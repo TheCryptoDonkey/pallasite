@@ -1,0 +1,55 @@
+{
+  "name": "Pallasite",
+  "tagline": "Shoot rocks. Stack sats.",
+  "tone": {
+    "personality": ["sharp", "sovereign", "wry", "cold"],
+    "voice": {
+      "do": [
+        "Use punchy verbs (ignites, banked, drift, stake)",
+        "Speak in numbers and physics (+240 sats, Wave 4)",
+        "Reference orbital mechanics naturally (orbits, drift, cascade)",
+        "Reward the curious with classical and scientific Easter eggs",
+        "Use British English (banked, claimed, spawned)",
+        "Pair short verb-noun phrases for rhythm"
+      ],
+      "dont": [
+        "Use marketing fluff (amazing, revolutionary, next-gen)",
+        "Cheerlead the player (Awesome job!, You crushed it!)",
+        "Over-explain Bitcoin, Lightning, or Nostr in-game",
+        "Lecture about freedom tech",
+        "Default to US conventions",
+        "Write paragraphs"
+      ]
+    },
+    "examples": {
+      "greeting": "Pallasite ignites. Press Enter to drift.",
+      "success": "Wave cleared. +240 sats banked.",
+      "error": "Hull breached. Press Enter to spawn.",
+      "encouragement": "Tighter orbits. Sharper aim.",
+      "cta": "Sign with Signet. Stake your name on Nostr."
+    }
+  },
+  "domain": {
+    "primary": "pallasite.space",
+    "alternates": ["pallasite.app"],
+    "defensive": ["pallasite.run", "pallasite.dev"]
+  },
+  "handles": {
+    "github": {
+      "name": "forgesworn/pallasite",
+      "available": true,
+      "note": "Standalone 'pallasite' user is taken; project lives under the forgesworn org"
+    },
+    "npm": {
+      "name": "@forgesworn/pallasite",
+      "available": true
+    }
+  },
+  "meta": {
+    "generatedAt": "2026-05-09T07:24:14Z",
+    "generatedBy": "brand-forge v1",
+    "scoringRubric": "holodeck-derived-v1",
+    "score": 72,
+    "scoreInterpretation": "Exceptional"
+  }
+}

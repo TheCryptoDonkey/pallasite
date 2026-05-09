@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Music masters — keep locally, never commit. The compressed opus versions in
+# public/music/ ARE tracked and ship with the build; the WAV originals + any
+# DAW exports stay on disk only. ~600MB total, would bloat the repo permanently.
+/music/
+
+# Wave background source PNGs — too large for git. The optimised webp versions
+# in public/backgrounds/ are what ships.
+/originals/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Build cache
+*.tsbuildinfo
+.cache/

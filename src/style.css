@@ -1,0 +1,519 @@
+:root {
+  --bg: #000;
+  --hud-green: #58ff58;
+  --hud-yellow: #ffd84a;
+  --hud-blue: #5b9dff;
+  --hud-purple: #b48cff;
+  --hud-red: #ff5050;
+  --font-vec: 'VT323', 'Press Start 2P', ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--hud-green);
+  font-family: var(--font-vec);
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+#game {
+  display: block;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--bg);
+  image-rendering: pixelated;
+  /* Soft CRT vignette */
+  box-shadow:
+    inset 0 0 120px rgba(0, 0, 0, 0.9),
+    0 0 60px rgba(91, 109, 255, 0.15);
+  border-radius: 12px;
+}
+
+#ui-root {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+#ui-root > * {
+  pointer-events: auto;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 28px;
+  padding: 32px 24px 80px;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(2px);
+  text-align: center;
+  font-family: var(--font-vec);
+  color: var(--hud-green);
+  text-shadow: 0 0 6px rgba(88, 255, 88, 0.6);
+  overflow-y: auto;
+}
+
+.overlay > * {
+  max-width: 540px;
+  width: 100%;
+}
+
+.overlay h1 {
+  font-size: clamp(2.5rem, 8vw, 5rem);
+  margin: 0 0 4px;
+  letter-spacing: 0.15em;
+  /* Compensate for the trailing letter-spacing space after the last glyph,
+     which would otherwise pull the centred text visibly leftward. */
+  padding-left: 0.15em;
+  color: var(--hud-green);
+  line-height: 1.05;
+}
+
+.overlay h2 {
+  font-size: clamp(1.5rem, 4vw, 2.5rem);
+  margin: 0;
+  color: var(--hud-yellow);
+  text-shadow: 0 0 6px rgba(255, 216, 74, 0.6);
+  letter-spacing: 0.1em;
+  padding-left: 0.1em;  /* same compensation, scaled to this letter-spacing */
+}
+
+.overlay p {
+  margin: 0;
+  font-size: 1.05rem;
+  color: rgba(255, 255, 255, 0.75);
+  letter-spacing: 0.04em;
+  line-height: 1.55;
+}
+
+.overlay .session-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 18px;
+  border: 1px solid rgba(180, 140, 255, 0.3);
+  border-radius: 10px;
+  background: rgba(180, 140, 255, 0.04);
+  width: auto;
+  max-width: 540px;
+  margin: 0 auto;
+}
+
+.overlay .leaderboard-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 20px;
+  border: 1px solid rgba(91, 157, 255, 0.4);
+  border-radius: 10px;
+  background: rgba(91, 157, 255, 0.05);
+  width: auto;
+  max-width: 540px;
+  margin: 0 auto;
+}
+
+.overlay .leaderboard-title {
+  font-size: 0.95rem;
+  color: var(--hud-blue);
+  letter-spacing: 0.25em;
+  margin: 0;
+  text-align: center;
+}
+
+.overlay .leaderboard-table {
+  display: grid;
+  grid-template-columns: 2.5em 1fr auto auto;
+  gap: 6px 18px;
+  font-size: 0.95rem;
+  text-align: left;
+}
+
+.overlay .leaderboard-table .rank { color: var(--hud-blue); text-align: right; }
+.overlay .leaderboard-table .name { color: var(--hud-green); text-transform: uppercase; }
+.overlay .leaderboard-table .score { color: var(--hud-yellow); text-align: right; }
+.overlay .leaderboard-table .sats { color: var(--hud-yellow); text-align: right; opacity: 0.75; font-size: 0.85rem; }
+
+.overlay .menu-btn {
+  background: transparent;
+  border: 2px solid var(--hud-green);
+  color: var(--hud-green);
+  font-family: var(--font-vec);
+  font-size: 1.3rem;
+  padding: 10px 24px;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  text-transform: uppercase;
+  transition: all 0.12s ease;
+  text-shadow: 0 0 6px rgba(88, 255, 88, 0.6);
+  box-shadow: 0 0 12px rgba(88, 255, 88, 0.2);
+}
+
+.overlay .menu-btn:hover {
+  background: rgba(88, 255, 88, 0.1);
+  box-shadow: 0 0 24px rgba(88, 255, 88, 0.5);
+  transform: translateY(-1px);
+}
+
+.overlay .menu-btn.secondary {
+  border-color: var(--hud-purple);
+  color: var(--hud-purple);
+  text-shadow: 0 0 6px rgba(180, 140, 255, 0.6);
+  box-shadow: 0 0 12px rgba(180, 140, 255, 0.2);
+}
+
+.overlay .menu-btn.secondary:hover {
+  background: rgba(180, 140, 255, 0.1);
+  box-shadow: 0 0 24px rgba(180, 140, 255, 0.5);
+}
+
+.menu-row {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.scoreboard {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px 28px;
+  font-size: 1.1rem;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 16px 28px;
+  border: 1px solid rgba(91, 157, 255, 0.4);
+  border-radius: 10px;
+  width: auto;
+  max-width: 360px;
+  margin: 0 auto;
+}
+
+.scoreboard .label { color: var(--hud-blue); text-align: right; letter-spacing: 0.15em; }
+.scoreboard .value { color: var(--hud-green); text-align: left; font-variant-numeric: tabular-nums; }
+
+.kbhint {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.82rem;
+  color: rgba(180, 140, 255, 0.75);
+  letter-spacing: 0.08em;
+  text-align: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  justify-content: center;
+  max-width: 720px;
+  pointer-events: none;
+}
+
+.kbhint span {
+  white-space: nowrap;
+}
+
+.kbhint kbd {
+  display: inline-block;
+  background: rgba(180, 140, 255, 0.15);
+  border: 1px solid rgba(180, 140, 255, 0.4);
+  padding: 2px 7px;
+  border-radius: 4px;
+  margin: 0 3px 0 0;
+  font-family: inherit;
+  font-size: 0.85em;
+}
+
+.toast {
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.8);
+  border: 1px solid var(--hud-yellow);
+  padding: 8px 16px;
+  font-size: 0.9rem;
+  color: var(--hud-yellow);
+  letter-spacing: 0.1em;
+  border-radius: 6px;
+  text-shadow: 0 0 4px rgba(255, 216, 74, 0.6);
+  animation: toast-fade 3s ease forwards;
+}
+
+@keyframes toast-fade {
+  0% { opacity: 0; transform: translateX(-50%) translateY(-8px); }
+  10% { opacity: 1; transform: translateX(-50%) translateY(0); }
+  80% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* Zap invoice popover — floating QR + actions, shown immediately on click for low-friction scan-to-pay */
+.zap-popover {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: linear-gradient(135deg, rgba(20, 8, 40, 0.96), rgba(8, 4, 24, 0.96));
+  border: 2px solid rgba(255, 216, 74, 0.6);
+  border-radius: 14px;
+  padding: 16px 18px 14px;
+  box-shadow: 0 0 40px rgba(255, 216, 74, 0.35);
+  z-index: 220;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  pointer-events: auto;
+  font-family: var(--font-vec);
+  max-width: 92vw;
+  animation: zap-popover-in 0.22s ease;
+}
+
+@keyframes zap-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes zap-popover-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+.zap-popover button:hover, .zap-popover a:hover {
+  filter: brightness(1.18);
+  transform: translateY(-1px);
+}
+
+/* Zap modal — fixed overlay above the game UI */
+.zap-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.82);
+  backdrop-filter: blur(4px);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  pointer-events: auto;
+}
+
+.zap-modal-inner {
+  background: linear-gradient(135deg, rgba(20, 8, 40, 0.95), rgba(8, 4, 24, 0.95));
+  border: 2px solid rgba(255, 216, 74, 0.5);
+  border-radius: 14px;
+  box-shadow: 0 0 60px rgba(255, 216, 74, 0.2);
+  padding: 28px 32px;
+  max-width: 540px;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  color: #cfd6ff;
+  font-family: var(--font-vec);
+}
+
+.zap-modal-inner h2 {
+  font-size: 1.6rem;
+  letter-spacing: 0.18em;
+  color: var(--hud-yellow);
+  text-shadow: 0 0 8px rgba(255, 216, 74, 0.5);
+  margin: 0 0 4px;
+}
+
+.zap-modal-inner button:hover:not(:disabled) {
+  filter: brightness(1.15);
+  transform: translateY(-1px);
+}
+
+/* Credits roll — auto-scrolling panel on the completion screen */
+.credits-roll {
+  position: relative;
+  width: 100%;
+  max-width: 620px;
+  height: 460px;
+  overflow: hidden;
+  border: 1px solid rgba(180, 140, 255, 0.3);
+  border-radius: 10px;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.7), rgba(20, 8, 40, 0.7));
+  margin: 0 auto;
+  mask-image: linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%);
+}
+
+.credits-roll-inner {
+  position: absolute;
+  width: 100%;
+  text-align: center;
+  padding: 0 24px;
+  animation: credits-roll-anim 60s linear forwards;
+  animation-play-state: running;
+}
+
+.credits-roll:hover .credits-roll-inner {
+  animation-play-state: paused;
+}
+
+@keyframes credits-roll-anim {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(-110%); }
+}
+
+/* Zap thank-you celebration — full-screen flash with a pulsing heart */
+@keyframes zap-thanks-in {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes zap-thanks-out {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: scale(0.97); }
+}
+@keyframes zap-thanks-pulse {
+  0%, 100% { transform: scale(1); filter: brightness(1); }
+  50%      { transform: scale(1.08); filter: brightness(1.25); }
+}
+
+/* Completion screen — staggered reveal of each section so the moment paces */
+.completion-stage {
+  opacity: 0;
+  transform: translateY(8px);
+  animation: completion-stage-in 0.7s ease forwards;
+}
+@keyframes completion-stage-in {
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Honours strip — small badges shown when special run conditions met */
+.honours-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin: 4px 0 0;
+}
+.honour-badge {
+  font-size: 0.78rem;
+  letter-spacing: 0.18em;
+  padding: 4px 12px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  text-shadow: 0 0 4px currentColor;
+}
+.honour-perfect { color: var(--hud-yellow); }
+.honour-no-lurk { color: var(--hud-green); }
+.honour-no-warp { color: var(--hud-blue); }
+.honour-completionist { color: #ffd84a; }
+
+.credits-roll-inner h3 {
+  font-size: 0.95rem;
+  letter-spacing: 0.32em;
+  color: var(--hud-yellow);
+  margin: 1.6em 0 0.5em;
+  font-weight: normal;
+  text-shadow: 0 0 6px rgba(255, 216, 74, 0.4);
+}
+
+.credits-roll-inner p {
+  font-size: 0.92rem;
+  color: rgba(220, 210, 255, 0.85);
+  margin: 0.3em 0;
+  line-height: 1.55;
+  letter-spacing: 0.04em;
+  text-shadow: none;
+}
+
+.credits-roll-inner p strong {
+  color: var(--hud-blue);
+  font-weight: normal;
+  letter-spacing: 0.12em;
+}
+
+.credits-roll-inner .name {
+  color: var(--hud-yellow);
+  font-size: 1.1rem;
+  letter-spacing: 0.22em;
+  text-shadow: 0 0 6px rgba(255, 216, 74, 0.5);
+  margin: 0.4em 0 0.2em;
+}
+
+.credits-roll-inner a {
+  color: var(--hud-blue);
+  text-decoration: none;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  word-break: break-all;
+}
+
+.credits-roll-inner a:hover {
+  color: var(--hud-yellow);
+  text-decoration: underline;
+}
+
+.credits-roll-inner .credits-divider {
+  font-size: 1.1em;
+  color: rgba(180, 140, 255, 0.4);
+  margin: 1.4em 0 0.6em;
+  letter-spacing: 0.6em;
+}
+
+.credits-roll-inner .credits-spacer {
+  height: 100px;
+}
+
+.credits-roll-inner .specimen {
+  margin: 0.45em 0;
+}
+.credits-roll-inner .specimen-name {
+  color: var(--hud-yellow);
+  letter-spacing: 0.16em;
+  font-size: 0.92rem;
+}
+.credits-roll-inner .specimen-sub {
+  color: rgba(180, 200, 255, 0.65);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+}
+
+@media (max-width: 768px) {
+  #game {
+    width: 100vw;
+    height: 100vh;
+    border-radius: 0;
+  }
+}
+
+/* CRT scanlines via CSS — cheap, no canvas overhead */
+#game::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    transparent 50%,
+    rgba(0, 0, 0, 0.06) 50%,
+    rgba(0, 0, 0, 0.06) 100%
+  );
+  background-size: 100% 3px;
+  mix-blend-mode: multiply;
+}

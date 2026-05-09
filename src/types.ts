@@ -1,0 +1,593 @@
+/** Game-wide types. */
+
+import type { SignetSession } from 'signet-login';
+
+export interface Vec2 { x: number; y: number; }
+
+export interface Entity {
+  pos: Vec2;
+  vel: Vec2;
+  radius: number;
+  alive: boolean;
+}
+
+export interface Ship extends Entity {
+  rot: number;            // radians
+  rotVel: number;
+  thrusting: boolean;
+  invulnerableUntil: number;  // timestamp ms
+  /** Flicker phase for thrust flame */
+  thrustFrame: number;
+  /** Timestamp ms when hyperspace cooldown ends */
+  hyperspaceReadyAt: number;
+  /** If > 0, ship is mid-hyperspace and not rendered/colliding for this many ms remaining */
+  hyperspaceCloakMs: number;
+  /**
+   * True if the malfunction roll fired at jump time. The cloak/emerge code path
+   * uses this to render a *visible* glitched warp instead of silently rolling
+   * the dice on emergence: red distortion particles during cloak, glitched SFX,
+   * and a red implosion at the would-be reappearance. Players curse the void,
+   * not the code.
+   */
+  hyperspaceMalfunction: boolean;
+  /** Shield active right now */
+  shieldUp: boolean;
+  /** Timestamp ms when the active shield expires */
+  shieldExpiresAt: number;
+  /** Timestamp ms when the shield can be re-activated after the last burst ends */
+  shieldReadyAt: number;
+}
+
+export type AsteroidSize = 'large' | 'medium' | 'small';
+
+/**
+ * Asteroid mineral types. Lifted from the pallasite lore so the visual variety
+ * has narrative roots:
+ *   - stony     → silicate baseline (the canonical rock)
+ *   - iron      → iron-nickel core fragments, denser, take two hits
+ *   - chondrite → fragile primitive matter, fragments into three
+ *   - pallasite → rare olivine-in-iron jackpots, big sat payouts
+ */
+export type AsteroidType = 'stony' | 'iron' | 'chondrite' | 'pallasite';
+
+export interface Asteroid extends Entity {
+  size: AsteroidSize;
+  type: AsteroidType;
+  /** HP remaining. Drops by 1 per hit; breaks at 0. Set per type × size. */
+  hp: number;
+  /** Hit-flash decay 0..1 (fades over ~250ms). */
+  hitFlash: number;
+  rot: number;
+  rotVel: number;
+  /** Pre-generated lumpy outline (relative to centre, in radius units) */
+  shape: number[];
+  /** Random hue offset for vector colour variety */
+  hue: number;
+}
+
+export interface AsteroidTypeConfig {
+  /** HP at large size — medium/small drop to 1 regardless. */
+  hp: number;
+  /** Multiplier on SATS_PER_SIZE drop. */
+  satMul: number;
+  /** Multiplier on POINTS_PER_SIZE. */
+  scoreMul: number;
+  /** Number of children spawned when this asteroid breaks (large/medium only). */
+  breakInto: number;
+  /** Base CSS hue for the outline. */
+  hueBase: number;
+  /** Glow shadow colour. */
+  glow: string;
+  /** Display label for toasts. */
+  label: string;
+}
+
+export const ASTEROID_TYPE_CONFIG: Record<AsteroidType, AsteroidTypeConfig> = {
+  stony:     { hp: 1, satMul: 1.0, scoreMul: 1.0, breakInto: 2, hueBase: 265, glow: '#b48cff', label: 'STONY' },
+  iron:      { hp: 2, satMul: 1.5, scoreMul: 1.6, breakInto: 2, hueBase: 16,  glow: '#ff7a3a', label: 'IRON' },
+  chondrite: { hp: 1, satMul: 0.6, scoreMul: 0.8, breakInto: 3, hueBase: 195, glow: '#7fbfff', label: 'CHONDRITE' },
+  pallasite: { hp: 1, satMul: 4.0, scoreMul: 2.0, breakInto: 2, hueBase: 80,  glow: '#ffd84a', label: 'PALLASITE' },
+};
+
+export interface Bullet extends Entity {
+  ttl: number;            // ms remaining
+}
+
+export type UfoType = 'cruiser' | 'elite' | 'tank' | 'sniper' | 'boss';
+
+export interface Ufo extends Entity {
+  type: UfoType;
+  /** Health remaining — only Tank has > 1 */
+  hp: number;
+  /** Direction of travel: 1 right, -1 left */
+  dir: 1 | -1;
+  /** Time until next zig-zag direction change in ms */
+  zigTimer: number;
+  /** Time until next shot in ms */
+  shootTimer: number;
+  /** Lifetime remaining in ms before despawn */
+  lifetime: number;
+  /** Render-frame counter for blinking lights */
+  blink: number;
+  /** Hit flash decay (0..1) — flashes white on damage */
+  hitFlash: number;
+}
+
+/**
+ * Pickup kinds. Two-tier economy:
+ *   - 'sat' — yellow ₿ coin, only drops in Nostr mode at SAT_DROP_CHANCE per
+ *     break. Worth real sats. Affected by the satboost power-up.
+ *   - 'dust' — green olivine shard, the bread-and-butter drop in both modes.
+ *     Pure score reward, never sats. Always available so guest players still
+ *     get pickup feedback after every kill.
+ */
+export type PickupKind = 'sat' | 'dust';
+
+export interface Coin extends Entity {
+  ttl: number;
+  collected: boolean;
+  kind: PickupKind;
+  /** Per-pickup payload — sats for `kind:'sat'`, score-bonus points for `kind:'dust'` */
+  value: number;
+}
+
+/** 1-in-N chance a break drops sat coins (Nostr mode only). The remaining
+ *  rolls drop dust shards. Tunes the perceived rarity of sats. */
+export const SAT_DROP_CHANCE_DENOM = 8;
+
+/** Rare temporary buff or one-shot effect dropped by UFO kills. */
+export type PowerUpType = 'rapid' | 'satboost' | 'bomb';
+
+export interface PowerUp extends Entity {
+  type: PowerUpType;
+  /** ms remaining before despawn */
+  ttl: number;
+  collected: boolean;
+}
+
+export interface PowerUpConfig {
+  /** Duration in ms a buff stays active (0 for instant effects like bomb). */
+  durationMs: number;
+  /** Glyph rendered on the pickup. */
+  glyph: string;
+  /** Body colour. */
+  colour: string;
+  /** Toast on pickup. */
+  pickupLabel: string;
+}
+
+export const POWERUP_CONFIG: Record<PowerUpType, PowerUpConfig> = {
+  rapid:    { durationMs: 8000,  glyph: '⚡', colour: '#ff8a3a', pickupLabel: 'RAPID FIRE' },
+  satboost: { durationMs: 12000, glyph: '₿', colour: '#ffd84a', pickupLabel: '×2 SATS' },
+  bomb:     { durationMs: 0,     glyph: '◉', colour: '#ff5050', pickupLabel: 'SMART BOMB' },
+};
+
+/** Drop chance per non-boss UFO kill. */
+export const POWERUP_DROP_CHANCE = 0.30;
+/** TTL for an uncollected power-up on the field. */
+export const POWERUP_TTL_MS = 14_000;
+export const POWERUP_RADIUS = 14;
+/** Multiplier on FIRE_COOLDOWN_MS while rapid is active (lower = faster). */
+export const RAPID_COOLDOWN_MUL = 0.34;
+/** Multiplier on coin sat value while satboost is active. */
+export const SATBOOST_MUL = 2;
+
+/** Stationary gravity mine — pulls the ship in, kills on contact unless shielded. */
+export interface Mine extends Entity {
+  /** ms since spawn — used for animation pulse */
+  age: number;
+  /** Gravity well effective range in px */
+  gravityRange: number;
+  /** 1 HP — destroyed by any bullet */
+  hp: number;
+  /** Hit-flash decay 0..1 */
+  hitFlash: number;
+}
+
+export interface Particle {
+  pos: Vec2;
+  vel: Vec2;
+  ttl: number;
+  maxTtl: number;
+  colour: string;
+  size: number;
+}
+
+export type GamePhase = 'title' | 'playing' | 'paused' | 'gameover' | 'wavestart' | 'warp' | 'completed' | 'deathreplay';
+
+/** Snapshot of motion-relevant state, captured at ~30Hz during play and used
+ *  to drive the death replay. Reuses the live entity types so the existing
+ *  draw functions work unchanged on snapshot data. Particles / coins /
+ *  power-ups / shield / hyperspace cloak are intentionally omitted — they
+ *  don't change the answer to "what killed me?". */
+export interface ReplaySnapshot {
+  t: number;
+  ship: { pos: Vec2; rot: number; alive: boolean; thrusting: boolean };
+  asteroids: Asteroid[];
+  ufos: Ufo[];
+  bullets: Bullet[];
+  enemyBullets: Bullet[];
+  mines: Mine[];
+}
+
+export interface DeathReplay {
+  snapshots: ReplaySnapshot[];
+  /** performance.now() at the moment playback (re-)started */
+  startedAt: number;
+  /** Captured game-time span, ms — last sample.t minus first sample.t */
+  spanMs: number;
+}
+
+export interface GameState {
+  phase: GamePhase;
+  ship: Ship;
+  asteroids: Asteroid[];
+  bullets: Bullet[];
+  enemyBullets: Bullet[];
+  ufos: Ufo[];
+  mines: Mine[];
+  coins: Coin[];
+  powerups: PowerUp[];
+  particles: Particle[];
+
+  score: number;
+  /** in-game sats counter (mirrors what backend would credit) */
+  sats: number;
+  /** HUD-side animated counter that catches up to `sats` over a few hundred ms.
+   *  Render uses Math.floor(displaySats) so the number visibly ticks up rather
+   *  than snapping when a coin is absorbed. Float so easing has sub-int steps.
+   */
+  displaySats: number;
+  wave: number;
+  lives: number;
+
+  /** ms timestamp this phase started */
+  phaseStart: number;
+  /** ms timestamp last update */
+  lastUpdate: number;
+  /** total elapsed playtime ms (for music/audio if added) */
+  elapsed: number;
+
+  /** ms until next UFO spawn */
+  nextUfoSpawn: number;
+  /** ms until next mine spawn check */
+  nextMineSpawn: number;
+
+  /** During warp, the wave number we're heading to (so the banner reads correctly under cheat-jumps too). */
+  warpTargetWave: number;
+
+  /** Total run time in ms (excluding pauses) — for completion screen */
+  runTimeMs: number;
+  /** Wave 25 boss state */
+  bossDefeated: boolean;
+
+  /** Active kill chain length (0 when not chained, 1+ during a chain). Caps at COMBO_MAX. */
+  combo: number;
+  /** ms timestamp the combo window closes. */
+  comboExpiresAt: number;
+
+  /** ms timestamp rapid-fire buff expires (0 when inactive). */
+  rapidExpiresAt: number;
+  /** ms timestamp ×2 sat boost buff expires (0 when inactive). */
+  satboostExpiresAt: number;
+
+  /** auth state */
+  session: SignetSession | null;
+  /** Resolved kind-0 profile for the active session (or null if not yet fetched) */
+  profile: import('./profile.js').NostrProfile | null;
+
+  /** input state */
+  keys: Record<string, boolean>;
+
+  /** transient toast text */
+  toast: string | null;
+  toastUntil: number;
+
+  /** True while the ship has been parked in the centre dead-zone (and slow)
+   *  for LURK_DURATION_MS. Easter egg honouring the 1979 saucer-aim exploit:
+   *  the strategy still works as a play option, but coins do not credit sats
+   *  while the flag is on. Score still ticks. Cleared the moment the ship
+   *  leaves the zone or accelerates above LURK_VEL_THRESHOLD. */
+  lurking: boolean;
+  /** performance.now() when the player first entered lurk conditions in the
+   *  current uninterrupted streak; 0 when not currently in the zone. */
+  lurkingSince: number;
+  /** Total sats withheld this run while lurking — for telemetry and a future
+   *  game-over breakdown line. */
+  lurkSatsBlocked: number;
+  /** Has the lurking easter-egg toast already fired this run? */
+  lurkEverDetected: boolean;
+
+  /** Ring buffer of recent gameplay snapshots. Capped at REPLAY_BUFFER_FRAMES. */
+  replayBuffer: ReplaySnapshot[];
+  /** Set by killShip on the final death; cleared by startGame. Lives across
+   *  the gameover screen so the REPLAY button can re-trigger playback. */
+  deathReplay: DeathReplay | null;
+}
+
+/** Lurking easter egg — see GameState.lurking. Detection: ship within
+ *  LURK_CENTRE_RADIUS_PX of dead centre AND speed below LURK_VEL_THRESHOLD.
+ *  Two thresholds: at LURK_DURATION_MS the mechanical effects kick in (sats
+ *  blocked, asteroid avoidance, UFO bullet immunity); at LURK_TOAST_MS the
+ *  one-time easter-egg confirmation message fires. The longer toast threshold
+ *  gates the explicit reveal behind a deliberate commitment, so it lands as
+ *  discovery rather than a hair-trigger explainer. */
+export const LURK_CENTRE_RADIUS_PX = 90;
+export const LURK_VEL_THRESHOLD = 25;
+export const LURK_DURATION_MS = 4000;
+export const LURK_TOAST_MS = 12000;
+
+/** Replay tuning. Total wall-clock duration is REPLAY_FAST_MS + REPLAY_SLOW_MS / SLOW_RATE. */
+export const REPLAY_RECORD_INTERVAL_MS = 33;       // ~30Hz
+export const REPLAY_DURATION_MS = 2000;            // captured span
+export const REPLAY_BUFFER_FRAMES = Math.ceil(REPLAY_DURATION_MS / REPLAY_RECORD_INTERVAL_MS) + 4;
+export const REPLAY_FAST_MS = 1500;                // first slice plays at 1.0x
+export const REPLAY_SLOW_MS = 500;                 // last 0.5s of game-time...
+export const REPLAY_SLOW_RATE = 0.4;               // ...stretched to 1.25s of wall-time
+export const REPLAY_TOTAL_WALL_MS = REPLAY_FAST_MS + Math.round(REPLAY_SLOW_MS / REPLAY_SLOW_RATE);
+
+export const WORLD_W = 960;
+export const WORLD_H = 720;
+
+export const SHIP_RADIUS = 12;
+export const SHIP_THRUST = 240;       // px/s²
+export const SHIP_DRAG = 0.4;         // multiplicative damping per second
+export const SHIP_ROT_ACCEL = 8;      // rad/s² when key held
+export const SHIP_ROT_DAMPING = 6;    // rad/s² counter
+export const SHIP_MAX_ROT = 4;        // rad/s
+export const SHIP_INVULN_MS = 2200;
+export const FIRE_COOLDOWN_MS = 220;
+export const HYPERSPACE_COOLDOWN_MS = 5000;
+export const HYPERSPACE_CLOAK_MS = 350;
+/** Probability of hyperspace malfunction (instant death). Classic Asteroids had ~1/8. */
+export const HYPERSPACE_MALFUNCTION_CHANCE = 0.06;
+/** Min distance from any asteroid/UFO when re-emerging. */
+export const HYPERSPACE_SAFE_DIST = 60;
+/** Window in ms within which a second ↓ press counts as a double-tap → hyperspace. */
+export const DOWN_DOUBLE_TAP_WINDOW_MS = 320;
+/** Shield active duration. */
+export const SHIELD_DURATION_MS = 1500;
+/** Cooldown after a shield burst ends before it can re-activate. */
+export const SHIELD_COOLDOWN_MS = 3000;
+
+export const BULLET_SPEED = 520;      // px/s
+export const BULLET_TTL_MS = 1000;
+export const BULLET_RADIUS = 2;
+
+export const ASTEROID_BASE_SPEED = 60;    // px/s base
+/** Per-wave additive speed bump for asteroids (Normal baseline). Easier curve than before. */
+export const ASTEROID_SPEED_PER_WAVE = 5;
+
+export const COIN_RADIUS = 9;
+export const COIN_TTL_MS = 8000;
+
+export const POINTS_PER_SIZE: Record<AsteroidSize, number> = {
+  large: 20,
+  medium: 50,
+  small: 100,
+};
+
+export const SATS_PER_SIZE: Record<AsteroidSize, number> = {
+  large: 1,
+  medium: 2,
+  small: 4,
+};
+
+export const RADIUS_PER_SIZE: Record<AsteroidSize, number> = {
+  large: 48,
+  medium: 26,
+  small: 14,
+};
+
+/**
+ * Per-wave specimen lore. Wave 1-24 are real pallasite finds; the subtitle is
+ * shown on the wave-clear banner so each wave teaches a fragment of meteorite
+ * history along with the play. Single source of truth — credits roll on the
+ * completion screen reads from this table too.
+ *
+ * Wave 25 (EVENT HORIZON) is the boss arena, no real-world referent.
+ */
+export interface WaveLore {
+  /** Display name shown big on the banner */
+  name: string;
+  /** One-line lore subtitle shown beneath the name */
+  subtitle: string;
+}
+
+export const WAVE_LORE: readonly WaveLore[] = [
+  // Verified against the Meteoritical Bulletin Database + Wikipedia, 2026-05-09
+  { name: 'KRASNOJARSK',     subtitle: 'Russia, 1749 — first pallasite ever found' },
+  { name: 'BRENHAM',         subtitle: 'Kansas, 1882 — over 4 tonnes recovered' },
+  { name: 'ESQUEL',          subtitle: 'Argentina, 1951 — gem-grade peridot' },
+  { name: 'FUKANG',          subtitle: 'Xinjiang, 2000 — 1,003 kg main mass' },
+  { name: 'IMILAC',          subtitle: 'Atacama, Chile, 1822 — ~1 tonne strewn field' },
+  { name: 'MINEO',           subtitle: 'Sicily, 1826 — observed fall' },
+  { name: 'ZAISHO',          subtitle: 'Japan, 1898 — observed fall, just 330 g' },
+  { name: 'MARJALAHTI',      subtitle: 'Finland, 1902 — observed fall, 45 kg' },
+  { name: 'OMOLON',          subtitle: 'Russia, 1981 — largest observed pallasite fall' },
+  { name: 'SPRINGWATER',     subtitle: 'Saskatchewan, 1931 — type locality of farringtonite' },
+  { name: 'GLORIETA MTN',    subtitle: 'New Mexico, 1884 — variable olivine content' },
+  { name: 'SEYMCHAN',        subtitle: 'Russia, 1967 — reclassified iron to pallasite' },
+  { name: 'ALBIN',           subtitle: 'Wyoming, 1915 — clear olivine to 38 mm' },
+  { name: 'BRAHIN',          subtitle: 'Belarus, 1810 — over 1 tonne recovered' },
+  { name: 'AHUMADA',         subtitle: 'Chihuahua, Mexico, 1909 — 53 kg main mass' },
+  { name: 'ITZAWISIS',       subtitle: 'Namibia, 1946 — Eagle Station group, 350 g' },
+  { name: 'EAGLE STATION',   subtitle: 'Kentucky, 1880 — type specimen of its group' },
+  { name: 'NEWPORT',         subtitle: 'Arkansas, 1923 — only stony-iron of the state' },
+  { name: 'OTINAPA',         subtitle: 'Durango, Mexico — main group pallasite' },
+  { name: 'CONCEPTION JCT',  subtitle: 'Missouri, 2006 — anomalous main group, 17 kg' },
+  { name: 'QUIJINGUE',       subtitle: 'Bahia, Brazil, 1984 — first Brazilian pallasite' },
+  { name: 'PHILLIPS COUNTY', subtitle: 'Colorado, 1935 — anomalous main group' },
+  { name: 'ADMIRE',          subtitle: 'Kansas, 1881 — strewn field, ~2 tonnes total' },
+  { name: 'HAMBLETON',       subtitle: 'North Yorkshire, 2005 — sulphide-rich' },
+  { name: 'EVENT HORIZON',   subtitle: 'The final arena · no return' },
+];
+
+/** Lookup the lore subtitle for a wave (1-indexed). Null for waves outside the table. */
+export function waveSubtitle(wave: number): string | null {
+  return WAVE_LORE[wave - 1]?.subtitle ?? null;
+}
+
+/** Convenience: just the names, derived from WAVE_LORE so the two stay in lock-step. */
+export const WAVE_NAMES: readonly string[] = WAVE_LORE.map(w => w.name);
+
+/** Total number of survival waves before completion. */
+export const FINAL_WAVE = 25;
+
+/** Get the lore name for a given wave number (1-indexed). Falls back to "WAVE N" beyond the table. */
+export function waveName(wave: number): string {
+  return WAVE_NAMES[wave - 1] ?? `WAVE ${wave}`;
+}
+
+export const UFO_RADIUS: Record<UfoType, number> = {
+  cruiser: 22,
+  elite: 12,
+  tank: 30,
+  sniper: 14,
+  boss: 50,
+};
+export const UFO_SPEED: Record<UfoType, number> = {
+  cruiser: 110,
+  elite: 170,
+  tank: 70,
+  sniper: 90,
+  boss: 50,
+};
+/** HP — number of player bullet hits required to destroy. */
+export const UFO_HP: Record<UfoType, number> = {
+  cruiser: 1,
+  elite: 1,
+  tank: 3,
+  sniper: 1,
+  boss: 25,
+};
+/** Per-type shot accuracy in radians (smaller = more accurate). */
+export const UFO_SHOT_SPREAD: Record<UfoType, number> = {
+  cruiser: 0.4,
+  elite: 0.08,
+  tank: 0.5,
+  sniper: 0.02,
+  boss: 0.1,
+};
+/** Per-type shoot interval ms. */
+export const UFO_SHOOT_INTERVAL: Record<UfoType, number> = {
+  cruiser: 1600,
+  elite: 1300,
+  tank: 2200,
+  sniper: 2400,
+  boss: 900,    // boss fires often — be aggressive
+};
+/** Per-type bullet speed multiplier. */
+export const UFO_BULLET_SPEED_MUL: Record<UfoType, number> = {
+  cruiser: 1.0,
+  elite: 1.0,
+  tank: 0.85,
+  sniper: 1.6,
+  boss: 1.2,
+};
+export const UFO_BULLET_SPEED = 320;
+export const UFO_BULLET_TTL_MS = 2500;
+export const UFO_LIFETIME_MS = 12_000;
+export const UFO_ZIG_INTERVAL_MS = 1100;
+/** Score points awarded for shooting a UFO. */
+export const UFO_POINTS: Record<UfoType, number> = {
+  cruiser: 200, elite: 1000, tank: 500, sniper: 1500, boss: 25_000,
+};
+/** Sats coins dropped on UFO kill. */
+export const UFO_SATS: Record<UfoType, number> = {
+  cruiser: 5, elite: 15, tank: 8, sniper: 12, boss: 100,
+};
+export const UFO_FIRST_SPAWN_MS = 12_000;
+export const UFO_RESPAWN_BASE_MS = 18_000;
+export const UFO_RESPAWN_PER_WAVE_MS = 1200;
+export const UFO_RESPAWN_MIN_MS = 6500;
+
+/**
+ * UFO type assigned to each wave. One species per wave keeps each fight legible
+ * and lets the player learn that wave's threat. Debuts: cruiser (1), elite (4),
+ * tank (7), sniper (10). Wave 25 minions are sniper to harass under the boss.
+ */
+export const UFO_TYPE_BY_WAVE: readonly UfoType[] = [
+  'cruiser',  // 1
+  'cruiser',  // 2
+  'cruiser',  // 3
+  'elite',    // 4 — debut
+  'cruiser',  // 5
+  'cruiser',  // 6
+  'tank',     // 7 — debut
+  'elite',    // 8
+  'cruiser',  // 9 — breather
+  'sniper',   // 10 — debut
+  'tank',     // 11
+  'elite',    // 12
+  'sniper',   // 13
+  'tank',     // 14
+  'elite',    // 15
+  'sniper',   // 16
+  'tank',     // 17
+  'elite',    // 18
+  'sniper',   // 19
+  'tank',     // 20
+  'elite',    // 21
+  'sniper',   // 22
+  'tank',     // 23
+  'sniper',   // 24
+  'sniper',   // 25 — boss arena minion (boss itself spawned separately)
+];
+
+// ── Mines ─────────────────────────────────────────────────────────────────────
+
+export const MINE_RADIUS = 11;
+/** Effective range of the gravity well in px. Smaller = easier to skirt around. */
+export const MINE_GRAVITY_RANGE = 150;
+/** Peak inward acceleration in px/s² when ship is at the edge of range. Smaller = escapable. */
+export const MINE_GRAVITY_STRENGTH = 180;
+export const MINE_POINTS = 250;
+export const MINE_SATS_DROP = 3;
+/** Wave at which mines start appearing. */
+export const MINE_FIRST_WAVE = 8;
+
+// ── Combo / chain bonus ──────────────────────────────────────────────────────
+
+/** Window after a kill in which the next kill counts as a chain. */
+export const COMBO_WINDOW_MS = 3000;
+/** Max chain multiplier — caps at ×5. */
+export const COMBO_MAX = 5;
+
+/**
+ * Candidate static mine positions — chosen by hand to be tactically interesting:
+ * quadrant centres, edge midpoints, between asteroid spawn lanes.
+ * Per wave we pick N of these deterministically (wave-seeded).
+ * Coordinates are within the 960x720 playfield with healthy edge buffer.
+ */
+export const MINE_CANDIDATE_POSITIONS: ReadonlyArray<{ x: number; y: number }> = [
+  { x: 240, y: 180 },   // top-left quadrant centre
+  { x: 720, y: 180 },   // top-right
+  { x: 240, y: 540 },   // bottom-left
+  { x: 720, y: 540 },   // bottom-right
+  { x: 480, y: 200 },   // top-centre
+  { x: 480, y: 520 },   // bottom-centre
+  { x: 200, y: 360 },   // left-centre
+  { x: 760, y: 360 },   // right-centre
+  { x: 360, y: 320 },   // inner ring NW
+  { x: 600, y: 320 },   // inner ring NE
+  { x: 360, y: 420 },   // inner ring SW
+  { x: 600, y: 420 },   // inner ring SE
+];
+
+/**
+ * Number of mines per wave (1-indexed by wave). 0 means no mines on this wave.
+ * Very gradual ramp so the player learns layouts.
+ */
+export const MINE_COUNT_BY_WAVE: ReadonlyArray<number> = [
+  0, 0, 0, 0, 0, 0, 0,  // waves 1-7: no mines
+  1, 1, 1,              // 8-10: 1 mine
+  2, 2,                 // 11-12: 2 mines
+  2, 3,                 // 13-14: 3 mines
+  3, 3,                 // 15-16
+  4, 4,                 // 17-18
+  4, 5,                 // 19-20
+  5, 5,                 // 21-22
+  6, 6,                 // 23-24
+  0,                    // 25: boss arena (boss deploys its own mines)
+];

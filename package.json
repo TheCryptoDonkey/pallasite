@@ -1,0 +1,32 @@
+{
+  "name": "@forgesworn/pallasite",
+  "version": "0.1.0",
+  "description": "Pallasite — Shoot rocks. Stack sats. Cosmic arcade Asteroids with Lightning payouts and Nostr leaderboards. Sign in with Signet.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "npm run sync-sdk && vite",
+    "build": "npm run sync-sdk && tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "sync-sdk": "cp ../signet-login/dist/signet-login.iife.js public/signet-login.iife.js",
+    "gen-backgrounds": "tsx tools/generate-backgrounds.ts",
+    "optimise-backgrounds": "tsx tools/optimise-backgrounds.ts"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4",
+    "signet-login": "file:../signet-login"
+  },
+  "devDependencies": {
+    "@types/qrcode": "^1.5.6",
+    "sharp": "^0.34.5",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/forgesworn/pallasite.git"
+  }
+}
