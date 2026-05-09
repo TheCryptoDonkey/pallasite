@@ -8,6 +8,7 @@
 import type { GameState } from './types.js';
 import { WAVE_LORE } from './types.js';
 import { getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRelay, removeRelay, resetRelays } from './relays.js';
+import { getTouchMode, setTouchMode, type TouchInputMode } from './touch.js';
 import * as auth from './auth.js';
 import { addLocalHighScore, getLocalHighScores, isHighScore, publishScore } from './score.js';
 import { startGame, startDeathReplay, toastNow } from './game.js';
@@ -463,6 +464,44 @@ export function renderSettings(onBack: () => void): void {
   // Quick reference for the in-game mute key
   const note = el('p', { parent: panel, text: 'Tap M in-game to toggle mute. Music ducks while paused.' });
   note.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.7);letter-spacing:0.06em;margin:0;text-align:center;';
+
+  // Touch input mode — only meaningful on touch devices but harmless to show
+  // on desktop (it just doesn't apply until a touch event reveals controls).
+  const touchHeading = el('p', { parent: overlay, text: 'TOUCH INPUT' });
+  touchHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
+
+  const touchPanel = el('div', { parent: overlay });
+  touchPanel.style.cssText = 'display:flex;gap:8px;align-items:center;justify-content:center;';
+  const inputOpts: ReadonlyArray<{ value: TouchInputMode; label: string; hint: string }> = [
+    { value: 'buttons',  label: 'BUTTONS',  hint: 'Authentic 1979 cabinet — discrete d-pad + fire' },
+    { value: 'joystick', label: 'JOYSTICK', hint: 'One-thumb pad — drag for rotate + thrust' },
+  ];
+  const inputHint = el('p', { parent: overlay });
+  inputHint.style.cssText = 'font-size:0.75rem;color:rgba(180,140,255,0.65);letter-spacing:0.04em;margin:0;height:1em;text-align:center;';
+
+  const inputBtns = new Map<TouchInputMode, HTMLButtonElement>();
+  function paintInput(): void {
+    const cur = getTouchMode();
+    for (const [v, btn] of inputBtns) {
+      const on = v === cur;
+      btn.style.cssText = [
+        'background:' + (on ? 'rgba(91,157,255,0.22)' : 'transparent'),
+        'border:2px solid ' + (on ? '#5b9dff' : 'rgba(180,140,255,0.4)'),
+        'color:' + (on ? '#5b9dff' : 'rgba(220,210,255,0.85)'),
+        "font-family:'VT323',ui-monospace,monospace",
+        'font-size:1rem', 'padding:6px 18px', 'letter-spacing:0.18em',
+        'cursor:pointer', 'border-radius:6px', 'min-width:104px',
+        on ? 'box-shadow:0 0 12px rgba(91,157,255,0.35);text-shadow:0 0 6px rgba(91,157,255,0.6)' : '',
+      ].filter(Boolean).join(';');
+    }
+    inputHint.textContent = inputOpts.find(o => o.value === cur)?.hint ?? '';
+  }
+  for (const opt of inputOpts) {
+    const btn = el('button', { parent: touchPanel, text: opt.label });
+    inputBtns.set(opt.value, btn);
+    btn.addEventListener('click', () => { setTouchMode(opt.value); paintInput(); });
+  }
+  paintInput();
 
   const row2 = el('div', { className: 'menu-row', parent: overlay });
   // Open the Nostr relay editor without leaving settings
