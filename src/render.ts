@@ -186,15 +186,69 @@ function syncBodyBackground(wave: number, hasOverride: boolean): void {
   document.body.style.backgroundImage = key ? `url(/backgrounds/wave-${wave}.webp)` : '';
 }
 
+/** Render mode info from main.ts fit() — tells drawBackground whether to use
+ *  in-world coords (retro) or canvas-pixel coords (modern fill). */
+export interface RenderModeInfo {
+  kind: 'retro' | 'modern';
+  vw: number;
+  vh: number;
+  dpr: number;
+  scale: number;
+  tx: number;
+  ty: number;
+}
+let renderMode: RenderModeInfo = { kind: 'retro', vw: 960, vh: 720, dpr: 1, scale: 1, tx: 0, ty: 0 };
+export function setRenderMode(info: RenderModeInfo): void { renderMode = info; }
+
+/** Title-screen background cycling: rotates through wave bgs every 30s,
+ *  skipping the wave-25 finale image so the boss reveal stays for in-game. */
+let titleBgStartedAt = 0;
+const TITLE_BG_INTERVAL_MS = 30_000;
+const TITLE_BG_MAX = 24;  // wave 25 (Event Horizon) excluded — saves the reveal
+
 function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: number): void {
-  const wave = Math.max(1, state.wave);
-  // Try image override first (non-blocking — fall back this frame, retry next)
+  let wave: number;
+  if (state.phase === 'title') {
+    if (titleBgStartedAt === 0) titleBgStartedAt = now;
+    const idx = Math.floor((now - titleBgStartedAt) / TITLE_BG_INTERVAL_MS) % TITLE_BG_MAX;
+    wave = idx + 1;
+    // Preload the next wave so the cycle is seamless
+    preloadBackground(((idx + 1) % TITLE_BG_MAX) + 1);
+  } else {
+    wave = Math.max(1, state.wave);
+    titleBgStartedAt = 0;  // reset so re-entering title starts the cycle from #1
+  }
   const override = tryLoadOverride(wave);
   syncBodyBackground(wave, override !== null);
+
+  if (renderMode.kind === 'modern') {
+    // Modern fill: bg covers the entire canvas in canvas-pixel space, not the
+    // 960×720 world rect. Save/restore the world transform around it so other
+    // draw calls keep using world coords.
+    ctx.save();
+    ctx.setTransform(renderMode.dpr, 0, 0, renderMode.dpr, 0, 0);
+    if (override) {
+      const breath = 1.025 + Math.sin(now * 0.00038) * 0.006;
+      const coverScale = Math.max(renderMode.vw / override.width, renderMode.vh / override.height) * breath;
+      const w = override.width * coverScale;
+      const h = override.height * coverScale;
+      const dx = (renderMode.vw - w) / 2 + Math.sin(now * 0.00029) * 12;
+      const dy = (renderMode.vh - h) / 2 + Math.cos(now * 0.00021) * 7;
+      ctx.drawImage(override, dx, dy, w, h);
+    } else {
+      // Procedural fallback also stretches to canvas — cheap solid black so
+      // the canvas isn't the underlying body bg (which we deliberately hid).
+      if (!bgCache || bgCache.wave !== wave) {
+        bgCache = { wave, canvas: buildProceduralBackground(wave) };
+      }
+      ctx.drawImage(bgCache.canvas, 0, 0, renderMode.vw, renderMode.vh);
+    }
+    ctx.restore();
+    return;
+  }
+
+  // Retro: draw bg in 960×720 world space (unchanged behaviour).
   if (override) {
-    // Subtle breath + sway — zooms 1.020 ± 0.005 with a slow horizontal/vertical
-    // drift, so the scene feels alive without anything obviously moving. The
-    // image is rendered slightly oversized so the sway never reveals a gap.
     const breath = 1.025 + Math.sin(now * 0.00038) * 0.006;
     const w = WORLD_W * breath;
     const h = WORLD_H * breath;
@@ -203,7 +257,6 @@ function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: nu
     ctx.drawImage(override, dx, dy, w, h);
     return;
   }
-  // Procedural background — cache one canvas per wave
   if (!bgCache || bgCache.wave !== wave) {
     bgCache = { wave, canvas: buildProceduralBackground(wave) };
   }

@@ -65,7 +65,8 @@ export function renderTitle(state: GameState): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
 
-  el('h1', { parent: overlay, text: 'PALLASITE' });
+  const titleH1 = el('h1', { parent: overlay });
+  titleH1.innerHTML = '<span class="ls">PALLASITE</span>';
   const tagline = el('p', { parent: overlay, text: 'SHOOT ROCKS · STACK SATS' });
   tagline.style.cssText = 'font-size:1.2rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin-top:-12px;';
   el('p', { parent: overlay, text: 'Cosmic arcade · Lightning sats · Nostr leaderboards' });
