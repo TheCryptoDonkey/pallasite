@@ -105,10 +105,13 @@ function setupWaveLongPress(): void {
   let sx = 0, sy = 0;
 
   function inWaveZone(clientX: number, clientY: number): boolean {
+    // Hot zone is the top strip of the canvas (where the WAVE label is drawn,
+    // anywhere across because cover-scale in portrait shifts the world right
+    // off-centre). Long-press requirement guards against accidental taps.
     const rect = canvas.getBoundingClientRect();
-    const xPct = (clientX - rect.left) / rect.width;
     const yPct = (clientY - rect.top) / rect.height;
-    return xPct >= 0.50 && xPct <= 0.80 && yPct >= 0 && yPct <= 0.12;
+    return clientX >= rect.left && clientX <= rect.right
+        && yPct >= 0 && yPct <= 0.10;
   }
   function clear(): void {
     if (timer !== null) { clearTimeout(timer); timer = null; }
@@ -396,17 +399,23 @@ async function boot(): Promise<void> {
     const vh = window.innerHeight;
 
     if (mode === 'modern') {
-      // Modern fill: canvas spans the entire viewport. World stays 960×720
-      // (so all gameplay constants are unchanged) and is centred with
-      // contain-scale; the wave background draws cover-style across the whole
-      // canvas via render.ts so there are no letterbox bars or body-bg gutters.
+      // Modern fill: canvas spans the entire viewport. World stays 960×720 so
+      // gameplay constants are unchanged; only the visual presentation differs.
+      // - Landscape (incl. 4:3): contain-scale — full world visible, the wave
+      //   bg drawn cover-style fills any leftover gutters.
+      // - Portrait: cover-scale — game world fills the screen vertically and
+      //   crops on the horizontal axis. The world wraps, so cropped asteroids
+      //   are still in play, just less visible until they cross the visible band.
       canvas.width = Math.round(vw * dpr);
       canvas.height = Math.round(vh * dpr);
       canvas.style.width = vw + 'px';
       canvas.style.height = vh + 'px';
       canvas.style.imageRendering = 'auto';
       const ctx = canvas.getContext('2d')!;
-      const scale = Math.min(vw / 960, vh / 720);
+      const isPortrait = vh > vw;
+      const scale = isPortrait
+        ? Math.max(vw / 960, vh / 720)
+        : Math.min(vw / 960, vh / 720);
       const tx = (vw - 960 * scale) / 2;
       const ty = (vh - 720 * scale) / 2;
       ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * tx, dpr * ty);
