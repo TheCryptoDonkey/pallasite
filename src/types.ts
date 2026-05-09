@@ -298,6 +298,12 @@ export interface GameState {
   /** Has the lurking easter-egg toast already fired this run? */
   lurkEverDetected: boolean;
 
+  /** Set true the first time a cheat is used in a run. Permanent for the run.
+   *  Side effects: sats are voided to 0, the HUD chip flags it openly, and
+   *  any kind 30762 score publish carries a `["cheated", "true"]` tag so the
+   *  leaderboard can show or filter accordingly. Honest runs are unaffected. */
+  cheatedThisRun: boolean;
+
   /** Ring buffer of recent gameplay snapshots. Capped at REPLAY_BUFFER_FRAMES. */
   replayBuffer: ReplaySnapshot[];
   /** Set by killShip on the final death; cleared by startGame. Lives across

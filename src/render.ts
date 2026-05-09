@@ -1139,6 +1139,11 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState, now: number): void
     const label = s.session ? 'LURK · NO SATS' : 'LURK · 1979 RESPECT';
     drawChip(label, 1, 1, '#ff5050');
   }
+  if (s.cheatedThisRun) {
+    // Loud and persistent — once cheated, the run is tainted for sats and
+    // any score publish carries the flag.
+    drawChip('CHEATED · SATS VOID', 1, 1, '#ff5050');
+  }
 
   // Sats column only appears in Nostr mode — guest runs are score-only.
   if (s.session) {

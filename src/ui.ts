@@ -486,7 +486,9 @@ export function renderGameOver(state: GameState): void {
       addLocalHighScore(entry);
       maybePublishScore(state, overlay);
     } else {
-      // Ask for initials
+      // Ask for initials. The leaderboard renders below; we keep a handle
+      // to it so the SAVE click can re-render with the freshly-added entry
+      // (otherwise the user sees a stale list missing their just-saved row).
       const inputRow = el('div', { className: 'menu-row', parent: overlay });
       const input = el('input', { parent: inputRow, attrs: { maxlength: '8', placeholder: 'INIT', type: 'text' } });
       input.style.cssText = 'background:transparent;border:2px solid #58ff58;color:#58ff58;font-family:inherit;font-size:1.3rem;padding:8px 12px;text-align:center;text-transform:uppercase;letter-spacing:0.2em;width:140px;';
@@ -503,12 +505,25 @@ export function renderGameOver(state: GameState): void {
         input.disabled = true;
         save.disabled = true;
         save.textContent = 'SAVED';
+        // Re-render the leaderboard in place so the new row appears immediately.
+        const lb = overlay.querySelector('.leaderboard-block');
+        if (lb) {
+          const fresh = getLocalHighScores();
+          const replacement = document.createElement('div');
+          overlay.replaceChild(replacement, lb);
+          renderLeaderboardBlock(replacement, fresh, '— LOCAL HIGH SCORES —');
+          // renderLeaderboardBlock appends to its parent, so we move its
+          // single child up and ditch the wrapper.
+          const block = replacement.firstElementChild;
+          if (block) overlay.replaceChild(block, replacement);
+        }
       });
       input.focus();
     }
   }
 
-  // Local high scores
+  // Local high scores — renders BEFORE the user has had a chance to enter
+  // their initials, so the SAVE handler above re-renders this block in place.
   const list = getLocalHighScores();
   if (list.length > 0) {
     renderLeaderboardBlock(overlay, list, '— LOCAL HIGH SCORES —');
@@ -558,6 +573,7 @@ async function maybePublishScore(state: GameState, parent: HTMLElement): Promise
       wave: state.wave,
       durationSeconds: elapsed,
       seed: getActiveSeed(),
+      cheated: state.cheatedThisRun,
     });
     if (result) {
       status.textContent = `✓ Plotted on ${result.publishedTo.length}/${result.publishedTo.length + result.failed.length} relays`;
@@ -647,13 +663,26 @@ export function renderCompletion(state: GameState): void {
     maybePublishCompletion(state, pubBlock);
     stage(3.0)(pubBlock);
   } else {
-    addLocalHighScore({
-      name: 'YOU',
-      score: state.score,
-      sats: state.sats,
-      wave: 25,
-      at: new Date().toISOString(),
+    // Guest finished the run — prompt for initials instead of silently
+    // saving as YOU. Mirrors the gameover flow.
+    const inputWrap = el('div', { className: 'menu-row', parent: overlay });
+    const input = el('input', { parent: inputWrap, attrs: { maxlength: '8', placeholder: 'INIT', type: 'text' } });
+    input.style.cssText = 'background:transparent;border:2px solid #58ff58;color:#58ff58;font-family:inherit;font-size:1.3rem;padding:8px 12px;text-align:center;text-transform:uppercase;letter-spacing:0.2em;width:140px;';
+    const save = el('button', { className: 'menu-btn', parent: inputWrap, text: 'BANK NAME' });
+    save.addEventListener('click', () => {
+      const name = input.value.trim().toUpperCase().slice(0, 8) || 'YOU';
+      addLocalHighScore({
+        name,
+        score: state.score,
+        sats: state.sats,
+        wave: 25,
+        at: new Date().toISOString(),
+      });
+      input.disabled = true;
+      save.disabled = true;
+      save.textContent = 'BANKED';
     });
+    stage(3.0)(inputWrap);
   }
 
   // Social actions + zap — Nostr mode only. Guests already see the X handle on
@@ -1513,6 +1542,7 @@ async function maybePublishCompletion(state: GameState, parent: HTMLElement): Pr
       durationSeconds: elapsed,
       state: 'completed',
       seed: getActiveSeed(),
+      cheated: state.cheatedThisRun,
     });
     if (result) {
       status.textContent = `✓ Plotted on ${result.publishedTo.length}/${result.publishedTo.length + result.failed.length} relays`;
