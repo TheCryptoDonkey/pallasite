@@ -13,6 +13,7 @@ import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion
 import { tryRestore } from './auth.js';
 import * as audio from './audio.js';
 import { musicSetTrackForState } from './music.js';
+import { setupTouchControls } from './touch.js';
 import type { GameState } from './types.js';
 import { DOWN_DOUBLE_TAP_WINDOW_MS } from './types.js';
 
@@ -304,6 +305,9 @@ async function boot(): Promise<void> {
   // Preload first two wave backgrounds so the start of the game is seamless
   preloadBackground(1);
   preloadBackground(2);
+
+  // Touch controls — buttons reveal themselves on first real touch
+  setupTouchControls(state, tryHyperspace, tryActivateShield);
 
   renderTitle(state);
 

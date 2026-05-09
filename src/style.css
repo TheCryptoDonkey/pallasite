@@ -496,10 +496,75 @@ html, body {
 @media (max-width: 768px) {
   #game {
     width: 100vw;
-    height: 100vh;
+    /* dvh sidesteps the iOS URL-bar 100vh bug — the canvas can use the
+       actual visible viewport height. */
+    height: 100dvh;
     border-radius: 0;
   }
+  .overlay {
+    padding: 24px 16px 96px;
+    gap: 18px;
+  }
+  .kbhint {
+    display: none;
+  }
 }
+
+/* ── Touch controls ──────────────────────────────────────────────────────── */
+/* Hidden by default; .touch-active toggled on the body by main.ts when a
+   touch event is detected. Keyboard players never see them. */
+#touch-controls {
+  display: none;
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 50;
+  /* Respect notch + home-indicator safe areas */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+body.touch-active #touch-controls {
+  display: block;
+}
+.touch-cluster {
+  position: absolute;
+  bottom: 18px;
+  display: grid;
+  gap: 8px;
+  pointer-events: none;
+}
+.touch-cluster.left  { left: 18px;  grid-template-columns: repeat(3, auto); grid-template-areas: ". thrust ." "rotL . rotR"; }
+.touch-cluster.right { right: 18px; grid-template-columns: repeat(2, auto); grid-template-areas: "hyper shield" "fire fire"; }
+.touch-btn {
+  pointer-events: auto;
+  width: 64px; height: 64px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  border: 2px solid rgba(220, 210, 255, 0.55);
+  color: rgba(220, 210, 255, 0.92);
+  font-family: 'VT323', ui-monospace, monospace;
+  font-size: 1.6rem;
+  display: flex; align-items: center; justify-content: center;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  text-shadow: 0 0 6px currentColor;
+  transition: background 0.08s ease, transform 0.06s ease;
+}
+.touch-btn:active,
+.touch-btn.held {
+  background: rgba(255, 216, 74, 0.22);
+  border-color: #ffd84a;
+  color: #ffd84a;
+  transform: scale(0.94);
+}
+.touch-btn.fire   { width: 132px; height: 64px; border-radius: 32px; grid-area: fire;   color: #ff8a3a; border-color: rgba(255, 138, 58, 0.7); font-size: 1rem; letter-spacing: 0.2em; }
+.touch-btn.fire:active, .touch-btn.fire.held { background: rgba(255, 138, 58, 0.28); color: #ff8a3a; border-color: #ff8a3a; }
+.touch-btn.thrust { grid-area: thrust; color: #5b9dff; border-color: rgba(91, 157, 255, 0.7); }
+.touch-btn.rotL   { grid-area: rotL;   font-size: 2rem; line-height: 1; }
+.touch-btn.rotR   { grid-area: rotR;   font-size: 2rem; line-height: 1; }
+.touch-btn.hyper  { grid-area: hyper;  width: 56px; height: 56px; font-size: 1.2rem; color: #b48cff; border-color: rgba(180, 140, 255, 0.6); }
+.touch-btn.shield { grid-area: shield; width: 56px; height: 56px; font-size: 1rem;  color: #58ff58; border-color: rgba(88, 255, 88, 0.6); }
 
 /* CRT scanlines via CSS — cheap, no canvas overhead */
 #game::after {

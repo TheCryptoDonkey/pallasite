@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Pallasite app icon: peridot olivine crystal in iron-nickel matrix.
+       Stylised cross-section of a real pallasite specimen. -->
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="50%" r="60%">
+      <stop offset="0%" stop-color="#1a1430"/>
+      <stop offset="60%" stop-color="#0a0418"/>
+      <stop offset="100%" stop-color="#000000"/>
+    </radialGradient>
+    <linearGradient id="crystal" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffd84a"/>
+      <stop offset="50%" stop-color="#7fffb0"/>
+      <stop offset="100%" stop-color="#3da067"/>
+    </linearGradient>
+    <radialGradient id="shine" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.5"/>
+      <stop offset="40%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <!-- Background field -->
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <!-- Iron-nickel matrix outline (subtle ring) -->
+  <circle cx="256" cy="256" r="220" fill="none" stroke="#5b9dff" stroke-width="2" stroke-opacity="0.25"/>
+  <circle cx="256" cy="256" r="200" fill="none" stroke="#b48cff" stroke-width="1" stroke-opacity="0.2"/>
+  <!-- Faint star scatter (cosmic field) -->
+  <g fill="#cfd6ff" fill-opacity="0.55">
+    <circle cx="78" cy="120" r="1.5"/>
+    <circle cx="430" cy="180" r="2"/>
+    <circle cx="120" cy="400" r="1.5"/>
+    <circle cx="380" cy="430" r="1.5"/>
+    <circle cx="450" cy="80" r="1"/>
+    <circle cx="60" cy="280" r="1"/>
+    <circle cx="420" cy="320" r="1"/>
+    <circle cx="200" cy="60" r="1"/>
+    <circle cx="320" cy="450" r="1"/>
+  </g>
+  <!-- Peridot crystal (rhombus / diamond) -->
+  <g transform="translate(256 256) rotate(20)">
+    <polygon points="0,-150 110,0 0,150 -110,0"
+             fill="url(#crystal)"
+             stroke="#7fffb0"
+             stroke-width="3"
+             filter="drop-shadow(0 0 24 #7fffb0)"/>
+    <!-- Refraction facet lines -->
+    <line x1="0" y1="-100" x2="0" y2="100" stroke="#ffffff" stroke-width="1.5" stroke-opacity="0.55"/>
+    <line x1="-80" y1="0" x2="80" y2="0" stroke="#ffffff" stroke-width="1.5" stroke-opacity="0.55"/>
+    <line x1="-55" y1="-75" x2="55" y2="75" stroke="#ffffff" stroke-width="1" stroke-opacity="0.3"/>
+    <line x1="55" y1="-75" x2="-55" y2="75" stroke="#ffffff" stroke-width="1" stroke-opacity="0.3"/>
+    <!-- Highlight glint -->
+    <ellipse cx="-30" cy="-50" rx="22" ry="40" fill="url(#shine)"/>
+  </g>
+</svg>
