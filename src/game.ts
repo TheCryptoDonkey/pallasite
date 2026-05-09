@@ -842,11 +842,14 @@ function spawnParticles(s: GameState, x: number, y: number, count: number, colou
 
 // ── Coins (sat drops) ─────────────────────────────────────────────────────────
 
-/** Per-asteroid roll: in Nostr mode, 1-in-SAT_DROP_CHANCE_DENOM picks `sat`; the
- *  rest pick `dust`. Guest mode never picks `sat` — pickups stay non-monetary
- *  so we don't accumulate uncashable sats against an unsigned identity. */
-function rollPickupKind(s: GameState): PickupKind {
+/** Per-asteroid roll: in Nostr mode, 1-in-SAT_DROP_CHANCE_DENOM picks `sat`;
+ *  the rest pick `dust`. Guest mode never picks `sat` — pickups stay
+ *  non-monetary so we don't accumulate uncashable sats against an unsigned
+ *  identity. Pallasite asteroids ALWAYS drop sats in Nostr mode — they're
+ *  the headline jackpot type and should reliably reward the player. */
+function rollPickupKind(s: GameState, asteroidType?: AsteroidType): PickupKind {
   if (s.session === null) return 'dust';
+  if (asteroidType === 'pallasite') return 'sat';
   return Math.random() < (1 / SAT_DROP_CHANCE_DENOM) ? 'sat' : 'dust';
 }
 
@@ -855,8 +858,8 @@ function rollPickupKind(s: GameState): PickupKind {
  *  score boost without overshadowing the kill points themselves. */
 const DUST_SCORE_BASE = 25;
 
-function spawnCoins(s: GameState, x: number, y: number, value: number, count: number, kind?: PickupKind): void {
-  const resolvedKind = kind ?? rollPickupKind(s);
+function spawnCoins(s: GameState, x: number, y: number, value: number, count: number, kind?: PickupKind, asteroidType?: AsteroidType): void {
+  const resolvedKind = kind ?? rollPickupKind(s, asteroidType);
   for (let i = 0; i < count; i++) {
     const angle = Math.random() * Math.PI * 2;
     const speed = 30 + Math.random() * 40;
@@ -1563,9 +1566,10 @@ function breakAsteroid(s: GameState, a: Asteroid): void {
   // Particles tinted to the type's accent
   spawnParticles(s, a.pos.x, a.pos.y, a.size === 'large' ? 18 : a.size === 'medium' ? 12 : 8, cfg.glow, 140, 700);
 
-  // Coins drop — value scales with type's sat multiplier
+  // Coins drop — value scales with type's sat multiplier; pallasite asteroids
+  // always drop sats (the headline jackpot), other types roll the rarity dice.
   const coinCount = a.size === 'large' ? 4 : a.size === 'medium' ? 2 : 1;
-  spawnCoins(s, a.pos.x, a.pos.y, satsValue, coinCount);
+  spawnCoins(s, a.pos.x, a.pos.y, satsValue, coinCount, undefined, a.type);
 
   audio.explosion(a.size === 'large' ? 1.0 : a.size === 'medium' ? 0.8 : 0.6);
 

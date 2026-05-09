@@ -2,16 +2,35 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
-  <meta name="theme-color" content="#000000" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#0a0418" />
+  <meta name="description" content="Cosmic arcade Asteroids with Lightning sat payouts and Nostr leaderboards. Sign in with Nostr." />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Pallasite" />
   <title>Pallasite</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/icon-192.png" type="image/png" sizes="192x192" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
   <canvas id="game" width="960" height="720" aria-label="Pallasite game"></canvas>
   <div id="ui-root"></div>
+  <div id="touch-controls"></div>
   <!-- signet-login SDK (IIFE bundle attaches login/restoreSession/logout to window.Signet) -->
   <script src="/signet-login.iife.js"></script>
   <script type="module" src="/src/main.ts"></script>
+  <script>
+    // Register the service worker after the page loads — keeps the boot path
+    // unchanged for users without SW support and avoids racing first paint.
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').catch(() => { /* registration failures are non-fatal */ });
+      });
+    }
+  </script>
 </body>
 </html>

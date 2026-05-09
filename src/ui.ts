@@ -84,6 +84,8 @@ export function renderTitle(state: GameState): void {
     lockInDifficulty(getStoredDifficulty());
     onStartCb?.();
   });
+  const howBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'HOW TO PLAY' });
+  howBtn.addEventListener('click', () => renderHowToPlay(() => renderTitle(state)));
   const settingsBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'AUDIO' });
   settingsBtn.addEventListener('click', () => {
     void audio.unlockAudio();
@@ -325,6 +327,74 @@ export function renderPause(state?: GameState): void {
 
   const hint = el('div', { className: 'kbhint', parent: root });
   hint.innerHTML = '<kbd>P</kbd> resume &nbsp;·&nbsp; <kbd>ESC</kbd> resume &nbsp;·&nbsp; <kbd>M</kbd> mute';
+}
+
+// ── How to Play overlay ──────────────────────────────────────────────────────
+
+/**
+ * Player-facing instructions. Voice-guide compliant: physics + verbs, no
+ * marketing fluff, British English. Cheats deliberately omitted (they're
+ * easter eggs that lose meaning if telegraphed).
+ */
+export function renderHowToPlay(onBack: () => void): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  el('h2', { parent: overlay, text: 'HOW TO PLAY' });
+
+  const tagline = el('p', { parent: overlay, text: 'Drift the orbit. Shoot rocks. Survive 25 waves.' });
+  tagline.style.cssText = 'font-size:1rem;color:var(--hud-yellow);letter-spacing:0.18em;text-shadow:0 0 8px rgba(255,216,74,0.45);margin:0 0 6px;';
+
+  const panel = el('div', { parent: overlay });
+  panel.style.cssText = 'display:flex;flex-direction:column;gap:18px;align-items:stretch;max-width:540px;text-align:left;';
+
+  function section(title: string, lines: ReadonlyArray<readonly [string, string]>): void {
+    const block = el('div', { parent: panel });
+    block.style.cssText = 'display:flex;flex-direction:column;gap:6px;';
+    const h = el('p', { parent: block, text: title });
+    h.style.cssText = 'font-size:0.78rem;letter-spacing:0.32em;color:rgba(180,140,255,0.95);margin:0;';
+    const grid = el('div', { parent: block });
+    grid.style.cssText = 'display:grid;grid-template-columns:max-content 1fr;gap:6px 18px;font-size:0.92rem;color:rgba(220,210,255,0.92);';
+    for (const [k, v] of lines) {
+      const key = el('span', { parent: grid, text: k });
+      key.style.cssText = 'color:#5b9dff;letter-spacing:0.08em;font-weight:bold;';
+      el('span', { parent: grid, text: v });
+    }
+  }
+
+  section('CONTROLS', [
+    ['← →', 'Rotate ship'],
+    ['↑', 'Thrust forward'],
+    ['Space', 'Fire'],
+    ['↓', 'Shield (timed burst)'],
+    ['↓ ↓ or Shift / H', 'Hyperspace — risky'],
+    ['P / Esc', 'Pause'],
+    ['M', 'Mute audio'],
+  ]);
+
+  section('THE GOAL', [
+    ['Waves 1-24', 'Each named after a real pallasite meteorite'],
+    ['Wave 25', 'Event Horizon — the boss arena'],
+    ['Pickups', 'Dust shards (green) for score · Sat coins (₿) for real sats when signed in'],
+    ['Lives', 'Lose all and the run ends · extra life every 10,000 score'],
+  ]);
+
+  section('WHAT TO WATCH FOR', [
+    ['Combo chain', 'Quick consecutive kills stack a multiplier — watch the chip'],
+    ['Hyperspace', 'Re-emerges anywhere, but ~6% chance the warp goes wrong'],
+    ['Mines', 'From wave 8 — gravity wells; bullets destroy them'],
+    ['Snipers', 'From wave 10 — slow, accurate, lethal'],
+    ['Iron rocks', 'Two hits to crack — the orange ones'],
+    ['Pallasite rocks', 'Rare jackpot — the yellow-green ones'],
+  ]);
+
+  section('SIGN IN WITH NOSTR', [
+    ['Optional', 'Guests play for score only · sign in to earn real sats and publish to leaderboards'],
+    ['Daily run', 'Same seed for everyone today · clean leaderboard'],
+  ]);
+
+  const row = el('div', { className: 'menu-row', parent: overlay });
+  const back = el('button', { className: 'menu-btn', parent: row, text: 'BACK' });
+  back.addEventListener('click', onBack);
 }
 
 // ── Settings overlay ─────────────────────────────────────────────────────────
