@@ -39,16 +39,103 @@ function openCheatInput(): void {
   cheatInputEl = document.createElement('div');
   cheatInputEl.style.cssText = [
     'position:fixed', 'top:80px', 'left:50%', 'transform:translateX(-50%)',
-    'z-index:100', 'background:rgba(0,0,0,0.85)',
-    'border:2px solid #ffd84a', 'border-radius:8px',
-    'padding:12px 22px',
+    'z-index:100', 'background:rgba(0,0,0,0.92)',
+    'border:2px solid #ffd84a', 'border-radius:10px',
+    'padding:14px 18px',
     "font-family:'VT323',ui-monospace,monospace", 'font-size:1.4rem',
     'color:#ffd84a', 'letter-spacing:0.2em',
-    'text-shadow:0 0 8px rgba(255,216,74,0.6)', 'pointer-events:none',
+    'text-shadow:0 0 8px rgba(255,216,74,0.6)',
+    'pointer-events:auto',
+    'user-select:none', '-webkit-user-select:none',
+    'min-width:220px', 'text-align:center',
   ].join(';');
-  cheatInputEl.innerHTML = `JUMP TO WAVE: <span id="pal-cheat-buf" style="color:#fff;">__</span> <span style="color:rgba(180,140,255,0.7);font-size:0.8rem;letter-spacing:0.1em;">·  Enter to warp · Esc to cancel</span>`;
+  cheatInputEl.innerHTML = `
+    <div>JUMP TO WAVE: <span id="pal-cheat-buf" style="color:#fff;">__</span></div>
+    <div id="pal-cheat-pad" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:10px 0 6px;">
+      <button data-d="1">1</button><button data-d="2">2</button><button data-d="3">3</button>
+      <button data-d="4">4</button><button data-d="5">5</button><button data-d="6">6</button>
+      <button data-d="7">7</button><button data-d="8">8</button><button data-d="9">9</button>
+      <button data-act="del">DEL</button><button data-d="0">0</button><button data-act="ok">▶</button>
+    </div>
+    <div style="font-size:0.7rem;color:rgba(180,140,255,0.7);letter-spacing:0.08em;">Enter / + warps · Esc cancels</div>
+  `;
+  const pad = cheatInputEl.querySelector('#pal-cheat-pad') as HTMLDivElement;
+  for (const btn of Array.from(pad.querySelectorAll('button'))) {
+    const b = btn as HTMLButtonElement;
+    b.style.cssText = [
+      "font-family:'VT323',ui-monospace,monospace",
+      'font-size:1.2rem', 'padding:12px 0',
+      'background:rgba(255,216,74,0.08)',
+      'border:1px solid rgba(255,216,74,0.5)',
+      'color:#ffd84a', 'border-radius:6px',
+      'cursor:pointer', 'touch-action:manipulation',
+      '-webkit-tap-highlight-color:transparent',
+    ].join(';');
+    b.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      const d = b.dataset.d;
+      const a = b.dataset.act;
+      if (d) {
+        if (cheatInputBuffer.length < 2) {
+          cheatInputBuffer += d;
+          refreshCheatBuffer();
+          resetCheatIdleTimer();
+        }
+      } else if (a === 'del') {
+        cheatInputBuffer = cheatInputBuffer.slice(0, -1);
+        refreshCheatBuffer();
+        resetCheatIdleTimer();
+      } else if (a === 'ok') {
+        closeCheatInput(true);
+      }
+    });
+  }
   document.body.appendChild(cheatInputEl);
   resetCheatIdleTimer();
+}
+
+/** Long-press the WAVE indicator on the HUD (~1.5s) to open the cheat input
+ *  on touch devices where there's no `+` key. Hot zone is the top-middle of
+ *  the canvas where the WAVE label is drawn (around x=0.62*WORLD_W, y<80). */
+function setupWaveLongPress(): void {
+  const HOLD_MS = 1500;
+  const MOVE_TOL_PX = 14;
+  let timer: number | null = null;
+  let sx = 0, sy = 0;
+
+  function inWaveZone(clientX: number, clientY: number): boolean {
+    const rect = canvas.getBoundingClientRect();
+    const xPct = (clientX - rect.left) / rect.width;
+    const yPct = (clientY - rect.top) / rect.height;
+    return xPct >= 0.50 && xPct <= 0.80 && yPct >= 0 && yPct <= 0.12;
+  }
+  function clear(): void {
+    if (timer !== null) { clearTimeout(timer); timer = null; }
+  }
+
+  canvas.addEventListener('pointerdown', e => {
+    if (state.phase !== 'playing' && state.phase !== 'wavestart') return;
+    if (cheatInputOpen) return;
+    if (!inWaveZone(e.clientX, e.clientY)) return;
+    sx = e.clientX; sy = e.clientY;
+    clear();
+    timer = window.setTimeout(() => {
+      timer = null;
+      if (getActiveSeed() !== null) {
+        state.toast = 'CHEATS LOCKED · DAILY RUN';
+        state.toastUntil = performance.now() + 1800;
+        return;
+      }
+      openCheatInput();
+    }, HOLD_MS);
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (timer === null) return;
+    if (Math.hypot(e.clientX - sx, e.clientY - sy) > MOVE_TOL_PX) clear();
+  });
+  canvas.addEventListener('pointerup',     clear);
+  canvas.addEventListener('pointercancel', clear);
+  canvas.addEventListener('pointerleave',  clear);
 }
 
 function refreshCheatBuffer(): void {
@@ -334,6 +421,10 @@ async function boot(): Promise<void> {
 
   // Touch controls — buttons reveal themselves on first real touch
   setupTouchControls(state, tryHyperspace, tryActivateShield);
+
+  // Long-press the WAVE label on the HUD = open cheat input (mobile equivalent
+  // of the `+` keyboard shortcut). Daily-run guard inside the handler.
+  setupWaveLongPress();
 
   // Seed the body data-phase so the CSS gates evaluate correctly on first paint
   // (the loop only writes this on phase change after the first frame).
