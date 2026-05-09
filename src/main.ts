@@ -8,7 +8,7 @@
 import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHyperspace, tryActivateShield, cheatJumpToWave, skipDeathReplay, skipWaveStart } from './game.js';
 import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
-import { render, preloadBackground } from './render.js';
+import { render, preloadBackground, setRenderMode } from './render.js';
 import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay } from './ui.js';
 import { tryRestore } from './auth.js';
 import * as audio from './audio.js';
@@ -394,28 +394,39 @@ async function boot(): Promise<void> {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const vw = window.innerWidth;
     const vh = window.innerHeight;
+
+    if (mode === 'modern') {
+      // Modern fill: canvas spans the entire viewport. World stays 960×720
+      // (so all gameplay constants are unchanged) and is centred with
+      // contain-scale; the wave background draws cover-style across the whole
+      // canvas via render.ts so there are no letterbox bars or body-bg gutters.
+      canvas.width = Math.round(vw * dpr);
+      canvas.height = Math.round(vh * dpr);
+      canvas.style.width = vw + 'px';
+      canvas.style.height = vh + 'px';
+      canvas.style.imageRendering = 'auto';
+      const ctx = canvas.getContext('2d')!;
+      const scale = Math.min(vw / 960, vh / 720);
+      const tx = (vw - 960 * scale) / 2;
+      const ty = (vh - 720 * scale) / 2;
+      ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * tx, dpr * ty);
+      setRenderMode({ kind: 'modern', vw, vh, dpr, scale, tx, ty });
+      return;
+    }
+
+    // Retro: 4:3 inscribed in viewport, capped at 960 native source.
     const aspect = 4 / 3;
     let w = Math.min(vw, vh * aspect);
-    // Retro mode caps at native source size so upscaling stays integer-ish;
-    // modern lets the canvas fill whatever 4:3 box fits in the viewport.
-    if (mode === 'retro' && w > 960) w = 960;
+    if (w > 960) w = 960;
     const h = w / aspect;
-    // Supersample only when actually upscaling — on mobile the display is
-    // typically smaller than the 960 source, so extra backing is pure waste
-    // (and the smooth-filter path would blur the HUD text). Cap at 2× to
-    // avoid runaway backing on giant monitors.
-    const supersample = mode === 'modern' && w > 960
-      ? Math.min(2, w / 960)
-      : 1;
-    canvas.width = Math.round(960 * dpr * supersample);
-    canvas.height = Math.round(720 * dpr * supersample);
+    canvas.width = Math.round(960 * dpr);
+    canvas.height = Math.round(720 * dpr);
     canvas.style.width = w + 'px';
     canvas.style.height = h + 'px';
-    // Pixelated keeps HUD/asteroid edges crisp on downscales too — only
-    // switch to smooth interpolation when we've actually supersampled.
-    canvas.style.imageRendering = supersample > 1 ? 'auto' : 'pixelated';
+    canvas.style.imageRendering = 'pixelated';
     const ctx = canvas.getContext('2d')!;
-    ctx.setTransform(dpr * supersample, 0, 0, dpr * supersample, 0, 0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    setRenderMode({ kind: 'retro', vw: w, vh: h, dpr, scale: 1, tx: 0, ty: 0 });
   }
   // Expose to the settings panel — flipping the mode needs to re-fit.
   (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit = fit;
