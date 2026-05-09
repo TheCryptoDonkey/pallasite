@@ -285,11 +285,37 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
     el('p', { parent, text: 'Sign in with Nostr. Stake your name.' });
     const row = el('div', { className: 'menu-row', parent });
     const inBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'SIGN IN WITH NOSTR' });
+    const status = el('p', { parent });
+    status.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.85);min-height:1em;margin:0;letter-spacing:0.04em;';
     inBtn.addEventListener('click', async () => {
       void audio.unlockAudio();
-      const session = await auth.signIn();
-      state.session = session;
-      renderSessionPanel(parent, state);
+      // Live status — slow signers can take 5-15s on a cold start. Updating
+      // this every second tells the user it's not frozen.
+      let elapsed = 0;
+      status.textContent = 'Connecting…';
+      status.style.color = 'rgba(180,140,255,0.85)';
+      const ticker = window.setInterval(() => {
+        elapsed += 1;
+        status.textContent = `Connecting to your signer (${elapsed}s)…`;
+      }, 1000);
+      try {
+        const session = await auth.signIn();
+        window.clearInterval(ticker);
+        if (session) {
+          status.textContent = '';
+          state.session = session;
+          renderSessionPanel(parent, state);
+        } else {
+          status.textContent = 'No signer attached. Try a NIP-07 extension or your bunker URI.';
+          status.style.color = '#ff8a3a';
+        }
+      } catch (err) {
+        window.clearInterval(ticker);
+        status.textContent = err instanceof auth.SignInTimeoutError
+          ? `Timeout — ${err.message}`
+          : `Sign-in failed: ${err instanceof Error ? err.message : String(err)}`;
+        status.style.color = '#ff5050';
+      }
     });
     // Pressing IGNITE without signing in IS the guest path — no separate
     // GUEST DRIFT button needed. The session-status hint covers it.
