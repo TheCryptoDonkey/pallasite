@@ -57,7 +57,7 @@ html, body {
   inset: 0;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;  /* anchor top so long content doesn't push the title off-screen */
   flex-direction: column;
   gap: 28px;
   padding: 32px 24px 80px;
@@ -68,6 +68,18 @@ html, body {
   color: var(--hud-green);
   text-shadow: 0 0 6px rgba(88, 255, 88, 0.6);
   overflow-y: auto;
+  /* body has `touch-action: none` to keep the canvas from being panned;
+     re-enable vertical pan inside overlays so menus scroll on touch. */
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+.overlay > h1:first-child,
+.overlay > h2:first-child {
+  margin-top: auto;  /* centre vertically when content is short */
+}
+.overlay::after {
+  content: '';
+  margin-bottom: auto;
 }
 
 .overlay > * {
@@ -519,31 +531,8 @@ html, body {
   }
 }
 
-/* Portrait nudge — the game runs but reads landscape-first. Modal hint
-   appears in portrait on narrow devices, dismisses on rotation. */
-.portrait-hint {
-  display: none;
-  position: fixed; inset: 0; z-index: 300;
-  background: rgba(0, 0, 0, 0.92);
-  align-items: center; justify-content: center;
-  flex-direction: column; gap: 18px;
-  padding: 32px;
-  text-align: center;
-  font-family: 'VT323', ui-monospace, monospace;
-  color: var(--hud-yellow);
-}
-@media (orientation: portrait) and (max-width: 768px) {
-  .portrait-hint { display: flex; }
-}
-.portrait-hint .icon {
-  font-size: 5rem;
-  text-shadow: 0 0 18px rgba(255, 216, 74, 0.6);
-  animation: portrait-rock 1.6s ease-in-out infinite;
-}
-@keyframes portrait-rock {
-  0%, 100% { transform: rotate(-12deg); }
-  50%      { transform: rotate(78deg); }
-}
+/* Portrait + landscape both supported — fit() in main.ts sizes the canvas
+   to the largest 4:3 box that fits in either orientation. */
 
 /* ── Touch controls ──────────────────────────────────────────────────────── */
 /* Hidden by default. main.ts adds .touch-active to body on first touch and
@@ -573,34 +562,36 @@ body.touch-active[data-phase="paused"]    #touch-controls {
   gap: 6px;
   pointer-events: none;
 }
-/* Left cluster — D-pad triangle: thrust on top spanning two cols, rotate
-   buttons touching beneath. Total footprint ~134×134. */
+/* Left cluster — D-pad: rotate buttons big and touching, thrust as a wide
+   bar across the top. ~180×164. */
 .touch-cluster.left {
-  left: max(14px, calc(env(safe-area-inset-left, 0px) + 8px));
-  grid-template-columns: 64px 64px;
-  grid-template-rows: 64px 64px;
+  left: max(12px, calc(env(safe-area-inset-left, 0px) + 6px));
+  grid-template-columns: 80px 80px;
+  grid-template-rows: 60px 80px;
   grid-template-areas:
     "thrust thrust"
     "rotL   rotR";
+  gap: 4px;
 }
-/* Right cluster — fire below, hyper + shield touching above. */
+/* Right cluster — FIRE big bar at the base, HYPER + SHIELD smaller on top. */
 .touch-cluster.right {
-  right: max(14px, calc(env(safe-area-inset-right, 0px) + 8px));
-  grid-template-columns: 64px 64px;
-  grid-template-rows: 56px 64px;
+  right: max(12px, calc(env(safe-area-inset-right, 0px) + 6px));
+  grid-template-columns: 80px 80px;
+  grid-template-rows: 60px 80px;
   grid-template-areas:
     "hyper shield"
     "fire  fire";
+  gap: 4px;
 }
 .touch-btn {
   pointer-events: auto;
-  width: 64px; height: 64px;
+  width: 80px; height: 80px;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(0, 0, 0, 0.55);
   border: 2px solid rgba(220, 210, 255, 0.55);
   color: rgba(220, 210, 255, 0.92);
   font-family: 'VT323', ui-monospace, monospace;
-  font-size: 1.6rem;
+  font-size: 2rem;
   display: flex; align-items: center; justify-content: center;
   user-select: none;
   -webkit-user-select: none;
@@ -611,19 +602,19 @@ body.touch-active[data-phase="paused"]    #touch-controls {
 }
 .touch-btn:active,
 .touch-btn.held {
-  background: rgba(255, 216, 74, 0.22);
+  background: rgba(255, 216, 74, 0.28);
   border-color: #ffd84a;
   color: #ffd84a;
   transform: scale(0.94);
 }
-.touch-btn.fire   { width: 134px; height: 64px; border-radius: 32px; grid-area: fire;   color: #ff8a3a; border-color: rgba(255, 138, 58, 0.7); font-size: 1rem; letter-spacing: 0.2em; }
-.touch-btn.fire:active, .touch-btn.fire.held { background: rgba(255, 138, 58, 0.28); color: #ff8a3a; border-color: #ff8a3a; }
-.touch-btn.thrust { width: 134px; height: 64px; border-radius: 32px; grid-area: thrust; color: #5b9dff; border-color: rgba(91, 157, 255, 0.7); font-size: 1.6rem; }
-.touch-btn.thrust:active, .touch-btn.thrust.held { background: rgba(91, 157, 255, 0.28); color: #5b9dff; border-color: #5b9dff; }
-.touch-btn.rotL   { grid-area: rotL;   font-size: 2rem; line-height: 1; }
-.touch-btn.rotR   { grid-area: rotR;   font-size: 2rem; line-height: 1; }
-.touch-btn.hyper  { grid-area: hyper;  width: 56px; height: 56px; font-size: 1.2rem; color: #b48cff; border-color: rgba(180, 140, 255, 0.6); }
-.touch-btn.shield { grid-area: shield; width: 56px; height: 56px; font-size: 1rem;  color: #58ff58; border-color: rgba(88, 255, 88, 0.6); }
+.touch-btn.fire   { width: 164px; height: 80px; border-radius: 40px; grid-area: fire;   color: #ff8a3a; border-color: rgba(255, 138, 58, 0.75); font-size: 1.1rem; letter-spacing: 0.22em; }
+.touch-btn.fire:active, .touch-btn.fire.held { background: rgba(255, 138, 58, 0.32); color: #ff8a3a; border-color: #ff8a3a; }
+.touch-btn.thrust { width: 164px; height: 60px; border-radius: 30px; grid-area: thrust; color: #5b9dff; border-color: rgba(91, 157, 255, 0.75); font-size: 1.6rem; }
+.touch-btn.thrust:active, .touch-btn.thrust.held { background: rgba(91, 157, 255, 0.32); color: #5b9dff; border-color: #5b9dff; }
+.touch-btn.rotL   { grid-area: rotL; font-size: 2.2rem; line-height: 1; }
+.touch-btn.rotR   { grid-area: rotR; font-size: 2.2rem; line-height: 1; }
+.touch-btn.hyper  { grid-area: hyper;  width: 80px; height: 60px; border-radius: 30px; font-size: 1.4rem; color: #b48cff; border-color: rgba(180, 140, 255, 0.65); }
+.touch-btn.shield { grid-area: shield; width: 80px; height: 60px; border-radius: 30px; font-size: 1.4rem;  color: #58ff58; border-color: rgba(88, 255, 88, 0.65); }
 
 /* CRT scanlines via CSS — cheap, no canvas overhead */
 #game::after {

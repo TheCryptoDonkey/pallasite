@@ -277,22 +277,32 @@ async function boot(): Promise<void> {
   // Lock in stored difficulty as the default for any auto-launched run
   lockInDifficulty(getStoredDifficulty());
 
-  // Resize canvas to fit viewport but keep 4:3 aspect
+  // Resize canvas to fit viewport in BOTH dimensions while preserving 4:3
+  // aspect — internal pixel resolution stays 960×720 (× dpr) so the game
+  // logic and HUD coords don't need to know about display size; the browser
+  // scales the bitmap. Centring is handled by the CSS absolute-translate.
   function fit(): void {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const targetW = 960;
-    const targetH = 720;
-    canvas.width = targetW * dpr;
-    canvas.height = targetH * dpr;
-    canvas.style.width = '100%';
-    canvas.style.height = 'auto';
-    canvas.style.maxWidth = `${targetW}px`;
-    canvas.style.aspectRatio = '4 / 3';
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const aspect = 4 / 3;
+    // Largest 4:3 box that fits inside both viewport dimensions
+    let w = Math.min(vw, vh * aspect);
+    // Cap at native size on big screens — no point upscaling beyond source
+    if (w > 960) w = 960;
+    const h = w / aspect;
+    canvas.width = 960 * dpr;
+    canvas.height = 720 * dpr;
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
     const ctx = canvas.getContext('2d')!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
   fit();
   window.addEventListener('resize', fit);
+  // iOS fires `orientationchange` slightly differently; resize covers both modern
+  // browsers but the explicit listener catches stragglers.
+  window.addEventListener('orientationchange', fit);
 
   // Try restoring a session
   state.session = await tryRestore();

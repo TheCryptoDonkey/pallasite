@@ -7,7 +7,7 @@
 
 import type { GameState } from './types.js';
 import { WAVE_LORE } from './types.js';
-import { getActiveRelays, setActiveRelays, resetRelays } from './relays.js';
+import { getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRelay, removeRelay, resetRelays } from './relays.js';
 import * as auth from './auth.js';
 import { addLocalHighScore, getLocalHighScores, isHighScore, publishScore } from './score.js';
 import { startGame, startDeathReplay, toastNow } from './game.js';
@@ -86,7 +86,7 @@ export function renderTitle(state: GameState): void {
   });
   const howBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'HOW TO PLAY' });
   howBtn.addEventListener('click', () => renderHowToPlay(() => renderTitle(state)));
-  const settingsBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'AUDIO' });
+  const settingsBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'SETTINGS' });
   settingsBtn.addEventListener('click', () => {
     void audio.unlockAudio();
     renderSettings(() => renderTitle(state));
@@ -99,13 +99,14 @@ export function renderTitle(state: GameState): void {
   }
 
   const hint = el('div', { className: 'kbhint', parent: root });
+  // Cheat keys (+/-) intentionally omitted — they're easter eggs, telegraphing
+  // them defeats the point and the cheat-flag wiring punishes use anyway.
   hint.innerHTML = `
     <span><kbd>←</kbd><kbd>→</kbd> rotate</span>
     <span><kbd>↑</kbd> thrust</span>
     <span><kbd>SPACE</kbd> fire</span>
     <span><kbd>↓</kbd> shield · <kbd>↓↓</kbd> hyperspace</span>
     <span><kbd>SHIFT</kbd> or <kbd>H</kbd> hyperspace</span>
-    <span><kbd>+</kbd> jump · <kbd>-</kbd> back wave (cheat)</span>
     <span><kbd>P</kbd> pause</span>
     <span><kbd>M</kbd> mute</span>
   `;
@@ -307,7 +308,7 @@ export function renderPause(state?: GameState): void {
   const row = el('div', { className: 'menu-row', parent: overlay });
   const resume = el('button', { className: 'menu-btn', parent: row, text: 'RESUME' });
   resume.addEventListener('click', () => onResumeCb?.());
-  const settings = el('button', { className: 'menu-btn secondary', parent: row, text: 'AUDIO · SETTINGS' });
+  const settings = el('button', { className: 'menu-btn secondary', parent: row, text: 'SETTINGS' });
   settings.addEventListener('click', () => renderSettings(() => renderPause(state)));
   if (state) {
     const quit = el('button', { className: 'menu-btn secondary', parent: row, text: 'QUIT TO TITLE' });
@@ -406,7 +407,9 @@ export function renderHowToPlay(onBack: () => void): void {
 export function renderSettings(onBack: () => void): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
-  el('h2', { parent: overlay, text: 'AUDIO' });
+  el('h2', { parent: overlay, text: 'SETTINGS' });
+  const sub = el('p', { parent: overlay, text: 'AUDIO' });
+  sub.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:0 0 -8px;';
 
   const panel = el('div', { parent: overlay });
   panel.style.cssText = 'display:flex;flex-direction:column;gap:18px;align-items:stretch;min-width:340px;margin-top:6px;';
@@ -474,50 +477,126 @@ export function renderSettings(onBack: () => void): void {
 }
 
 /**
- * Nostr relay editor. Textarea — one URL per line — for free-form editing.
- * Save validates and persists; Reset returns to bundled defaults. Used by
- * score publishing, follows, shares, endorsements, and zap requests.
+ * Nostr relay editor — toggle list with add/remove. Default relays can be
+ * toggled on/off but not deleted (only hidden from `active`); custom-added
+ * ones can be removed entirely. Each row is a wss:// URL.
  */
 export function renderRelaySettings(onBack: () => void): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   el('h2', { parent: overlay, text: 'NOSTR RELAYS' });
 
-  const intro = el('p', { parent: overlay, text: 'Where this game publishes scores, follows, shares and zap requests. One wss:// URL per line.' });
+  const intro = el('p', { parent: overlay, text: 'Where this game publishes scores, follows, shares and zap requests. Toggle to disable, add your own, remove the ones you brought.' });
   intro.style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.85);max-width:480px;margin:0;line-height:1.5;';
 
-  const textarea = el('textarea', { parent: overlay }) as HTMLTextAreaElement;
-  textarea.value = getActiveRelays().join('\n');
-  textarea.style.cssText = [
-    'background:rgba(0,0,0,0.5)', 'border:2px solid rgba(91,157,255,0.4)',
-    'color:#cfd6ff', 'font-family:ui-monospace,monospace',
-    'font-size:0.9rem', 'padding:10px 12px',
-    'width:480px', 'max-width:90vw', 'height:180px',
-    'border-radius:6px', 'resize:vertical',
-    'letter-spacing:0', 'line-height:1.5',
-  ].join(';');
+  const list = el('div', { parent: overlay });
+  list.style.cssText = 'display:flex;flex-direction:column;gap:6px;width:100%;max-width:520px;';
 
   const status = el('p', { parent: overlay, text: '' });
   status.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.75);min-height:1.1em;margin:0;';
 
-  const row = el('div', { className: 'menu-row', parent: overlay });
-  const save = el('button', { className: 'menu-btn', parent: row, text: 'SAVE' });
-  save.addEventListener('click', () => {
-    const lines = textarea.value.split('\n').map(s => s.trim()).filter(Boolean);
-    const cleaned = setActiveRelays(lines);
-    textarea.value = cleaned.join('\n');
-    status.textContent = `✓ ${cleaned.length} relay${cleaned.length === 1 ? '' : 's'} active.`;
-    status.style.color = '#58ff58';
+  function setStatus(text: string, colour: string): void {
+    status.textContent = text;
+    status.style.color = colour;
+  }
+
+  function paint(): void {
+    list.innerHTML = '';
+    const relays = getKnownRelays();
+    if (relays.length === 0) {
+      const empty = el('p', { parent: list, text: 'No relays. Add one below or RESET to defaults.' });
+      empty.style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.65);text-align:center;margin:8px 0;';
+    }
+    for (const url of relays) {
+      const enabled = isRelayEnabled(url);
+      const isDefault = isDefaultRelay(url);
+      const row = el('div', { parent: list });
+      row.style.cssText = 'display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;background:rgba(0,0,0,0.4);border:1px solid rgba(91,157,255,0.25);border-radius:8px;padding:8px 12px;';
+
+      const toggle = el('button', { parent: row });
+      toggle.setAttribute('aria-pressed', String(enabled));
+      toggle.textContent = enabled ? 'ON' : 'OFF';
+      toggle.style.cssText = [
+        'min-width:54px',
+        'padding:5px 10px', 'border-radius:14px',
+        'border:2px solid ' + (enabled ? '#58ff58' : 'rgba(180,140,255,0.4)'),
+        'background:' + (enabled ? 'rgba(88,255,88,0.16)' : 'transparent'),
+        'color:' + (enabled ? '#58ff58' : 'rgba(220,210,255,0.65)'),
+        "font-family:'VT323',ui-monospace,monospace",
+        'font-size:0.85rem', 'letter-spacing:0.18em',
+        'cursor:pointer',
+      ].join(';');
+      toggle.addEventListener('click', () => {
+        setRelayEnabled(url, !enabled);
+        setStatus(enabled ? `Disabled ${shortRelay(url)}` : `Enabled ${shortRelay(url)}`, '#58ff58');
+        paint();
+      });
+
+      const label = el('div', { parent: row });
+      label.style.cssText = 'display:flex;flex-direction:column;align-items:flex-start;text-align:left;min-width:0;';
+      const urlSpan = el('span', { parent: label, text: url });
+      urlSpan.style.cssText = "font-family:ui-monospace,monospace;font-size:0.82rem;color:rgba(220,210,255,0.92);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;letter-spacing:0;";
+      const tag = el('span', { parent: label, text: isDefault ? 'BUNDLED' : 'CUSTOM' });
+      tag.style.cssText = 'font-size:0.62rem;letter-spacing:0.2em;color:' + (isDefault ? 'rgba(91,157,255,0.7)' : 'rgba(255,138,58,0.85)') + ';margin-top:2px;';
+
+      if (!isDefault) {
+        const remove = el('button', { parent: row, text: '✕' });
+        remove.setAttribute('aria-label', 'Remove relay');
+        remove.style.cssText = [
+          'background:transparent', 'border:none',
+          'color:rgba(255,80,80,0.7)',
+          "font-family:'VT323',ui-monospace,monospace",
+          'font-size:1.1rem', 'cursor:pointer',
+          'padding:4px 8px', 'border-radius:4px',
+        ].join(';');
+        remove.addEventListener('click', () => {
+          removeRelay(url);
+          setStatus(`Removed ${shortRelay(url)}`, '#ff8a3a');
+          paint();
+        });
+      } else {
+        // Empty cell so the grid keeps three columns aligned across rows
+        el('span', { parent: row, text: '' });
+      }
+    }
+  }
+
+  paint();
+
+  // Add-new row
+  const addRow = el('div', { parent: overlay });
+  addRow.style.cssText = 'display:flex;gap:8px;align-items:center;width:100%;max-width:520px;';
+  const input = el('input', { parent: addRow, attrs: { type: 'url', placeholder: 'wss://relay.example.com' } });
+  input.style.cssText = 'flex:1;background:rgba(0,0,0,0.5);border:2px solid rgba(91,157,255,0.4);color:#cfd6ff;font-family:ui-monospace,monospace;font-size:0.85rem;padding:8px 12px;border-radius:6px;letter-spacing:0;';
+  const addBtn = el('button', { className: 'menu-btn secondary', parent: addRow, text: 'ADD' });
+  function commit(): void {
+    const result = addRelay(input.value);
+    if (result) {
+      input.value = '';
+      setStatus(`Added relay`, '#58ff58');
+      paint();
+    } else {
+      setStatus('Must be a valid wss:// URL', '#ff5050');
+    }
+  }
+  addBtn.addEventListener('click', commit);
+  input.addEventListener('keydown', (e: Event) => {
+    if ((e as KeyboardEvent).code === 'Enter') { e.preventDefault(); commit(); }
   });
+
+  const row = el('div', { className: 'menu-row', parent: overlay });
   const reset = el('button', { className: 'menu-btn secondary', parent: row, text: 'RESET' });
   reset.addEventListener('click', () => {
     resetRelays();
-    textarea.value = getActiveRelays().join('\n');
-    status.textContent = 'Restored bundled defaults.';
-    status.style.color = 'rgba(180,140,255,0.85)';
+    setStatus('Restored bundled defaults.', 'rgba(180,140,255,0.85)');
+    paint();
   });
-  const back = el('button', { className: 'menu-btn secondary', parent: row, text: 'BACK' });
+  const back = el('button', { className: 'menu-btn', parent: row, text: 'BACK' });
   back.addEventListener('click', onBack);
+}
+
+function shortRelay(url: string): string {
+  return url.replace(/^wss:\/\//, '').replace(/\/$/, '');
 }
 
 // ── Game over screen ──────────────────────────────────────────────────────────
