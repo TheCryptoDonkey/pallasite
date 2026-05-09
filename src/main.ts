@@ -392,9 +392,6 @@ async function boot(): Promise<void> {
   function fit(): void {
     const mode = getDisplayMode();
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    // Modern mode supersamples the backing store for smoother scaling on
-    // big monitors; retro keeps it 1:1 to preserve the chunky pixel feel.
-    const supersample = mode === 'modern' ? 1.5 : 1;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const aspect = 4 / 3;
@@ -403,11 +400,20 @@ async function boot(): Promise<void> {
     // modern lets the canvas fill whatever 4:3 box fits in the viewport.
     if (mode === 'retro' && w > 960) w = 960;
     const h = w / aspect;
+    // Supersample only when actually upscaling — on mobile the display is
+    // typically smaller than the 960 source, so extra backing is pure waste
+    // (and the smooth-filter path would blur the HUD text). Cap at 2× to
+    // avoid runaway backing on giant monitors.
+    const supersample = mode === 'modern' && w > 960
+      ? Math.min(2, w / 960)
+      : 1;
     canvas.width = Math.round(960 * dpr * supersample);
     canvas.height = Math.round(720 * dpr * supersample);
     canvas.style.width = w + 'px';
     canvas.style.height = h + 'px';
-    canvas.style.imageRendering = mode === 'retro' ? 'pixelated' : 'auto';
+    // Pixelated keeps HUD/asteroid edges crisp on downscales too — only
+    // switch to smooth interpolation when we've actually supersampled.
+    canvas.style.imageRendering = supersample > 1 ? 'auto' : 'pixelated';
     const ctx = canvas.getContext('2d')!;
     ctx.setTransform(dpr * supersample, 0, 0, dpr * supersample, 0, 0);
   }
