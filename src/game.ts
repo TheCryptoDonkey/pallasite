@@ -87,6 +87,8 @@ export function makeInitialState(): GameState {
     lurkEverDetected: false,
     cheatedThisRun: false,
     bonusLivesGranted: 0,
+    targetHeading: null,
+    thrustOverride: false,
   };
 }
 
@@ -154,6 +156,8 @@ export function startGame(s: GameState): void {
   s.lurkEverDetected = false;
   s.cheatedThisRun = false;
   s.bonusLivesGranted = 0;
+  s.targetHeading = null;
+  s.thrustOverride = false;
   beginWave(s, 1);
   audio.startHeartbeat();
   audio.startAmbient();
@@ -1185,7 +1189,7 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   // ── Ship input ──
   const turnLeft = s.keys['ArrowLeft'] || s.keys['KeyA'];
   const turnRight = s.keys['ArrowRight'] || s.keys['KeyD'];
-  const thrust = s.keys['ArrowUp'] || s.keys['KeyW'];
+  const thrust = (s.keys['ArrowUp'] || s.keys['KeyW']) || s.thrustOverride;
   const fire = s.keys['Space'];
 
   // Hyperspace cloak countdown
@@ -1194,16 +1198,32 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   }
 
   if (s.ship.alive && s.ship.hyperspaceCloakMs <= 0) {
-    if (turnLeft) s.ship.rotVel -= SHIP_ROT_ACCEL * dt;
-    if (turnRight) s.ship.rotVel += SHIP_ROT_ACCEL * dt;
-    // Damping toward zero
-    if (!turnLeft && !turnRight) {
-      const sign = Math.sign(s.ship.rotVel);
-      const newVel = s.ship.rotVel - sign * SHIP_ROT_DAMPING * dt;
-      s.ship.rotVel = Math.sign(newVel) === sign ? newVel : 0;
+    if (s.targetHeading !== null) {
+      // Heading-mode (joystick): rotate ship smoothly toward the stick angle
+      // at a fixed angular rate. Snaps when within one frame's worth of rate.
+      const HEADING_LERP_RATE = 8;  // rad/s — feels responsive without jitter
+      let diff = s.targetHeading - s.ship.rot;
+      while (diff >  Math.PI) diff -= 2 * Math.PI;
+      while (diff < -Math.PI) diff += 2 * Math.PI;
+      const step = HEADING_LERP_RATE * dt;
+      if (Math.abs(diff) <= step) {
+        s.ship.rot = s.targetHeading;
+        s.ship.rotVel = 0;
+      } else {
+        s.ship.rot += Math.sign(diff) * step;
+        s.ship.rotVel = Math.sign(diff) * HEADING_LERP_RATE;  // for thrust-flame visuals etc
+      }
+    } else {
+      if (turnLeft) s.ship.rotVel -= SHIP_ROT_ACCEL * dt;
+      if (turnRight) s.ship.rotVel += SHIP_ROT_ACCEL * dt;
+      if (!turnLeft && !turnRight) {
+        const sign = Math.sign(s.ship.rotVel);
+        const newVel = s.ship.rotVel - sign * SHIP_ROT_DAMPING * dt;
+        s.ship.rotVel = Math.sign(newVel) === sign ? newVel : 0;
+      }
+      s.ship.rotVel = Math.max(-SHIP_MAX_ROT, Math.min(SHIP_MAX_ROT, s.ship.rotVel));
+      s.ship.rot += s.ship.rotVel * dt;
     }
-    s.ship.rotVel = Math.max(-SHIP_MAX_ROT, Math.min(SHIP_MAX_ROT, s.ship.rotVel));
-    s.ship.rot += s.ship.rotVel * dt;
 
     s.ship.thrusting = thrust;
     if (thrust) {

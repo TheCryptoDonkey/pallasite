@@ -500,7 +500,7 @@ export function renderSettings(onBack: () => void): void {
   touchPanel.style.cssText = 'display:flex;gap:8px;align-items:center;justify-content:center;';
   const inputOpts: ReadonlyArray<{ value: TouchInputMode; label: string; hint: string }> = [
     { value: 'buttons',  label: 'BUTTONS',  hint: 'Authentic 1979 cabinet — discrete d-pad + fire' },
-    { value: 'joystick', label: 'JOYSTICK', hint: 'One-thumb pad — drag for rotate + thrust' },
+    { value: 'joystick', label: 'JOYSTICK', hint: 'Point + go — stick angle = heading, push to thrust, tap to fire' },
   ];
   const inputHint = el('p', { parent: overlay });
   inputHint.style.cssText = 'font-size:0.75rem;color:rgba(180,140,255,0.65);letter-spacing:0.04em;margin:0;height:1em;text-align:center;';
