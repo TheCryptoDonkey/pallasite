@@ -554,6 +554,9 @@ body.touch-active[data-phase="warp"]      #touch-controls,
 body.touch-active[data-phase="paused"]    #touch-controls {
   display: block;
 }
+/* Mode gating — only one input set is active at a time. */
+#touch-controls[data-mode="buttons"]  .joystick-mode { display: none; }
+#touch-controls[data-mode="joystick"] .buttons-mode  { display: none; }
 .touch-cluster {
   position: absolute;
   /* Sit clear of the home-indicator + a touch above the bottom edge */
@@ -615,6 +618,37 @@ body.touch-active[data-phase="paused"]    #touch-controls {
 .touch-btn.rotR   { grid-area: rotR; font-size: 2.2rem; line-height: 1; }
 .touch-btn.hyper  { grid-area: hyper;  width: 80px; height: 60px; border-radius: 30px; font-size: 1.4rem; color: #b48cff; border-color: rgba(180, 140, 255, 0.65); }
 .touch-btn.shield { grid-area: shield; width: 80px; height: 60px; border-radius: 30px; font-size: 1.4rem;  color: #58ff58; border-color: rgba(88, 255, 88, 0.65); }
+
+/* Virtual joystick — left-thumb pad with knob that follows the finger. */
+.joystick-pad {
+  position: absolute;
+  pointer-events: auto;
+  bottom: max(14px, calc(env(safe-area-inset-bottom, 0px) + 8px));
+  left:   max(14px, calc(env(safe-area-inset-left,   0px) + 6px));
+  width: 168px; height: 168px;
+  border-radius: 50%;
+  background: radial-gradient(circle at center, rgba(91, 157, 255, 0.18), rgba(0, 0, 0, 0.4) 70%);
+  border: 2px solid rgba(91, 157, 255, 0.45);
+  box-shadow: 0 0 18px rgba(91, 157, 255, 0.18) inset;
+  display: flex; align-items: center; justify-content: center;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  transition: border-color 0.1s ease, background 0.1s ease;
+}
+.joystick-pad.active {
+  border-color: #5b9dff;
+  background: radial-gradient(circle at center, rgba(91, 157, 255, 0.32), rgba(0, 0, 0, 0.5) 70%);
+}
+.joystick-knob {
+  width: 64px; height: 64px;
+  border-radius: 50%;
+  background: rgba(91, 157, 255, 0.55);
+  border: 2px solid rgba(91, 157, 255, 0.95);
+  box-shadow: 0 0 12px rgba(91, 157, 255, 0.4);
+  pointer-events: none;
+  transition: transform 0.06s ease;
+}
 
 /* CRT scanlines via CSS — cheap, no canvas overhead */
 #game::after {
