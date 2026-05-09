@@ -99,18 +99,8 @@ export function renderTitle(state: GameState): void {
     renderLeaderboardBlock(overlay, list, '— LOCAL HIGH SCORES —');
   }
 
-  const hint = el('div', { className: 'kbhint', parent: root });
-  // Cheat keys (+/-) intentionally omitted — they're easter eggs, telegraphing
-  // them defeats the point and the cheat-flag wiring punishes use anyway.
-  hint.innerHTML = `
-    <span><kbd>←</kbd><kbd>→</kbd> rotate</span>
-    <span><kbd>↑</kbd> thrust</span>
-    <span><kbd>SPACE</kbd> fire</span>
-    <span><kbd>↓</kbd> shield · <kbd>↓↓</kbd> hyperspace</span>
-    <span><kbd>SHIFT</kbd> or <kbd>H</kbd> hyperspace</span>
-    <span><kbd>P</kbd> pause</span>
-    <span><kbd>M</kbd> mute</span>
-  `;
+  // Keyboard cheatsheet removed — HOW TO PLAY button covers the same content
+  // and the duplicate strip cramped the desktop layout against the high scores.
 }
 
 function renderDifficultyRow(parent: HTMLElement): void {
