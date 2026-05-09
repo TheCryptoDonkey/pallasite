@@ -253,6 +253,9 @@ function loop(now: number): void {
     } else if (state.phase === 'completed') {
       renderCompletion(state);
     }
+    // Mirror the phase to the body so CSS can gate touch controls visibility —
+    // controls appear during gameplay phases only, hidden on title/menu screens.
+    document.body.dataset.phase = state.phase;
     lastPhase = state.phase;
   }
 
@@ -308,6 +311,10 @@ async function boot(): Promise<void> {
 
   // Touch controls — buttons reveal themselves on first real touch
   setupTouchControls(state, tryHyperspace, tryActivateShield);
+
+  // Seed the body data-phase so the CSS gates evaluate correctly on first paint
+  // (the loop only writes this on phase change after the first frame).
+  document.body.dataset.phase = state.phase;
 
   renderTitle(state);
 
