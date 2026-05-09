@@ -793,8 +793,22 @@ export function fireBullet(s: GameState): void {
 
 // ── Particles ─────────────────────────────────────────────────────────────────
 
+/** Hard ceiling on the live particle buffer. Above this, fresh spawns get
+ *  proportionally scaled down so a chain of explosions on a busy wave doesn't
+ *  push the renderer into the red. Tuned by-eye against wave 7-8 stress. */
+const MAX_PARTICLES = 240;
+
 function spawnParticles(s: GameState, x: number, y: number, count: number, colour: string, speed = 100, ttl = 600): void {
-  for (let i = 0; i < count; i++) {
+  // Scale request down when the buffer is filling up — at the cap, requests
+  // are reduced to ~25% of nominal so big visual moments still register but
+  // don't compound.
+  const headroom = MAX_PARTICLES - s.particles.length;
+  const effective = headroom <= 0
+    ? 0
+    : headroom < count
+      ? Math.max(1, Math.floor(headroom * 0.6))
+      : count;
+  for (let i = 0; i < effective; i++) {
     const angle = Math.random() * Math.PI * 2;
     const v = speed * (0.4 + Math.random() * 0.8);
     s.particles.push({

@@ -1058,17 +1058,28 @@ function drawPowerUp(ctx: CanvasRenderingContext2D, p: PowerUp, now: number): vo
 
 // ── Particles ─────────────────────────────────────────────────────────────────
 
-function drawParticle(ctx: CanvasRenderingContext2D, p: Particle): void {
-  const alpha = p.ttl / p.maxTtl;
-  if (alpha <= 0) return;
+/**
+ * Batched particle render. Caller wraps a single save/restore around the loop
+ * so we don't push/pop the canvas state per particle. shadowBlur is omitted
+ * entirely — at small sizes it costs ~10× the actual fill and makes no visible
+ * difference. Particles below alpha 0.05 are skipped (invisible anyway).
+ */
+function drawParticles(ctx: CanvasRenderingContext2D, particles: ReadonlyArray<Particle>): void {
+  if (particles.length === 0) return;
   ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.fillStyle = p.colour;
-  ctx.shadowColor = p.colour;
-  ctx.shadowBlur = 6;
-  ctx.beginPath();
-  ctx.arc(p.pos.x, p.pos.y, p.size * (0.5 + 0.5 * alpha), 0, Math.PI * 2);
-  ctx.fill();
+  ctx.shadowBlur = 0;
+  let lastColour: string | null = null;
+  let lastAlpha = -1;
+  for (const p of particles) {
+    const alpha = p.ttl / p.maxTtl;
+    if (alpha < 0.05) continue;
+    // Avoid re-setting fillStyle / globalAlpha when consecutive particles match
+    if (p.colour !== lastColour) { ctx.fillStyle = p.colour; lastColour = p.colour; }
+    if (alpha !== lastAlpha) { ctx.globalAlpha = alpha; lastAlpha = alpha; }
+    ctx.beginPath();
+    ctx.arc(p.pos.x, p.pos.y, p.size * (0.5 + 0.5 * alpha), 0, Math.PI * 2);
+    ctx.fill();
+  }
   ctx.restore();
 }
 
@@ -1444,7 +1455,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   for (const b of state.enemyBullets) drawBullet(ctx, b, false);
   for (const c of state.coins) drawCoin(ctx, c, now);
   for (const p of state.powerups) drawPowerUp(ctx, p, now);
-  for (const p of state.particles) drawParticle(ctx, p);
+  drawParticles(ctx, state.particles);
 
   drawShield(ctx, state.ship, now);
   drawShip(ctx, state.ship, now);
