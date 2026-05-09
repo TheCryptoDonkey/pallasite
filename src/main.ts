@@ -5,7 +5,7 @@
  * stored Signet session, and routes between title/playing/paused/game-over.
  */
 
-import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHyperspace, tryActivateShield, cheatJumpToWave, skipDeathReplay } from './game.js';
+import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHyperspace, tryActivateShield, cheatJumpToWave, skipDeathReplay, skipWaveStart } from './game.js';
 import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadBackground } from './render.js';
@@ -108,6 +108,13 @@ window.addEventListener('keydown', e => {
     skipDeathReplay(state);
     e.preventDefault();
     return;
+  }
+  // Any key during the wave-start cinematic skips to playing (after the
+  // skip-allowed window — guard inside skipWaveStart). Lets repeat players
+  // skim past the lore without sitting through the dwell every time.
+  if (state.phase === 'wavestart') {
+    skipWaveStart(state);
+    // Don't swallow — let the keypress also register for movement
   }
   // Wave-jump cheat input mode swallows keys while open
   if (cheatInputOpen) {
@@ -220,6 +227,12 @@ window.addEventListener('keyup', e => {
     state.keys.Space = false;
   }
 });
+
+// Tap anywhere during wave-start to skip the lore dwell on touch devices.
+// Buttons bubble up too — skipWaveStart guards on phase + min elapsed.
+window.addEventListener('pointerdown', () => {
+  if (state.phase === 'wavestart') skipWaveStart(state);
+}, { capture: true });
 
 // Lose focus → release keys & pause
 window.addEventListener('blur', () => {

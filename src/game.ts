@@ -319,8 +319,21 @@ export function beginWave(s: GameState, wave: number): void {
   }, WAVESTART_MS);
 }
 
-const WAVESTART_MS = 2000;
+const WAVESTART_MS = 4000;
 const WAVE_REVEAL_DELAY_MS = 400;
+/** Earliest moment after wavestart begins that a tap/key can skip — give the
+ *  banner enough time to fully fade in so accidental skips don't show nothing. */
+const WAVESTART_SKIP_AFTER_MS = 900;
+
+/** Cut a wavestart short on user input. Safe to call from any phase — no-op
+ *  unless we're actually in wavestart and past the skip-allowed window. */
+export function skipWaveStart(s: GameState): void {
+  if (s.phase !== 'wavestart') return;
+  const elapsed = performance.now() - s.phaseStart;
+  if (elapsed < WAVESTART_SKIP_AFTER_MS) return;
+  audio.setMusicDuck(1);
+  s.phase = 'playing';
+}
 
 function startWarp(s: GameState, targetWave?: number): void {
   const next = targetWave ?? s.wave + 1;

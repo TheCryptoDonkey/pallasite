@@ -548,6 +548,18 @@ body {
 /* Portrait + landscape both supported — fit() in main.ts sizes the canvas
    to the largest 4:3 box that fits in either orientation. */
 
+/* On portrait phones the 4:3 canvas is letterboxed top + bottom equally, which
+   pushes the in-canvas HUD (SCORE / SATS / WAVE / LIVES) into the vertical
+   middle of the screen — visually buried. Anchor the canvas to the top of the
+   viewport in portrait so HUD sits at the top edge; the bottom letterbox is
+   where the touch controls already live, so it gets used naturally. */
+@media (orientation: portrait) {
+  #game {
+    top: 0;
+    transform: translateX(-50%);
+  }
+}
+
 /* ── Touch controls ──────────────────────────────────────────────────────── */
 /* Hidden by default. main.ts adds .touch-active to body on first touch and
    sets data-phase on every phase change; the controls only appear during
