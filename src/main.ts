@@ -173,6 +173,10 @@ function digitFromCode(code: string): string | null {
 
 bindActions({
   onStart: () => {
+    // Apply current daily-mode preference. Without this, the activeSeed from
+    // a prior daily run would persist through a subsequent free-mode start
+    // (the IGNITE button bypasses the keyboard Enter path that did the reset).
+    setDailySeed(getStoredDailyPref() ? todayUTC() : null);
     startGame(state);
     state.phase = 'wavestart';
     clearOverlay();

@@ -242,6 +242,13 @@ export interface DeathReplay {
 export interface GameState {
   phase: GamePhase;
   ship: Ship;
+  /** Heading-mode joystick: when non-null, ship lerps toward this angle
+   *  (radians) at HEADING_LERP_RATE rad/s instead of using L/R rotation keys.
+   *  Cleared on pointer-up so keyboard control resumes. */
+  targetHeading: number | null;
+  /** Heading-mode joystick: analog thrust override. When true, ship thrusts
+   *  regardless of ArrowUp — driven by joystick deflection past a threshold. */
+  thrustOverride: boolean;
   asteroids: Asteroid[];
   bullets: Bullet[];
   enemyBullets: Bullet[];

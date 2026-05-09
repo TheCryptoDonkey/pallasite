@@ -3,14 +3,18 @@
  *
  *   'buttons'  — discrete d-pad cluster (rotate L/R + thrust on the left,
  *                fire + hyper + shield on the right). Authentic to the 1979
- *                arcade cabinet's button layout.
+ *                arcade cabinet's button layout. Tank-control feel preserved
+ *                for purists.
  *
- *   'joystick' — left-thumb virtual joystick (drag for rotate + thrust),
- *                right-thumb action cluster (fire + hyper + shield). One-stick
- *                steering for players who prefer modern mobile shooters.
+ *   'joystick' — heading-mode virtual stick (point in direction, ship rotates
+ *                to face it; deflection past a threshold thrusts). Quick tap
+ *                without drag fires a single shot from the left thumb. Right-
+ *                thumb cluster keeps fire/hyper/shield. Maps angle directly,
+ *                not L/R-rotate-then-thrust — far more intuitive for players
+ *                who haven't memorised tank controls.
  *
  * Both modes funnel input into the same `state.keys` codes the keyboard
- * sets, so combat logic doesn't need to know how the player is steering.
+ * sets (joystick additionally drives `state.targetHeading` + `state.thrustOverride`).
  *
  * Mode toggle persists in localStorage; SETTINGS panel surfaces the choice.
  */
@@ -136,24 +140,32 @@ function attachButton(parent: HTMLElement, spec: ButtonSpec, state: GameState): 
 }
 
 /**
- * Virtual joystick: drag from the pad centre to set rotation + thrust.
- * X axis maps to ArrowLeft/Right above a deadzone; Y axis maps to ArrowUp
- * (thrust) when pulled toward the top. Down does nothing — Asteroids has
- * no reverse thrust. The knob visually tracks the finger inside a fixed
- * radius; release returns it to centre and clears all input.
+ * Heading-mode virtual joystick: the stick angle directly drives the ship's
+ * target heading; deflection magnitude past a threshold engages thrust. One
+ * intuitive motion — point where you want to go.
+ *
+ *   - Drag: sets `state.targetHeading` (game lerps ship rotation toward it
+ *     at ~8 rad/s) and `state.thrustOverride` (true past THRUST_THRESHOLD).
+ *   - Quick tap (released within TAP_TIME_MS, drag < TAP_MOVE_PX): fires one
+ *     bullet from the left thumb without affecting heading.
+ *   - Release: clears both state hooks so keyboard/no-input resumes.
  */
 function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState): void {
-  const MAX_RADIUS = 60;     // px — max knob travel from centre
-  const X_DEADZONE = 0.25;   // ignore tiny drift on rotation
-  const Y_DEADZONE = 0.30;   // thrust needs a clear pull upward
+  const MAX_RADIUS       = 70;    // px — knob travel; bumped from 60 for finger comfort
+  const HEADING_DEADZONE = 0.18;  // ignore micro-drift before steering kicks in
+  const THRUST_THRESHOLD = 0.45;  // half-push or more = engage thrust
+  const TAP_TIME_MS      = 220;   // press shorter than this with no drag = fire
+  const TAP_MOVE_PX      = 8;     // total movement allowed before tap is "drag"
 
   let activeId: number | null = null;
   let originX = 0, originY = 0;
+  let pressedAt = 0;
+  let maxDriftPx = 0;
+  let didEngage = false;  // true once we cross the heading deadzone — disables tap-fire
 
-  function clearKeys(): void {
-    state.keys.ArrowLeft = false;
-    state.keys.ArrowRight = false;
-    state.keys.ArrowUp = false;
+  function clearMotion(): void {
+    state.targetHeading = null;
+    state.thrustOverride = false;
   }
 
   pad.addEventListener('pointerdown', e => {
@@ -162,6 +174,9 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState): 
     const rect = pad.getBoundingClientRect();
     originX = rect.left + rect.width / 2;
     originY = rect.top + rect.height / 2;
+    pressedAt = performance.now();
+    maxDriftPx = 0;
+    didEngage = false;
     pad.setPointerCapture(e.pointerId);
     void audio.unlockAudio();
     pad.classList.add('active');
@@ -171,16 +186,24 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState): 
     if (e.pointerId !== activeId) return;
     const dx = e.clientX - originX;
     const dy = e.clientY - originY;
-    const dist = Math.hypot(dx, dy) || 1;
-    const clipped = Math.min(dist, MAX_RADIUS);
-    const kx = (dx / dist) * clipped;
-    const ky = (dy / dist) * clipped;
+    const dist = Math.hypot(dx, dy);
+    if (dist > maxDriftPx) maxDriftPx = dist;
+    const clipped = Math.min(dist || 1, MAX_RADIUS);
+    const kx = ((dx / (dist || 1)) * clipped);
+    const ky = ((dy / (dist || 1)) * clipped);
     knob.style.transform = `translate(${kx.toFixed(1)}px, ${ky.toFixed(1)}px)`;
-    const nx = kx / MAX_RADIUS;
-    const ny = ky / MAX_RADIUS;
-    state.keys.ArrowLeft  = nx < -X_DEADZONE;
-    state.keys.ArrowRight = nx >  X_DEADZONE;
-    state.keys.ArrowUp    = ny < -Y_DEADZONE;
+    const magnitude = clipped / MAX_RADIUS;  // 0..1
+    if (magnitude > HEADING_DEADZONE) {
+      didEngage = true;
+      // Canvas y-down means Math.atan2(dy, dx) returns angle in canvas frame —
+      // matches ship.rot which is also in canvas-frame radians.
+      state.targetHeading = Math.atan2(dy, dx);
+      state.thrustOverride = magnitude > THRUST_THRESHOLD;
+    } else {
+      // Inside deadzone — release motion so ship coasts straight
+      state.targetHeading = null;
+      state.thrustOverride = false;
+    }
   });
 
   function release(e: PointerEvent): void {
@@ -188,7 +211,17 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState): 
     activeId = null;
     knob.style.transform = '';
     pad.classList.remove('active');
-    clearKeys();
+    clearMotion();
+    // Tap-to-fire: short press without engaging the heading deadzone fires once.
+    const heldMs = performance.now() - pressedAt;
+    if (!didEngage && heldMs < TAP_TIME_MS && maxDriftPx < TAP_MOVE_PX) {
+      // Pulse Space for one frame so the existing fire-on-keydown path triggers.
+      // Game reads keys[Space] in its update loop; clearing in a microtask lets
+      // exactly one frame see it as held (which is enough for the fire cooldown
+      // path to issue one bullet).
+      state.keys.Space = true;
+      requestAnimationFrame(() => { state.keys.Space = false; });
+    }
   }
   pad.addEventListener('pointerup',     release);
   pad.addEventListener('pointercancel', release);
