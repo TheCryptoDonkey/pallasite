@@ -521,12 +521,28 @@ function drawUfo(ctx: CanvasRenderingContext2D, u: Ufo, now: number): void {
     ctx.lineTo(0, -h * 0.5 - 11);
     ctx.stroke();
 
-    // Cockpit slit — glowing red strip top centre
-    ctx.fillStyle = col.cockpit;
+    // Central viewport — wider glowing band that pulses, much more visible
+    // than the old 12% slit. Reads as the "scanner" of the heavy ship.
+    const tankPulse = 0.7 + 0.3 * Math.sin(u.blink * 3);
+    const viewportGrad = ctx.createLinearGradient(-w * 0.18, 0, w * 0.18, 0);
+    viewportGrad.addColorStop(0, col.shadow);
+    viewportGrad.addColorStop(0.5, col.cockpit);
+    viewportGrad.addColorStop(1, col.shadow);
+    ctx.fillStyle = viewportGrad;
+    ctx.shadowColor = col.cockpit;
+    ctx.shadowBlur = 10 + tankPulse * 4;
+    ctx.globalAlpha = 0.7 + tankPulse * 0.3;
+    ctx.beginPath();
+    ctx.rect(-w * 0.18, -h * 0.34, w * 0.36, 4);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.shadowBlur = 12;
+    // Single bright running light dead-centre — the hunter's eye
+    ctx.fillStyle = '#ffffff';
     ctx.shadowColor = col.cockpit;
     ctx.shadowBlur = 8;
     ctx.beginPath();
-    ctx.rect(-w * 0.06, -h * 0.32, w * 0.12, 2);
+    ctx.arc(0, -h * 0.32 + 2, 1.4 + tankPulse * 0.6, 0, Math.PI * 2);
     ctx.fill();
 
     // HP dots — scaled up
@@ -539,58 +555,75 @@ function drawUfo(ctx: CanvasRenderingContext2D, u: Ufo, now: number): void {
       ctx.fill();
     }
   } else if (u.type === 'sniper') {
-    const len = r * 2.6;
-    const halfW = r * 0.7;
-    const facing = u.dir;
-    ctx.scale(facing, 1);
+    // Sniper — slim hunter saucer with a single huge cyclops sensor eye and
+    // long swept fins. The eye dominates the silhouette so the player reads
+    // "this thing is locked on me" at a glance.
+    const len = r * 2.8;
+    const halfW = r * 0.85;
+    ctx.scale(u.dir, 1);
 
-    // Engine glow at tail
-    drawEngineGlow(ctx, 1, -len * 0.5, 0, len * 0.5, col.primary, 0.7);
+    // Twin engine ribbons trailing behind
+    drawEngineGlow(ctx, 1, -len * 0.46,  halfW * 0.35, len * 0.45, col.primary, 0.8);
+    drawEngineGlow(ctx, 1, -len * 0.46, -halfW * 0.35, len * 0.45, col.primary, 0.8);
 
-    // Body (filled dart) — gradient along length
+    // Body — sleek elongated lozenge with metal gradient
     const bodyGrad = ctx.createLinearGradient(-len * 0.5, 0, len * 0.5, 0);
-    bodyGrad.addColorStop(0, col.shadow);
-    bodyGrad.addColorStop(0.4, col.primary);
-    bodyGrad.addColorStop(1, col.accent);
-    ctx.beginPath();
-    ctx.moveTo(len * 0.5, 0);
-    ctx.lineTo(-len * 0.3, -halfW);
-    ctx.lineTo(-len * 0.5, 0);
-    ctx.lineTo(-len * 0.3, halfW);
-    ctx.closePath();
+    bodyGrad.addColorStop(0,    col.shadow);
+    bodyGrad.addColorStop(0.5,  col.primary);
+    bodyGrad.addColorStop(0.85, col.accent);
+    bodyGrad.addColorStop(1,    col.shadow);
     ctx.fillStyle = bodyGrad;
+    ctx.beginPath();
+    ctx.moveTo(len * 0.50,  0);
+    ctx.bezierCurveTo(len * 0.45, -halfW, -len * 0.20, -halfW, -len * 0.46, -halfW * 0.35);
+    ctx.lineTo(-len * 0.46, halfW * 0.35);
+    ctx.bezierCurveTo(-len * 0.20, halfW, len * 0.45, halfW, len * 0.50, 0);
+    ctx.closePath();
     ctx.fill();
     ctx.stroke();
 
-    // Side fins
+    // Long swept fins — give the silhouette a clear "predator" outline
     ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.moveTo(-len * 0.1, -halfW * 0.6);
-    ctx.lineTo(-len * 0.1, -halfW * 1.4);
-    ctx.lineTo(len * 0.05, -halfW * 0.6);
-    ctx.closePath();
     ctx.fillStyle = col.shadow;
-    ctx.fill();
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(-len * 0.1, halfW * 0.6);
-    ctx.lineTo(-len * 0.1, halfW * 1.4);
-    ctx.lineTo(len * 0.05, halfW * 0.6);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
+    for (const dir of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(-len * 0.15, dir * halfW * 0.6);
+      ctx.lineTo(-len * 0.32, dir * halfW * 1.85);
+      ctx.lineTo( len * 0.05, dir * halfW * 0.6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.lineWidth = 1.5;
 
-    // Sensor lens at the nose
-    ctx.fillStyle = col.cockpit;
-    ctx.shadowColor = col.cockpit;
-    ctx.shadowBlur = 10;
+    // Cyclops sensor eye — the focal point. Pulses brighter as shootTimer
+    // approaches zero (about-to-fire signal).
+    const charge = u.shootTimer < 1200 ? Math.max(0, 1 - u.shootTimer / 1200) : 0;
+    const eyePulse = 0.65 + 0.35 * Math.sin(u.blink * 4) + charge * 0.4;
+    // Outer eye socket
+    ctx.fillStyle = col.shadow;
     ctx.beginPath();
-    ctx.arc(len * 0.4, 0, 2.5, 0, Math.PI * 2);
+    ctx.arc(len * 0.28, 0, halfW * 0.55, 0, Math.PI * 2);
     ctx.fill();
+    ctx.stroke();
+    // Glowing iris
+    const irisGrad = ctx.createRadialGradient(len * 0.28, 0, 0, len * 0.28, 0, halfW * 0.5);
+    irisGrad.addColorStop(0, '#ffffff');
+    irisGrad.addColorStop(0.4, col.cockpit);
+    irisGrad.addColorStop(1, col.primary);
+    ctx.fillStyle = irisGrad;
+    ctx.shadowColor = col.cockpit;
+    ctx.shadowBlur = 10 + eyePulse * 8;
+    ctx.globalAlpha = 0.85;
+    ctx.beginPath();
+    ctx.arc(len * 0.28, 0, halfW * 0.4 * eyePulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.shadowColor = col.primary;
+    ctx.shadowBlur = 12;
 
     // Charging laser sight — line extends as shootTimer approaches 0
-    if (u.shootTimer < 1200) {
-      const charge = Math.max(0, 1 - u.shootTimer / 1200);
+    if (charge > 0) {
       const sightLen = len * 1.5 * charge;
       ctx.strokeStyle = col.primary;
       ctx.shadowColor = col.primary;
@@ -604,7 +637,6 @@ function drawUfo(ctx: CanvasRenderingContext2D, u: Ufo, now: number): void {
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.globalAlpha = 1;
-      // Lock-on dot at tip
       if (u.shootTimer < 400) {
         ctx.fillStyle = col.primary;
         ctx.beginPath();
@@ -727,56 +759,89 @@ function drawUfo(ctx: CanvasRenderingContext2D, u: Ufo, now: number): void {
     ctx.strokeStyle = col.primary;
     ctx.strokeRect(-r * 0.95, -r - 16, r * 1.9, 7);
   } else if (u.type === 'elite') {
-    // Elite — sleek interceptor (NOT a saucer). Swept-back delta wing.
-    const len = r * 2.4;
-    const halfW = r * 1.1;
+    // Elite — fast stealth saucer with twin engine pods. Reads as kin to the
+    // cruiser (saucer body) but lower, sleeker, more dangerous.
+    const w = r * 2.6;
+    const h = r * 1.05;
     ctx.scale(u.dir, 1);
 
-    // Engine glow at tail
-    drawEngineGlow(ctx, 1, -len * 0.45, 0, len * 0.55, col.primary, 0.85);
+    // Twin engine plumes at the rear pods — twice the heat of cruiser
+    drawEngineGlow(ctx, 1, -w * 0.45,  h * 0.18, w * 0.4, col.primary, 0.85);
+    drawEngineGlow(ctx, 1, -w * 0.45, -h * 0.18, w * 0.4, col.primary, 0.85);
 
-    // Wing fill — sharp delta
-    const bodyGrad = ctx.createLinearGradient(-len * 0.5, 0, len * 0.5, 0);
-    bodyGrad.addColorStop(0, col.shadow);
-    bodyGrad.addColorStop(0.6, col.primary);
-    bodyGrad.addColorStop(1, col.accent);
+    // Lower hull — flatter ellipse with under-belly gradient
+    const hullGrad = ctx.createRadialGradient(0, h * 0.3, h * 0.15, 0, 0, w * 0.55);
+    hullGrad.addColorStop(0, col.accent);
+    hullGrad.addColorStop(0.55, col.primary);
+    hullGrad.addColorStop(1, col.shadow);
     ctx.beginPath();
-    ctx.moveTo(len * 0.5, 0);
-    ctx.lineTo(-len * 0.45, -halfW);
-    ctx.lineTo(-len * 0.2, 0);
-    ctx.lineTo(-len * 0.45, halfW);
-    ctx.closePath();
-    ctx.fillStyle = bodyGrad;
+    ctx.ellipse(0, h * 0.05, w * 0.5, h * 0.42, 0, 0, Math.PI * 2);
+    ctx.fillStyle = hullGrad;
     ctx.fill();
     ctx.stroke();
 
-    // Centre fuselage ridge
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = col.shadow;
-    ctx.beginPath();
-    ctx.moveTo(len * 0.4, 0);
-    ctx.lineTo(-len * 0.3, 0);
-    ctx.stroke();
-    ctx.strokeStyle = col.primary;
-    ctx.lineWidth = 1.5;
-
-    // Cockpit canopy near nose
-    ctx.fillStyle = col.cockpit;
+    // Forward swept canopy — bigger than cruiser's, runs front to mid
+    const canopyGrad = ctx.createLinearGradient(0, -h * 0.5, 0, 0);
+    canopyGrad.addColorStop(0, col.cockpit);
+    canopyGrad.addColorStop(1, col.shadow);
+    ctx.fillStyle = canopyGrad;
     ctx.shadowColor = col.cockpit;
     ctx.shadowBlur = 10;
     ctx.beginPath();
-    ctx.ellipse(len * 0.22, 0, len * 0.12, halfW * 0.18, 0, 0, Math.PI * 2);
+    ctx.moveTo(w * 0.42, h * 0.0);
+    ctx.bezierCurveTo(w * 0.42, -h * 0.55, -w * 0.25, -h * 0.55, -w * 0.25, h * 0.0);
+    ctx.closePath();
     ctx.fill();
+    ctx.stroke();
 
-    // Wingtip beacons (rapid blink, alternating)
-    const t = u.blink * 6;
-    const onL = Math.sin(t) > 0;
-    const onR = Math.sin(t + Math.PI) > 0;
-    ctx.shadowBlur = 8;
-    ctx.fillStyle = onL ? col.primary : 'rgba(255,255,255,0.15)';
-    ctx.beginPath(); ctx.arc(-len * 0.42, -halfW * 0.95, 1.8, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = onR ? col.primary : 'rgba(255,255,255,0.15)';
-    ctx.beginPath(); ctx.arc(-len * 0.42, halfW * 0.95, 1.8, 0, Math.PI * 2); ctx.fill();
+    // Canopy reflection — thin highlight stripe
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = `${col.accent}cc`;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(w * 0.34, -h * 0.18);
+    ctx.bezierCurveTo(w * 0.30, -h * 0.42, -w * 0.10, -h * 0.42, -w * 0.18, -h * 0.18);
+    ctx.stroke();
+    ctx.strokeStyle = col.primary;
+    ctx.lineWidth = 1.5;
+    ctx.shadowColor = col.primary;
+    ctx.shadowBlur = 12;
+
+    // Twin engine pods — small bulges at the rear, glowing intakes
+    const t = u.blink * 5;
+    for (const py of [-h * 0.2, h * 0.2]) {
+      ctx.fillStyle = col.shadow;
+      ctx.beginPath();
+      ctx.ellipse(-w * 0.42, py, w * 0.08, h * 0.18, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      // Glowing intake at the leading edge of the pod
+      const intakePulse = 0.6 + 0.4 * Math.sin(t * 2 + (py > 0 ? 0 : Math.PI));
+      ctx.fillStyle = col.cockpit;
+      ctx.shadowColor = col.cockpit;
+      ctx.shadowBlur = 8 + intakePulse * 6;
+      ctx.globalAlpha = 0.7 + intakePulse * 0.3;
+      ctx.beginPath();
+      ctx.arc(-w * 0.36, py, 1.6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    ctx.shadowColor = col.primary;
+    ctx.shadowBlur = 12;
+
+    // Underside running lights — three pulsing dots
+    for (let i = 0; i < 3; i++) {
+      const x = -w * 0.18 + i * w * 0.18;
+      const phase = (Math.sin(t + i * 1.6) + 1) / 2;
+      ctx.globalAlpha = 0.4 + phase * 0.5;
+      ctx.fillStyle = col.cockpit;
+      ctx.shadowColor = col.cockpit;
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      ctx.arc(x, h * 0.38, 1.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
   } else {
     // Cruiser — classic saucer with proper weight
     const w = r * 2.4;
