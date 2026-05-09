@@ -173,19 +173,17 @@ function buildProceduralBackground(wave: number): HTMLCanvasElement {
 /**
  * Apply the current wave's background image as a body-level CSS background
  * so the area outside the (letterboxed) canvas on mobile / odd aspect ratios
- * still has something to look at. Idempotent — only writes the inline style
- * when the wave actually changes.
+ * still has something to look at. Keyed on (wave + override-availability) so
+ * we re-apply once the override image finishes loading — keying on wave alone
+ * meant the first-frame "no override yet, set ''" call was sticky.
  */
-let lastBodyBgWave = -1;
+let lastBodyBgKey = '';
 function syncBodyBackground(wave: number, hasOverride: boolean): void {
-  if (wave === lastBodyBgWave) return;
-  lastBodyBgWave = wave;
+  const key = hasOverride ? `w${wave}` : '';
+  if (key === lastBodyBgKey) return;
+  lastBodyBgKey = key;
   if (typeof document === 'undefined') return;
-  if (hasOverride) {
-    document.body.style.backgroundImage = `url(/backgrounds/wave-${wave}.webp)`;
-  } else {
-    document.body.style.backgroundImage = '';
-  }
+  document.body.style.backgroundImage = key ? `url(/backgrounds/wave-${wave}.webp)` : '';
 }
 
 function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: number): void {
@@ -1303,19 +1301,20 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState, now: number): void
 }
 
 /**
- * Wave-clear cinematic. Sequence over the 2000ms `wavestart` phase:
- *   0–400ms   silence — no banner
- *   400–700ms fade in
- *   700–1500ms hold (chime + name visible, music ducked)
- *   1500–1800ms fade out
- *   1800–2000ms held black before action resumes
+ * Wave-clear cinematic. Sequence over the 4000ms `wavestart` phase (skippable
+ * after 900ms via tap/key):
+ *   0–400ms     silence — no banner
+ *   400–700ms   fade in
+ *   700–3500ms  hold (chime + name + lore visible, music ducked)
+ *   3500–3800ms fade out
+ *   3800–4000ms held black before action resumes
  */
 function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState, now: number): void {
   if (s.phase !== 'wavestart') return;
   const elapsed = now - s.phaseStart;
   const REVEAL_AT = 400;
   const FADE_IN = 300;
-  const HOLD_END = 1500;
+  const HOLD_END = 3500;
   const FADE_OUT = 300;
   if (elapsed < REVEAL_AT) return;
   const t = elapsed - REVEAL_AT;
@@ -1327,15 +1326,21 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState, now: number
   alpha = Math.max(0, Math.min(1, alpha));
 
   ctx.save();
-  ctx.globalAlpha = alpha;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
+
+  // Dim the wave-image background behind the cinematic so text stays readable
+  // regardless of which specimen photo is loaded. Sits below all text.
+  ctx.globalAlpha = alpha * 0.55;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, WORLD_H / 2 - 130, WORLD_W, 240);
+  ctx.globalAlpha = alpha;
 
   // Subtle horizontal accent line behind the title — a faint heraldic bar
   ctx.strokeStyle = '#5b9dff';
   ctx.shadowColor = '#5b9dff';
   ctx.shadowBlur = 12;
-  ctx.globalAlpha = alpha * 0.35;
+  ctx.globalAlpha = alpha * 0.45;
   ctx.lineWidth = 1;
   const lineY = WORLD_H / 2 + 4;
   const reach = 220;
@@ -1360,15 +1365,28 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState, now: number
   ctx.letterSpacing = '0.18em' as unknown as string;
   ctx.fillText(waveName(s.wave), WORLD_W / 2, WORLD_H / 2 + 38);
 
-  // One-line specimen lore — small, soft purple, history fragment
+  // One-line specimen lore — bright cream over a darker backing strip so it
+  // reads against any wave image. Was soft purple, hard to read on warm bgs.
   const lore = waveSubtitle(s.wave);
   if (lore) {
-    ctx.font = '15px ui-monospace, monospace';
-    ctx.fillStyle = '#b48cff';
-    ctx.shadowColor = '#b48cff';
-    ctx.shadowBlur = 6;
+    ctx.font = '16px ui-monospace, monospace';
+    ctx.fillStyle = '#fff5d8';
+    ctx.shadowColor = 'rgba(0,0,0,0.9)';
+    ctx.shadowBlur = 4;
+    ctx.shadowOffsetY = 1;
     ctx.letterSpacing = '0.06em' as unknown as string;
-    ctx.fillText(lore, WORLD_W / 2, WORLD_H / 2 + 70);
+    ctx.fillText(lore, WORLD_W / 2, WORLD_H / 2 + 72);
+    ctx.shadowOffsetY = 0;
+  }
+
+  // Skip hint — visible only after the skip window opens. Quiet, off to bottom.
+  if (elapsed > 1200) {
+    ctx.globalAlpha = alpha * 0.55;
+    ctx.font = '12px ui-monospace, monospace';
+    ctx.fillStyle = '#9fb6ff';
+    ctx.shadowBlur = 0;
+    ctx.letterSpacing = '0.18em' as unknown as string;
+    ctx.fillText('TAP OR PRESS ANY KEY TO SKIP', WORLD_W / 2, WORLD_H / 2 + 112);
   }
 
   ctx.restore();
