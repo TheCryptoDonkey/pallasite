@@ -514,8 +514,8 @@ export function renderGameOver(state: GameState): void {
     renderLeaderboardBlock(overlay, list, '— LOCAL HIGH SCORES —');
   }
 
-  // Zap the dev — also on game-over so non-completers can tip
-  renderZapButton(overlay, state);
+  // Zap the dev — only in Nostr mode. Guests get a quieter dev card on completion.
+  if (state.session) renderZapButton(overlay, state);
 
   const row = el('div', { className: 'menu-row', parent: overlay });
   const again = el('button', { className: 'menu-btn', parent: row, text: 'SPAWN AGAIN' });
@@ -625,11 +625,11 @@ export function renderCompletion(state: GameState): void {
   renderHonours(overlay, state, stage(1.4));
 
   // Credits roll — promoted high in the layout so it actually gets watched.
-  renderCreditsRoll(overlay, stage(1.9));
+  renderCreditsRoll(overlay, stage(1.9), state);
 
-  // Dev card — creator name + clickable profile
+  // Dev card — creator name + clickable profile (npub for Nostr, @handle for guests)
   const devWrap = el('div', { parent: overlay });
-  renderDevCard(devWrap);
+  renderDevCard(devWrap, state);
   stage(2.6)(devWrap);
 
   // Auto-record under the player's resolved name (or pubkey-prefix fallback)
@@ -656,15 +656,17 @@ export function renderCompletion(state: GameState): void {
     });
   }
 
-  // Social actions: follow, share, endorse
-  const socialWrap = el('div', { parent: overlay });
-  renderSocialActions(socialWrap, state);
-  stage(3.4)(socialWrap);
+  // Social actions + zap — Nostr mode only. Guests already see the X handle on
+  // the dev card; no point showing them auth-gated buttons that just nag.
+  if (state.session) {
+    const socialWrap = el('div', { parent: overlay });
+    renderSocialActions(socialWrap, state);
+    stage(3.4)(socialWrap);
 
-  // Zap button — prominent, separate row
-  const zapWrap = el('div', { parent: overlay });
-  renderZapButton(zapWrap, state);
-  stage(3.8)(zapWrap);
+    const zapWrap = el('div', { parent: overlay });
+    renderZapButton(zapWrap, state);
+    stage(3.8)(zapWrap);
+  }
 
   const row = el('div', { className: 'menu-row', parent: overlay });
   const again = el('button', { className: 'menu-btn', parent: row, text: 'IGNITE AGAIN' });
@@ -702,15 +704,23 @@ function renderHonours(parent: HTMLElement, state: GameState, applyStage: (e: HT
   applyStage(row);
 }
 
-function renderDevCard(parent: HTMLElement): void {
+function renderDevCard(parent: HTMLElement, state: GameState): void {
   const wrap = el('div', { parent });
   wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:6px;margin-top:4px;';
   const heading = el('p', { parent: wrap, text: 'CREATED BY' });
   heading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:0;';
   const name = el('p', { parent: wrap, text: DEV.name.toUpperCase() });
   name.style.cssText = 'font-size:1.4rem;letter-spacing:0.25em;color:var(--hud-yellow);text-shadow:0 0 8px rgba(255,216,74,0.5);margin:0;';
-  const link = el('a', { parent: wrap, text: `${DEV.npub.slice(0, 12)}…${DEV.npub.slice(-6)}` });
-  link.setAttribute('href', DEV.profileUrl);
+  // Guest mode: surface the X handle (something a non-Nostr player can act on).
+  // Nostr mode: surface the npub linking to njump.me — meaningful on the network.
+  const link = el('a', { parent: wrap });
+  if (state.session) {
+    link.textContent = `${DEV.npub.slice(0, 12)}…${DEV.npub.slice(-6)}`;
+    link.setAttribute('href', DEV.profileUrl);
+  } else {
+    link.textContent = `@${DEV.twitter}`;
+    link.setAttribute('href', DEV.twitterUrl);
+  }
   link.setAttribute('target', '_blank');
   link.setAttribute('rel', 'noopener noreferrer');
   link.style.cssText = 'font-size:0.85rem;color:var(--hud-blue);letter-spacing:0.1em;text-decoration:none;border-bottom:1px dotted rgba(91,157,255,0.5);';
@@ -1398,7 +1408,7 @@ function openZapModal(state: GameState): void {
   window.addEventListener('keydown', escHandler);
 }
 
-function renderCreditsRoll(parent: HTMLElement, applyStage?: (e: HTMLElement) => void): void {
+function renderCreditsRoll(parent: HTMLElement, applyStage?: (e: HTMLElement) => void, state?: GameState): void {
   const panel = el('div', { className: 'credits-roll', parent });
   if (applyStage) applyStage(panel);
   const inner = el('div', { className: 'credits-roll-inner', parent: panel });
@@ -1411,6 +1421,11 @@ function renderCreditsRoll(parent: HTMLElement, applyStage?: (e: HTMLElement) =>
     `<p class="specimen"><span class="specimen-name">${escape(s.name)}</span><br><span class="specimen-sub">${escape(s.subtitle)}</span></p>`
   ).join('');
 
+  // Guest mode shows the X handle; Nostr mode shows the full npub.
+  const creatorLink = state?.session
+    ? `<a href="${escape(DEV.profileUrl)}" target="_blank" rel="noopener noreferrer">${escape(DEV.npub)}</a>`
+    : `<a href="${escape(DEV.twitterUrl)}" target="_blank" rel="noopener noreferrer">@${escape(DEV.twitter)}</a>`;
+
   inner.innerHTML = `
     <p class="credits-spacer"></p>
     <h3>A PALLASITE PRODUCTION</h3>
@@ -1418,7 +1433,7 @@ function renderCreditsRoll(parent: HTMLElement, applyStage?: (e: HTMLElement) =>
 
     <h3>CREATED BY</h3>
     <p class="name">${escape(DEV.name.toUpperCase())}</p>
-    <p><a href="${escape(DEV.profileUrl)}" target="_blank" rel="noopener noreferrer">${escape(DEV.npub)}</a></p>
+    <p>${creatorLink}</p>
 
     <p class="credits-divider">· · ·</p>
 
