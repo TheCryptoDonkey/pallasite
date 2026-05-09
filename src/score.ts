@@ -70,7 +70,7 @@ export function isHighScore(score: number): boolean {
  */
 export async function publishScore(
   session: SignetSession,
-  scoreData: { score: number; sats: number; wave: number; durationSeconds: number; state?: 'active' | 'completed'; seed?: string | null },
+  scoreData: { score: number; sats: number; wave: number; durationSeconds: number; state?: 'active' | 'completed'; seed?: string | null; cheated?: boolean },
   relays: readonly string[] = getActiveRelays(),
 ): Promise<{ event: NostrEvent; publishedTo: string[]; failed: string[] } | null> {
   if (!session.signer.capabilities.canSignEvents) {
@@ -97,6 +97,11 @@ export async function publishScore(
   if (scoreData.seed) {
     tags.push(['seed', scoreData.seed]);
     tags.push(['t', 'daily']);
+  }
+  // Honest signal — leaderboard consumers can hide or sort cheated runs.
+  if (scoreData.cheated) {
+    tags.push(['cheated', 'true']);
+    tags.push(['t', 'cheated']);
   }
 
   const template = {

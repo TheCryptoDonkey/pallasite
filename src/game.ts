@@ -39,7 +39,7 @@ import {
 import type { PowerUp, PowerUpType } from './types.js';
 import * as audio from './audio.js';
 import { preloadBackground } from './render.js';
-import { currentMods } from './difficulty.js';
+import { currentMods, lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { gameRng } from './seed.js';
 
 // ── Initial state ─────────────────────────────────────────────────────────────
@@ -84,6 +84,7 @@ export function makeInitialState(): GameState {
     lurkingSince: 0,
     lurkSatsBlocked: 0,
     lurkEverDetected: false,
+    cheatedThisRun: false,
   };
 }
 
@@ -108,6 +109,11 @@ function makeShip(): Ship {
 }
 
 export function startGame(s: GameState): void {
+  // Defensive re-lock — the title-screen IGNITE path also locks, but the
+  // gameover SPAWN AGAIN and completion IGNITE AGAIN buttons jump straight
+  // here. Without this, switching difficulty between runs (via TO TITLE then
+  // back) wouldn't take effect on the next press of SPAWN AGAIN.
+  lockInDifficulty(getStoredDifficulty());
   const mods = currentMods();
   s.score = 0;
   s.sats = 0;
@@ -143,6 +149,7 @@ export function startGame(s: GameState): void {
   s.lurkingSince = 0;
   s.lurkSatsBlocked = 0;
   s.lurkEverDetected = false;
+  s.cheatedThisRun = false;
   beginWave(s, 1);
   audio.startHeartbeat();
   audio.startAmbient();
@@ -328,6 +335,17 @@ function startWarp(s: GameState, targetWave?: number): void {
 export function cheatJumpToWave(s: GameState, wave: number): void {
   if (s.phase !== 'playing' && s.phase !== 'wavestart' && s.phase !== 'warp') return;
   const target = Math.max(1, Math.min(99, Math.floor(wave)));
+  // First cheat use voids the run's sat earnings and locks the cheat flag for
+  // any subsequent score publish. Score still accrues — score is bragging
+  // rights; sats are money.
+  if (!s.cheatedThisRun) {
+    s.cheatedThisRun = true;
+    if (s.sats > 0) {
+      s.lurkSatsBlocked += s.sats;  // accounted as forfeited for the gameover breakdown
+      s.sats = 0;
+    }
+    toastNow(s, '► CHEAT · SATS VOIDED');
+  }
   clearStage(s, { autoCollect: false });
   audio.ufoSirenStop();
   // Preload the target wave so the warp banner doesn't flash a missing image
@@ -424,11 +442,11 @@ function clearStage(s: GameState, opts: { autoCollect: boolean }): void {
       spawnParticles(s, c.pos.x, c.pos.y, 4, tint, 100, 350);
     }
     if (bankedSats > 0) {
-      // Lurking forfeits the wave-clear sat bank too; dust score is never
-      // blocked because it's not money.
-      if (s.lurking) {
+      // Lurking and cheating both forfeit the wave-clear sat bank; dust score
+      // is never blocked because it's not money.
+      if (s.lurking || s.cheatedThisRun) {
         s.lurkSatsBlocked += bankedSats;
-        toastNow(s, `LURK · ${bankedSats} sats forfeit`);
+        toastNow(s, s.cheatedThisRun ? `CHEAT · ${bankedSats} sats forfeit` : `LURK · ${bankedSats} sats forfeit`);
       } else {
         s.sats += bankedSats;
         toastNow(s, `+ ${bankedSats} sats banked`);
@@ -1429,7 +1447,9 @@ export function updateGame(s: GameState, dt: number, now: number): void {
         c.collected = true;
         if (c.kind === 'sat') {
           const credit = Math.max(1, Math.round(c.value * satMul));
-          if (s.lurking) s.lurkSatsBlocked += credit;
+          // Lurking and cheating both forfeit sat credit. Score still ticks
+          // via dust, but sats won't accumulate once the run is tainted.
+          if (s.lurking || s.cheatedThisRun) s.lurkSatsBlocked += credit;
           else s.sats += credit;
           audio.coinPickup();
           spawnParticles(s, c.pos.x, c.pos.y, 6, '#ffd84a', 80, 350);
