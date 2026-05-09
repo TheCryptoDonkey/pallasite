@@ -193,6 +193,22 @@ export interface Particle {
   size: number;
 }
 
+/** Line-segment debris — used for the ship explosion to recreate the
+ *  iconic 1979 Asteroids "ship splits into bits" effect. Each piece tumbles
+ *  outward, fades over its TTL, and wraps around the playfield. */
+export interface Debris {
+  pos: Vec2;
+  vel: Vec2;
+  /** Current orientation in radians */
+  rot: number;
+  rotVel: number;
+  /** Visual length in px (line drawn from -length/2 to +length/2 along local x axis) */
+  length: number;
+  ttl: number;
+  maxTtl: number;
+  colour: string;
+}
+
 export type GamePhase = 'title' | 'playing' | 'paused' | 'gameover' | 'wavestart' | 'warp' | 'completed' | 'deathreplay';
 
 /** Snapshot of motion-relevant state, captured at ~30Hz during play and used
@@ -214,8 +230,13 @@ export interface DeathReplay {
   snapshots: ReplaySnapshot[];
   /** performance.now() at the moment playback (re-)started */
   startedAt: number;
-  /** Captured game-time span, ms — last sample.t minus first sample.t */
+  /** Captured game-time span, ms — last sample.t minus first sample.t.
+   *  This is the SNAPSHOT span; the actual playback runs an additional
+   *  REPLAY_EXPLOSION_MS past this to render the synthetic ship explosion. */
   spanMs: number;
+  /** Where the ship exploded — synthesised explosion centre for the post-
+   *  buffer extension. Captured in killShip from the ship's last position. */
+  explosionAt: Vec2;
 }
 
 export interface GameState {
@@ -229,6 +250,7 @@ export interface GameState {
   coins: Coin[];
   powerups: PowerUp[];
   particles: Particle[];
+  debris: Debris[];
 
   score: number;
   /** in-game sats counter (mirrors what backend would credit) */
@@ -304,6 +326,12 @@ export interface GameState {
    *  leaderboard can show or filter accordingly. Honest runs are unaffected. */
   cheatedThisRun: boolean;
 
+  /** Number of bonus lives the player has earned this run via score thresholds
+   *  (1 per 10,000 score). Tracked separately from `lives` so that lost lives
+   *  DON'T regenerate when an asteroid happens to be killed at a sub-threshold
+   *  score — the maybeExtraLife sweep only grants when this value rises. */
+  bonusLivesGranted: number;
+
   /** Ring buffer of recent gameplay snapshots. Capped at REPLAY_BUFFER_FRAMES. */
   replayBuffer: ReplaySnapshot[];
   /** Set by killShip on the final death; cleared by startGame. Lives across
@@ -331,6 +359,10 @@ export const REPLAY_FAST_MS = 1500;                // first slice plays at 1.0x
 export const REPLAY_SLOW_MS = 500;                 // last 0.5s of game-time...
 export const REPLAY_SLOW_RATE = 0.4;               // ...stretched to 1.25s of wall-time
 export const REPLAY_TOTAL_WALL_MS = REPLAY_FAST_MS + Math.round(REPLAY_SLOW_MS / REPLAY_SLOW_RATE);
+/** Extra game-time tail past the captured buffer where a synthetic explosion
+ *  blooms at the ship's last position. Plays at the slow-mo rate so it lingers. */
+export const REPLAY_EXPLOSION_MS = 500;
+export const REPLAY_EXPLOSION_WALL_MS = Math.round(REPLAY_EXPLOSION_MS / REPLAY_SLOW_RATE);
 
 export const WORLD_W = 960;
 export const WORLD_H = 720;

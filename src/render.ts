@@ -7,11 +7,11 @@
  */
 
 import type {
-  GameState, Ship, Asteroid, Bullet, Coin, Particle, Ufo, Mine, PowerUp, ReplaySnapshot,
+  GameState, Ship, Asteroid, Bullet, Coin, Particle, Ufo, Mine, PowerUp, ReplaySnapshot, Debris,
 } from './types.js';
 import {
   WORLD_W, WORLD_H, waveName, waveSubtitle, ASTEROID_TYPE_CONFIG, POWERUP_CONFIG,
-  REPLAY_SLOW_MS, REPLAY_SLOW_RATE,
+  REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS,
 } from './types.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
@@ -1064,6 +1064,34 @@ function drawPowerUp(ctx: CanvasRenderingContext2D, p: PowerUp, now: number): vo
  * entirely — at small sizes it costs ~10× the actual fill and makes no visible
  * difference. Particles below alpha 0.05 are skipped (invisible anyway).
  */
+/**
+ * Render line-segment debris from the ship explosion. One save/restore for
+ * the lot; per-piece transform via translate + rotate. Fade with TTL.
+ */
+function drawDebris(ctx: CanvasRenderingContext2D, debris: ReadonlyArray<Debris>): void {
+  if (debris.length === 0) return;
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 1.6;
+  ctx.shadowBlur = 0;
+  for (const d of debris) {
+    const alpha = Math.max(0, Math.min(1, d.ttl / d.maxTtl));
+    if (alpha < 0.05) continue;
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = d.colour;
+    ctx.save();
+    ctx.translate(d.pos.x, d.pos.y);
+    ctx.rotate(d.rot);
+    const half = d.length / 2;
+    ctx.beginPath();
+    ctx.moveTo(-half, 0);
+    ctx.lineTo(half, 0);
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
 function drawParticles(ctx: CanvasRenderingContext2D, particles: ReadonlyArray<Particle>): void {
   if (particles.length === 0) return;
   ctx.save();
@@ -1363,7 +1391,49 @@ function replayGameTime(spanMs: number, wallElapsed: number): number {
   const fastWall = fastGameTime;  // 1.0x
   if (wallElapsed < fastWall) return wallElapsed;
   const slowWall = (wallElapsed - fastWall);
-  return Math.min(spanMs, fastGameTime + slowWall * REPLAY_SLOW_RATE);
+  // Allow gameTime to exceed spanMs by up to REPLAY_EXPLOSION_MS — that tail
+  // is the synthetic explosion bloom (drawn outside the snapshot stream).
+  return Math.min(spanMs + REPLAY_EXPLOSION_MS, fastGameTime + slowWall * REPLAY_SLOW_RATE);
+}
+
+/**
+ * Synthetic explosion bloom for the replay tail. `t` is 0..1 progress
+ * over REPLAY_EXPLOSION_MS. Three expanding rings + radial sparks; no
+ * shadowBlur (cheap and crisp at slow-mo). Renders at the ship's death
+ * position so the replay genuinely shows the moment of impact.
+ */
+function drawSyntheticExplosion(ctx: CanvasRenderingContext2D, centre: { x: number; y: number }, t: number): void {
+  ctx.save();
+  ctx.translate(centre.x, centre.y);
+  // Outer green shock ring (ship colour)
+  for (let ring = 0; ring < 3; ring++) {
+    const phase = Math.min(1, Math.max(0, (t - ring * 0.12) / 0.55));
+    if (phase <= 0 || phase >= 1) continue;
+    const r = 8 + phase * 80;
+    const alpha = (1 - phase) * 0.85;
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = ring === 0 ? '#ffffff' : ring === 1 ? '#ffd84a' : '#58ff58';
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  // Radial sparks — 12 short lines fanning out
+  ctx.lineWidth = 1.6;
+  ctx.lineCap = 'round';
+  const sparkOut = 10 + t * 70;
+  const sparkIn = sparkOut - 12;
+  ctx.globalAlpha = (1 - t) * 0.95;
+  ctx.strokeStyle = '#ffd84a';
+  for (let i = 0; i < 12; i++) {
+    const a = (Math.PI * 2 * i) / 12;
+    const cos = Math.cos(a), sin = Math.sin(a);
+    ctx.beginPath();
+    ctx.moveTo(cos * sparkIn, sin * sparkIn);
+    ctx.lineTo(cos * sparkOut, sin * sparkOut);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 function pickSnapshot(snapshots: ReplaySnapshot[], gameTime: number): ReplaySnapshot {
@@ -1403,6 +1473,14 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
       shieldUp: false, shieldExpiresAt: 0, shieldReadyAt: 0,
     };
     drawShip(ctx, fauxShip, now);
+  }
+
+  // Synthetic explosion bloom — fires past the captured span as the
+  // replay's grand finale. Replicates the kill moment with concentric
+  // rings + radial sparks at the ship's last position.
+  if (gameTime > dr.spanMs) {
+    const t = Math.min(1, (gameTime - dr.spanMs) / REPLAY_EXPLOSION_MS);
+    drawSyntheticExplosion(ctx, dr.explosionAt, t);
   }
 
   // Red vignette — softer at the centre, stronger at the edges
@@ -1461,6 +1539,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   for (const c of state.coins) drawCoin(ctx, c, now);
   for (const p of state.powerups) drawPowerUp(ctx, p, now);
   drawParticles(ctx, state.particles);
+  drawDebris(ctx, state.debris);
 
   drawShield(ctx, state.ship, now);
   drawShip(ctx, state.ship, now);

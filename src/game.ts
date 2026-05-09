@@ -10,12 +10,12 @@ import type {
 } from './types.js';
 import {
   waveName, FINAL_WAVE, ASTEROID_TYPE_CONFIG,
-  REPLAY_RECORD_INTERVAL_MS, REPLAY_BUFFER_FRAMES, REPLAY_TOTAL_WALL_MS,
+  REPLAY_RECORD_INTERVAL_MS, REPLAY_BUFFER_FRAMES, REPLAY_TOTAL_WALL_MS, REPLAY_EXPLOSION_WALL_MS,
   LURK_CENTRE_RADIUS_PX, LURK_VEL_THRESHOLD, LURK_DURATION_MS, LURK_TOAST_MS,
   SAT_DROP_CHANCE_DENOM,
 } from './types.js';
 import type { PickupKind } from './types.js';
-import type { ReplaySnapshot } from './types.js';
+import type { ReplaySnapshot, Debris } from './types.js';
 import {
   WORLD_W, WORLD_H,
   SHIP_RADIUS, SHIP_THRUST, SHIP_DRAG, SHIP_ROT_ACCEL, SHIP_ROT_DAMPING, SHIP_MAX_ROT, SHIP_INVULN_MS, FIRE_COOLDOWN_MS,
@@ -56,6 +56,7 @@ export function makeInitialState(): GameState {
     coins: [],
     powerups: [],
     particles: [],
+    debris: [],
     score: 0,
     sats: 0,
     displaySats: 0,
@@ -85,6 +86,7 @@ export function makeInitialState(): GameState {
     lurkSatsBlocked: 0,
     lurkEverDetected: false,
     cheatedThisRun: false,
+    bonusLivesGranted: 0,
   };
 }
 
@@ -145,11 +147,13 @@ export function startGame(s: GameState): void {
   s.keys = {};
   s.replayBuffer = [];
   s.deathReplay = null;
+  s.debris = [];
   s.lurking = false;
   s.lurkingSince = 0;
   s.lurkSatsBlocked = 0;
   s.lurkEverDetected = false;
   s.cheatedThisRun = false;
+  s.bonusLivesGranted = 0;
   beginWave(s, 1);
   audio.startHeartbeat();
   audio.startAmbient();
@@ -1016,15 +1020,17 @@ const SAT_TICK_RATE = 9;
 
 let lastReplayRecordedAt = 0;
 
-function recordReplaySnapshot(s: GameState, now: number): void {
-  if (s.phase !== 'playing') return;
-  if (now - lastReplayRecordedAt < REPLAY_RECORD_INTERVAL_MS) return;
-  lastReplayRecordedAt = now;
-  // Spread-copy each entity and its mutable Vec2 fields so the buffer doesn't
-  // alias the live state (and get mutated frame-by-frame). The `shape` array
-  // on asteroids is never mutated post-spawn so a shared ref is safe.
-  const snap: ReplaySnapshot = {
-    t: now,
+/** Push an unconditional snapshot — used by killShip to bake the impact-
+ *  moment frame into the buffer (the regular recorder runs at frame start,
+ *  before collision). */
+function pushReplayImpactFrame(s: GameState): void {
+  s.replayBuffer.push(buildReplaySnapshot(s, performance.now()));
+  if (s.replayBuffer.length > REPLAY_BUFFER_FRAMES) s.replayBuffer.shift();
+}
+
+function buildReplaySnapshot(s: GameState, t: number): ReplaySnapshot {
+  return {
+    t,
     ship: { pos: { x: s.ship.pos.x, y: s.ship.pos.y }, rot: s.ship.rot, alive: s.ship.alive, thrusting: s.ship.thrusting },
     asteroids: s.asteroids.map(a => ({ ...a, pos: { x: a.pos.x, y: a.pos.y }, vel: { x: a.vel.x, y: a.vel.y } })),
     ufos: s.ufos.map(u => ({ ...u, pos: { x: u.pos.x, y: u.pos.y }, vel: { x: u.vel.x, y: u.vel.y } })),
@@ -1032,7 +1038,16 @@ function recordReplaySnapshot(s: GameState, now: number): void {
     enemyBullets: s.enemyBullets.map(b => ({ ...b, pos: { x: b.pos.x, y: b.pos.y }, vel: { x: b.vel.x, y: b.vel.y } })),
     mines: s.mines.map(m => ({ ...m, pos: { x: m.pos.x, y: m.pos.y }, vel: { x: m.vel.x, y: m.vel.y } })),
   };
-  s.replayBuffer.push(snap);
+}
+
+function recordReplaySnapshot(s: GameState, now: number): void {
+  if (s.phase !== 'playing') return;
+  if (now - lastReplayRecordedAt < REPLAY_RECORD_INTERVAL_MS) return;
+  lastReplayRecordedAt = now;
+  // Spread-copy each entity and its mutable Vec2 fields so the buffer doesn't
+  // alias the live state (and get mutated frame-by-frame). The `shape` array
+  // on asteroids is never mutated post-spawn so a shared ref is safe.
+  s.replayBuffer.push(buildReplaySnapshot(s, now));
   if (s.replayBuffer.length > REPLAY_BUFFER_FRAMES) s.replayBuffer.shift();
 }
 
@@ -1067,7 +1082,7 @@ export function startDeathReplay(s: GameState, after: 'gameover'): void {
       // Hull-breached music carries it; no synth chime.
       stopGameplayAudio();
     }
-  }, REPLAY_TOTAL_WALL_MS);
+  }, REPLAY_TOTAL_WALL_MS + REPLAY_EXPLOSION_WALL_MS);
 }
 
 /** Skip the in-progress replay — fast-forward to the gameover screen. */
@@ -1286,6 +1301,19 @@ export function updateGame(s: GameState, dt: number, now: number): void {
     p.vel.y *= Math.exp(-1.5 * dt);
   }
   s.particles = s.particles.filter(p => p.ttl > 0);
+
+  // ── Debris (ship explosion fragments) ──
+  for (const d of s.debris) {
+    d.pos.x += d.vel.x * dt;
+    d.pos.y += d.vel.y * dt;
+    d.rot += d.rotVel * dt;
+    d.ttl -= dt * 1000;
+    // Mild drag so pieces decelerate as they tumble outward
+    d.vel.x *= Math.exp(-0.6 * dt);
+    d.vel.y *= Math.exp(-0.6 * dt);
+    wrap(d.pos, 20);
+  }
+  s.debris = s.debris.filter(d => d.ttl > 0);
 
   // ── Coins ──
   for (const c of s.coins) {
@@ -1596,24 +1624,97 @@ function breakAsteroid(s: GameState, a: Asteroid): void {
   maybeExtraLife(s);
 }
 
+/**
+ * Award an extra life on each 10,000-score threshold crossing. Tracked via
+ * `bonusLivesGranted` so dying after earning one doesn't get the life
+ * regenerated by the next asteroid kill (the previous logic compared
+ * current lives against a hardcoded `3 + earnedLives` target, which silently
+ * resurrected players on Normal and bumped Hard runs from 2 lives up to 3).
+ */
 function maybeExtraLife(s: GameState): void {
-  // Every 10000 score, +1 life (cap at 5)
   const earnedLives = Math.floor(s.score / 10000);
-  // Track how many we've granted via lives count: starting 3 + earned
-  const targetLives = Math.min(5, 3 + earnedLives);
-  if (s.lives < targetLives) {
-    s.lives = targetLives;
-    audio.extraLife();
-    toastNow(s, '+ EXTRA LIFE');
+  if (earnedLives <= s.bonusLivesGranted) return;
+  if (s.lives >= 5) {
+    // Cap reached but the threshold still counts — record it so we don't
+    // grant a backlog if the player drops below cap later.
+    s.bonusLivesGranted = earnedLives;
+    return;
+  }
+  const grant = Math.min(earnedLives - s.bonusLivesGranted, 5 - s.lives);
+  s.lives += grant;
+  s.bonusLivesGranted = earnedLives;
+  audio.extraLife();
+  toastNow(s, grant > 1 ? `+ ${grant} EXTRA LIVES` : '+ EXTRA LIFE');
+}
+
+/**
+ * Spawn ship-shaped debris pieces — line segments along the ship's outline
+ * scattering outward from the kill site. Mirrors the iconic 1979 effect.
+ */
+function spawnShipDebris(s: GameState, ship: Ship): void {
+  // Ship local-space outline (matches drawShip): four line segments.
+  const segments: Array<[Vec2, Vec2]> = [
+    [{ x: 14, y: 0 },  { x: -10, y: 8 }],
+    [{ x: -10, y: 8 }, { x: -6, y: 0 }],
+    [{ x: -6, y: 0 },  { x: -10, y: -8 }],
+    [{ x: -10, y: -8 }, { x: 14, y: 0 }],
+  ];
+  const cosR = Math.cos(ship.rot);
+  const sinR = Math.sin(ship.rot);
+  for (const [a, b] of segments) {
+    const cxLocal = (a.x + b.x) / 2;
+    const cyLocal = (a.y + b.y) / 2;
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    const segAngleLocal = Math.atan2(b.y - a.y, b.x - a.x);
+    // Rotate centre into world space
+    const worldX = ship.pos.x + cxLocal * cosR - cyLocal * sinR;
+    const worldY = ship.pos.y + cxLocal * sinR + cyLocal * cosR;
+    // Outward velocity: from ship centre through the segment's centre,
+    // rotated into world. Carry a fraction of the ship's velocity so debris
+    // inherits inertia.
+    const distLocal = Math.hypot(cxLocal, cyLocal) || 1;
+    const dirX = cxLocal / distLocal;
+    const dirY = cyLocal / distLocal;
+    const wDirX = dirX * cosR - dirY * sinR;
+    const wDirY = dirX * sinR + dirY * cosR;
+    const speed = 70 + Math.random() * 80;
+    const debris: Debris = {
+      pos: { x: worldX, y: worldY },
+      vel: {
+        x: wDirX * speed + ship.vel.x * 0.5,
+        y: wDirY * speed + ship.vel.y * 0.5,
+      },
+      rot: ship.rot + segAngleLocal,
+      rotVel: (Math.random() - 0.5) * 6,
+      length,
+      ttl: 1500,
+      maxTtl: 1500,
+      colour: '#58ff58',
+    };
+    s.debris.push(debris);
   }
 }
 
 function killShip(s: GameState): void {
+  // Capture the impact-frame snapshot BEFORE flipping ship.alive — the
+  // standard recordReplaySnapshot at frame start was taken at the ship's
+  // pre-collision position, so without this the replay would end one frame
+  // before the actual hit. Synthesising it here puts the visible final
+  // frame on the impact moment.
+  pushReplayImpactFrame(s);
+
+  const deathPos: Vec2 = { x: s.ship.pos.x, y: s.ship.pos.y };
   s.ship.alive = false;
   resetCombo(s);
   audio.explosion(1.4);
   audio.thrustOff();
-  spawnParticles(s, s.ship.pos.x, s.ship.pos.y, 30, '#58ff58', 200, 900);
+  // Layered explosion: ship-green burst + yellow flash + white sparks +
+  // line-segment debris. Bigger and more cinematic than the old 30-particle
+  // single-colour puff.
+  spawnParticles(s, deathPos.x, deathPos.y, 42, '#58ff58', 280, 1100);
+  spawnParticles(s, deathPos.x, deathPos.y, 22, '#ffd84a', 200,  700);
+  spawnParticles(s, deathPos.x, deathPos.y, 18, '#ffffff', 380,  450);
+  spawnShipDebris(s, s.ship);
   s.lives -= 1;
   if (s.lives <= 0) {
     // Final death — capture the buffer for the replay, then route through
@@ -1624,6 +1725,7 @@ function killShip(s: GameState): void {
         snapshots: s.replayBuffer.slice(),
         startedAt: performance.now(),
         spanMs: s.replayBuffer[s.replayBuffer.length - 1].t - s.replayBuffer[0].t,
+        explosionAt: deathPos,
       };
       startDeathReplay(s, 'gameover');
     } else {
