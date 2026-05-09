@@ -27,6 +27,20 @@ html, body {
   touch-action: none;
 }
 
+/* Wave background bleeds onto the body so letterbox margins on
+   mobile/landscape aren't black bars — they pick up the same image as
+   the canvas. Render.ts sets `body.style.backgroundImage` when a wave
+   image loads. We darken via background-color blend so the body image
+   recedes behind the (sharper, breathing) canvas-rendered version. */
+body {
+  background-size: cover;
+  background-position: center;
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+  background-color: rgba(0, 0, 0, 0.55);
+  background-blend-mode: multiply;
+}
+
 #game {
   display: block;
   position: absolute;
