@@ -170,12 +170,39 @@ function buildProceduralBackground(wave: number): HTMLCanvasElement {
   return off;
 }
 
-function drawBackground(ctx: CanvasRenderingContext2D, state: GameState): void {
+/**
+ * Apply the current wave's background image as a body-level CSS background
+ * so the area outside the (letterboxed) canvas on mobile / odd aspect ratios
+ * still has something to look at. Idempotent — only writes the inline style
+ * when the wave actually changes.
+ */
+let lastBodyBgWave = -1;
+function syncBodyBackground(wave: number, hasOverride: boolean): void {
+  if (wave === lastBodyBgWave) return;
+  lastBodyBgWave = wave;
+  if (typeof document === 'undefined') return;
+  if (hasOverride) {
+    document.body.style.backgroundImage = `url(/backgrounds/wave-${wave}.webp)`;
+  } else {
+    document.body.style.backgroundImage = '';
+  }
+}
+
+function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: number): void {
   const wave = Math.max(1, state.wave);
   // Try image override first (non-blocking — fall back this frame, retry next)
   const override = tryLoadOverride(wave);
+  syncBodyBackground(wave, override !== null);
   if (override) {
-    ctx.drawImage(override, 0, 0, WORLD_W, WORLD_H);
+    // Subtle breath + sway — zooms 1.020 ± 0.005 with a slow horizontal/vertical
+    // drift, so the scene feels alive without anything obviously moving. The
+    // image is rendered slightly oversized so the sway never reveals a gap.
+    const breath = 1.025 + Math.sin(now * 0.00038) * 0.006;
+    const w = WORLD_W * breath;
+    const h = WORLD_H * breath;
+    const dx = (WORLD_W - w) / 2 + Math.sin(now * 0.00029) * 9;
+    const dy = (WORLD_H - h) / 2 + Math.cos(now * 0.00021) * 5;
+    ctx.drawImage(override, dx, dy, w, h);
     return;
   }
   // Procedural background — cache one canvas per wave
@@ -1515,7 +1542,7 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
   const dr = state.deathReplay;
   if (!dr || dr.snapshots.length === 0) return;
 
-  drawBackground(ctx, state);
+  drawBackground(ctx, state, now);
   drawStars(ctx, now);
 
   const wallElapsed = now - dr.startedAt;
@@ -1593,7 +1620,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     return;
   }
 
-  drawBackground(ctx, state);
+  drawBackground(ctx, state, now);
   drawStars(ctx, now);
 
   for (const a of state.asteroids) drawAsteroid(ctx, a, now);
