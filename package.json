@@ -1,21 +1,21 @@
 {
-  "name": "@forgesworn/pallasite",
+  "name": "@thecryptodonkey/pallasite",
   "version": "0.1.0",
-  "description": "Pallasite — Shoot rocks. Stack sats. Cosmic arcade Asteroids with Lightning payouts and Nostr leaderboards. Sign in with Signet.",
+  "description": "Pallasite — Shoot rocks. Stack sats. Cosmic arcade Asteroids with Lightning payouts and Nostr leaderboards. Sign in with Nostr.",
   "type": "module",
   "private": true,
+  "packageManager": "pnpm@9.0.0",
   "scripts": {
-    "dev": "npm run sync-sdk && vite",
-    "build": "npm run sync-sdk && tsc --noEmit && vite build",
+    "dev": "pnpm run sync-sdk && vite",
+    "build": "pnpm run sync-sdk && tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "sync-sdk": "cp ../signet-login/dist/signet-login.iife.js public/signet-login.iife.js",
+    "sync-sdk": "if [ -f ../signet-login/dist/signet-login.iife.js ]; then cp ../signet-login/dist/signet-login.iife.js public/signet-login.iife.js; else echo 'sync-sdk: signet-login sibling not present, using committed copy'; fi",
     "gen-backgrounds": "tsx tools/generate-backgrounds.ts",
     "optimise-backgrounds": "tsx tools/optimise-backgrounds.ts"
   },
   "dependencies": {
-    "qrcode": "^1.5.4",
-    "signet-login": "file:../signet-login"
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@types/qrcode": "^1.5.6",
@@ -27,6 +27,6 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/forgesworn/pallasite.git"
+    "url": "https://github.com/TheCryptoDonkey/pallasite.git"
   }
 }
