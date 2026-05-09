@@ -73,14 +73,6 @@ html, body {
   touch-action: pan-y;
   -webkit-overflow-scrolling: touch;
 }
-.overlay > h1:first-child,
-.overlay > h2:first-child {
-  margin-top: auto;  /* centre vertically when content is short */
-}
-.overlay::after {
-  content: '';
-  margin-bottom: auto;
-}
 
 .overlay > * {
   max-width: 540px;
@@ -175,6 +167,14 @@ html, body {
   transition: all 0.12s ease;
   text-shadow: 0 0 6px rgba(88, 255, 88, 0.6);
   box-shadow: 0 0 12px rgba(88, 255, 88, 0.2);
+  /* Without this, the overlay's `touch-action: pan-y` can let an in-progress
+     scroll gesture cancel the tap on iOS Safari — feels like the button
+     "doesn't work". `manipulation` keeps the click immediate. */
+  touch-action: manipulation;
+  /* Belt and braces — make sure the button always wins click events even if
+     a sibling has weird stacking. */
+  position: relative;
+  z-index: 1;
 }
 
 .overlay .menu-btn:hover {
