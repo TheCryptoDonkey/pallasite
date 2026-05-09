@@ -14,6 +14,7 @@ import { tryRestore } from './auth.js';
 import * as audio from './audio.js';
 import { musicSetTrackForState } from './music.js';
 import { setupTouchControls } from './touch.js';
+import { getDisplayMode, setDisplayMode } from './display.js';
 import type { GameState } from './types.js';
 import { DOWN_DOUBLE_TAP_WINDOW_MS } from './types.js';
 
@@ -380,28 +381,38 @@ function loop(now: number): void {
 async function boot(): Promise<void> {
   // Lock in stored difficulty as the default for any auto-launched run
   lockInDifficulty(getStoredDifficulty());
+  // Mirror the stored display mode to a body data-attr so any CSS that wants
+  // to react (currently nothing, but cheap to seed for future use) can match it.
+  setDisplayMode(getDisplayMode());
 
   // Resize canvas to fit viewport in BOTH dimensions while preserving 4:3
   // aspect — internal pixel resolution stays 960×720 (× dpr) so the game
   // logic and HUD coords don't need to know about display size; the browser
   // scales the bitmap. Centring is handled by the CSS absolute-translate.
   function fit(): void {
+    const mode = getDisplayMode();
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    // Modern mode supersamples the backing store for smoother scaling on
+    // big monitors; retro keeps it 1:1 to preserve the chunky pixel feel.
+    const supersample = mode === 'modern' ? 1.5 : 1;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const aspect = 4 / 3;
-    // Largest 4:3 box that fits inside both viewport dimensions
     let w = Math.min(vw, vh * aspect);
-    // Cap at native size on big screens — no point upscaling beyond source
-    if (w > 960) w = 960;
+    // Retro mode caps at native source size so upscaling stays integer-ish;
+    // modern lets the canvas fill whatever 4:3 box fits in the viewport.
+    if (mode === 'retro' && w > 960) w = 960;
     const h = w / aspect;
-    canvas.width = 960 * dpr;
-    canvas.height = 720 * dpr;
+    canvas.width = Math.round(960 * dpr * supersample);
+    canvas.height = Math.round(720 * dpr * supersample);
     canvas.style.width = w + 'px';
     canvas.style.height = h + 'px';
+    canvas.style.imageRendering = mode === 'retro' ? 'pixelated' : 'auto';
     const ctx = canvas.getContext('2d')!;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.setTransform(dpr * supersample, 0, 0, dpr * supersample, 0, 0);
   }
+  // Expose to the settings panel — flipping the mode needs to re-fit.
+  (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit = fit;
   fit();
   window.addEventListener('resize', fit);
   // iOS fires `orientationchange` slightly differently; resize covers both modern

@@ -9,6 +9,7 @@ import type { GameState } from './types.js';
 import { WAVE_LORE } from './types.js';
 import { getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRelay, removeRelay, resetRelays } from './relays.js';
 import { getTouchMode, setTouchMode, type TouchInputMode } from './touch.js';
+import { getDisplayMode, setDisplayMode, type DisplayMode } from './display.js';
 import * as auth from './auth.js';
 import { addLocalHighScore, getLocalHighScores, isHighScore, publishScore } from './score.js';
 import { startGame, startDeathReplay, toastNow } from './game.js';
@@ -518,6 +519,48 @@ export function renderSettings(onBack: () => void): void {
     btn.addEventListener('click', () => { setTouchMode(opt.value); paintInput(); });
   }
   paintInput();
+
+  // Display mode — retro pixelated 4:3 vs smooth uncapped modern
+  const displayHeading = el('p', { parent: overlay, text: 'DISPLAY' });
+  displayHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
+
+  const displayPanel = el('div', { parent: overlay });
+  displayPanel.style.cssText = 'display:flex;gap:8px;align-items:center;justify-content:center;';
+  const displayOpts: ReadonlyArray<{ value: DisplayMode; label: string; hint: string }> = [
+    { value: 'retro',  label: 'RETRO',  hint: 'Pixelated 4:3 — capped at 960×720, faithful to the cabinet' },
+    { value: 'modern', label: 'MODERN', hint: 'Smooth scaling — fills viewport, supersampled, sharper backgrounds' },
+  ];
+  const displayHint = el('p', { parent: overlay });
+  displayHint.style.cssText = 'font-size:0.75rem;color:rgba(180,140,255,0.65);letter-spacing:0.04em;margin:0;height:1em;text-align:center;';
+  const displayBtns = new Map<DisplayMode, HTMLButtonElement>();
+  function paintDisplay(): void {
+    const cur = getDisplayMode();
+    for (const [v, btn] of displayBtns) {
+      const on = v === cur;
+      btn.style.cssText = [
+        'background:' + (on ? 'rgba(91,157,255,0.22)' : 'transparent'),
+        'border:2px solid ' + (on ? '#5b9dff' : 'rgba(180,140,255,0.4)'),
+        'color:' + (on ? '#5b9dff' : 'rgba(220,210,255,0.85)'),
+        "font-family:'VT323',ui-monospace,monospace",
+        'font-size:1rem', 'padding:6px 18px', 'letter-spacing:0.18em',
+        'cursor:pointer', 'border-radius:6px', 'min-width:104px',
+        on ? 'box-shadow:0 0 12px rgba(91,157,255,0.35);text-shadow:0 0 6px rgba(91,157,255,0.6)' : '',
+      ].filter(Boolean).join(';');
+    }
+    displayHint.textContent = displayOpts.find(o => o.value === cur)?.hint ?? '';
+  }
+  for (const opt of displayOpts) {
+    const btn = el('button', { parent: displayPanel, text: opt.label });
+    displayBtns.set(opt.value, btn);
+    btn.addEventListener('click', () => {
+      setDisplayMode(opt.value);
+      paintDisplay();
+      // Re-fit the canvas so the new mode takes effect immediately rather
+      // than waiting for the next resize/orientation event.
+      (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
+    });
+  }
+  paintDisplay();
 
   const row2 = el('div', { className: 'menu-row', parent: overlay });
   // Open the Nostr relay editor without leaving settings
