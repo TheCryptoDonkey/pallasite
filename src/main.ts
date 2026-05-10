@@ -198,8 +198,16 @@ bindActions({
 // ── Input ─────────────────────────────────────────────────────────────────────
 
 window.addEventListener('keydown', e => {
-  // Any key during the death replay short-circuits to the gameover screen
+  // Any deliberate key during the death replay short-circuits to gameover.
+  // Two filters protect against accidental skips: OS auto-repeats from a
+  // movement key the player was still holding when they died (these fire
+  // while phase=='deathreplay' even though the player hasn't pressed
+  // anything new), and a 250ms grace window so a key pressed in the same
+  // tick as the lethal collision doesn't skip the replay before anyone
+  // sees it.
   if (state.phase === 'deathreplay') {
+    if (e.repeat) return;
+    if (performance.now() - state.phaseStart < 250) return;
     skipDeathReplay(state);
     e.preventDefault();
     return;
