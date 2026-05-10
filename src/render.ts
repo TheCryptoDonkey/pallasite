@@ -10,11 +10,12 @@ import type {
   GameState, Ship, Asteroid, AsteroidType, Bullet, Coin, Particle, Ufo, Mine, PowerUp, ReplaySnapshot, Debris,
 } from './types.js';
 import {
-  WORLD_W, WORLD_H, WARP_MS, waveName, waveSubtitle, ASTEROID_TYPE_CONFIG, POWERUP_CONFIG,
+  WORLD_W, WORLD_H, WARP_MS, waveName, waveSubtitle, POWERUP_CONFIG,
   REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS,
 } from './types.js';
 import { getCachedGhost, ghostScoreAt, ghostPoseAt } from './ghost.js';
 import { getActiveSeed } from './seed.js';
+import { getAsteroidStyle, shouldReduceMotion } from './a11y.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
 
@@ -203,15 +204,20 @@ let renderMode: RenderModeInfo = { kind: 'retro', vw: 960, vh: 720, dpr: 1, scal
 export function setRenderMode(info: RenderModeInfo): void { renderMode = info; }
 
 /**
- * Effective wrap distance for collisions. In modern portrait mode the canvas
- * shows a cropped slice of the 960×720 world and we ghost-render entities at
- * ±visW so the wrap appears seamless to the player. Collisions must use the
- * same shorter wrap distance — otherwise a bullet aimed at a visible ghost
- * asteroid passes through it because the real entity sits one full visW away
- * in world coordinates. Returns world dimensions for retro/landscape, where
- * the visible band already covers the world.
+ * Effective world dimensions — used for both physics wrapping AND collision
+ * detection so they always agree with what the player sees.
+ *
+ * In modern portrait mode we crop the world to a narrower band (visW < WORLD_W)
+ * and ghost-render at ±visW. If physics still wrapped at WORLD_W, the ship
+ * would visibly skip across the screen on every wrap because visW doesn't
+ * divide WORLD_W cleanly: leaving the band's right edge via the -visW ghost
+ * versus re-entering via the +visW ghost lands at different virtual x-values.
+ * Wrapping physics at the same distance the renderer ghosts at fixes that —
+ * the visible band IS the world for the duration of the cropped mode.
+ *
+ * In retro / landscape (no crop), this returns the original 960×720 world.
  */
-export function getCollisionWrap(): { w: number; h: number } {
+export function getEffectiveWorld(): { w: number; h: number } {
   if (renderMode.kind !== 'modern') return { w: WORLD_W, h: WORLD_H };
   const visW = renderMode.vw / renderMode.scale;
   const visH = renderMode.vh / renderMode.scale;
@@ -220,6 +226,10 @@ export function getCollisionWrap(): { w: number; h: number } {
     h: Math.min(WORLD_H, visH),
   };
 }
+
+/** Backward-compat alias — same data, used by collision code that pre-dates
+ *  the physics-wrap unification. */
+export const getCollisionWrap = getEffectiveWorld;
 
 /** Title-screen background cycling: rotates through wave bgs every 30s,
  *  skipping the wave-25 finale image so the boss reveal stays for in-game. */
@@ -483,14 +493,14 @@ function drawHyperspaceMalfunction(ctx: CanvasRenderingContext2D, ship: Ship, no
 
 function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): void {
   if (!a.alive) return;
-  const cfg = ASTEROID_TYPE_CONFIG[a.type];
+  const style = getAsteroidStyle(a.type);
   ctx.save();
   ctx.translate(a.pos.x, a.pos.y);
   ctx.rotate(a.rot);
   ctx.lineWidth = a.type === 'iron' ? 2.0 : 1.4;
   const lightness = 60 + a.hue * 0.2;
-  ctx.strokeStyle = `hsl(${cfg.hueBase}, 70%, ${lightness}%)`;
-  ctx.shadowColor = cfg.glow;
+  ctx.strokeStyle = `hsl(${style.hueBase}, 70%, ${lightness}%)`;
+  ctx.shadowColor = style.glow;
   ctx.shadowBlur = a.type === 'pallasite' ? 14 : 8;
 
   const n = a.shape.length;
@@ -1212,10 +1222,10 @@ function drawCoin(ctx: CanvasRenderingContext2D, c: Coin, now: number): void {
   // the rarer rocks get distinct silhouettes.
   const tumble = now * 0.003 + c.pos.x * 0.02;
   const sourceType = c.sourceType ?? 'stony';
-  const cfg = ASTEROID_TYPE_CONFIG[sourceType];
+  const style = getAsteroidStyle(sourceType);
   // Stony intentionally overrides to peridot green; the others use the
   // asteroid's glow colour for at-a-glance recognition.
-  const dustColour = sourceType === 'stony' ? '#7fffb0' : cfg.glow;
+  const dustColour = sourceType === 'stony' ? '#7fffb0' : style.glow;
   const r = c.radius * 0.95;
   ctx.save();
   ctx.translate(c.pos.x, c.pos.y);
@@ -2139,6 +2149,18 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   drawBackground(ctx, state, now);
   drawStars(ctx, now);
 
+  // Camera shake from accumulated trauma. trauma² gives a natural quadratic
+  // feel — small hits barely shake, big hits punch. Reduced-motion zeros the
+  // amplitude so the mechanic still drains but the world doesn't move.
+  // Frequency is high enough that the shake reads as a thwack, not a wobble.
+  let shakeX = 0, shakeY = 0;
+  const trauma = state.cameraTrauma;
+  if (trauma > 0 && !shouldReduceMotion()) {
+    const amp = trauma * trauma * 14;
+    shakeX = (Math.sin(now * 0.073) + Math.sin(now * 0.127) * 0.6) * amp;
+    shakeY = (Math.cos(now * 0.091) + Math.cos(now * 0.151) * 0.6) * amp;
+  }
+
   // Ghost-render offsets so wraps look seamless at visible-band edges.
   // We're only in "wrap visualisation" mode when at least one axis is
   // cropped (vis < world). Pure contain (e.g. landscape with side gutters)
@@ -2161,6 +2183,11 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     else if (cropX && visH > WORLD_H + 1) ghostYs.push(-WORLD_H, WORLD_H);
   }
 
+  // Shake wraps only the entity layer — HUD stays steady so readouts don't
+  // judder during impacts.
+  ctx.save();
+  ctx.translate(shakeX, shakeY);
+
   for (const dx of ghostXs) {
     for (const dy of ghostYs) {
       const isGhost = dx !== 0 || dy !== 0;
@@ -2182,6 +2209,44 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     }
   }
 
+  ctx.restore();  // unwrap shake before HUD
+
+  // Hyperspace-malfunction chromatic split — red+cyan vignettes nudged in
+  // opposite directions sell the "something's wrong" frame. Cheap (two solid
+  // gradient draws) and visually distinct from any other in-world effect.
+  // Skip under reduced-motion.
+  if (state.ship.hyperspaceCloakMs > 0 && state.ship.hyperspaceMalfunction && !shouldReduceMotion()) {
+    drawChromaticSplit(ctx, now);
+  }
+
   drawHud(ctx, state, now);
   drawWaveBanner(ctx, state, now);
+}
+
+/**
+ * Cheap RGB-split overlay for hyperspace-malfunction frames. Draws two
+ * full-screen radial gradients tinted red and cyan, offset on opposite
+ * axes by ~6px. Pulses with the malfunction ring cadence so it reads
+ * as one effect, not two.
+ */
+function drawChromaticSplit(ctx: CanvasRenderingContext2D, now: number): void {
+  const t = (now * 0.012) % 1;
+  const amp = 6 + Math.sin(now * 0.04) * 2;
+  const alpha = 0.18 + 0.10 * t;
+  const cx = WORLD_W / 2, cy = WORLD_H / 2;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  // Red channel — pushed left
+  const red = ctx.createRadialGradient(cx - amp, cy, 100, cx - amp, cy, 600);
+  red.addColorStop(0, 'rgba(255,80,80,0)');
+  red.addColorStop(1, `rgba(255,60,60,${alpha})`);
+  ctx.fillStyle = red;
+  ctx.fillRect(0, 0, WORLD_W, WORLD_H);
+  // Cyan channel — pushed right
+  const cyan = ctx.createRadialGradient(cx + amp, cy, 100, cx + amp, cy, 600);
+  cyan.addColorStop(0, 'rgba(80,255,255,0)');
+  cyan.addColorStop(1, `rgba(60,200,255,${alpha})`);
+  ctx.fillStyle = cyan;
+  ctx.fillRect(0, 0, WORLD_W, WORLD_H);
+  ctx.restore();
 }
