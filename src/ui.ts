@@ -650,6 +650,9 @@ export function renderSettings(onBack: () => void): void {
   paintDisplay();
 
   const row2 = el('div', { className: 'menu-row', parent: overlay });
+  // Push the action row clear of the DISPLAY hint above so the buttons don't
+  // visually clash with text. The .overlay flex gap is 28px; this adds more.
+  row2.style.marginTop = '24px';
   // Open the Nostr relay editor without leaving settings
   const relayBtn = el('button', { className: 'menu-btn secondary', parent: row2, text: 'NOSTR RELAYS' });
   relayBtn.addEventListener('click', () => renderRelaySettings(() => renderSettings(onBack)));
