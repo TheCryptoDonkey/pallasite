@@ -257,9 +257,13 @@ export async function fetchGlobalHighScores(
       };
 
       ws.onopen = () => {
+        // NIP-01 only indexes single-letter tags, so `#game` is not a valid
+        // server-side filter. We narrow with `#t: ['asteroids']` (a tag every
+        // score event already carries) then post-filter on `game=pallasite`
+        // below — necessary if anyone else ever publishes kind 30762.
         ws.send(JSON.stringify(['REQ', subId, {
           kinds: [30762],
-          '#game': [GAME_ID],
+          '#t': ['asteroids'],
           limit,
         }]));
       };
@@ -270,7 +274,7 @@ export async function fetchGlobalHighScores(
         if (!Array.isArray(msg)) return;
         if (msg[0] === 'EVENT' && msg[1] === subId) {
           const event = msg[2];
-          if (isScoreEvent(event)) consider(event);
+          if (isScoreEvent(event) && hasTagValue(event.tags, 'game', GAME_ID)) consider(event);
         } else if (msg[0] === 'EOSE' && msg[1] === subId) {
           markDone();
         }
