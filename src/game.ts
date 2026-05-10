@@ -1537,13 +1537,16 @@ export function updateGame(s: GameState, dt: number, now: number): void {
     }
   }
 
-  // ── Shield deflection of mines ──
+  // ── Shield contact with mines ──
+  // Shield protects the ship from death but no longer destroys the mine —
+  // matches how shield handles asteroids (pure deflect, no damage). Mines
+  // are cleared by bullets only. Visual sparks + audio still fire so the
+  // contact reads on screen.
   if (s.ship.alive && s.ship.shieldUp) {
     for (const m of s.mines) {
       if (!m.alive) continue;
       if (circlesHit(s.ship, m)) {
-        destroyMine(s, m);
-        spawnParticles(s, m.pos.x, m.pos.y, 12, '#5b9dff', 200, 400);
+        spawnParticles(s, m.pos.x, m.pos.y, 8, '#5b9dff', 180, 320);
         audio.shieldHit();
       }
     }

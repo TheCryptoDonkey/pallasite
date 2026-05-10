@@ -7,7 +7,7 @@
  */
 
 import type {
-  GameState, Ship, Asteroid, Bullet, Coin, Particle, Ufo, Mine, PowerUp, ReplaySnapshot, Debris,
+  GameState, Ship, Asteroid, AsteroidType, Bullet, Coin, Particle, Ufo, Mine, PowerUp, ReplaySnapshot, Debris,
 } from './types.js';
 import {
   WORLD_W, WORLD_H, WARP_MS, waveName, waveSubtitle, ASTEROID_TYPE_CONFIG, POWERUP_CONFIG,
@@ -1108,12 +1108,18 @@ function drawCoin(ctx: CanvasRenderingContext2D, c: Coin, now: number): void {
     return;
   }
 
-  // Dust shard — diamond facet, tumbling. Tinted to the source asteroid's
-  // glow colour when known so iron rocks shed orange shards, chondrites
-  // blue, pallasites gold etc. Falls back to peridot green for drops that
-  // didn't come from an asteroid (mines/UFOs in some flows).
+  // Dust shard — shape varies by source asteroid so the screen reads as
+  // four distinct loot families instead of four colour-tints of the same
+  // diamond. Stony (the baseline) keeps the original peridot-green facet
+  // so the "fiat-vibe" score-only signal stays dominant on screen — only
+  // the rarer rocks get distinct silhouettes.
   const tumble = now * 0.003 + c.pos.x * 0.02;
-  const dustColour = c.sourceType ? ASTEROID_TYPE_CONFIG[c.sourceType].glow : '#7fffb0';
+  const sourceType = c.sourceType ?? 'stony';
+  const cfg = ASTEROID_TYPE_CONFIG[sourceType];
+  // Stony intentionally overrides to peridot green; the others use the
+  // asteroid's glow colour for at-a-glance recognition.
+  const dustColour = sourceType === 'stony' ? '#7fffb0' : cfg.glow;
+  const r = c.radius * 0.95;
   ctx.save();
   ctx.translate(c.pos.x, c.pos.y);
   ctx.rotate(tumble);
@@ -1122,25 +1128,90 @@ function drawCoin(ctx: CanvasRenderingContext2D, c: Coin, now: number): void {
   ctx.strokeStyle = dustColour;
   ctx.shadowColor = dustColour;
   ctx.shadowBlur = 9;
-  const r = c.radius * 0.95;
-  // Diamond / rhombus outline
-  ctx.beginPath();
-  ctx.moveTo(0, -r);
-  ctx.lineTo(r * 0.78, 0);
-  ctx.lineTo(0, r);
-  ctx.lineTo(-r * 0.78, 0);
-  ctx.closePath();
-  ctx.stroke();
-  // Inner facet cross — refraction lines
-  ctx.lineWidth = 0.9;
-  ctx.globalAlpha = alpha * 0.6;
-  ctx.beginPath();
-  ctx.moveTo(0, -r * 0.6);
-  ctx.lineTo(0, r * 0.6);
-  ctx.moveTo(-r * 0.5, 0);
-  ctx.lineTo(r * 0.5, 0);
-  ctx.stroke();
+  drawDustShape(ctx, sourceType, r, alpha);
   ctx.restore();
+}
+
+/**
+ * Per-source-type shard shape. Kept as plain stroke paths so they read at
+ * tiny radii and match the vector aesthetic of everything else.
+ */
+function drawDustShape(ctx: CanvasRenderingContext2D, type: AsteroidType, r: number, alpha: number): void {
+  switch (type) {
+    case 'stony':
+      // Diamond facet — the canonical fiat-vibe peridot shard.
+      ctx.beginPath();
+      ctx.moveTo(0, -r);
+      ctx.lineTo(r * 0.78, 0);
+      ctx.lineTo(0, r);
+      ctx.lineTo(-r * 0.78, 0);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.lineWidth = 0.9;
+      ctx.globalAlpha = alpha * 0.6;
+      ctx.beginPath();
+      ctx.moveTo(0, -r * 0.6);
+      ctx.lineTo(0, r * 0.6);
+      ctx.moveTo(-r * 0.5, 0);
+      ctx.lineTo(r * 0.5, 0);
+      ctx.stroke();
+      return;
+    case 'iron': {
+      // Hex nut — flat sides, a small bolt-mark in the middle so it reads
+      // as machined metal at a glance.
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const ang = (i / 6) * Math.PI * 2 - Math.PI / 2;
+        const x = Math.cos(ang) * r;
+        const y = Math.sin(ang) * r;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.stroke();
+      ctx.lineWidth = 0.9;
+      ctx.globalAlpha = alpha * 0.6;
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 0.35, 0, Math.PI * 2);
+      ctx.stroke();
+      return;
+    }
+    case 'chondrite': {
+      // Three-fragment cluster — fits the lore that chondrites split into
+      // three on break. Three small triangles arranged in a triad.
+      const off = r * 0.55;
+      const tri = (cx: number, cy: number): void => {
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - r * 0.42);
+        ctx.lineTo(cx + r * 0.36, cy + r * 0.22);
+        ctx.lineTo(cx - r * 0.36, cy + r * 0.22);
+        ctx.closePath();
+        ctx.stroke();
+      };
+      tri(0, -off * 0.4);
+      tri(-off * 0.6, off * 0.4);
+      tri(off * 0.6, off * 0.4);
+      return;
+    }
+    case 'pallasite': {
+      // Six-point star — premium silhouette, signals jackpot rarity even
+      // if it lands as dust (in guest mode pallasite drops dust, in Nostr
+      // mode it usually drops sat coins instead).
+      ctx.beginPath();
+      const points = 12;
+      for (let i = 0; i < points; i++) {
+        const ang = (i / points) * Math.PI * 2 - Math.PI / 2;
+        const radius = i % 2 === 0 ? r : r * 0.45;
+        const x = Math.cos(ang) * radius;
+        const y = Math.sin(ang) * radius;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.stroke();
+      return;
+    }
+  }
 }
 
 // ── Power-up ──────────────────────────────────────────────────────────────────
