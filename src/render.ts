@@ -11,7 +11,7 @@ import type {
 } from './types.js';
 import {
   WORLD_W, WORLD_H, WARP_MS, waveName, waveSubtitle, waveTagline, POWERUP_CONFIG,
-  REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS,
+  REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS, COMBO_MAX,
 } from './types.js';
 import { getCachedGhost, ghostScoreAt, ghostPoseAt } from './ghost.js';
 import { getActiveSeed } from './seed.js';
@@ -2299,6 +2299,17 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // gradient draws), and visually distinct from any other in-world effect.
   if (state.ship.hyperspaceCloakMs > 0 && state.ship.hyperspaceMalfunction && !shouldReduceMotion()) {
     drawChromaticSplit(ctx, now);
+  }
+
+  // 5x combo screen tint -- a faint warm wash that signals "we're at the
+  // cap" without obscuring play. Only when combo is at COMBO_MAX; below
+  // that the bass-pulse stem alone carries the intensity.
+  if (state.combo >= COMBO_MAX) {
+    const alpha = shouldReduceMotion() ? 0.04 : 0.08;
+    ctx.save();
+    ctx.fillStyle = `rgba(255,80,40,${alpha})`;
+    ctx.fillRect(0, 0, WORLD_W, WORLD_H);
+    ctx.restore();
   }
 
   drawHud(ctx, state, now);
