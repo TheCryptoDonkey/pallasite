@@ -19,10 +19,16 @@ const KEY = 'pallasite:displayMode';
 
 export function getDisplayMode(): DisplayMode {
   try {
-    return localStorage.getItem(KEY) === 'modern' ? 'modern' : 'retro';
-  } catch {
-    return 'retro';
+    const v = localStorage.getItem(KEY);
+    if (v === 'modern' || v === 'retro') return v;
+  } catch { /* ignore */ }
+  // Mobile-first default: 'modern' fills the viewport edge-to-edge, which
+  // reads better on a phone than the centred 4:3 letterbox 'retro' produces.
+  // Desktops keep the arcade-cabinet feel by default.
+  if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) {
+    return 'modern';
   }
+  return 'retro';
 }
 
 export function setDisplayMode(m: DisplayMode): void {

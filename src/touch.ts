@@ -31,6 +31,13 @@ export function getTouchMode(): TouchInputMode {
     const v = localStorage.getItem(MODE_KEY);
     if (v === 'buttons' || v === 'joystick') return v;
   } catch { /* ignore */ }
+  // Mobile-first default: joystick maps better to a thumb than a d-pad.
+  // Coarse pointer is the most reliable touch-primary signal — laptops with
+  // touchscreens still report 'fine' as the primary, so this won't surprise
+  // a hybrid-device user. Desktop default stays buttons (keyboard-equivalent).
+  if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) {
+    return 'joystick';
+  }
   return 'buttons';
 }
 
