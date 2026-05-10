@@ -1184,31 +1184,17 @@ function drawBullet(ctx: CanvasRenderingContext2D, b: Bullet, friendly: boolean)
   const uy = b.vel.y / speed;
   ctx.save();
 
-  // Additive trail behind the bullet head. Stateless: bullets fly in a
-  // straight line at constant velocity, so a fixed-length fading stroke from
-  // the head backwards reads as motion blur without per-bullet history. The
-  // 'lighter' composite stacks colour with the underlying glow rather than
-  // overwriting it, giving a cheap bloom feel on chained shots.
+  // Soft trail behind the bullet head. Flat semi-transparent stroke -- the
+  // earlier gradient + composite-op version was per-bullet expensive enough
+  // to crater mobile frame rate. The shadowBlur on the head still gives the
+  // lit look without any per-frame allocation here.
   const trailLen = len * 3.5;
-  const trailGrad = ctx.createLinearGradient(
-    b.pos.x, b.pos.y,
-    b.pos.x - ux * trailLen, b.pos.y - uy * trailLen,
-  );
-  if (friendly) {
-    trailGrad.addColorStop(0, 'rgba(255,90,90,0.65)');
-    trailGrad.addColorStop(1, 'rgba(255,90,90,0)');
-  } else {
-    trailGrad.addColorStop(0, 'rgba(255,170,40,0.6)');
-    trailGrad.addColorStop(1, 'rgba(255,170,40,0)');
-  }
-  ctx.globalCompositeOperation = 'lighter';
-  ctx.strokeStyle = trailGrad;
-  ctx.lineWidth = 1.8;
+  ctx.strokeStyle = friendly ? 'rgba(255,90,90,0.30)' : 'rgba(255,170,40,0.30)';
+  ctx.lineWidth = 1.6;
   ctx.beginPath();
   ctx.moveTo(b.pos.x, b.pos.y);
   ctx.lineTo(b.pos.x - ux * trailLen, b.pos.y - uy * trailLen);
   ctx.stroke();
-  ctx.globalCompositeOperation = 'source-over';
 
   ctx.lineWidth = friendly ? 2.2 : 2.6;
   ctx.strokeStyle = friendly ? '#ff5050' : '#ffffff';
