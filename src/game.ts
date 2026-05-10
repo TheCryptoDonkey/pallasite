@@ -43,7 +43,7 @@ import {
 import type { PowerUp, PowerUpType } from './types.js';
 import * as audio from './audio.js';
 import { preloadBackground, getCollisionWrap, getVisibleBoundsW } from './render.js';
-import { currentMods, lockInDifficulty, getStoredDifficulty } from './difficulty.js';
+import { currentMods, lockInDifficulty, getStoredDifficulty, currentDifficulty } from './difficulty.js';
 import { gameRng } from './seed.js';
 import { haptic } from './haptics.js';
 import { markSkinUnlocked } from './skins.js';
@@ -700,22 +700,34 @@ function updateUfos(s: GameState, dt: number): void {
         u.shootTimer = UFO_SHOOT_INTERVAL[u.type];
         ufoFanShoot(s, u, s.ship.pos);
       } else if (u.type === 'boss') {
-        // Per-phase boss combat. Cadence accelerates and the attack mix
-        // escalates: P1 aimed, P2 alternates aimed+fan, P3 throws in radial
-        // bullet curtains on top so the player has to dance, not snipe.
+        // Per-phase boss combat scaled by difficulty. Cadence accelerates
+        // and the attack mix escalates: P1 aimed, P2 alternates aimed+fan,
+        // P3 throws in radial bullet curtains on top so the player has to
+        // dance, not snipe.
+        //
+        // Easy mode keeps the phase progression but stays readable on
+        // phones: no fan in P2, no radial curtain in P3, longer cadence.
+        const easy = currentDifficulty() === 'easy';
         if (u.bossPhase === 1) {
-          u.shootTimer = 900;
+          u.shootTimer = easy ? 1200 : 900;
           ufoShootAt(s, u, s.ship.pos);
         } else if (u.bossPhase === 2) {
-          u.shootTimer = 700;
-          if (Math.random() < 0.45) ufoFanShoot(s, u, s.ship.pos);
+          u.shootTimer = easy ? 900 : 700;
+          if (!easy && Math.random() < 0.45) ufoFanShoot(s, u, s.ship.pos);
           else ufoShootAt(s, u, s.ship.pos);
         } else {
-          u.shootTimer = 500;
-          const roll = Math.random();
-          if (roll < 0.30) ufoRadialShoot(s, u);
-          else if (roll < 0.65) ufoFanShoot(s, u, s.ship.pos);
-          else ufoShootAt(s, u, s.ship.pos);
+          u.shootTimer = easy ? 700 : 500;
+          if (easy) {
+            // No radial curtains on easy — aimed shots with the occasional
+            // fan to keep the phase distinct from P2.
+            if (Math.random() < 0.35) ufoFanShoot(s, u, s.ship.pos);
+            else ufoShootAt(s, u, s.ship.pos);
+          } else {
+            const roll = Math.random();
+            if (roll < 0.30) ufoRadialShoot(s, u);
+            else if (roll < 0.65) ufoFanShoot(s, u, s.ship.pos);
+            else ufoShootAt(s, u, s.ship.pos);
+          }
         }
       } else {
         u.shootTimer = UFO_SHOOT_INTERVAL[u.type];
@@ -773,14 +785,15 @@ function ufoFanShoot(s: GameState, u: Ufo, target: Vec2): void {
   audio.ufoShoot();
 }
 
-/** 8-spoke radial bullet curtain — boss phase-3 signature attack. Fires
- *  evenly around the boss with a slight random rotation per volley so the
- *  player can't memorise a single lane. */
+/** Radial bullet curtain — boss phase-3 signature attack. Fires evenly
+ *  around the boss with a slight random rotation per volley so the player
+ *  can't memorise a single lane. Spokes dialled back to 6 (was 8) so the
+ *  screen stays readable on phones during the busiest moments. */
 function ufoRadialShoot(s: GameState, u: Ufo): void {
   const mods = currentMods();
-  const spokes = 8;
+  const spokes = 6;
   const baseRot = gameRng() * (Math.PI * 2);
-  const speed = UFO_BULLET_SPEED * UFO_BULLET_SPEED_MUL.boss * mods.ufoBulletSpeedMul * 0.85;
+  const speed = UFO_BULLET_SPEED * UFO_BULLET_SPEED_MUL.boss * mods.ufoBulletSpeedMul * 0.8;
   for (let i = 0; i < spokes; i++) {
     const angle = baseRot + (Math.PI * 2 * i) / spokes;
     s.enemyBullets.push({
@@ -929,10 +942,15 @@ function damageUfo(s: GameState, u: Ufo): void {
     bumpTrauma(s, 0.10);
   }
 
-  // Boss drops mines around itself at every 5 HP threshold (P1+P2 drop 3,
-  // P3 drops 5 because the bullet curtain isn't enough on its own).
+  // Boss drops mines around itself at every 5 HP threshold. Count scales
+  // with difficulty so easy stays survivable; normal and hard keep the
+  // chunky deploys. P3 always drops more because the bullet curtain alone
+  // isn't enough to keep the player honest.
   if (u.type === 'boss' && u.hp > 0 && u.hp % 5 === 0) {
-    const mineCount = u.bossPhase === 3 ? 5 : 3;
+    const diff = currentDifficulty();
+    const mineCount = diff === 'easy'
+      ? (u.bossPhase === 3 ? 2 : 1)
+      : (u.bossPhase === 3 ? 5 : 3);
     for (let i = 0; i < mineCount; i++) {
       const angle = (Math.PI * 2 * i) / mineCount + Math.random() * 0.4;
       const dist = 90 + Math.random() * 40;
@@ -948,10 +966,9 @@ function damageUfo(s: GameState, u: Ufo): void {
   }
 
   // Boss phase transition — recompute phase from HP, and if it changed,
-  // fire the climactic juice: big freeze, fat trauma, particle burst around
-  // the boss, and a banked-style toast announcing the next phase. The
-  // attack pattern + fire cadence change is read off bossPhase from the
-  // ufo update loop and per-phase code paths below.
+  // fire the climactic juice + drop a fresh tool for the next chapter.
+  // Easy mode also grants a free life so a long fight doesn't dead-end
+  // on a single mistake.
   if (u.type === 'boss' && u.hp > 0) {
     const next = bossPhaseForHp(u.hp);
     if (next !== u.bossPhase) {
@@ -960,10 +977,19 @@ function damageUfo(s: GameState, u: Ufo): void {
       hitStop(s, 320);
       audio.pulseDuck(0.45, 280);
       haptic('rumble');
-      // Phase-entry particle ring around the boss — red on P2, white-hot on P3.
       const colour = next === 3 ? '#fff5d8' : '#ff5050';
       spawnParticles(s, u.pos.x, u.pos.y, 40, colour, 280, 700);
-      toastNow(s, next === 3 ? 'EVENT HORIZON · CRITICAL' : 'EVENT HORIZON · ENRAGED');
+      // Guaranteed tool drop a short distance off the boss so it isn't
+      // immediately inside the new mine ring.
+      const aid: PowerUpType = next === 3 ? 'nova' : 'trident';
+      maybeDropPowerUp(s, u.pos.x + 80, u.pos.y + 20, aid);
+      // Easy: free life on every phase entry.
+      if (currentDifficulty() === 'easy') {
+        s.lives += 1;
+        toastNow(s, next === 3 ? 'CRITICAL · +1 LIFE' : 'ENRAGED · +1 LIFE');
+      } else {
+        toastNow(s, next === 3 ? 'EVENT HORIZON · CRITICAL' : 'EVENT HORIZON · ENRAGED');
+      }
     }
   }
 
@@ -1772,10 +1798,13 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   s.enemyBullets = s.enemyBullets.filter(b => b.alive);
 
   // ── UFOs (boss never replaced; minions spawn alongside on boss wave) ──
+  // Easy mode boss arena gets no sniper minions — the boss + its mine ring
+  // is enough fight on its own. Normal and hard keep the harassment.
   const mods = currentMods();
+  const easyBossArena = s.wave === FINAL_WAVE && currentDifficulty() === 'easy';
   const minionCount = s.ufos.filter(u => u.type !== 'boss').length;
   s.nextUfoSpawn -= dt * 1000;
-  if (s.nextUfoSpawn <= 0 && minionCount === 0) {
+  if (!easyBossArena && s.nextUfoSpawn <= 0 && minionCount === 0) {
     spawnUfo(s);
     const baseInterval = Math.max(UFO_RESPAWN_MIN_MS, UFO_RESPAWN_BASE_MS - s.wave * UFO_RESPAWN_PER_WAVE_MS);
     s.nextUfoSpawn = baseInterval * mods.ufoIntervalMul;
