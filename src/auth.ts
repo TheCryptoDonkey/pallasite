@@ -127,13 +127,13 @@ export async function handleAuthCallback(): Promise<SignetSession | null> {
     // after returning from sign-in" are consistent with a stale dialog
     // covering the title screen — belt-and-braces sweep here keeps the
     // title interactive even if the SDK leaves something behind.
-    if (result.kind !== 'no-callback') cleanupRedirectArtefacts();
+    if (result.kind !== 'no-callback') sweepSignetArtefacts();
     return result.kind === 'session' ? result.session : null;
   } catch (err) {
     // The SDK already logs invalid-callback diagnostics. Sweep artefacts
     // and swallow so a stray bookmark with stale params can't strand the UI.
     console.warn('[auth] handleRedirectCallback threw:', err);
-    cleanupRedirectArtefacts();
+    sweepSignetArtefacts();
     return null;
   }
 }
@@ -142,8 +142,12 @@ export async function handleAuthCallback(): Promise<SignetSession | null> {
  * Remove any Signet SDK dialog/callback overlays from the DOM. Called after
  * handleRedirectCallback resolves so a stale modal can't intercept clicks
  * on the title screen. Also strips the URL hash if one survived consume.
+ *
+ * Exported so main.ts can call it on bfcache restore: a player who hits
+ * browser-back mid-redirect comes back to a frozen page that still has the
+ * SDK dialog in the DOM, and the dialog captures every click underneath.
  */
-function cleanupRedirectArtefacts(): void {
+export function sweepSignetArtefacts(): void {
   document.querySelectorAll('.signet-login-dialog').forEach(el => el.remove());
   document.querySelectorAll('.signet-login-callback').forEach(el => el.remove());
   if (location.hash) {
