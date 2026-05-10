@@ -1108,16 +1108,19 @@ function drawCoin(ctx: CanvasRenderingContext2D, c: Coin, now: number): void {
     return;
   }
 
-  // Dust shard — peridot crystal in green-gold, slowly tumbling. Diamond
-  // outline + inner cross suggests a polished gem facet rather than a coin.
+  // Dust shard — diamond facet, tumbling. Tinted to the source asteroid's
+  // glow colour when known so iron rocks shed orange shards, chondrites
+  // blue, pallasites gold etc. Falls back to peridot green for drops that
+  // didn't come from an asteroid (mines/UFOs in some flows).
   const tumble = now * 0.003 + c.pos.x * 0.02;
+  const dustColour = c.sourceType ? ASTEROID_TYPE_CONFIG[c.sourceType].glow : '#7fffb0';
   ctx.save();
   ctx.translate(c.pos.x, c.pos.y);
   ctx.rotate(tumble);
   ctx.globalAlpha = alpha;
   ctx.lineWidth = 1.4;
-  ctx.strokeStyle = '#7fffb0';
-  ctx.shadowColor = '#7fffb0';
+  ctx.strokeStyle = dustColour;
+  ctx.shadowColor = dustColour;
   ctx.shadowBlur = 9;
   const r = c.radius * 0.95;
   // Diamond / rhombus outline

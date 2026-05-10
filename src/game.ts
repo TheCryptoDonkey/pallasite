@@ -929,12 +929,15 @@ const DUST_SCORE_BASE = 25;
 
 function spawnCoins(s: GameState, x: number, y: number, value: number, count: number, kind?: PickupKind, asteroidType?: AsteroidType): void {
   const resolvedKind = kind ?? rollPickupKind(s, asteroidType);
+  // Dust shards inherit the source asteroid's score multiplier so iron and
+  // pallasite drops feel meaningfully better than stony or chondrite — and
+  // the renderer tints them with the source's glow colour for at-a-glance
+  // recognition. Sat coins continue to split the cfg-scaled value.
+  const dustMul = asteroidType ? ASTEROID_TYPE_CONFIG[asteroidType].scoreMul : 1;
   for (let i = 0; i < count; i++) {
     const angle = Math.random() * Math.PI * 2;
     const speed = 30 + Math.random() * 40;
-    // Sat coins split the source `value` (sats) across N drops; dust shards
-    // each grant a fixed score bonus regardless of source size.
-    const perPickup = resolvedKind === 'sat' ? value / count : DUST_SCORE_BASE;
+    const perPickup = resolvedKind === 'sat' ? value / count : Math.round(DUST_SCORE_BASE * dustMul);
     s.coins.push({
       pos: { x, y },
       vel: { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed },
@@ -944,6 +947,7 @@ function spawnCoins(s: GameState, x: number, y: number, value: number, count: nu
       collected: false,
       kind: resolvedKind,
       value: perPickup,
+      sourceType: asteroidType,
     });
   }
 }
