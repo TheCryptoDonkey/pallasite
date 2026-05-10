@@ -260,7 +260,11 @@ function publishToRelay(url: string, event: NostrEvent, timeoutMs = 5000): Promi
 
 const FETCH_TIMEOUT_MS = 5000;
 const TOP_GHOST_CACHE_TTL_MS = 60_000;
-let topGhostCache: { at: number; key: string; ghost: GhostRun | null } | null = null;
+/** Cache keyed by seed (or '' for the seedless global top). Lets the title
+ *  screen prefetch both the daily ghost and the global ghost without one
+ *  overwriting the other; render.ts can then prefer the daily entry and
+ *  fall back to the global one for the attract loop. */
+const topGhostCache = new Map<string, { at: number; ghost: GhostRun | null }>();
 
 /** Pull the highest-score kind 30763 event for this game. Optionally filtered
  *  by daily seed (so daily mode races a same-seed ghost). Cached for 60s per
@@ -269,9 +273,9 @@ export async function fetchTopGhost(
   opts: { seed?: string | null; relays?: readonly string[]; force?: boolean } = {},
 ): Promise<GhostRun | null> {
   const cacheKey = opts.seed ?? '';
-  if (!opts.force && topGhostCache && topGhostCache.key === cacheKey
-      && Date.now() - topGhostCache.at < TOP_GHOST_CACHE_TTL_MS) {
-    return topGhostCache.ghost;
+  if (!opts.force) {
+    const hit = topGhostCache.get(cacheKey);
+    if (hit && Date.now() - hit.at < TOP_GHOST_CACHE_TTL_MS) return hit.ghost;
   }
   const relays = opts.relays ?? getActiveRelays();
   if (relays.length === 0) return null;
@@ -373,22 +377,25 @@ export async function fetchTopGhost(
     };
   }
 
-  topGhostCache = { at: Date.now(), key: cacheKey, ghost: best };
+  topGhostCache.set(cacheKey, { at: Date.now(), ghost: best });
   return best;
 }
 
 /** Synchronous read of the cached top ghost — no network. Used by render.ts
  *  to draw the leader chip without bouncing through async on every frame. */
 export function getCachedGhost(seed?: string | null): GhostRun | null {
-  if (!topGhostCache) return null;
   const wantKey = seed ?? '';
-  if (topGhostCache.key !== wantKey) return null;
-  return topGhostCache.ghost;
+  const hit = topGhostCache.get(wantKey);
+  return hit?.ghost ?? null;
 }
 
-/** Fire-and-forget prefetch for the title screen. Errors swallowed. */
+/** Fire-and-forget prefetch for the title screen. Errors swallowed. When a
+ *  seed is supplied, also kicks off a global-top fetch so the attract-loop
+ *  has a fallback to render even if no ghost has been published for today's
+ *  seed yet. */
 export function prefetchTopGhost(seed?: string | null): void {
   void fetchTopGhost({ seed }).catch(() => undefined);
+  if (seed) void fetchTopGhost({ seed: null }).catch(() => undefined);
 }
 
 function isGhostEvent(value: unknown): value is NostrEvent {

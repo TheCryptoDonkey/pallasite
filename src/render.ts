@@ -363,10 +363,42 @@ function drawGhostShip(ctx: CanvasRenderingContext2D, s: GameState): void {
   const pose = ghostPoseAt(ghost, t);
   if (!pose || !pose.alive) return;
 
+  drawGhostShipAt(ctx, pose.x, pose.y, pose.rot, pose.thrusting, 0.35);
+}
+
+/** Title-screen attract loop. Plays back the cached top ghost on a
+ *  continuous loop while the user reads the title menu. Higher alpha
+ *  than the in-game overlay because there's no live ship competing for
+ *  attention. Restart-keyed off `now` so the loop is purely time-driven —
+ *  no state mutation. */
+let attractStartedAt = 0;
+function drawGhostAttract(ctx: CanvasRenderingContext2D, s: GameState, now: number): void {
+  if (s.phase !== 'title') {
+    attractStartedAt = 0;
+    return;
+  }
+  const ghost = getCachedGhost(getActiveSeed()) ?? getCachedGhost(null);
+  if (!ghost || !ghost.poseSamples) return;
+  if (attractStartedAt === 0) attractStartedAt = now;
+  const loopMs = Math.max(2000, ghost.durationMs);
+  const t = (now - attractStartedAt) % loopMs;
+  const pose = ghostPoseAt(ghost, t);
+  if (!pose) return;
+  drawGhostShipAt(ctx, pose.x, pose.y, pose.rot, pose.thrusting, 0.55);
+}
+
+function drawGhostShipAt(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  rot: number,
+  thrusting: boolean,
+  alpha: number,
+): void {
   ctx.save();
-  ctx.globalAlpha = 0.35;
-  ctx.translate(pose.x, pose.y);
-  ctx.rotate(pose.rot);
+  ctx.globalAlpha = alpha;
+  ctx.translate(x, y);
+  ctx.rotate(rot);
   ctx.lineWidth = 1.6;
   ctx.strokeStyle = '#8ee0ff';
   ctx.shadowColor = '#8ee0ff';
@@ -378,7 +410,7 @@ function drawGhostShip(ctx: CanvasRenderingContext2D, s: GameState): void {
   ctx.lineTo(-10, -8);
   ctx.closePath();
   ctx.stroke();
-  if (pose.thrusting) {
+  if (thrusting) {
     ctx.strokeStyle = '#cfeefb';
     ctx.shadowColor = '#cfeefb';
     ctx.beginPath();
@@ -2104,6 +2136,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       drawParticles(ctx, state.particles);
       drawDebris(ctx, state.debris);
       drawGhostShip(ctx, state);
+      drawGhostAttract(ctx, state, now);
       drawShield(ctx, state.ship, now);
       drawShip(ctx, state.ship, now);
       if (isGhost) ctx.restore();

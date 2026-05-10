@@ -42,7 +42,7 @@ import type { PowerUp, PowerUpType } from './types.js';
 import * as audio from './audio.js';
 import { preloadBackground } from './render.js';
 import { currentMods, lockInDifficulty, getStoredDifficulty } from './difficulty.js';
-import { gameRng, getActiveSeed } from './seed.js';
+import { gameRng } from './seed.js';
 
 // ── Initial state ─────────────────────────────────────────────────────────────
 
@@ -1176,10 +1176,9 @@ function recordGhostSample(s: GameState): void {
     }
     lastGhostSampleRunMs = runMs;
   }
-  // Pose stream — daily mode only. We intentionally don't capture pose for
-  // free runs because the encoded payload is ~10x bigger than v1 and adds
-  // no value when the watching player won't see the same RNG.
-  if (getActiveSeed() === null) return;
+  // Pose stream is always captured. In daily mode it powers the in-game
+  // ship overlay; outside daily it powers the title-screen attract loop.
+  // 35 KB / 10-min run is small enough that we don't gate this on mode.
   if (lastGhostPoseRunMs < 0 || runMs - lastGhostPoseRunMs >= GHOST_POSE_SAMPLE_MS) {
     if (s.ghostPoseSamples.length < GHOST_POSE_SAMPLE_CAP) {
       const expectedT = s.ghostPoseSamples.length * GHOST_POSE_SAMPLE_MS;
