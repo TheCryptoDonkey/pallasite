@@ -119,6 +119,20 @@ body[data-display="modern"] #game {
   line-height: 1.05;
   text-align: center;
 }
+/* PALLASITE wordmark — gpt-image-2 generated, square 1024×1024 webp.
+   mix-blend-mode: screen drops the baked-in black starfield so only the
+   bright green/gold lettering floats over the cycling wave bgs. Sized to
+   sit roughly where the previous text H1 did. */
+.overlay .title-logo {
+  display: block;
+  margin: 0 auto;
+  width: clamp(220px, 42vw, 420px);
+  height: auto;
+  mix-blend-mode: screen;
+  filter: drop-shadow(0 0 18px rgba(88, 255, 88, 0.25));
+  -webkit-user-drag: none;
+  user-select: none;
+}
 /* Letter-spacing adds trailing space after the last glyph that text-align:
    center counts as content width, drifting the visible text right of true
    centre. Wrap the text in an inline-block whose negative margin-right
