@@ -24,7 +24,6 @@ declare global {
         relayUrl?: string;
         mode?: 'relay' | 'redirect';
         redirectCallback?: string;
-        preferredMethod?: 'nip07' | 'redirect' | 'bunker';
       }) => Promise<SignetSession | null>;
       restoreSession: () => Promise<SignetSession | null>;
       logout: (s?: SignetSession) => Promise<void>;
@@ -32,17 +31,6 @@ declare global {
     };
   }
 }
-
-/**
- * Pallasite-side picker tokens. Maps onto signet-login's options:
- *
- *   - 'signet' → `mode: 'redirect'` — same-tab nav to mysignet.app and back.
- *   - 'nip07'  → SDK modal goes straight to the browser-extension wait UI.
- *   - 'bunker' → SDK modal goes straight to the paste-bunker-URI UI.
- *
- * The SDK's own picker is bypassed so the player only ever sees one chooser.
- */
-export type SignInMethod = 'signet' | 'nip07' | 'bunker';
 
 export const APP_NAME = 'Pallasite';
 export const GAME_ID = 'pallasite';
@@ -70,32 +58,25 @@ function withTimeout<T>(p: Promise<T>, ms: number, onTimeout: () => Error): Prom
   });
 }
 
-export async function signIn(method: SignInMethod): Promise<SignetSession | null> {
+export async function signIn(): Promise<SignetSession | null> {
   if (!window.Signet) return null;
-  // Use the player's chosen relay (game has its own relay config) — the SDK's
-  // wss://relay.damus.io default doesn't match what publishing/scoring use, so
-  // a relay-mode handshake there would be cross-traffic the game never uses.
-  // Fall back to the SDK default only if the player has zero relays enabled.
+  // Use the player's chosen relay for the cross-device QR path — the SDK's
+  // wss://relay.damus.io default doesn't match what publishing/scoring use,
+  // so a relay-mode handshake there would be cross-traffic the game never
+  // sees. Fall back to the SDK default only if zero relays are enabled.
   const active = getActiveRelays();
   const relayUrl = active[0];
-
-  // Signet path uses same-tab redirect — avoids the relay-delivery handshake
-  // entirely on the auth path so a temporarily unreachable relay can't kill
-  // sign-in. The other two paths are in-page (NIP-07 talks to the extension,
-  // bunker talks to the player's NIP-46 URI) so they don't need redirect.
-  const opts: Parameters<NonNullable<typeof window.Signet>['login']>[0] = {
-    appName: APP_NAME,
-    theme: 'dark',
-    ...(relayUrl ? { relayUrl } : {}),
-  };
-  if (method === 'signet') {
-    opts.mode = 'redirect';
-  } else {
-    opts.preferredMethod = method;
-  }
-
+  // Open the SDK's own picker — four buttons: NIP-07, Sign in with Signet
+  // (same-tab redirect), Signet on another device (QR + relay), bunker URI.
+  // We don't pass `mode` or `preferredMethod`, so the user picks; the
+  // same-tab Signet button calls startRedirect inside the modal and
+  // navigates this tab away.
   return withTimeout(
-    window.Signet.login(opts),
+    window.Signet.login({
+      appName: APP_NAME,
+      theme: 'dark',
+      ...(relayUrl ? { relayUrl } : {}),
+    }),
     SIGN_IN_TIMEOUT_MS,
     () => new SignInTimeoutError(),
   );
