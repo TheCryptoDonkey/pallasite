@@ -117,10 +117,16 @@ function setupWaveLongPress(): void {
     // Hot zone is the top strip of the canvas (where the WAVE label is drawn,
     // anywhere across because cover-scale in portrait shifts the world right
     // off-centre). Long-press requirement guards against accidental taps.
+    //
+    // Use an absolute pixel band rather than a fraction of canvas height —
+    // landscape mobile has a short canvas (~375px on iPhone landscape), and
+    // 10% of that is only ~37px, which barely covers the WAVE label. A fixed
+    // 110px hot zone is the same physical size in any orientation and always
+    // covers the label + a tap-tolerance margin.
     const rect = canvas.getBoundingClientRect();
-    const yPct = (clientY - rect.top) / rect.height;
+    const yFromTop = clientY - rect.top;
     return clientX >= rect.left && clientX <= rect.right
-        && yPct >= 0 && yPct <= 0.10;
+        && yFromTop >= 0 && yFromTop <= 110;
   }
   function clear(): void {
     if (timer !== null) { clearTimeout(timer); timer = null; }
