@@ -227,12 +227,18 @@ export function listTracks(): readonly TrackInfo[] { return TRACK_INFO; }
 export function currentTrackId(): string | null { return currentId; }
 
 /** Crossfade to a track id without going through the state-driven memo
- *  path. Memoised state→track mapping is also invalidated so a later
- *  musicSetTrackForState call (e.g. on phase change) re-resolves cleanly.
- *  Used by the music-player easter egg. */
+ *  path. Used by the music-player easter egg.
+ *
+ *  Crucially, this does NOT invalidate lastAppliedKey. The game loop ticks
+ *  musicSetTrackForState every frame and the player is opened from the
+ *  title screen — if the memo were cleared, the next tick would resolve
+ *  'title|0' → 'pallasite-idle' and instantly crossfade back over our
+ *  chosen track. Leaving the memo at its title key means the loop returns
+ *  early and the previewed track plays uninterrupted. The player's BACK
+ *  button calls musicForceRefresh() on close so the loop re-resolves the
+ *  current phase track on the next tick. */
 export function musicPreviewPlay(id: string): void {
   crossfadeTo(id, 250);
-  lastAppliedKey = '';
 }
 
 export function musicStop(fadeMs = DEFAULT_FADE_MS): void {
