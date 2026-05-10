@@ -393,6 +393,11 @@ export const REPLAY_EXPLOSION_WALL_MS = Math.round(REPLAY_EXPLOSION_MS / REPLAY_
 export const WORLD_W = 960;
 export const WORLD_H = 720;
 
+/** Inter-wave warp transition duration. Drives the visual envelope in render
+ *  (drawWarp uses elapsed/WARP_MS) and the setTimeout in startWarp that calls
+ *  beginWave. Long enough for warp-transition.opus to actually be heard. */
+export const WARP_MS = 3000;
+
 export const SHIP_RADIUS = 12;
 export const SHIP_THRUST = 240;       // px/s²
 export const SHIP_DRAG = 0.4;         // multiplicative damping per second
