@@ -146,10 +146,21 @@ export async function handleAuthCallback(): Promise<SignetSession | null> {
  * Exported so main.ts can call it on bfcache restore: a player who hits
  * browser-back mid-redirect comes back to a frozen page that still has the
  * SDK dialog in the DOM, and the dialog captures every click underneath.
+ *
+ * The SDK uses native <dialog> elements with IDs (not classes); a dialog left
+ * open via showModal() sits in the top layer and is opaque to clicks even
+ * when not visually evident. Closing first is belt-and-braces for browsers
+ * that need explicit close before remove to release the top layer.
  */
 export function sweepSignetArtefacts(): void {
-  document.querySelectorAll('.signet-login-dialog').forEach(el => el.remove());
-  document.querySelectorAll('.signet-login-callback').forEach(el => el.remove());
+  for (const id of ['signet-login-dialog', 'signet-verify-dialog']) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (el instanceof HTMLDialogElement && el.open) {
+      try { el.close(); } catch { /* ignore */ }
+    }
+    el.remove();
+  }
   if (location.hash) {
     history.replaceState(null, '', location.pathname + location.search);
   }
