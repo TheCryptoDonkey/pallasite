@@ -1847,8 +1847,11 @@ export function renderGameOver(state: GameState): void {
   // entire screen on the arcade-initials entry first (no other buttons,
   // no recap rows competing for attention), then advance to the recap +
   // actions screen on commit. Non-high-score runs skip straight to recap.
+  // Also skip the name-entry stage if the player has already submitted
+  // initials for this run — REPLAY KILL flips phase back through 'gameover'
+  // when the replay completes, and we don't want to prompt again.
   const isNewHigh = isHighScore(state.score) && state.score > 0;
-  if (isNewHigh) renderGameOverNameEntry(state);
+  if (isNewHigh && !state.initialsEnteredThisRun) renderGameOverNameEntry(state);
   else renderGameOverRecap(state);
 }
 
@@ -1876,6 +1879,7 @@ function renderGameOverNameEntry(state: GameState): void {
         at: new Date().toISOString(),
         pubkey: state.session?.pubkey,
       });
+      state.initialsEnteredThisRun = true;
       renderRunCredits(state, { headerText: 'GAME OVER' });
     },
   });
@@ -2505,7 +2509,7 @@ export function renderCompletion(state: GameState): void {
   // wave-25 clears (rare but possible — local list already full of higher
   // scores) skip stage 1 and land on the celebration directly.
   const isNewHigh = isHighScore(state.score) && state.score > 0;
-  if (isNewHigh) renderCompletionNameEntry(state);
+  if (isNewHigh && !state.initialsEnteredThisRun) renderCompletionNameEntry(state);
   else renderCompletionRecap(state);
 }
 
@@ -2544,6 +2548,7 @@ function renderCompletionNameEntry(state: GameState): void {
         at: new Date().toISOString(),
         pubkey: state.session?.pubkey,
       });
+      state.initialsEnteredThisRun = true;
       renderRunCredits(state, {
         headerText: 'PALLASITE COMPLETE',
         subText: 'EVENT HORIZON · BREACHED',

@@ -376,6 +376,10 @@ export interface GameState {
   /** Set by killShip on the final death; cleared by startGame. Lives across
    *  the gameover screen so the REPLAY button can re-trigger playback. */
   deathReplay: DeathReplay | null;
+  /** True once the player has submitted initials for this run's high score
+   *  entry. Guards against re-prompting the initials widget after a REPLAY
+   *  KILL click flips phase back through 'gameover'. Cleared on startGame. */
+  initialsEnteredThisRun: boolean;
 
   /** Per-run breakdown for the gameover / completion stat grid. Reset in
    *  startGame, incremented at the relevant kill / pickup / fire sites in
