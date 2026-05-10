@@ -1110,7 +1110,64 @@ function shortRelay(url: string): string {
 
 // ── Game over screen ──────────────────────────────────────────────────────────
 
+/** Where would `score` rank in the local top-10? 1-indexed; ties resolve
+ *  toward the older entry (the new score sits below equal existing ones). */
+function predictedLocalRank(score: number): number {
+  const list = getLocalHighScores();
+  let higher = 0;
+  for (const e of list) if (e.score >= score) higher += 1;
+  return higher + 1;
+}
+
 export function renderGameOver(state: GameState): void {
+  // Two-stage gameover: when the run is a new local high score, focus the
+  // entire screen on the arcade-initials entry first (no other buttons,
+  // no recap rows competing for attention), then advance to the recap +
+  // actions screen on commit. Non-high-score runs skip straight to recap.
+  const isNewHigh = isHighScore(state.score) && state.score > 0;
+  if (isNewHigh) renderGameOverNameEntry(state);
+  else renderGameOverRecap(state);
+}
+
+function renderGameOverNameEntry(state: GameState): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  // Deliberately *no* setupOverlayArrowNav here — we want arrow keys to
+  // belong exclusively to the arcade widget so the player can't tab away
+  // and lose the entry surface.
+  el('h2', { parent: overlay, text: 'GAME OVER' });
+
+  const rank = predictedLocalRank(state.score);
+  const banner = el('p', { parent: overlay, text: `RANK ${String(rank).padStart(2, '0')} · NEW HIGH SCORE` });
+  banner.style.cssText = 'font-size:1.15rem;color:#ffd84a;letter-spacing:0.22em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:6px 0 -4px;';
+
+  const scoreLabel = el('p', { parent: overlay, text: 'SCORE' });
+  scoreLabel.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:8px 0 -8px;';
+  const scoreValue = el('div', { parent: overlay, text: String(state.score) });
+  scoreValue.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:3.6rem;color:#ffd84a;letter-spacing:0.06em;line-height:1;";
+
+  const inputRow = el('div', { className: 'menu-row', parent: overlay });
+  renderArcadeInitials(inputRow, {
+    onSubmit: (name) => {
+      addLocalHighScore({
+        name,
+        score: state.score,
+        sats: state.sats,
+        wave: state.wave,
+        at: new Date().toISOString(),
+        pubkey: state.session?.pubkey,
+      });
+      // Advance to the recap screen. The faucet/publish flow lives there;
+      // separating it from name entry avoids two competing focus targets.
+      renderGameOverRecap(state);
+    },
+  });
+
+  const help = el('p', { parent: overlay, text: 'ENTER YOUR INITIALS · ↑↓ CYCLE   ←→ MOVE   ENTER SAVE' });
+  help.style.cssText = 'font-size:0.72rem;color:rgba(180,140,255,0.5);letter-spacing:0.16em;margin:8px 0 0;text-align:center;';
+}
+
+function renderGameOverRecap(state: GameState): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
@@ -1126,47 +1183,16 @@ export function renderGameOver(state: GameState): void {
     el('div', { className: 'value', parent: board, text: String(v) });
   }
 
-  // High-score recap. Arcade initials show for everyone, signed-in or
-  // guest — the Nostr identity is still attached via `pubkey` on the
-  // local entry, but the displayed leaderboard name is whatever the
-  // player picks. Server-side publish (Nostr) still fires after commit
-  // so the global kind 30762 record is unaffected.
-  const isNewHigh = isHighScore(state.score);
-  if (isNewHigh && state.score > 0) {
-    el('p', { parent: overlay, text: 'NEW PERIHELION · HIGH SCORE LOGGED' }).style.color = '#ffd84a';
-    const inputRow = el('div', { className: 'menu-row', parent: overlay });
-    renderArcadeInitials(inputRow, {
-      onSubmit: (name) => {
-        addLocalHighScore({
-          name,
-          score: state.score,
-          sats: state.sats,
-          wave: state.wave,
-          at: new Date().toISOString(),
-          pubkey: state.session?.pubkey,
-        });
-        const lb = overlay.querySelector('.leaderboard-block');
-        if (lb) {
-          const fresh = getLocalHighScores();
-          const replacement = document.createElement('div');
-          overlay.replaceChild(replacement, lb);
-          renderLeaderboardBlock(replacement, fresh, '— LOCAL HIGH SCORES —');
-          const block = replacement.firstElementChild;
-          if (block) overlay.replaceChild(block, replacement);
-        }
-        if (state.session) maybePublishScore(state, overlay);
-      },
-    });
-  }
+  // Faucet/publish flow — only triggered for Nostr-mode runs. Guests see a
+  // sign-in CTA instead. The arcade-input commit (when relevant) already
+  // landed the local entry; this is the Nostr-side claim path.
+  if (state.session) maybePublishScore(state, overlay);
 
-  // Local high scores — renders BEFORE the user has had a chance to enter
-  // their initials, so the SAVE handler above re-renders this block in place.
   const list = getLocalHighScores();
   if (list.length > 0) {
     renderLeaderboardBlock(overlay, list, '— LOCAL HIGH SCORES —');
   }
 
-  // Zap the dev — only in Nostr mode. Guests get a quieter dev card on completion.
   if (state.session) renderZapButton(overlay, state);
 
   const row = el('div', { className: 'menu-row', parent: overlay });
