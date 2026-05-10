@@ -119,17 +119,15 @@ body[data-display="modern"] #game {
   line-height: 1.05;
   text-align: center;
 }
-/* PALLASITE wordmark — gpt-image-2 generated, square 1024×1024 webp.
-   mix-blend-mode: screen drops the baked-in black starfield so only the
-   bright green/gold lettering floats over the cycling wave bgs. Sized to
-   sit roughly where the previous text H1 did. */
+/* PALLASITE wordmark — gpt-image-1 generated with transparent background, so
+   it drops onto any wave bg cleanly without blend-mode tricks. Sized to sit
+   roughly where the previous text H1 did. */
 .overlay .title-logo {
   display: block;
   margin: 0 auto;
   width: clamp(220px, 42vw, 420px);
   height: auto;
-  mix-blend-mode: screen;
-  filter: drop-shadow(0 0 18px rgba(88, 255, 88, 0.25));
+  filter: drop-shadow(0 0 18px rgba(88, 255, 88, 0.35));
   -webkit-user-drag: none;
   user-select: none;
 }
@@ -591,17 +589,11 @@ body[data-display="modern"] #game {
 /* Portrait + landscape both supported — fit() in main.ts sizes the canvas
    to the largest 4:3 box that fits in either orientation. */
 
-/* On portrait phones the 4:3 canvas is letterboxed top + bottom equally, which
-   pushes the in-canvas HUD (SCORE / SATS / WAVE / LIVES) into the vertical
-   middle of the screen — visually buried. Anchor the canvas to the top of the
-   viewport in portrait so HUD sits at the top edge; the bottom letterbox is
-   where the touch controls already live, so it gets used naturally. */
-@media (orientation: portrait) {
-  #game {
-    top: 0;
-    transform: translateX(-50%);
-  }
-}
+/* In retro mode portrait, the 4:3 canvas centres in the viewport (default
+   positioning). Centring keeps the HUD clear of notches/status bars at the
+   top of the device, with body-bg gutters filling the space above and below.
+   Modern mode handles fill-the-screen separately via the body[data-display]
+   block above. */
 
 /* ── Touch controls ──────────────────────────────────────────────────────── */
 /* Hidden by default. main.ts adds .touch-active to body on first touch and
