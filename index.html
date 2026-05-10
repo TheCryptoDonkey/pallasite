@@ -20,7 +20,10 @@
   <canvas id="game" width="960" height="720" aria-label="Pallasite game"></canvas>
   <div id="ui-root"></div>
   <div id="touch-controls"></div>
-  <!-- signet-login SDK (IIFE bundle attaches login/restoreSession/logout to window.Signet) -->
+  <!-- Signet SDKs share window.Signet. signet-verify replaces window.Signet
+       on load; signet-login is additive (Object.assign) and merges its login
+       methods on top. So signet-verify MUST load first or login will be lost. -->
+  <script src="/signet-verify.iife.js"></script>
   <script src="/signet-login.iife.js"></script>
   <script type="module" src="/src/main.ts"></script>
   <!-- Service worker registration moved to main.ts so the update-detection

@@ -15,6 +15,30 @@
 import type { ConsumeCallbackResult, SignetSession } from 'signet-login';
 import { getActiveRelays } from './relays.js';
 
+/**
+ * Result shape from signet-verify's verifyAge() — vendored to keep the
+ * typecheck self-contained. Source of truth: `signet-verify/src/signet-verify.ts`
+ * (`SignetVerifyResult`). Drift is detectable: we only consume the fields
+ * below, so any rename will surface as a type error here.
+ */
+export interface SignetVerifyResult {
+  verified: boolean;
+  ageRange: string | null;
+  tier: number | null;
+  verifierPubkey: string | null;
+  verifierConfirmed: boolean | null;
+  expiresAt: number | null;
+  error?: string;
+}
+
+export interface SignetVerifyOptions {
+  relayUrl?: string;
+  theme?: 'light' | 'dark' | 'auto';
+  timeout?: number;
+  verifierCheckUrl?: string | null;
+  acceptUnconfirmed?: boolean;
+}
+
 declare global {
   interface Window {
     Signet?: {
@@ -28,6 +52,10 @@ declare global {
       restoreSession: () => Promise<SignetSession | null>;
       logout: (s?: SignetSession) => Promise<void>;
       handleRedirectCallback: () => Promise<ConsumeCallbackResult>;
+      verifyAge?: (
+        requiredAgeRange: string,
+        options?: SignetVerifyOptions,
+      ) => Promise<SignetVerifyResult>;
     };
   }
 }
