@@ -52,6 +52,125 @@ export function clearOverlay(): void {
   root.innerHTML = '';
 }
 
+// ── First-run onboarding ─────────────────────────────────────────────────────
+
+const ONBOARDING_KEY = 'pallasite:onboarded';
+
+function hasCompletedOnboarding(): boolean {
+  // Fail-safe to "true" -- if storage is blocked the player should not get
+  // stuck behind a tutorial on every IGNITE.
+  try { return localStorage.getItem(ONBOARDING_KEY) === '1'; } catch { return true; }
+}
+
+function markOnboardingComplete(): void {
+  try { localStorage.setItem(ONBOARDING_KEY, '1'); } catch { /* ignore */ }
+}
+
+interface OnboardingCard {
+  step: string;
+  title: string;
+  body: string;
+}
+
+const ONBOARDING_CARDS: readonly OnboardingCard[] = [
+  {
+    step: '1 / 3',
+    title: 'DRIFT',
+    body: 'Rotate ◀ ▶ to face. Thrust ▲ to drift. There is no friction here. Mass keeps moving until you point the other way.',
+  },
+  {
+    step: '2 / 3',
+    title: 'FIRE',
+    body: 'Space to fire. Quick consecutive kills chain a multiplier up to 5×. Pallasite rocks drop sats. Hunt the gold.',
+  },
+  {
+    step: '3 / 3',
+    title: 'BANK',
+    body: 'Survive each wave to bank what you earned. Twenty-five waves to the horizon. Sign in with Nostr to bank real sats and stake your name on the leaderboard.',
+  },
+];
+
+/**
+ * First-run cinematic. Three brand-voice cards then a BEGIN button that
+ * fires the actual game start. Skippable. Triggered once after the first
+ * IGNITE click; localStorage flag suppresses it on return.
+ *
+ * Marks `data-onboarding="open"` on the overlay so the global Enter-to-start
+ * handler in main.ts can refuse to fire while the cinematic is up. Without
+ * the gate, pressing Enter would bypass the cinematic and start the game on
+ * an un-watched intro -- defeats the whole point.
+ */
+function renderOnboarding(onBegin: () => void): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root, attrs: { 'data-onboarding': 'open' } });
+  setupOverlayArrowNav(overlay);
+
+  let idx = 0;
+
+  const stepEl = el('p', { parent: overlay });
+  stepEl.style.cssText = 'font-size:0.78rem;letter-spacing:0.32em;color:rgba(180,140,255,0.85);margin:0;';
+
+  const titleEl = el('h2', { parent: overlay });
+  titleEl.style.cssText = 'font-size:2.4rem;letter-spacing:0.18em;color:var(--hud-yellow);text-shadow:0 0 12px rgba(255,216,74,0.5);margin:8px 0 16px;';
+
+  const bodyEl = el('p', { parent: overlay });
+  bodyEl.style.cssText = 'max-width:540px;font-size:1rem;line-height:1.6;color:rgba(220,210,255,0.92);margin:0 0 8px;text-align:center;';
+
+  const row = el('div', { className: 'menu-row', parent: overlay });
+  const nextBtn = el('button', { className: 'menu-btn', parent: row, text: 'NEXT' });
+
+  const skipRow = el('div', { parent: overlay });
+  skipRow.style.cssText = 'margin-top:18px;';
+  const skipLink = el('button', { parent: skipRow, text: 'Skip intro' });
+  skipLink.style.cssText = 'background:transparent;border:none;color:rgba(180,140,255,0.65);text-decoration:underline;cursor:pointer;font-size:0.9rem;letter-spacing:0.06em;padding:4px 8px;';
+
+  const finish = (): void => {
+    markOnboardingComplete();
+    clearOverlay();
+    onBegin();
+  };
+
+  const renderCard = (): void => {
+    const card = ONBOARDING_CARDS[idx];
+    stepEl.textContent = `STEP ${card.step}`;
+    titleEl.textContent = card.title;
+    bodyEl.textContent = card.body;
+    const isLast = idx === ONBOARDING_CARDS.length - 1;
+    nextBtn.textContent = isLast ? 'BEGIN · IGNITE' : 'NEXT ▶';
+  };
+
+  nextBtn.addEventListener('click', () => {
+    if (idx === ONBOARDING_CARDS.length - 1) {
+      finish();
+    } else {
+      idx += 1;
+      renderCard();
+      nextBtn.focus();
+    }
+  });
+
+  skipLink.addEventListener('click', finish);
+
+  renderCard();
+}
+
+/**
+ * Gate any IGNITE-style entry path behind the first-run cinematic.
+ *
+ * If the player has already completed onboarding, calls `onReady` straight
+ * away. Otherwise shows the cinematic and calls `onReady` after they
+ * finish or skip. Keeps both the IGNITE-button path and the global
+ * Enter-to-start path consistent so first-timers can't skip the intro just
+ * by pressing Enter.
+ */
+export function gateBehindOnboarding(onReady: () => void): void {
+  if (hasCompletedOnboarding()) {
+    onReady();
+  } else {
+    renderOnboarding(onReady);
+  }
+}
+
 /**
  * Wire arrow-key navigation across the focusable buttons in an overlay.
  * ↑/← cycles to previous, ↓/→ to next, Enter/Space activates (browser default).
@@ -396,7 +515,7 @@ export function renderTitle(state: GameState): void {
   startBtn.addEventListener('click', () => {
     void audio.unlockAudio();
     lockInDifficulty(getStoredDifficulty());
-    onStartCb?.();
+    gateBehindOnboarding(() => onStartCb?.());
   });
   const howBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'HOW TO PLAY' });
   howBtn.addEventListener('click', () => renderHowToPlay(() => renderTitle(state)));

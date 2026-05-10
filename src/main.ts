@@ -9,7 +9,7 @@ import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHype
 import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadBackground, setRenderMode } from './render.js';
-import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner } from './ui.js';
+import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding } from './ui.js';
 import { handleAuthCallback, tryRestore } from './auth.js';
 import * as audio from './audio.js';
 import { musicSetTrackForState, preloadAllTracks } from './music.js';
@@ -309,14 +309,19 @@ window.addEventListener('keydown', e => {
     audio.setMuted(!audio.isMuted());
     if (audio.isMuted()) audio.thrustOff();
   }
-  // Enter to start from title
-  if (e.code === 'Enter' && state.phase === 'title') {
+  // Enter to start from title. Two gates: the data-onboarding marker stops
+  // Enter from advancing past the cinematic itself, and gateBehindOnboarding
+  // diverts first-time players into the cinematic instead of the game so they
+  // can't skip the intro by Entering before clicking IGNITE.
+  if (e.code === 'Enter' && state.phase === 'title' && !document.querySelector('[data-onboarding="open"]')) {
     void audio.unlockAudio();
     lockInDifficulty(getStoredDifficulty());
-    setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-    startGame(state);
-    state.phase = 'wavestart';
-    clearOverlay();
+    gateBehindOnboarding(() => {
+      setDailySeed(getStoredDailyPref() ? todayUTC() : null);
+      startGame(state);
+      state.phase = 'wavestart';
+      clearOverlay();
+    });
   }
   // Enter to play again from gameover. Gated on the arcade-initials widget
   // not being open — when the player is locking in initials, Enter is a
