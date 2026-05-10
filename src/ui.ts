@@ -166,6 +166,7 @@ function renderArcadeInitials(
     if (submitted) return;
     submitted = true;
     cleanup();
+    audio.initialCommit();
     const name = slots.map(i => CHARS[i]).join('').replace(/\s+$/, '') || 'YOU';
     opts.onSubmit(name);
   };
@@ -177,23 +178,27 @@ function renderArcadeInitials(
       case 'ArrowUp':
         slots[cursor] = (slots[cursor] + 1) % CHARS.length;
         renderSlots();
+        audio.initialCycle();
         break;
       case 'ArrowDown':
         slots[cursor] = (slots[cursor] - 1 + CHARS.length) % CHARS.length;
         renderSlots();
+        audio.initialCycle();
         break;
       case 'ArrowRight':
         if (cursor === 3) { commit(); return; }
         cursor += 1;
         renderSlots();
+        audio.initialMove();
         break;
       case 'ArrowLeft':
-        if (cursor > 0) { cursor -= 1; renderSlots(); }
+        if (cursor > 0) { cursor -= 1; renderSlots(); audio.initialMove(); }
         break;
       case 'Backspace':
         slots[cursor] = SPACE_IDX;
         if (cursor > 0) cursor -= 1;
         renderSlots();
+        audio.initialBackspace();
         break;
       case 'Enter':
         commit();
