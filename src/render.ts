@@ -18,6 +18,22 @@ import { getActiveSeed } from './seed.js';
 import { getAsteroidStyle, shouldReduceMotion } from './a11y.js';
 import { getActiveSkin } from './skins.js';
 
+// ── Performance helpers ─────────────────────────────────────────────────────
+
+/** Cached coarse-pointer flag. matchMedia('(pointer: coarse)') is fast but
+ *  not free; we read it once per frame at the top of render() (or anywhere
+ *  else) without re-querying the media list. Mobile = touchscreens, where
+ *  shadowBlur, ghost passes, and per-bullet allocations cost more than on
+ *  desktop. */
+let coarseCached: boolean | null = null;
+function isCoarsePointer(): boolean {
+  if (coarseCached !== null) return coarseCached;
+  coarseCached = typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(pointer: coarse)').matches;
+  return coarseCached;
+}
+
 // ── Stars ─────────────────────────────────────────────────────────────────────
 
 const STAR_COUNT = 110;
@@ -2234,14 +2250,14 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   }
 
   // Ghost-render offsets so wraps look seamless at visible-band edges.
-  // Only the axis that's actually cropped (vis < world) gets ghosts; the
-  // older "fill the empty band" passes that copied the world into oversized
-  // gutters were tripling the per-frame entity work for a cosmetic gain
-  // (gutters already pick up the wave-bg). On portrait mobile this drops
-  // the entity render cost from 9 passes (3×3) down to 3.
+  // On coarse pointer (touchscreens) we skip ghost passes entirely — even
+  // a single extra pass per frame can knock a phone below 60fps, which in
+  // turn starves Web Audio scheduling and makes the music stutter. The
+  // visual cost (asteroids appear to pop at the wrap edge instead of
+  // smooth-cycle through it) is acceptable for the framerate gain.
   const ghostXs: number[] = [0];
   const ghostYs: number[] = [0];
-  if (renderMode.kind === 'modern') {
+  if (renderMode.kind === 'modern' && !isCoarsePointer()) {
     const visW = renderMode.vw / renderMode.scale;
     const visH = renderMode.vh / renderMode.scale;
     const cropX = visW < WORLD_W - 1;
