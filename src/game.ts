@@ -980,10 +980,16 @@ function wrap(p: Vec2, margin = 0): void {
   // near-zero perpendicular velocity could sit off-screen forever, blocking
   // wave-clear. Inclusive `<=` / `>=` ensures any contact with the boundary
   // teleports.
-  if (p.x <= -margin) p.x += WORLD_W + margin * 2;
-  if (p.x >= WORLD_W + margin) p.x -= WORLD_W + margin * 2;
-  if (p.y <= -margin) p.y += WORLD_H + margin * 2;
-  if (p.y >= WORLD_H + margin) p.y -= WORLD_H + margin * 2;
+  // Use the same effective wrap dims that collisions use (= visible band in
+  // modern portrait crop, = WORLD_W/H elsewhere). Without this the ship
+  // would visibly skip across the screen on every WORLD_W traversal in
+  // zoomed-out portrait, because visW doesn't divide WORLD_W cleanly:
+  // physics wraps at 960 while the renderer ghosts at ±visW.
+  const ew = getCollisionWrap();
+  if (p.x <= -margin) p.x += ew.w + margin * 2;
+  if (p.x >= ew.w + margin) p.x -= ew.w + margin * 2;
+  if (p.y <= -margin) p.y += ew.h + margin * 2;
+  if (p.y >= ew.h + margin) p.y -= ew.h + margin * 2;
 }
 
 function circlesHit(a: { pos: Vec2; radius: number }, b: { pos: Vec2; radius: number }): boolean {
