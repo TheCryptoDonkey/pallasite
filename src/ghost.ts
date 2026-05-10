@@ -398,6 +398,119 @@ export function prefetchTopGhost(seed?: string | null): void {
   if (seed) void fetchTopGhost({ seed: null }).catch(() => undefined);
 }
 
+/**
+ * Fetch the ghost (kind 30763) that references a specific kind 30762 score
+ * event. Used by the replay theatre to play back a leaderboard entry: the
+ * leaderboard row knows its own score event id, and ghost events tag the
+ * score event via `e`, so the lookup is a direct relay query.
+ *
+ * Resolves null on relay timeout, decode failure, or absent ghost (not all
+ * scores have a published replay). Does not throw -- the leaderboard caller
+ * shows a "no replay available" state on null instead of erroring.
+ */
+export async function fetchGhostByScoreEventId(
+  scoreEventId: string,
+  opts: { relays?: readonly string[] } = {},
+): Promise<GhostRun | null> {
+  if (!/^[0-9a-f]{64}$/i.test(scoreEventId)) return null;
+  const relays = opts.relays ?? getActiveRelays();
+  if (relays.length === 0) return null;
+
+  const filter: Record<string, unknown> = {
+    kinds: [GHOST_KIND],
+    '#e': [scoreEventId],
+    '#t': ['pallasite'],
+    limit: 5,
+  };
+
+  const events = await new Promise<NostrEvent[]>(resolve => {
+    const collected: NostrEvent[] = [];
+    let done = 0;
+    const sockets: WebSocket[] = [];
+    let settled = false;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      sockets.forEach(s => { try { s.close(); } catch { /* ignore */ } });
+      resolve(collected);
+    };
+    const timer = setTimeout(settle, FETCH_TIMEOUT_MS);
+    const markDone = (): void => {
+      done += 1;
+      if (done >= relays.length) settle();
+    };
+    for (const url of relays) {
+      let ws: WebSocket;
+      try { ws = new WebSocket(url); } catch { markDone(); continue; }
+      sockets.push(ws);
+      const subId = 'gx' + Math.random().toString(36).slice(2, 10);
+      ws.onopen = () => ws.send(JSON.stringify(['REQ', subId, filter]));
+      ws.onmessage = ev => {
+        try {
+          const msg: unknown = JSON.parse(typeof ev.data === 'string' ? ev.data : '');
+          if (!Array.isArray(msg)) return;
+          if (msg[0] === 'EVENT' && msg[1] === subId) {
+            const e = msg[2];
+            if (isGhostEvent(e)) collected.push(e);
+          } else if (msg[0] === 'EOSE' && msg[1] === subId) {
+            markDone();
+          }
+        } catch { /* ignore */ }
+      };
+      ws.onerror = markDone;
+      ws.onclose = markDone;
+    }
+  });
+
+  for (const e of events) {
+    if (!hasTagValue(e.tags, 'game', GAME_ID)) continue;
+    const enc = tagValue(e.tags, 'enc');
+    if (enc !== 'ghost-v1' && enc !== 'ghost-v2') continue;
+    const score = parseInt(tagValue(e.tags, 'score') ?? '0', 10) || 0;
+    if (score <= 0) continue;
+
+    let samples: GhostSample[];
+    let poseSamples: GhostPoseSample[] | undefined;
+    let fps: number;
+    if (enc === 'ghost-v2') {
+      const pose = decodeGhostV2(e.content);
+      if (!pose || pose.length < 2) continue;
+      poseSamples = pose;
+      fps = GHOST_FPS_V2;
+      const stride = Math.max(1, Math.floor(fps / GHOST_FPS_V1));
+      samples = [];
+      for (let i = 0; i < pose.length; i += stride) {
+        samples.push({ t: pose[i].t, score: pose[i].score });
+      }
+    } else {
+      const v1 = decodeGhostV1(e.content);
+      if (!v1 || v1.length < 2) continue;
+      samples = v1;
+      fps = GHOST_FPS_V1;
+    }
+
+    const declaredDuration = parseInt(tagValue(e.tags, 'duration') ?? '0', 10);
+    const durationMs = declaredDuration > 0
+      ? declaredDuration
+      : (poseSamples ?? samples)[(poseSamples ?? samples).length - 1].t;
+
+    return {
+      pubkey: e.pubkey,
+      score,
+      wave: parseInt(tagValue(e.tags, 'wave') ?? '0', 10) || 0,
+      seed: tagValue(e.tags, 'seed'),
+      encoding: enc,
+      fps,
+      samples,
+      poseSamples,
+      durationMs,
+      eventId: e.id,
+    };
+  }
+  return null;
+}
+
 function isGhostEvent(value: unknown): value is NostrEvent {
   if (typeof value !== 'object' || value === null) return false;
   const e = value as Record<string, unknown>;

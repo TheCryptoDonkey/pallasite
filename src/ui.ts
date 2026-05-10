@@ -28,7 +28,8 @@ import { DEV } from './credits.js';
 import { followUser, shareCompletion, endorseSubject, rankFromWave } from './social.js';
 import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, hasWebLN, payViaWebLN } from './zap.js';
-import { publishGhost, prefetchTopGhost, getCachedGhost } from './ghost.js';
+import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, ghostPoseAt, ghostScoreAt, type GhostRun } from './ghost.js';
+import { WORLD_W as PALL_WORLD_W, WORLD_H as PALL_WORLD_H } from './types.js';
 import {
   asteroidPreview, minePreview, sniperPreview, powerupPreview,
   dustPreview, satCoinPreview,
@@ -525,16 +526,18 @@ export function renderTitle(state: GameState): void {
     renderSettings(() => renderTitle(state));
   });
 
-  // Show local high scores under the start button if any exist
+  // Show local high scores under the start button if any exist. Local entries
+  // sometimes carry an eventId (set when the player published this run via the
+  // faucet); when they do, the row is clickable and replays in the theatre.
   const list = getLocalHighScores();
   if (list.length > 0) {
-    renderLeaderboardBlock(overlay, list, '— LOCAL HIGH SCORES —');
+    renderLeaderboardBlock(overlay, list, '— LOCAL HIGH SCORES —', 5, () => renderTitle(state));
   }
 
   // Global leaderboard from kind 30762 events on relays. Rendered async so
   // the title screen never blocks on a network round-trip — show a placeholder
   // while it loads, swap in the real list when the relays answer.
-  renderGlobalLeaderboard(overlay);
+  renderGlobalLeaderboard(overlay, state);
 
   renderLegalFooter(overlay);
 
@@ -627,7 +630,7 @@ function renderPoolChip(parent: HTMLElement): void {
   }, 60_000);
 }
 
-function renderGlobalLeaderboard(parent: HTMLElement): void {
+function renderGlobalLeaderboard(parent: HTMLElement, state: GameState): void {
   const container = el('div', { parent });
   const block = el('div', { className: 'leaderboard-block', parent: container });
   el('p', { className: 'leaderboard-title', parent: block, text: '— GLOBAL HIGH SCORES —' });
@@ -659,7 +662,7 @@ function renderGlobalLeaderboard(parent: HTMLElement): void {
     const entries = await Promise.all(top.map(resolveDisplayName));
     if (!container.isConnected || myToken !== renderToken) return;
     container.innerHTML = '';
-    renderLeaderboardBlock(container, entries.map(globalToLocal), '— GLOBAL HIGH SCORES —');
+    renderLeaderboardBlock(container, entries.map(globalToLocal), '— GLOBAL HIGH SCORES —', 5, () => renderTitle(state));
   });
 
   // Backstop probe: if the title screen unmounts during a long quiet period
@@ -854,15 +857,258 @@ function renderDailyLeaderChip(parent: HTMLElement): void {
   }, 400);
 }
 
-function renderLeaderboardBlock(parent: HTMLElement, list: ReturnType<typeof getLocalHighScores>, title: string, max = 5): void {
+// ── Replay theatre ────────────────────────────────────────────────────────────
+
+interface ReplayTheatreInput {
+  scoreEventId: string;
+  displayName: string;
+  score: number;
+  wave: number;
+  sats: number;
+  onClose: () => void;
+}
+
+/**
+ * Watch a leaderboard run.
+ *
+ * Fetches the kind 30763 ghost referencing the supplied kind 30762 score
+ * event, then plays it back in a small canvas with score + progress chip.
+ * Ghost data carries ship pose (v2) or score-only (v1) -- the playback shows
+ * how the player navigated and how their score climbed, not the asteroid
+ * field they fought (the ghost stream doesn't carry that).
+ *
+ * Speed cycles 1x / 2x / 4x. Defaults to 2x. Space toggles looping at the
+ * end of a run; Escape and the CLOSE button exit and call `onClose`.
+ */
+function renderReplayTheatre(input: ReplayTheatreInput): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+
+  el('h2', { parent: overlay, text: 'WATCHING' });
+
+  const nameEl = el('p', { parent: overlay, text: input.displayName.toUpperCase() });
+  nameEl.style.cssText = 'margin:6px 0 4px;font-size:1.2rem;letter-spacing:0.18em;color:var(--hud-green);text-shadow:0 0 10px rgba(91,255,140,0.4);';
+
+  const stat = el('p', { parent: overlay });
+  stat.style.cssText = 'margin:0 0 14px;font-size:0.92rem;color:rgba(220,210,255,0.8);letter-spacing:0.1em;';
+  stat.textContent = `WAVE ${input.wave} · ${input.score.toLocaleString()} SCORE${input.sats > 0 ? ` · ₿ ${input.sats}` : ''}`;
+
+  const CANVAS_W = 600;
+  const CANVAS_H = Math.round(CANVAS_W * PALL_WORLD_H / PALL_WORLD_W);
+  const canvas = el('canvas', { parent: overlay, attrs: { width: String(CANVAS_W), height: String(CANVAS_H) } });
+  canvas.style.cssText = 'border:1px solid rgba(91,157,255,0.4);border-radius:8px;background:#02050d;display:block;margin:0 auto;max-width:100%;';
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    el('p', { parent: overlay, text: 'Canvas unsupported in this browser.' });
+    return;
+  }
+
+  const status = el('p', { parent: overlay, text: 'Fetching replay…' });
+  status.style.cssText = 'margin:10px 0 4px;font-size:0.9rem;color:rgba(180,140,255,0.75);letter-spacing:0.08em;min-height:1.2em;';
+
+  const liveScore = el('p', { parent: overlay });
+  liveScore.style.cssText = 'margin:6px 0 0;font-size:1.4rem;letter-spacing:0.18em;color:var(--hud-yellow);text-shadow:0 0 12px rgba(255,216,74,0.5);min-height:1.4em;';
+
+  const progressTrack = el('div', { parent: overlay });
+  progressTrack.style.cssText = 'width:600px;max-width:90vw;height:4px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden;margin:10px auto 6px;';
+  const progressFill = el('div', { parent: progressTrack });
+  progressFill.style.cssText = 'height:100%;width:0%;background:#5b9dff;transition:width 80ms linear;';
+
+  const timeLabel = el('p', { parent: overlay });
+  timeLabel.style.cssText = 'margin:0 0 14px;font-size:0.78rem;color:rgba(180,140,255,0.7);letter-spacing:0.08em;min-height:1em;';
+
+  const buttonRow = el('div', { className: 'menu-row', parent: overlay });
+  let speed = 2;
+  const speedBtn = el('button', { className: 'menu-btn secondary', parent: buttonRow, text: `SPEED ${speed}×` });
+  const closeBtn = el('button', { className: 'menu-btn', parent: buttonRow, text: 'CLOSE · ESC' });
+
+  // Stable starfield -- generated once so the background isn't re-randomised
+  // every frame.
+  const stars: { x: number; y: number; r: number }[] = [];
+  for (let i = 0; i < 80; i++) {
+    stars.push({ x: Math.random() * CANVAS_W, y: Math.random() * CANVAS_H, r: 0.4 + Math.random() * 1.0 });
+  }
+
+  let ghost: GhostRun | null = null;
+  let playheadMs = 0;
+  let lastFrame = 0;
+  let rafId: number | null = null;
+  let cancelled = false;
+  let looped = false;
+
+  const cleanup = (): void => {
+    cancelled = true;
+    if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
+    window.removeEventListener('keydown', onKey);
+  };
+
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.code === 'Escape') {
+      cleanup();
+      input.onClose();
+      return;
+    }
+    if (e.code === 'Space' && ghost) {
+      e.preventDefault();
+      looped = !looped;
+      if (rafId === null) {
+        playheadMs = 0;
+        lastFrame = 0;
+        status.textContent = looped ? 'Looping replay.' : '';
+        rafId = requestAnimationFrame(tick);
+      } else {
+        status.textContent = looped ? 'Looping replay.' : 'Will stop at end.';
+      }
+    }
+  };
+  window.addEventListener('keydown', onKey);
+
+  closeBtn.addEventListener('click', () => { cleanup(); input.onClose(); });
+
+  speedBtn.addEventListener('click', () => {
+    speed = speed === 1 ? 2 : speed === 2 ? 4 : 1;
+    speedBtn.textContent = `SPEED ${speed}×`;
+  });
+
+  const formatTime = (ms: number): string => {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    return `${Math.floor(total / 60)}:${(total % 60).toString().padStart(2, '0')}`;
+  };
+
+  const drawFrame = (): void => {
+    if (cancelled || !ghost) return;
+
+    ctx.fillStyle = '#02050d';
+    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    ctx.fillStyle = 'rgba(180,140,255,0.55)';
+    for (const star of stars) {
+      ctx.beginPath();
+      ctx.arc(star.x, star.y, star.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    const sx = CANVAS_W / PALL_WORLD_W;
+    const sy = CANVAS_H / PALL_WORLD_H;
+    const pose = ghostPoseAt(ghost, playheadMs);
+    if (pose && pose.alive) {
+      ctx.save();
+      ctx.translate(pose.x * sx, pose.y * sy);
+      ctx.rotate(pose.rot);
+      ctx.scale(0.85, 0.85);
+      ctx.lineWidth = 1.6;
+      ctx.strokeStyle = '#8ee0ff';
+      ctx.shadowColor = '#8ee0ff';
+      ctx.shadowBlur = 10;
+      ctx.beginPath();
+      ctx.moveTo(14, 0);
+      ctx.lineTo(-10, 8);
+      ctx.lineTo(-6, 0);
+      ctx.lineTo(-10, -8);
+      ctx.closePath();
+      ctx.stroke();
+      if (pose.thrusting) {
+        ctx.strokeStyle = '#cfeefb';
+        ctx.shadowColor = '#cfeefb';
+        ctx.beginPath();
+        ctx.moveTo(-6, 4);
+        ctx.lineTo(-14, 0);
+        ctx.lineTo(-6, -4);
+        ctx.stroke();
+      }
+      ctx.restore();
+    } else if (pose && !pose.alive) {
+      ctx.save();
+      ctx.translate(pose.x * sx, pose.y * sy);
+      ctx.strokeStyle = '#ff5050';
+      ctx.shadowColor = '#ff5050';
+      ctx.shadowBlur = 12;
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(-8, -8); ctx.lineTo(8, 8);
+      ctx.moveTo(8, -8); ctx.lineTo(-8, 8);
+      ctx.stroke();
+      ctx.restore();
+    }
+    // pose === null on v1 (score-only) -- canvas stays starfield.
+
+    liveScore.textContent = ghostScoreAt(ghost, playheadMs).toLocaleString();
+    const pct = Math.min(100, Math.max(0, (playheadMs / Math.max(1, ghost.durationMs)) * 100));
+    progressFill.style.width = `${pct}%`;
+    timeLabel.textContent = `${formatTime(playheadMs)} / ${formatTime(ghost.durationMs)}`;
+  };
+
+  const tick = (now: number): void => {
+    if (cancelled || !ghost) return;
+    if (lastFrame === 0) lastFrame = now;
+    const dt = now - lastFrame;
+    lastFrame = now;
+    playheadMs += dt * speed;
+    if (playheadMs >= ghost.durationMs) {
+      if (looped) {
+        playheadMs = 0;
+      } else {
+        playheadMs = ghost.durationMs;
+        drawFrame();
+        status.textContent = 'End of replay. SPACE to loop, CLOSE to exit.';
+        rafId = null;
+        return;
+      }
+    }
+    drawFrame();
+    rafId = requestAnimationFrame(tick);
+  };
+
+  void (async () => {
+    const result = await fetchGhostByScoreEventId(input.scoreEventId).catch(() => null);
+    if (cancelled) return;
+    if (!result) {
+      status.textContent = 'No replay event found for this run.';
+      return;
+    }
+    ghost = result;
+    if (!ghost.poseSamples || ghost.poseSamples.length === 0) {
+      status.textContent = 'Score-only replay (v1 ghost · no ship pose).';
+    } else {
+      const lengthSec = (ghost.durationMs / 1000).toFixed(0);
+      status.textContent = `Live · ${lengthSec}s @ ${ghost.fps}Hz pose · SPACE loops, ${speed}× default`;
+    }
+    rafId = requestAnimationFrame(tick);
+  })();
+}
+
+function renderLeaderboardBlock(parent: HTMLElement, list: ReturnType<typeof getLocalHighScores>, title: string, max = 5, onReplayClose?: () => void): void {
   const block = el('div', { className: 'leaderboard-block', parent });
   el('p', { className: 'leaderboard-title', parent: block, text: title });
   const table = el('div', { className: 'leaderboard-table', parent: block });
   list.slice(0, max).forEach((entry, i) => {
-    el('div', { className: 'rank', parent: table, text: String(i + 1).padStart(2, '0') });
-    el('div', { className: 'name', parent: table, text: entry.name });
-    el('div', { className: 'score', parent: table, text: String(entry.score).padStart(6, '0') });
-    el('div', { className: 'sats', parent: table, text: entry.sats > 0 ? `₿ ${entry.sats}` : '' });
+    // When the entry has a published kind 30762 score event id, the row is
+    // clickable -- click anywhere on it to fetch the matching ghost (kind
+    // 30763) and play it back in the replay theatre. Local-only entries
+    // (no eventId) stay non-interactive.
+    const replayable = !!entry.eventId;
+    const cls = (base: string): string => replayable ? `${base} replay-row` : base;
+    const rank = el('div', { className: cls('rank'), parent: table, text: String(i + 1).padStart(2, '0') });
+    const name = el('div', { className: cls('name'), parent: table, text: entry.name });
+    const score = el('div', { className: cls('score'), parent: table, text: String(entry.score).padStart(6, '0') });
+    const sats = el('div', { className: cls('sats'), parent: table, text: entry.sats > 0 ? `₿ ${entry.sats}` : '' });
+    if (replayable && entry.eventId && onReplayClose) {
+      const eventId = entry.eventId;
+      const onClick = (): void => {
+        renderReplayTheatre({
+          scoreEventId: eventId,
+          displayName: entry.name,
+          score: entry.score,
+          wave: entry.wave,
+          sats: entry.sats,
+          onClose: onReplayClose,
+        });
+      };
+      for (const cell of [rank, name, score, sats]) {
+        cell.setAttribute('data-event-id', eventId);
+        cell.addEventListener('click', onClick);
+      }
+    }
   });
 }
 

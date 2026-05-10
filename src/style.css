@@ -210,6 +210,21 @@ body[data-display="modern"] #game {
 .overlay .leaderboard-table .score { color: var(--hud-yellow); text-align: right; }
 .overlay .leaderboard-table .sats { color: var(--hud-yellow); text-align: right; opacity: 0.75; font-size: 0.85rem; }
 
+/* Clickable row affordance -- applied to each cell when the entry has a
+   replay event id. Hover lifts the row, confirms it as actionable. */
+.overlay .leaderboard-table .replay-row {
+  cursor: pointer;
+  transition: color 120ms ease, text-shadow 120ms ease;
+}
+.overlay .leaderboard-table .replay-row:hover { color: #fff5d8; text-shadow: 0 0 8px rgba(255,216,74,0.55); }
+.overlay .leaderboard-table .replay-row.name:hover::after {
+  content: ' \25B6';
+  font-size: 0.7em;
+  color: var(--hud-yellow);
+  margin-left: 6px;
+  letter-spacing: 0;
+}
+
 .overlay .menu-btn {
   background: transparent;
   border: 2px solid var(--hud-green);
