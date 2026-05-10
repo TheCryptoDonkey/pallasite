@@ -1270,11 +1270,21 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
     renderTierBadge(parent, pubkey);
     const row = el('div', { className: 'menu-row', parent });
     const out = el('button', { className: 'menu-btn secondary', parent: row, text: 'EJECT' });
-    out.addEventListener('click', async () => {
-      await auth.signOut(state.session);
+    let ejecting = false;
+    const doEject = async (): Promise<void> => {
+      if (ejecting) return;
+      ejecting = true;
+      try {
+        await auth.signOut(state.session);
+      } catch { /* ignore */ }
       state.session = null;
       state.profile = null;
+      ejecting = false;
       renderSessionPanel(parent, state);
+    };
+    out.addEventListener('click', () => { void doEject(); });
+    out.addEventListener('pointerup', e => {
+      if (e.pointerType !== 'mouse') void doEject();
     });
   } else {
     el('p', { parent, text: 'Sign in with Nostr. Stake your name.' });
@@ -1282,20 +1292,24 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
     const inBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'SIGN IN WITH NOSTR' });
     const status = el('p', { parent });
     status.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.85);min-height:1em;margin:0;letter-spacing:0.04em;';
-    inBtn.addEventListener('click', async () => {
-      void audio.unlockAudio();
-      // Live status — slow signers can take 5-15s on a cold start. Updating
-      // this every second tells the user it's not frozen.
-      let elapsed = 0;
+    let signing = false;
+    const doSignIn = async (): Promise<void> => {
+      if (signing) return;
+      signing = true;
+      // Set visible feedback FIRST so the player sees their tap registered
+      // even if audio unlock or the signer call hangs or throws downstream.
       status.textContent = 'Connecting…';
       status.style.color = 'rgba(180,140,255,0.85)';
+      // Audio unlock is fire-and-forget — a thrown error from a half-blocked
+      // AudioContext on iOS PWA mode must not kill the sign-in path.
+      try { void audio.unlockAudio(); } catch { /* ignore */ }
+      let elapsed = 0;
       const ticker = window.setInterval(() => {
         elapsed += 1;
         status.textContent = `Connecting to your signer (${elapsed}s)…`;
       }, 1000);
       try {
         const session = await auth.signIn();
-        window.clearInterval(ticker);
         if (session) {
           status.textContent = '';
           state.session = session;
@@ -1305,12 +1319,23 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
           status.style.color = '#ff8a3a';
         }
       } catch (err) {
-        window.clearInterval(ticker);
         status.textContent = err instanceof auth.SignInTimeoutError
           ? `Timeout — ${err.message}`
           : `Sign-in failed: ${err instanceof Error ? err.message : String(err)}`;
         status.style.color = '#ff5050';
+      } finally {
+        window.clearInterval(ticker);
+        signing = false;
       }
+    };
+    inBtn.addEventListener('click', () => { void doSignIn(); });
+    // Touch fallback. body's `touch-action: none` cascade plus the overlay's
+    // `pan-y` can occasionally swallow click events on iOS/Android when a
+    // gesture starts as a tap and the browser reclassifies it mid-flight.
+    // pointerup fires from the same gesture and is more reliable. The
+    // `signing` flag dedupes the (rare) case where both events land.
+    inBtn.addEventListener('pointerup', e => {
+      if (e.pointerType !== 'mouse') void doSignIn();
     });
     // Pressing IGNITE without signing in IS the guest path — no separate
     // GUEST DRIFT button needed. The session-status hint covers it.
