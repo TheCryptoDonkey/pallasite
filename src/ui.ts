@@ -1444,7 +1444,7 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
   const canvas = el('canvas', { parent: vizSticky, attrs: { width: '960', height: '360' } }) as HTMLCanvasElement;
   canvas.style.cssText = 'width:100%;max-width:460px;height:172px;border-radius:6px;background:radial-gradient(ellipse at 50% 100%, rgba(180,140,255,0.18), rgba(0,0,0,0.7));';
 
-  const BAR_COUNT = 64;
+  const BAR_COUNT = 96;
   const peaks = new Float32Array(BAR_COUNT);
   const smoothed = new Float32Array(BAR_COUNT);  // smoothed bar values, fluid rise/fall
   const PEAK_DECAY = 0.014;
@@ -1501,7 +1501,7 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
     barGrad.addColorStop(0.78, '#ff8a3a');
     barGrad.addColorStop(1.00, '#ff4858');
 
-    const gap = 3;
+    const gap = 2;
     const barW = (w - gap * (BAR_COUNT + 1)) / BAR_COUNT;
     const usableBins = Math.floor(bins * 0.82);
 
