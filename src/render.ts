@@ -16,6 +16,7 @@ import {
 import { getCachedGhost, ghostScoreAt, ghostPoseAt } from './ghost.js';
 import { getActiveSeed } from './seed.js';
 import { getAsteroidStyle, shouldReduceMotion } from './a11y.js';
+import { getActiveSkin } from './skins.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
 
@@ -344,12 +345,14 @@ function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number): void 
   const flickerOff = ship.invulnerableUntil > now && Math.floor(now / 80) % 2 === 0;
   if (flickerOff) return;
 
+  const skin = getActiveSkin().palette;
+
   ctx.save();
   ctx.translate(ship.pos.x, ship.pos.y);
   ctx.rotate(ship.rot);
   ctx.lineWidth = 1.6;
-  ctx.strokeStyle = '#58ff58';
-  ctx.shadowColor = '#58ff58';
+  ctx.strokeStyle = skin.ship;
+  ctx.shadowColor = skin.shipShadow;
   ctx.shadowBlur = 12;
   ctx.beginPath();
   ctx.moveTo(14, 0);
@@ -366,17 +369,17 @@ function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number): void 
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     const bloom = ctx.createRadialGradient(-10, 0, 0, -10, 0, 24);
-    bloom.addColorStop(0, 'rgba(255,216,74,0.55)');
-    bloom.addColorStop(0.5, 'rgba(255,140,30,0.22)');
-    bloom.addColorStop(1, 'rgba(255,140,30,0)');
+    bloom.addColorStop(0, skin.bloomCore);
+    bloom.addColorStop(0.5, skin.bloomMid);
+    bloom.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = bloom;
     ctx.beginPath();
     ctx.arc(-10, 0, 24, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
 
-    ctx.strokeStyle = '#ffd84a';
-    ctx.shadowColor = '#ffd84a';
+    ctx.strokeStyle = skin.thrust;
+    ctx.shadowColor = skin.thrustShadow;
     ctx.shadowBlur = 10;
     ctx.beginPath();
     ctx.moveTo(-6, 4);
