@@ -991,13 +991,13 @@ function circlesHit(a: { pos: Vec2; radius: number }, b: { pos: Vec2; radius: nu
   // cropped with ghosts at ±visW; collisions must use the same shorter wrap
   // distance or the player aims at a visible ghost and the bullet passes
   // through it (the real entity sits one full visW away in world coords).
+  // Use proper modulo so positions further than one wrap apart still fold
+  // back correctly — visW need not divide WORLD_W cleanly.
   const wrap = getCollisionWrap();
-  let dx = a.pos.x - b.pos.x;
-  let dy = a.pos.y - b.pos.y;
+  let dx = (((a.pos.x - b.pos.x) % wrap.w) + wrap.w) % wrap.w;
   if (dx > wrap.w / 2) dx -= wrap.w;
-  else if (dx < -wrap.w / 2) dx += wrap.w;
+  let dy = (((a.pos.y - b.pos.y) % wrap.h) + wrap.h) % wrap.h;
   if (dy > wrap.h / 2) dy -= wrap.h;
-  else if (dy < -wrap.h / 2) dy += wrap.h;
   const r = a.radius + b.radius;
   return dx * dx + dy * dy <= r * r;
 }
@@ -1629,12 +1629,10 @@ export function updateGame(s: GameState, dt: number, now: number): void {
         // Use wrap-aware delta so reflections at the edges push the asteroid
         // along the actual contact normal, not a normal flipped by the wrap.
         const wrap = getCollisionWrap();
-        let dx = a.pos.x - s.ship.pos.x;
-        let dy = a.pos.y - s.ship.pos.y;
+        let dx = (((a.pos.x - s.ship.pos.x) % wrap.w) + wrap.w) % wrap.w;
         if (dx > wrap.w / 2) dx -= wrap.w;
-        else if (dx < -wrap.w / 2) dx += wrap.w;
+        let dy = (((a.pos.y - s.ship.pos.y) % wrap.h) + wrap.h) % wrap.h;
         if (dy > wrap.h / 2) dy -= wrap.h;
-        else if (dy < -wrap.h / 2) dy += wrap.h;
         const distSq = dx * dx + dy * dy;
         const dist = Math.sqrt(distSq) || 1;
         const nx = dx / dist;
