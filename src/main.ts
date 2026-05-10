@@ -15,7 +15,6 @@ import * as audio from './audio.js';
 import { musicSetTrackForState, preloadAllTracks } from './music.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, setDisplayMode } from './display.js';
-import { checkForUpdate } from './version.js';
 import type { GameState } from './types.js';
 import { DOWN_DOUBLE_TAP_WINDOW_MS } from './types.js';
 
@@ -516,10 +515,6 @@ async function boot(): Promise<void> {
 
   setupServiceWorker();
 
-  // Independent of the service-worker path so non-SW browsers still get an
-  // authoritative version chip on the title screen.
-  void checkForUpdate();
-
   requestAnimationFrame(loop);
 }
 
@@ -626,20 +621,7 @@ function setupServiceWorker(): void {
 
     // Long-lived sessions get a periodic update check so a deploy from
     // yesterday isn't silently sat on for hours.
-    setInterval(() => {
-      reg.update().catch(() => { /* ignore */ });
-      void checkForUpdate();
-    }, 60 * 1000);
-
-    // Re-check the moment the PWA returns from background. iOS can suspend
-    // the page for hours; the 60s interval doesn't fire while suspended,
-    // so a foreground transition is the right moment to ask "is there a
-    // newer build?". Covers the "I opened the app Tuesday morning" case.
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState !== 'visible') return;
-      reg.update().catch(() => { /* ignore */ });
-      void checkForUpdate();
-    });
+    setInterval(() => { reg.update().catch(() => { /* ignore */ }); }, 60 * 1000);
   }).catch(() => { /* registration failures are non-fatal */ });
 }
 
