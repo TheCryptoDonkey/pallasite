@@ -1108,11 +1108,24 @@ function wrap(p: Vec2, margin = 0): void {
   // would visibly skip across the screen on every WORLD_W traversal in
   // zoomed-out portrait, because visW doesn't divide WORLD_W cleanly:
   // physics wraps at 960 while the renderer ghosts at ±visW.
+  //
+  // Per-axis margin gating: on a cropped axis (ew.w !== WORLD_W or
+  // ew.h !== WORLD_H) the wrap cycle IS the visible band and the ghost
+  // renderer offsets at ±ew. A non-zero margin makes the physics wrap cycle
+  // ew + 2·margin while the ghost cycle stays ew, so a wrapping asteroid
+  // appears to jump backwards by exactly 2·margin world units — visible as
+  // an asteroid that "travels, jumps back, then travels the same path
+  // again" on iPhone modern portrait. Force margin to 0 on each cropped
+  // axis individually so the wrap cycle matches the ghost cycle. Uncropped
+  // axes (e.g. Y in iPhone portrait, both axes in retro) keep the courtesy
+  // margin so an asteroid flies its radius off-screen before reappearing.
   const ew = getCollisionWrap();
-  if (p.x <= -margin) p.x += ew.w + margin * 2;
-  if (p.x >= ew.w + margin) p.x -= ew.w + margin * 2;
-  if (p.y <= -margin) p.y += ew.h + margin * 2;
-  if (p.y >= ew.h + margin) p.y -= ew.h + margin * 2;
+  const mx = ew.w !== WORLD_W ? 0 : margin;
+  const my = ew.h !== WORLD_H ? 0 : margin;
+  if (p.x <= -mx) p.x += ew.w + mx * 2;
+  if (p.x >= ew.w + mx) p.x -= ew.w + mx * 2;
+  if (p.y <= -my) p.y += ew.h + my * 2;
+  if (p.y >= ew.h + my) p.y -= ew.h + my * 2;
 }
 
 function circlesHit(a: { pos: Vec2; radius: number }, b: { pos: Vec2; radius: number }): boolean {
