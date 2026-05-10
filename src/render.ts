@@ -1323,7 +1323,10 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState, now: number): void
   }
 
   // Sats column only appears in Nostr mode — guest runs are score-only.
-  if (s.session) {
+  // Also hidden once a cheat fires this run: the SATS VOID chip already
+  // signals the run is unranked, and a still-ticking counter beside it
+  // reads as a real payout, which it isn't.
+  if (s.session && !s.cheatedThisRun) {
     ctx.fillStyle = '#ffd84a';
     ctx.textAlign = 'center';
     ctx.fillText('SATS', WORLD_W * 0.32, 16);
