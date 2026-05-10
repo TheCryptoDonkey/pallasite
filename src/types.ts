@@ -72,6 +72,12 @@ export interface Asteroid extends Entity {
   shape: number[];
   /** Random hue offset for vector colour variety */
   hue: number;
+  /** Pallasite VEIN flag — a rare special pallasite that streams sats per
+   *  hit (instead of dropping a single coin on break), takes VEIN_HP hits
+   *  to clear, spawns oversized with a pulsing gold halo, and triggers a
+   *  UFO swarm a moment after appearing. Vapourises clean on break (no
+   *  fragments) with a jackpot drop. The unique Lightning-arcade moment. */
+  isVein: boolean;
 }
 
 export interface AsteroidTypeConfig {
@@ -181,6 +187,23 @@ export interface Coin extends Entity {
 /** 1-in-N chance a break drops sat coins (Nostr mode only). The remaining
  *  rolls drop dust shards. Tunes the perceived rarity of sats. */
 export const SAT_DROP_CHANCE_DENOM = 8;
+
+/** Pallasite VEIN tuning. The event lives ~10 hits, streams sats per hit,
+ *  and lands a fat jackpot on collapse. Spawn radius is larger than the
+ *  standard large-rock radius so the vein reads instantly as different.
+ *  Probability is rolled per wave (waves 6-24) at beginWave. */
+export const VEIN_HP = 10;
+export const VEIN_RADIUS_MUL = 1.4;
+export const VEIN_SATS_PER_HIT = 5;
+export const VEIN_SCORE_PER_HIT = 50;  // guest payout (no sats)
+export const VEIN_JACKPOT_SATS = 100;
+export const VEIN_JACKPOT_SCORE = 1500;
+export const VEIN_SPAWN_CHANCE = 0.125;
+export const VEIN_SPAWN_MIN_WAVE = 6;
+export const VEIN_SPAWN_MAX_WAVE = 24;
+/** ms after vein spawn before the UFO swarm arrives — player should
+ *  see the vein and start engaging before the heat shows up. */
+export const VEIN_SWARM_DELAY_MS = 2200;
 
 /** Rare temporary buff or one-shot effect dropped by UFO kills. */
 export type PowerUpType = 'rapid' | 'satboost' | 'nova' | 'trident' | 'magnet';
@@ -467,6 +490,11 @@ export interface GameState {
   /** Active target kill count for the bullet-curtain set-piece (wave 12).
    *  0 when not on a curtain wave. */
   bulletCurtainKillTarget: number;
+
+  /** Timestamp (performance.now() ms) at which the vein's UFO swarm should
+   *  arrive. 0 when no swarm is pending. Set by spawnVein; consumed in
+   *  updateGame the moment the timer elapses. */
+  veinSwarmDueAt: number;
 }
 
 /** A single (t, score) pacing point. t is ms since startGame. */
