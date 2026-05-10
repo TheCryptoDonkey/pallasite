@@ -537,40 +537,52 @@ export interface WaveLore {
   name: string;
   /** One-line lore subtitle shown beneath the name */
   subtitle: string;
+  /**
+   * Brand-voice tactical tagline shown below the subtitle on the wavestart
+   * banner. Punchy verb-noun pair that hints at this wave's danger or play
+   * tip (UFO debut, mine count, mineral shift, chain advice). The factual
+   * subtitle teaches meteorite history; the tagline teaches the wave.
+   */
+  tagline: string;
 }
 
 export const WAVE_LORE: readonly WaveLore[] = [
   // Verified against the Meteoritical Bulletin Database + Wikipedia, 2026-05-09
-  { name: 'KRASNOJARSK',     subtitle: 'Russia, 1749 — first pallasite ever found' },
-  { name: 'BRENHAM',         subtitle: 'Kansas, 1882 — over 4 tonnes recovered' },
-  { name: 'ESQUEL',          subtitle: 'Argentina, 1951 — gem-grade peridot' },
-  { name: 'FUKANG',          subtitle: 'Xinjiang, 2000 — 1,003 kg main mass' },
-  { name: 'IMILAC',          subtitle: 'Atacama, Chile, 1822 — ~1 tonne strewn field' },
-  { name: 'MINEO',           subtitle: 'Sicily, 1826 — observed fall' },
-  { name: 'ZAISHO',          subtitle: 'Japan, 1898 — observed fall, just 330 g' },
-  { name: 'MARJALAHTI',      subtitle: 'Finland, 1902 — observed fall, 45 kg' },
-  { name: 'OMOLON',          subtitle: 'Russia, 1981 — largest observed pallasite fall' },
-  { name: 'SPRINGWATER',     subtitle: 'Saskatchewan, 1931 — type locality of farringtonite' },
-  { name: 'GLORIETA MTN',    subtitle: 'New Mexico, 1884 — variable olivine content' },
-  { name: 'SEYMCHAN',        subtitle: 'Russia, 1967 — reclassified iron to pallasite' },
-  { name: 'ALBIN',           subtitle: 'Wyoming, 1915 — clear olivine to 38 mm' },
-  { name: 'BRAHIN',          subtitle: 'Belarus, 1810 — over 1 tonne recovered' },
-  { name: 'AHUMADA',         subtitle: 'Chihuahua, Mexico, 1909 — 53 kg main mass' },
-  { name: 'ITZAWISIS',       subtitle: 'Namibia, 1946 — Eagle Station group, 350 g' },
-  { name: 'EAGLE STATION',   subtitle: 'Kentucky, 1880 — type specimen of its group' },
-  { name: 'NEWPORT',         subtitle: 'Arkansas, 1923 — only stony-iron of the state' },
-  { name: 'OTINAPA',         subtitle: 'Durango, Mexico — main group pallasite' },
-  { name: 'CONCEPTION JCT',  subtitle: 'Missouri, 2006 — anomalous main group, 17 kg' },
-  { name: 'QUIJINGUE',       subtitle: 'Bahia, Brazil, 1984 — first Brazilian pallasite' },
-  { name: 'PHILLIPS COUNTY', subtitle: 'Colorado, 1935 — anomalous main group' },
-  { name: 'ADMIRE',          subtitle: 'Kansas, 1881 — strewn field, ~2 tonnes total' },
-  { name: 'HAMBLETON',       subtitle: 'North Yorkshire, 2005 — sulphide-rich' },
-  { name: 'EVENT HORIZON',   subtitle: 'The final arena · no return' },
+  { name: 'KRASNOJARSK',     subtitle: 'Russia, 1749 — first pallasite ever found',         tagline: 'Drift. Fire. Wrap.' },
+  { name: 'BRENHAM',         subtitle: 'Kansas, 1882 — over 4 tonnes recovered',            tagline: 'Tighter orbits.' },
+  { name: 'ESQUEL',          subtitle: 'Argentina, 1951 — gem-grade peridot',               tagline: 'Hold the centre.' },
+  { name: 'FUKANG',          subtitle: 'Xinjiang, 2000 — 1,003 kg main mass',               tagline: 'Elites incoming. Mass attracts.' },
+  { name: 'IMILAC',          subtitle: 'Atacama, Chile, 1822 — ~1 tonne strewn field',      tagline: 'Pallasite banks sats. Hunt the gold.' },
+  { name: 'MINEO',           subtitle: 'Sicily, 1826 — observed fall',                      tagline: 'Iron takes two. Aim true.' },
+  { name: 'ZAISHO',          subtitle: 'Japan, 1898 — observed fall, just 330 g',           tagline: 'Tanks roll. Three hits each.' },
+  { name: 'MARJALAHTI',      subtitle: 'Finland, 1902 — observed fall, 45 kg',              tagline: 'Mines arm. Mind the well.' },
+  { name: 'OMOLON',          subtitle: 'Russia, 1981 — largest observed pallasite fall',    tagline: 'Breather. Bank the chain.' },
+  { name: 'SPRINGWATER',     subtitle: 'Saskatchewan, 1931 — type locality of farringtonite', tagline: 'Snipers calibrate. Keep moving.' },
+  { name: 'GLORIETA MTN',    subtitle: 'New Mexico, 1884 — variable olivine content',       tagline: 'Two wells. Plot a clean line.' },
+  { name: 'SEYMCHAN',        subtitle: 'Russia, 1967 — reclassified iron to pallasite',     tagline: 'Reclassified threats. Re-read the field.' },
+  { name: 'ALBIN',           subtitle: 'Wyoming, 1915 — clear olivine to 38 mm',            tagline: 'Three wells. Edges open.' },
+  { name: 'BRAHIN',          subtitle: 'Belarus, 1810 — over 1 tonne recovered',            tagline: 'Tanks anchor. Strip them down.' },
+  { name: 'AHUMADA',         subtitle: 'Chihuahua, Mexico, 1909 — 53 kg main mass',         tagline: 'Conserve the chain.' },
+  { name: 'ITZAWISIS',       subtitle: 'Namibia, 1946 — Eagle Station group, 350 g',        tagline: 'Pallasite seam. Press it.' },
+  { name: 'EAGLE STATION',   subtitle: 'Kentucky, 1880 — type specimen of its group',       tagline: 'Past halfway. Lanes thin.' },
+  { name: 'NEWPORT',         subtitle: 'Arkansas, 1923 — only stony-iron of the state',     tagline: 'Four wells. Lanes tighten.' },
+  { name: 'OTINAPA',         subtitle: 'Durango, Mexico — main group pallasite',            tagline: 'Snipers brake on you. Brake first.' },
+  { name: 'CONCEPTION JCT',  subtitle: 'Missouri, 2006 — anomalous main group, 17 kg',      tagline: 'Five wells. Chain hard.' },
+  { name: 'QUIJINGUE',       subtitle: 'Bahia, Brazil, 1984 — first Brazilian pallasite',   tagline: 'Anomalous run. Stay sharp.' },
+  { name: 'PHILLIPS COUNTY', subtitle: 'Colorado, 1935 — anomalous main group',             tagline: 'Trust no orbit.' },
+  { name: 'ADMIRE',          subtitle: 'Kansas, 1881 — strewn field, ~2 tonnes total',      tagline: 'Six wells. Two tonnes of grief.' },
+  { name: 'HAMBLETON',       subtitle: 'North Yorkshire, 2005 — sulphide-rich',             tagline: 'Last orbit before the horizon.' },
+  { name: 'EVENT HORIZON',   subtitle: 'The final arena · no return',                       tagline: 'Stand or fall.' },
 ];
 
 /** Lookup the lore subtitle for a wave (1-indexed). Null for waves outside the table. */
 export function waveSubtitle(wave: number): string | null {
   return WAVE_LORE[wave - 1]?.subtitle ?? null;
+}
+
+/** Lookup the brand-voice tactical tagline for a wave (1-indexed). Null for waves outside the table. */
+export function waveTagline(wave: number): string | null {
+  return WAVE_LORE[wave - 1]?.tagline ?? null;
 }
 
 /** Convenience: just the names, derived from WAVE_LORE so the two stay in lock-step. */

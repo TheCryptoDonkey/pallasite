@@ -10,7 +10,7 @@ import type {
   GameState, Ship, Asteroid, AsteroidType, Bullet, Coin, Particle, Ufo, Mine, PowerUp, ReplaySnapshot, Debris,
 } from './types.js';
 import {
-  WORLD_W, WORLD_H, WARP_MS, waveName, waveSubtitle, POWERUP_CONFIG,
+  WORLD_W, WORLD_H, WARP_MS, waveName, waveSubtitle, waveTagline, POWERUP_CONFIG,
   REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS,
 } from './types.js';
 import { getCachedGhost, ghostScoreAt, ghostPoseAt } from './ghost.js';
@@ -1668,9 +1668,11 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState, now: number
 
   // Dim the wave-image background behind the cinematic so text stays readable
   // regardless of which specimen photo is loaded. Sits below all text.
+  // Strip is sized to fit four lines: WAVE N, specimen name, factual subtitle,
+  // tactical tagline. Bumped from 240 to 270 when the tagline was added.
   ctx.globalAlpha = alpha * 0.55;
   ctx.fillStyle = '#000';
-  ctx.fillRect(0, WORLD_H / 2 - 130, WORLD_W, 240);
+  ctx.fillRect(0, WORLD_H / 2 - 130, WORLD_W, 270);
   ctx.globalAlpha = alpha;
 
   // Subtle horizontal accent line behind the title — a faint heraldic bar
@@ -1714,6 +1716,19 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState, now: number
     ctx.letterSpacing = '0.06em' as unknown as string;
     ctx.fillText(lore, WORLD_W / 2, WORLD_H / 2 + 72);
     ctx.shadowOffsetY = 0;
+  }
+
+  // Tactical tagline — heraldic blue, ties visually to the WAVE number above
+  // so the eye reads warm-tone lore (yellow + cream) and cool-tone system
+  // (blue + blue) as two distinct registers.
+  const tagline = waveTagline(s.wave);
+  if (tagline) {
+    ctx.font = '14px ui-monospace, monospace';
+    ctx.fillStyle = '#7da5d4';
+    ctx.shadowColor = '#5b9dff';
+    ctx.shadowBlur = 6;
+    ctx.letterSpacing = '0.10em' as unknown as string;
+    ctx.fillText(tagline, WORLD_W / 2, WORLD_H / 2 + 102);
   }
 
   ctx.restore();
