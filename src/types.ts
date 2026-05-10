@@ -187,11 +187,14 @@ export interface Mine extends Entity {
   age: number;
   /** Gravity well effective range in px */
   gravityRange: number;
-  /** 1 HP — destroyed by any bullet */
+  /** Hits to destroy. Set per spawn — see MINE_HP_BASE / wave scaling. */
   hp: number;
   /** Hit-flash decay 0..1 */
   hitFlash: number;
 }
+
+/** Base mine HP — bumped from 1 so they take a small flurry to clear. */
+export const MINE_HP_BASE = 3;
 
 export interface Particle {
   pos: Vec2;

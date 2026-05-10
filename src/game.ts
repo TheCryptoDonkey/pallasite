@@ -31,7 +31,7 @@ import {
   UFO_ZIG_INTERVAL_MS, UFO_POINTS, UFO_SATS,
   UFO_FIRST_SPAWN_MS, UFO_RESPAWN_BASE_MS, UFO_RESPAWN_PER_WAVE_MS, UFO_RESPAWN_MIN_MS,
   UFO_TYPE_BY_WAVE,
-  MINE_RADIUS, MINE_GRAVITY_RANGE, MINE_GRAVITY_STRENGTH, MINE_POINTS, MINE_SATS_DROP,
+  MINE_RADIUS, MINE_GRAVITY_RANGE, MINE_GRAVITY_STRENGTH, MINE_POINTS, MINE_SATS_DROP, MINE_HP_BASE,
   MINE_CANDIDATE_POSITIONS, MINE_COUNT_BY_WAVE,
   COMBO_WINDOW_MS, COMBO_MAX,
   POWERUP_CONFIG, POWERUP_DROP_CHANCE, POWERUP_TTL_MS, POWERUP_RADIUS,
@@ -682,7 +682,7 @@ function ufoFanShoot(s: GameState, u: Ufo, target: Vec2): void {
 
 // ── Mines ─────────────────────────────────────────────────────────────────────
 
-function makeMine(pos: Vec2): Mine {
+function makeMine(pos: Vec2, hp: number = MINE_HP_BASE): Mine {
   return {
     pos: { x: pos.x, y: pos.y },
     vel: { x: 0, y: 0 },     // static — never drifts
@@ -690,9 +690,22 @@ function makeMine(pos: Vec2): Mine {
     alive: true,
     age: 0,
     gravityRange: MINE_GRAVITY_RANGE,
-    hp: 1,
+    hp,
     hitFlash: 0,
   };
+}
+
+/** One bullet's worth of damage. Flashes on a non-fatal hit; destroys
+ *  on the killing blow with the existing payout/effects path. */
+function damageMine(s: GameState, m: Mine): void {
+  m.hp -= 1;
+  m.hitFlash = 1;
+  if (m.hp <= 0) {
+    destroyMine(s, m);
+  } else {
+    audio.hit();
+    spawnParticles(s, m.pos.x, m.pos.y, 5, '#ff5050', 110, 280);
+  }
 }
 
 /**
@@ -1514,7 +1527,7 @@ export function updateGame(s: GameState, dt: number, now: number): void {
       if (!m.alive) continue;
       if (circlesHit(b, m)) {
         b.alive = false;
-        destroyMine(s, m);
+        damageMine(s, m);
         break;
       }
     }
