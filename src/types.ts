@@ -136,7 +136,7 @@ export interface Coin extends Entity {
 export const SAT_DROP_CHANCE_DENOM = 8;
 
 /** Rare temporary buff or one-shot effect dropped by UFO kills. */
-export type PowerUpType = 'rapid' | 'satboost' | 'bomb';
+export type PowerUpType = 'rapid' | 'satboost' | 'nova' | 'trident' | 'magnet';
 
 export interface PowerUp extends Entity {
   type: PowerUpType;
@@ -159,7 +159,9 @@ export interface PowerUpConfig {
 export const POWERUP_CONFIG: Record<PowerUpType, PowerUpConfig> = {
   rapid:    { durationMs: 8000,  glyph: '⚡', colour: '#ff8a3a', pickupLabel: 'RAPID FIRE' },
   satboost: { durationMs: 12000, glyph: '₿', colour: '#ffd84a', pickupLabel: '×2 SATS' },
-  bomb:     { durationMs: 0,     glyph: '◉', colour: '#ff5050', pickupLabel: 'SMART BOMB' },
+  nova:     { durationMs: 0,     glyph: '◉', colour: '#ff5050', pickupLabel: 'NOVA' },
+  trident:  { durationMs: 6000,  glyph: '⋔', colour: '#ffd84a', pickupLabel: 'TRIDENT' },
+  magnet:   { durationMs: 8000,  glyph: '◎', colour: '#5b9dff', pickupLabel: 'MAGNET' },
 };
 
 /** Drop chance per non-boss UFO kill. */
@@ -171,6 +173,13 @@ export const POWERUP_RADIUS = 14;
 export const RAPID_COOLDOWN_MUL = 0.34;
 /** Multiplier on coin sat value while satboost is active. */
 export const SATBOOST_MUL = 2;
+/** Trident fan: half-angle of the spread (radians). Outer bullets fire at
+ *  ±TRIDENT_SPREAD from the ship's facing; centre bullet stays on heading. */
+export const TRIDENT_SPREAD = 0.18;
+/** Magnet pull: max acceleration applied to coins (px/s²) when at MAGNET_RANGE. */
+export const MAGNET_MAX_ACCEL = 1400;
+/** Magnet effective range — coins within this radius accelerate toward the ship. */
+export const MAGNET_RANGE = 9999;  // effectively whole screen
 
 /** Stationary gravity mine — pulls the ship in, kills on contact unless shielded. */
 export interface Mine extends Entity {
@@ -305,6 +314,10 @@ export interface GameState {
   rapidExpiresAt: number;
   /** ms timestamp ×2 sat boost buff expires (0 when inactive). */
   satboostExpiresAt: number;
+  /** ms timestamp trident (3-way fan fire) expires. */
+  tridentExpiresAt: number;
+  /** ms timestamp magnet (coin/dust pull) expires. */
+  magnetExpiresAt: number;
 
   /** auth state */
   session: SignetSession | null;
