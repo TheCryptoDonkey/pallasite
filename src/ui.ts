@@ -147,7 +147,14 @@ function renderArcadeInitials(
     resetIdle();
   };
 
-  const arrowBtnCss = 'width:42px;height:32px;display:flex;align-items:center;justify-content:center;background:rgba(88,255,88,0.08);border:2px solid rgba(88,255,88,0.3);color:#58ff58;font-family:inherit;font-size:1rem;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;user-select:none;';
+  // pointerdown (not click) so the overlay's touch-action: pan-y can't
+  // re-interpret a tap as a scroll-cancel. position: relative + z-index ensures
+  // the button always wins event capture against any overlapping descendant.
+  const arrowBtnCss = 'width:48px;height:44px;display:flex;align-items:center;justify-content:center;background:rgba(88,255,88,0.12);border:2px solid rgba(88,255,88,0.4);color:#58ff58;font-family:inherit;font-size:1.1rem;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;user-select:none;position:relative;z-index:2;pointer-events:auto;';
+  const bindTap = (btn: HTMLElement, fn: () => void): void => {
+    btn.addEventListener('pointerdown', e => { e.preventDefault(); fn(); });
+    btn.addEventListener('click', e => { e.preventDefault(); });
+  };
   for (let i = 0; i < 4; i++) {
     const col = el('div', { parent: slotsRow }) as HTMLDivElement;
     col.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:4px;';
@@ -155,24 +162,24 @@ function renderArcadeInitials(
     const up = el('button', { parent: col, text: '▲' }) as HTMLButtonElement;
     up.type = 'button';
     up.style.cssText = arrowBtnCss;
-    up.addEventListener('click', () => cycleAt(i, 1));
+    bindTap(up, () => cycleAt(i, 1));
 
     const box = el('div', { parent: col }) as HTMLDivElement;
-    box.style.cssText = 'width:42px;height:54px;display:flex;align-items:center;justify-content:center;font-family:inherit;font-size:1.6rem;background:rgba(0,0,0,0.4);border:2px solid rgba(88,255,88,0.3);color:#58ff58;letter-spacing:0;transition:opacity 120ms;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;user-select:none;';
-    box.addEventListener('click', () => moveTo(i));
+    box.style.cssText = 'width:48px;height:54px;display:flex;align-items:center;justify-content:center;font-family:inherit;font-size:1.6rem;background:rgba(0,0,0,0.4);border:2px solid rgba(88,255,88,0.3);color:#58ff58;letter-spacing:0;transition:opacity 120ms;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;user-select:none;position:relative;z-index:2;pointer-events:auto;';
+    bindTap(box, () => moveTo(i));
 
     const down = el('button', { parent: col, text: '▼' }) as HTMLButtonElement;
     down.type = 'button';
     down.style.cssText = arrowBtnCss;
-    down.addEventListener('click', () => cycleAt(i, -1));
+    bindTap(down, () => cycleAt(i, -1));
 
     slotEls.push(box);
   }
 
   const saveBtn = el('button', { parent: wrap, text: 'SAVE' }) as HTMLButtonElement;
   saveBtn.type = 'button';
-  saveBtn.style.cssText = 'margin-top:4px;padding:8px 24px;background:rgba(255,216,74,0.15);border:2px solid #ffd84a;color:#ffd84a;font-family:inherit;font-size:0.9rem;letter-spacing:0.2em;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;';
-  saveBtn.addEventListener('click', () => commit());
+  saveBtn.style.cssText = 'margin-top:6px;padding:12px 32px;min-height:44px;background:rgba(255,216,74,0.18);border:2px solid #ffd84a;color:#ffd84a;font-family:inherit;font-size:1rem;letter-spacing:0.2em;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;position:relative;z-index:2;pointer-events:auto;';
+  bindTap(saveBtn, () => commit());
 
   const hint = el('p', { parent: wrap, text: '▲▼ CYCLE · TAP SLOT TO MOVE · SAVE' });
   hint.style.cssText = 'font-size:0.7rem;color:rgba(180,140,255,0.7);letter-spacing:0.18em;margin:0;';
