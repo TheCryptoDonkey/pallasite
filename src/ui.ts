@@ -31,6 +31,11 @@ import { requestZapInvoice, hasWebLN, payViaWebLN } from './zap.js';
 import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, ghostPoseAt, ghostScoreAt, type GhostRun } from './ghost.js';
 import { WORLD_W as PALL_WORLD_W, WORLD_H as PALL_WORLD_H } from './types.js';
 import {
+  SKINS, getActiveSkinId, setActiveSkinId, isSkinUnlocked,
+  markSkinUnlocked, publishSkinUnlocks, syncSkinUnlocksFromNostr,
+  type SkinDef,
+} from './skins.js';
+import {
   asteroidPreview, minePreview, sniperPreview, powerupPreview,
   dustPreview, satCoinPreview,
 } from './previews.js';
@@ -498,6 +503,14 @@ export function renderTitle(state: GameState): void {
   // the seed only locks on IGNITE — so we read the stored preference
   // directly to anticipate.
   prefetchTopGhost(getStoredDailyPref() ? todayUTC() : null);
+
+  // Pull skin unlocks the player earned on other devices. Fire-and-forget;
+  // returned set has already been merged into local. The settings overlay
+  // re-reads localStorage each time it opens so by the time the player
+  // navigates there the merged set is visible.
+  if (state.session) {
+    void syncSkinUnlocksFromNostr(state.session.pubkey).catch(() => undefined);
+  }
 
   // Wordmark image rendered with mix-blend-mode: screen so the baked-in
   // black starfield bg drops out and only the green lettering floats over
@@ -1194,6 +1207,12 @@ function renderTierBadge(parent: HTMLElement, pubkey: string): void {
     chip.textContent = `${label[p.tier]} · ${earned}/${cap} sats`;
     chip.style.color = colour[p.tier];
 
+    // Ironclad skin: unlocks once the player crosses the lifetime-sats
+    // threshold. Detection lives here because /api/player is the canonical
+    // source for that figure. markSkinUnlocked is idempotent so this is a
+    // no-op once the unlock has landed; the publish path below catches it.
+    if (p.lifetime_paid_sats >= 100_000) markSkinUnlocked('ironclad');
+
     if (p.tier === 'anon') {
       upgrade.textContent =
         'Set NIP-05 in your profile to lift your cap to £5. Get followed by the dev for £20.';
@@ -1432,6 +1451,115 @@ export function renderHowToPlay(onBack: () => void): void {
  * Audio mix panel — master / music / SFX sliders + mute. Reachable from title
  * and pause; `onBack` re-renders whichever screen opened it.
  */
+/**
+ * Renders a small ship preview into a fixed-size canvas. Used by the skins
+ * panel so each skin card shows the actual silhouette + thrust palette the
+ * player will see in-game, not a coloured swatch.
+ */
+function paintShipPreview(canvas: HTMLCanvasElement, skin: SkinDef, locked: boolean): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.save();
+  ctx.translate(w / 2, h / 2);
+  ctx.scale(1.4, 1.4);
+  ctx.globalAlpha = locked ? 0.35 : 1;
+  ctx.lineWidth = 1.6;
+  ctx.strokeStyle = skin.palette.ship;
+  ctx.shadowColor = skin.palette.shipShadow;
+  ctx.shadowBlur = 12;
+  ctx.beginPath();
+  ctx.moveTo(14, 0);
+  ctx.lineTo(-10, 8);
+  ctx.lineTo(-6, 0);
+  ctx.lineTo(-10, -8);
+  ctx.closePath();
+  ctx.stroke();
+  // Static thrust flame so the player sees the full palette.
+  ctx.strokeStyle = skin.palette.thrust;
+  ctx.shadowColor = skin.palette.thrustShadow;
+  ctx.shadowBlur = 10;
+  ctx.beginPath();
+  ctx.moveTo(-6, 4);
+  ctx.lineTo(-14, 0);
+  ctx.lineTo(-6, -4);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/**
+ * Skins section in the settings overlay. Shows every catalogue entry as a
+ * card with a live ship preview, label, description, and either an
+ * "ACTIVE" badge (unlocked + selected), a "SELECT" button (unlocked +
+ * not selected), or the unlock hint (still locked).
+ */
+function renderSkinsPanel(parent: HTMLElement): void {
+  const heading = el('p', { parent, text: 'SHIPS' });
+  heading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:8px 0 -10px;';
+
+  const grid = el('div', { parent });
+  grid.style.cssText = 'display:flex;gap:14px;flex-wrap:wrap;justify-content:center;align-items:stretch;';
+
+  const cards: Array<{ skin: SkinDef; el: HTMLElement; preview: HTMLCanvasElement; cta: HTMLElement }> = [];
+
+  for (const skin of SKINS) {
+    const card = el('div', { parent: grid });
+    card.style.cssText = [
+      'display:flex', 'flex-direction:column', 'align-items:center', 'gap:6px',
+      'padding:12px 14px', 'border-radius:10px', 'min-width:160px',
+      'background:rgba(180,140,255,0.04)', 'border:1px solid rgba(180,140,255,0.25)',
+    ].join(';');
+
+    const preview = el('canvas', { parent: card, attrs: { width: '110', height: '60' } });
+    preview.style.cssText = 'background:#02050d;border-radius:6px;width:110px;height:60px;';
+
+    const label = el('p', { parent: card, text: skin.label });
+    label.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:1.1rem;letter-spacing:0.18em;color:#fff5d8;margin:0;";
+
+    const desc = el('p', { parent: card, text: skin.description });
+    desc.style.cssText = 'font-size:0.7rem;letter-spacing:0.04em;color:rgba(220,210,255,0.75);margin:0;text-align:center;line-height:1.4;max-width:160px;';
+
+    const cta = el('div', { parent: card });
+    cta.style.cssText = 'min-height:30px;display:flex;align-items:center;justify-content:center;';
+
+    cards.push({ skin, el: card, preview, cta });
+  }
+
+  function paintAll(): void {
+    const activeId = getActiveSkinId();
+    for (const { skin, el: card, preview, cta } of cards) {
+      const unlocked = isSkinUnlocked(skin.id);
+      paintShipPreview(preview, skin, !unlocked);
+
+      cta.innerHTML = '';
+      if (!unlocked) {
+        card.style.borderColor = 'rgba(180,140,255,0.18)';
+        const hint = el('p', { parent: cta, text: skin.unlockHint });
+        hint.style.cssText = 'font-size:0.72rem;color:rgba(180,140,255,0.65);letter-spacing:0.06em;margin:0;text-align:center;';
+      } else if (skin.id === activeId) {
+        card.style.borderColor = 'rgba(255,216,74,0.65)';
+        const badge = el('p', { parent: cta, text: 'ACTIVE' });
+        badge.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:0.95rem;letter-spacing:0.18em;color:#ffd84a;margin:0;text-shadow:0 0 6px rgba(255,216,74,0.45);";
+      } else {
+        card.style.borderColor = 'rgba(91,255,140,0.45)';
+        const btn = el('button', { parent: cta, text: 'SELECT' });
+        btn.style.cssText = [
+          'background:transparent', 'border:1px solid rgba(91,255,140,0.6)',
+          'color:#7fffb0', "font-family:'VT323',ui-monospace,monospace",
+          'font-size:0.85rem', 'letter-spacing:0.12em', 'padding:4px 14px',
+          'cursor:pointer', 'border-radius:6px',
+        ].join(';');
+        btn.addEventListener('click', () => {
+          if (setActiveSkinId(skin.id)) paintAll();
+        });
+      }
+    }
+  }
+  paintAll();
+}
+
 export function renderSettings(onBack: () => void): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
@@ -1492,6 +1620,10 @@ export function renderSettings(onBack: () => void): void {
   // Quick reference for the in-game mute key
   const note = el('p', { parent: panel, text: 'Tap M in-game to toggle mute. Music ducks while paused.' });
   note.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.7);letter-spacing:0.06em;margin:0;text-align:center;';
+
+  // Ship skins -- earned cosmetics drawn in render.ts. Locked entries show
+  // their unlock criterion; unlocked ones are click-to-select.
+  renderSkinsPanel(overlay);
 
   // Touch input mode — only meaningful on touch devices but harmless to show
   // on desktop (it just doesn't apply until a touch event reveals controls).
@@ -1884,6 +2016,14 @@ function predictedLocalRank(score: number): number {
 }
 
 export function renderGameOver(state: GameState): void {
+  // Push the current skin unlock set to Nostr at the end of every run.
+  // kind 30764 is replaceable (d="pallasite-skins") so this is idempotent
+  // when nothing has changed; when something has (e.g. halo just unlocked
+  // mid-run), the new set propagates without a separate signal path.
+  if (state.session) {
+    void publishSkinUnlocks(state.session).catch(() => undefined);
+  }
+
   // Two-stage gameover: when the run is a new local high score, focus the
   // entire screen on the arcade-initials entry first (no other buttons,
   // no recap rows competing for attention), then advance to the recap +

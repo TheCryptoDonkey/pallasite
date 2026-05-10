@@ -44,6 +44,7 @@ import { preloadBackground, getCollisionWrap } from './render.js';
 import { currentMods, lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { gameRng } from './seed.js';
 import { haptic } from './haptics.js';
+import { markSkinUnlocked } from './skins.js';
 
 // ── Initial state ─────────────────────────────────────────────────────────────
 
@@ -876,6 +877,10 @@ function destroyUfo(s: GameState, u: Ufo): void {
   toastNow(s, labels[u.type]);
   if (u.type === 'boss') {
     s.bossDefeated = true;
+    // Halo skin: unlocks the first time the player downs the wave-25 boss.
+    // markSkinUnlocked is idempotent so repeat clears are no-ops, and the
+    // gameover overlay's publish path picks the unlock up to push to Nostr.
+    if (markSkinUnlocked('halo')) toastNow(s, 'HALO SKIN UNLOCKED');
     // Banked music carries the moment now — no synth triumph chime.
     // Victory drop — guaranteed nova so any straggler debris vanishes
     maybeDropPowerUp(s, u.pos.x, u.pos.y, 'nova');
