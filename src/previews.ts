@@ -133,27 +133,83 @@ export function powerupPreview(type: PowerUpType): HTMLCanvasElement {
 export function dustPreview(sourceType?: AsteroidType): HTMLCanvasElement {
   const { canvas, ctx } = makeCanvas();
   const r = PREVIEW_SIZE * 0.3;
-  const colour = sourceType ? ASTEROID_TYPE_CONFIG[sourceType].glow : '#7fffb0';
+  const type: AsteroidType = sourceType ?? 'stony';
+  const colour = type === 'stony' ? '#7fffb0' : ASTEROID_TYPE_CONFIG[type].glow;
   ctx.lineWidth = 1.4;
   ctx.strokeStyle = colour;
   ctx.shadowColor = colour;
   ctx.shadowBlur = 7;
-  ctx.beginPath();
-  ctx.moveTo(0, -r);
-  ctx.lineTo(r * 0.78, 0);
-  ctx.lineTo(0, r);
-  ctx.lineTo(-r * 0.78, 0);
-  ctx.closePath();
-  ctx.stroke();
-  // Inner facets
-  ctx.lineWidth = 0.8;
-  ctx.globalAlpha = 0.6;
-  ctx.beginPath();
-  ctx.moveTo(0, -r * 0.6);
-  ctx.lineTo(0, r * 0.6);
-  ctx.moveTo(-r * 0.5, 0);
-  ctx.lineTo(r * 0.5, 0);
-  ctx.stroke();
+  switch (type) {
+    case 'stony':
+      // Diamond facet
+      ctx.beginPath();
+      ctx.moveTo(0, -r);
+      ctx.lineTo(r * 0.78, 0);
+      ctx.lineTo(0, r);
+      ctx.lineTo(-r * 0.78, 0);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.lineWidth = 0.8;
+      ctx.globalAlpha = 0.6;
+      ctx.beginPath();
+      ctx.moveTo(0, -r * 0.6);
+      ctx.lineTo(0, r * 0.6);
+      ctx.moveTo(-r * 0.5, 0);
+      ctx.lineTo(r * 0.5, 0);
+      ctx.stroke();
+      break;
+    case 'iron': {
+      // Hex nut
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const ang = (i / 6) * Math.PI * 2 - Math.PI / 2;
+        const x = Math.cos(ang) * r;
+        const y = Math.sin(ang) * r;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.stroke();
+      ctx.lineWidth = 0.8;
+      ctx.globalAlpha = 0.6;
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 0.35, 0, Math.PI * 2);
+      ctx.stroke();
+      break;
+    }
+    case 'chondrite': {
+      // Three-fragment cluster
+      const off = r * 0.55;
+      const tri = (cx: number, cy: number): void => {
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - r * 0.42);
+        ctx.lineTo(cx + r * 0.36, cy + r * 0.22);
+        ctx.lineTo(cx - r * 0.36, cy + r * 0.22);
+        ctx.closePath();
+        ctx.stroke();
+      };
+      tri(0, -off * 0.4);
+      tri(-off * 0.6, off * 0.4);
+      tri(off * 0.6, off * 0.4);
+      break;
+    }
+    case 'pallasite': {
+      // Six-point star
+      ctx.beginPath();
+      const points = 12;
+      for (let i = 0; i < points; i++) {
+        const ang = (i / points) * Math.PI * 2 - Math.PI / 2;
+        const radius = i % 2 === 0 ? r : r * 0.45;
+        const x = Math.cos(ang) * radius;
+        const y = Math.sin(ang) * radius;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.stroke();
+      break;
+    }
+  }
   return canvas;
 }
 
