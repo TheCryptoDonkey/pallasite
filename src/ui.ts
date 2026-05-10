@@ -21,6 +21,7 @@ import { submitClaim, fetchPool, fetchPlayer, type PlayerTier } from './faucet.j
 import { renderLegalFooter, openTermsModal } from './legal.js';
 import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow } from './game.js';
 import * as audio from './audio.js';
+import { listTracks, currentTrackId, musicPreviewPlay, musicForceRefresh, musicStop } from './music.js';
 import { fetchProfile, getCachedProfile, bestName } from './profile.js';
 import { type Difficulty, getStoredDifficulty, setStoredDifficulty, lockInDifficulty } from './difficulty.js';
 import { getStoredDailyPref, setStoredDailyPref, todayUTC, getActiveSeed } from './seed.js';
@@ -83,6 +84,31 @@ function onTap(btn: HTMLElement, fn: () => void): void {
   btn.addEventListener('pointerup', e => {
     if (e.pointerType !== 'mouse') run();
   });
+}
+
+/**
+ * Bind a long-press handler to the title logo. Used by the secret music-
+ * player easter egg. Hold for 700ms with minimal drift to fire; pointer
+ * release, leave, or significant motion cancels.
+ */
+function bindLogoLongPress(target: HTMLElement, fn: () => void): void {
+  const HOLD_MS = 700;
+  const MOVE_TOL = 8;
+  let timer: number | null = null;
+  let sx = 0, sy = 0;
+  const clear = (): void => { if (timer !== null) { clearTimeout(timer); timer = null; } };
+  target.addEventListener('pointerdown', e => {
+    sx = e.clientX; sy = e.clientY;
+    clear();
+    timer = window.setTimeout(() => { timer = null; fn(); }, HOLD_MS);
+  });
+  target.addEventListener('pointermove', e => {
+    if (timer === null) return;
+    if (Math.hypot(e.clientX - sx, e.clientY - sy) > MOVE_TOL) clear();
+  });
+  target.addEventListener('pointerup',     clear);
+  target.addEventListener('pointercancel', clear);
+  target.addEventListener('pointerleave',  clear);
 }
 
 // ── First-run onboarding ─────────────────────────────────────────────────────
@@ -548,6 +574,8 @@ export function renderTitle(state: GameState): void {
   (titleLogo as HTMLImageElement).src = '/logo.webp';
   (titleLogo as HTMLImageElement).alt = 'PALLASITE';
   (titleLogo as HTMLImageElement).decoding = 'async';
+  // Easter egg: long-press the logo to open the secret music player.
+  bindLogoLongPress(titleLogo, () => renderMusicPlayer(state, () => renderTitle(state)));
   const tagline = el('p', { parent: overlay, text: 'SHOOT ROCKS · STACK SATS' });
   tagline.style.cssText = 'font-size:1.2rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin-top:-12px;';
   el('p', { parent: overlay, text: 'Cosmic arcade · Lightning sats · Nostr leaderboards' });
@@ -1371,6 +1399,83 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
     hint.style.color = 'rgba(180,140,255,0.7)';
     hint.style.marginTop = '6px';
   }
+}
+
+// ── Music player (secret) ────────────────────────────────────────────────────
+
+/**
+ * Hidden music-player easter egg. Reached by long-pressing the title logo.
+ * Lists every campaign track with a play button that crossfades to it.
+ * The currently-playing track shows a pulsing ▶ glyph. BACK restores the
+ * normal title music via musicForceRefresh — the game loop's next tick
+ * resolves 'pallasite-idle' from the title phase and crossfades back.
+ */
+function renderMusicPlayer(state: GameState, onBack: () => void): void {
+  void state;
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+  el('h2', { parent: overlay, text: 'PALLASITE TRACKS' });
+  const sub = el('p', { parent: overlay, text: 'Drift through the score.' });
+  sub.style.cssText = 'font-size:0.95rem;letter-spacing:0.2em;color:var(--hud-yellow);margin:-12px 0 6px;';
+
+  const list = el('div', { parent: overlay });
+  list.style.cssText = 'display:flex;flex-direction:column;gap:8px;width:100%;max-width:420px;';
+
+  const rows: Array<{ id: string; el: HTMLElement; glyph: HTMLElement }> = [];
+  const paint = (): void => {
+    const active = currentTrackId();
+    for (const r of rows) {
+      const isActive = r.id === active;
+      r.el.style.borderColor = isActive ? 'rgba(255,216,74,0.8)' : 'rgba(180,140,255,0.3)';
+      r.el.style.background = isActive ? 'rgba(255,216,74,0.08)' : 'rgba(180,140,255,0.04)';
+      r.glyph.textContent = isActive ? '▶' : '·';
+      r.glyph.style.color = isActive ? '#ffd84a' : 'rgba(180,140,255,0.6)';
+    }
+  };
+
+  for (const t of listTracks()) {
+    const row = el('div', { parent: list });
+    row.style.cssText = [
+      'display:flex', 'align-items:center', 'gap:14px',
+      'padding:10px 14px', 'border-radius:8px',
+      'border:1px solid rgba(180,140,255,0.3)',
+      'background:rgba(180,140,255,0.04)',
+      'cursor:pointer', '-webkit-tap-highlight-color:transparent',
+      'touch-action:manipulation',
+    ].join(';');
+
+    const glyph = el('span', { parent: row, text: '·' });
+    glyph.style.cssText = 'font-size:1.2rem;width:1.6rem;text-align:center;color:rgba(180,140,255,0.6);';
+
+    const text = el('div', { parent: row });
+    text.style.cssText = 'flex:1;display:flex;flex-direction:column;gap:2px;text-align:left;';
+    const label = el('span', { parent: text, text: t.label });
+    label.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:1.1rem;letter-spacing:0.18em;color:#fff5d8;";
+    const hint = el('span', { parent: text, text: t.hint });
+    hint.style.cssText = 'font-size:0.72rem;letter-spacing:0.06em;color:rgba(220,210,255,0.6);';
+
+    onTap(row, () => {
+      void audio.unlockAudio();
+      musicPreviewPlay(t.id);
+      paint();
+    });
+
+    rows.push({ id: t.id, el: row, glyph });
+  }
+  paint();
+
+  const buttons = el('div', { className: 'menu-row', parent: overlay });
+  const stop = el('button', { className: 'menu-btn secondary', parent: buttons, text: 'STOP' });
+  onTap(stop, () => { musicStop(250); paint(); });
+  const back = el('button', { className: 'menu-btn', parent: buttons, text: 'BACK' });
+  onTap(back, () => {
+    // Restore state-driven music. Force-refresh invalidates the memo so the
+    // next musicSetTrackForState tick (the game loop runs every frame) will
+    // re-resolve the current phase and crossfade back to pallasite-idle.
+    musicForceRefresh();
+    onBack();
+  });
 }
 
 // ── Pause overlay ─────────────────────────────────────────────────────────────

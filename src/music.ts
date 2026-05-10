@@ -200,6 +200,41 @@ export function musicForceRefresh(): void {
   lastAppliedKey = '';
 }
 
+/** Display metadata for the secret music-player easter egg. Order is the
+ *  order tracks appear in the menu — roughly the order they're heard
+ *  through a campaign run. */
+export interface TrackInfo {
+  id: string;
+  label: string;
+  hint: string;
+}
+
+const TRACK_INFO: TrackInfo[] = [
+  { id: 'pallasite-idle',  label: 'PALLASITE IDLE',  hint: 'Title theme' },
+  { id: 'slow-orbit',      label: 'SLOW ORBIT',      hint: 'Waves 1-8' },
+  { id: 'tighter-orbits',  label: 'TIGHTER ORBITS',  hint: 'Waves 9-16' },
+  { id: 'cascade',         label: 'CASCADE',         hint: 'Waves 17-24' },
+  { id: 'event-horizon',   label: 'EVENT HORIZON',   hint: 'Wave 25 boss' },
+  { id: 'warp-transition', label: 'WARP TRANSITION', hint: 'Inter-wave' },
+  { id: 'hull-breached',   label: 'HULL BREACHED',   hint: 'Death sting' },
+  { id: 'banked',          label: 'BANKED',          hint: 'Victory sting' },
+];
+
+export function listTracks(): readonly TrackInfo[] { return TRACK_INFO; }
+
+/** Currently-active track id, or null when silent. Used by the music
+ *  player UI to highlight the active row. */
+export function currentTrackId(): string | null { return currentId; }
+
+/** Crossfade to a track id without going through the state-driven memo
+ *  path. Memoised state→track mapping is also invalidated so a later
+ *  musicSetTrackForState call (e.g. on phase change) re-resolves cleanly.
+ *  Used by the music-player easter egg. */
+export function musicPreviewPlay(id: string): void {
+  crossfadeTo(id, 250);
+  lastAppliedKey = '';
+}
+
 export function musicStop(fadeMs = DEFAULT_FADE_MS): void {
   crossfadeTo(null, fadeMs);
   lastAppliedKey = '';
