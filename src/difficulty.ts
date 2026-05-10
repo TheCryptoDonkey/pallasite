@@ -84,11 +84,19 @@ export function setStoredDifficulty(d: Difficulty): void {
  * for that run.
  */
 let active: DifficultyMods = DIFFICULTIES.normal;
+let activeName: Difficulty = 'normal';
 
 export function lockInDifficulty(d: Difficulty): void {
   active = DIFFICULTIES[d];
+  activeName = d;
 }
 
 export function currentMods(): DifficultyMods {
   return active;
+}
+
+/** Active difficulty name. Used by boss-fight relief paths that need to
+ *  scale mine counts, suppress minions, or grant extra lives on easy. */
+export function currentDifficulty(): Difficulty {
+  return activeName;
 }
