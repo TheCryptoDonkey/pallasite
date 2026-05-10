@@ -358,18 +358,42 @@ interface WaveSetPiece {
 }
 
 const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
-  // Wave 5 — Pallasite Heist. A single large pallasite parked at centre
-  // ringed by mines. Player must navigate the ring (or warp through) for
-  // a fat sat payout. No other asteroids; no procedural mines on top.
+  // Wave 5 — Pallasite Heist. The pallasite glows at centre, ringed by
+  // a tight mine "vault". Player spawns at the bottom edge so the prize
+  // is across the screen, not directly under them. Iron+chondrite chaos
+  // drifts in from the edges to keep the field busy while they thread
+  // the ring — the heist isn't just a target, it's a moving-cover scrap
+  // with one obvious prize.
   5: {
     setup(s) {
       const cx = WORLD_W / 2, cy = WORLD_H / 2;
+      // Park the player at the bottom edge facing up, so they have to
+      // travel to the prize instead of spawning inside the pallasite.
+      if (s.ship.alive) {
+        s.ship.pos.x = cx;
+        s.ship.pos.y = WORLD_H - 90;
+        s.ship.rot = -Math.PI / 2;
+        s.ship.vel.x = 0;
+        s.ship.vel.y = 0;
+      }
+      // The prize.
       s.asteroids.push(spawnAsteroid('large', s.wave, { x: cx, y: cy }, { x: 0, y: 0 }, 'pallasite'));
-      const ringR = 110;
-      for (let i = 0; i < 3; i++) {
-        const angle = (Math.PI * 2 * i) / 3 + Math.PI / 6;
+      // Vault — 5 mines in a tight ring. Tight enough that brute-forcing
+      // through gets the player nicked by gravity wells, so they need to
+      // either snipe through gaps or warp.
+      const ringR = 90;
+      const N = 5;
+      for (let i = 0; i < N; i++) {
+        const angle = (Math.PI * 2 * i) / N + Math.PI / 10;
         s.mines.push(makeMine({ x: cx + Math.cos(angle) * ringR, y: cy + Math.sin(angle) * ringR }));
       }
+      // Chaos — two iron and three chondrite large asteroids drifting in
+      // from random edge positions. Iron takes two hits each so it carries
+      // weight even on a short wave; chondrites swarm into smalls. Enough
+      // bodies to make the player choose: clear the chaos first or sprint
+      // to the prize and outrun the fragments.
+      for (let i = 0; i < 2; i++) s.asteroids.push(spawnAsteroid('large', s.wave, undefined, undefined, 'iron'));
+      for (let i = 0; i < 3; i++) s.asteroids.push(spawnAsteroid('large', s.wave, undefined, undefined, 'chondrite'));
     },
     suppressDefaultMines: true,
     banner: 'PALLASITE HEIST',
