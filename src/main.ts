@@ -5,7 +5,7 @@
  * stored Signet session, and routes between title/playing/paused/game-over.
  */
 
-import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHyperspace, tryActivateShield, cheatJumpToWave, skipDeathReplay, skipWaveStart } from './game.js';
+import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHyperspace, tryActivateShield, cheatJumpToWave, skipDeathReplay, skipWaveStart, skipWarp } from './game.js';
 import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadBackground, setRenderMode } from './render.js';
@@ -211,6 +211,11 @@ window.addEventListener('keydown', e => {
     skipWaveStart(state);
     // Don't swallow — let the keypress also register for movement
   }
+  // Same for the warp cinematic — long enough to fit the music, but a key
+  // press past the skip window jumps straight into the next wave.
+  if (state.phase === 'warp') {
+    skipWarp(state);
+  }
   // Wave-jump cheat input mode swallows keys while open
   if (cheatInputOpen) {
     if (e.code === 'Enter') { closeCheatInput(true); e.preventDefault(); return; }
@@ -323,10 +328,11 @@ window.addEventListener('keyup', e => {
   }
 });
 
-// Tap anywhere during wave-start to skip the lore dwell on touch devices.
-// Buttons bubble up too — skipWaveStart guards on phase + min elapsed.
+// Tap anywhere during wave-start or warp to skip the long cinematic on touch
+// devices. Buttons bubble up too — skip helpers guard on phase + min elapsed.
 window.addEventListener('pointerdown', () => {
   if (state.phase === 'wavestart') skipWaveStart(state);
+  else if (state.phase === 'warp') skipWarp(state);
 }, { capture: true });
 
 // Lose focus → release keys & pause

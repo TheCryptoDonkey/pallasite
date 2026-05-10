@@ -1508,39 +1508,36 @@ function drawWarp(ctx: CanvasRenderingContext2D, s: GameState, now: number): voi
   ctx.globalAlpha = 1;
   ctx.shadowBlur = 0;
 
-  // Banner
-  const bannerAlpha = progress < 0.3 ? progress / 0.3 : progress > 0.7 ? (1 - progress) / 0.3 : 1;
+  // Banner: fade in across the first 12% of the phase, hold, fade out across
+  // the last 12%. Long warp + holding alpha=1 lets the lore read clearly.
+  const bannerAlpha = progress < 0.12 ? progress / 0.12 : progress > 0.88 ? (1 - progress) / 0.12 : 1;
   ctx.globalAlpha = Math.max(0, bannerAlpha);
-  ctx.font = 'bold 48px ui-monospace, monospace';
-  ctx.fillStyle = '#5b9dff';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.shadowColor = '#5b9dff';
-  ctx.shadowBlur = 20;
-  ctx.fillText(`PLOTTING WAVE ${s.warpTargetWave}`, cx, cy - 16);
-  ctx.font = 'bold 22px ui-monospace, monospace';
+
+  // Specimen name front-and-centre — the wavestart banner repeats it big.
+  ctx.font = 'bold 36px ui-monospace, monospace';
   ctx.fillStyle = '#ffd84a';
   ctx.shadowColor = '#ffd84a';
-  ctx.shadowBlur = 16;
-  ctx.fillText(waveName(s.warpTargetWave), cx, cy + 18);
-  // Specimen lore on the warp banner too — sets up the wave before it lands.
+  ctx.shadowBlur = 18;
+  ctx.fillText(waveName(s.warpTargetWave), cx, cy - 8);
+
+  // Specimen lore underneath.
   const warpLore = waveSubtitle(s.warpTargetWave);
   if (warpLore) {
-    ctx.font = '14px ui-monospace, monospace';
+    ctx.font = '15px ui-monospace, monospace';
     ctx.fillStyle = '#b48cff';
     ctx.shadowColor = '#b48cff';
     ctx.shadowBlur = 8;
-    ctx.fillText(warpLore, cx, cy + 48);
-    ctx.font = '14px ui-monospace, monospace';
-    ctx.fillStyle = 'rgba(180,140,255,0.7)';
-    ctx.shadowBlur = 4;
-    ctx.fillText('HOLD COURSE…', cx, cy + 76);
-  } else {
-    ctx.font = '18px ui-monospace, monospace';
-    ctx.fillStyle = '#b48cff';
-    ctx.shadowColor = '#b48cff';
-    ctx.fillText('HOLD COURSE…', cx, cy + 50);
+    ctx.fillText(warpLore, cx, cy + 30);
   }
+
+  // Quiet "HOLD COURSE" line as the warp settles.
+  ctx.font = '13px ui-monospace, monospace';
+  ctx.fillStyle = 'rgba(180,140,255,0.7)';
+  ctx.shadowBlur = 4;
+  ctx.letterSpacing = '0.2em' as unknown as string;
+  ctx.fillText('HOLD COURSE', cx, cy + 64);
 
   ctx.restore();
 }
