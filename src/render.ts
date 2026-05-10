@@ -1443,43 +1443,107 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState, now: number
 
 // ── Warp transition ───────────────────────────────────────────────────────────
 
-type WarpColour = 'white' | 'olive' | 'silver' | 'gold';
-interface WarpStar { angle: number; depth: number; speed: number; colour: WarpColour; }
-const WARP_PALETTE: Record<WarpColour, { line: string; glow: string }> = {
-  white:  { line: '#ffffff', glow: '#5b9dff' },
-  olive:  { line: '#a3d958', glow: '#7bb83a' },  // olivine green
-  silver: { line: '#cbd5e1', glow: '#94a3b8' },  // nickel-iron
-  gold:   { line: '#ffd84a', glow: '#ff9933' },
+type WarpColour = 'white' | 'olive' | 'silver' | 'gold' | 'cyan' | 'magenta';
+const WARP_PALETTE: Record<WarpColour, string> = {
+  white:   '#ffffff',
+  olive:   '#a3d958',  // olivine
+  silver:  '#dde6f0',  // nickel-iron
+  gold:    '#ffd84a',
+  cyan:    '#5be0ff',
+  magenta: '#ff5cb0',
 };
-let warpStars: WarpStar[] | null = null;
 
+interface WarpStar { angle: number; depth: number; speed: number; curl: number; colour: WarpColour; }
+let warpStars: WarpStar[] | null = null;
 function ensureWarpStars(): WarpStar[] {
   if (warpStars) return warpStars;
   warpStars = [];
-  for (let i = 0; i < 160; i++) {
+  for (let i = 0; i < 220; i++) {
     const r = Math.random();
-    const colour: WarpColour = r < 0.5 ? 'white' : r < 0.78 ? 'olive' : r < 0.93 ? 'silver' : 'gold';
+    const colour: WarpColour =
+      r < 0.42 ? 'white'
+      : r < 0.62 ? 'olive'
+      : r < 0.78 ? 'silver'
+      : r < 0.90 ? 'gold'
+      : r < 0.96 ? 'cyan'
+      : 'magenta';
     warpStars.push({
       angle: Math.random() * Math.PI * 2,
       depth: Math.random() * 0.05,
-      speed: 1 + Math.random() * 1.6,
+      speed: 0.8 + Math.random() * 1.8,
+      curl: (Math.random() - 0.5) * 0.7,  // signed → mix of CW and CCW spiral arms
       colour,
     });
   }
   return warpStars;
 }
 
+interface WarpRibbon { phase: number; amp: number; speed: number; hue: number; thickness: number; offsetY: number; }
+let warpRibbons: WarpRibbon[] | null = null;
+function ensureWarpRibbons(): WarpRibbon[] {
+  if (warpRibbons) return warpRibbons;
+  warpRibbons = [];
+  // Ribbon hues span the warp palette so layered drifting bands create
+  // chromatic interference patterns when they overlap (composite=lighter).
+  const hues = [80, 50, 200, 320, 165];
+  for (let i = 0; i < hues.length; i++) {
+    warpRibbons.push({
+      phase: Math.random() * Math.PI * 2,
+      amp: 80 + Math.random() * 100,
+      speed: 0.0003 + Math.random() * 0.0006,
+      hue: hues[i],
+      thickness: 70 + Math.random() * 80,
+      offsetY: (i + 0.5) * (WORLD_H / hues.length),
+    });
+  }
+  return warpRibbons;
+}
+
+interface WarpFlare { startedAt: number; durMs: number; }
+interface WarpAsteroid { startedAt: number; durMs: number; angle: number; spinSpeed: number; vertices: number[]; }
+let warpFlares: WarpFlare[] = [];
+let warpAsteroids: WarpAsteroid[] = [];
+let lastFlareSpawnAt = -Infinity;
+let lastAsteroidSpawnAt = -Infinity;
+let warpRunId = -1;  // tracks which warp instance we're in; reset transients on new warp
+
+function spawnWarpAsteroid(now: number): void {
+  const verts: number[] = [];
+  const n = 8 + Math.floor(Math.random() * 5);
+  for (let i = 0; i < n; i++) verts.push(0.7 + Math.random() * 0.5);
+  warpAsteroids.push({
+    startedAt: now,
+    durMs: 1100 + Math.random() * 700,
+    angle: Math.random() * Math.PI * 2,
+    spinSpeed: (Math.random() - 0.5) * 4,
+    vertices: verts,
+  });
+}
+
 /**
- * Inter-wave warp cutscene. Layered build:
- *   1. Black-fill + drifting nebula glow keyed off the destination wave's hue
- *   2. Multi-coloured tunnel of star streaks (white + olivine + silver + gold)
- *   3. Destination specimen tumbling in a circular disc, growing as we
- *      "approach" — uses the wave bg image (or a procedural disc if not yet
- *      loaded). Slow yaw + slight wobble.
- *   4. Approach flash + rim glow for the arrival beat
+ * Inter-wave warp cutscene. Layered build (back to front):
+ *   0. Black + nebula glow keyed off the destination wave's hue
+ *   1. Hyperspace ENGAGE flash — sudden white punch in first 80ms
+ *   2. Camera-shake-and-rotate wrapper around the motion layers:
+ *      a. Chromatic ribbons drifting horizontally (additive)
+ *      b. 220 spiral tunnel streaks, multi-coloured, additive
+ *      c. Vector asteroid silhouettes hurtling outward at parallax
+ *      d. Periodic warp flares (centre shockwaves)
+ *   3. Destination specimen disc — chromatic-aberration "lensed" while small,
+ *      sharpens as it grows ease-in-cubic to fill the screen
+ *   4. ARRIVAL flash — final iris burst that bleeds into the wave bg
  * No text — the wavestart banner that follows handles the wave name + lore.
  */
 function drawWarp(ctx: CanvasRenderingContext2D, s: GameState, now: number): void {
+  // Reset per-warp transients when a new warp begins (phaseStart is the warp ID)
+  if (s.phaseStart !== warpRunId) {
+    warpRunId = s.phaseStart;
+    warpFlares = [];
+    warpAsteroids = [];
+    lastFlareSpawnAt = now - 500;  // first flare fires almost immediately
+    lastAsteroidSpawnAt = now;
+  }
+
   ctx.save();
   // Black-fill the entire canvas first (in canvas-pixel coords) so modern-mode
   // letterbox gutters don't expose the body bg through the warp tunnel.
@@ -1498,78 +1562,189 @@ function drawWarp(ctx: CanvasRenderingContext2D, s: GameState, now: number): voi
   const elapsed = (now - s.phaseStart) / WARP_MS;  // 0..1 across phase
   const progress = Math.min(1, elapsed);
   const intensity = Math.sin(progress * Math.PI);  // ease in/out
-  const reachMax = Math.max(WORLD_W, WORLD_H) * 0.7;
+  const reachMax = Math.max(WORLD_W, WORLD_H) * 0.75;
 
-  // ── Layer 1: distant nebula glow keyed off the destination wave's hue
+  // ── Layer 0: nebula glow keyed off the destination wave's hue
   const nebulaHue = (s.warpTargetWave * 47 + 200) % 360;
   const nebulaGlow = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(WORLD_W, WORLD_H));
-  nebulaGlow.addColorStop(0, `hsla(${nebulaHue}, 75%, 38%, ${0.42 * intensity})`);
+  nebulaGlow.addColorStop(0, `hsla(${nebulaHue}, 80%, 38%, ${0.45 * intensity})`);
   nebulaGlow.addColorStop(0.45, `hsla(${nebulaHue}, 60%, 22%, ${0.20 * intensity})`);
   nebulaGlow.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = nebulaGlow;
   ctx.fillRect(0, 0, WORLD_W, WORLD_H);
 
-  // ── Layer 2: warp tunnel star streaks
-  const list = ensureWarpStars();
+  // ── Layer 1: hyperspace ENGAGE punch — fades over first 8% of phase
+  if (progress < 0.08) {
+    const punchAlpha = (1 - progress / 0.08) * 0.85;
+    ctx.fillStyle = `rgba(255,250,240,${punchAlpha})`;
+    ctx.fillRect(0, 0, WORLD_W, WORLD_H);
+  }
+
+  // ── Camera shake + slow rotation (sin/cos noise, scales with intensity)
+  const shakeX = Math.sin(now * 0.072) * intensity * 1.6 + Math.sin(now * 0.219) * intensity * 0.6;
+  const shakeY = Math.cos(now * 0.083) * intensity * 1.6 + Math.cos(now * 0.183) * intensity * 0.6;
+  const cameraRot = (progress - 0.5) * 0.45 + Math.sin(progress * Math.PI * 3) * 0.05;
+
+  ctx.save();
+  ctx.translate(cx + shakeX, cy + shakeY);
+  ctx.rotate(cameraRot);
+  ctx.translate(-cx, -cy);
+
+  // ── Layer 2a: chromatic ribbons — large translucent sin curves drifting
+  const ribbons = ensureWarpRibbons();
+  ctx.globalCompositeOperation = 'lighter';
   ctx.lineCap = 'round';
-  // Tunnel fades as the specimen disc takes over the centre — gives focal depth.
-  const tunnelFade = 1 - Math.max(0, progress - 0.55) * 1.4;
-  for (const st of list) {
-    st.depth += st.speed * 0.025 * (1 + intensity * 4);
+  for (const rib of ribbons) {
+    const t = now * rib.speed + rib.phase;
+    const baseY = rib.offsetY + Math.sin(t * 0.5) * rib.amp * 0.3;
+    ctx.beginPath();
+    const steps = 20;
+    for (let i = 0; i <= steps; i++) {
+      const x = (i / steps) * WORLD_W;
+      const y = baseY + Math.sin(t + i * 0.55) * rib.amp;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.lineWidth = rib.thickness;
+    ctx.strokeStyle = `hsla(${rib.hue}, 75%, 55%, ${0.10 * intensity})`;
+    ctx.stroke();
+  }
+
+  // ── Layer 2b: spiral tunnel streaks (curl per star → swirl)
+  // Tunnel fades after the disc takes over so focal depth lands on the arrival.
+  const tunnelFade = 1 - Math.max(0, progress - 0.55) * 1.2;
+  const stars = ensureWarpStars();
+  for (const st of stars) {
+    st.depth += st.speed * 0.025 * (1 + intensity * 5);
     if (st.depth > 1) {
       st.depth = 0.02;
       st.angle = Math.random() * Math.PI * 2;
     }
     const reach = st.depth * reachMax;
-    const reachPrev = Math.max(0.001, (st.depth - 0.04) * reachMax);
-    const x1 = cx + Math.cos(st.angle) * reachPrev;
-    const y1 = cy + Math.sin(st.angle) * reachPrev;
-    const x2 = cx + Math.cos(st.angle) * reach;
-    const y2 = cy + Math.sin(st.angle) * reach;
-
+    const reachPrev = Math.max(0.001, (st.depth - 0.05) * reachMax);
+    // Curl: angle wobbles with depth → curved spiral path instead of pure radial
+    const curlNow = st.curl * st.depth;
+    const curlPrev = st.curl * Math.max(0, st.depth - 0.05);
+    const x1 = cx + Math.cos(st.angle + curlPrev) * reachPrev;
+    const y1 = cy + Math.sin(st.angle + curlPrev) * reachPrev;
+    const x2 = cx + Math.cos(st.angle + curlNow) * reach;
+    const y2 = cy + Math.sin(st.angle + curlNow) * reach;
     const alpha = Math.min(1, st.depth * 4) * Math.max(0, tunnelFade);
-    if (alpha <= 0.02) continue;
+    if (alpha < 0.02) continue;
     ctx.globalAlpha = alpha;
-    const c = WARP_PALETTE[st.colour];
-    ctx.strokeStyle = c.line;
-    ctx.shadowColor = c.glow;
-    ctx.shadowBlur = 10;
-    ctx.lineWidth = 0.8 + st.depth * 2;
+    ctx.strokeStyle = WARP_PALETTE[st.colour];
+    ctx.lineWidth = 0.7 + st.depth * 2.4;
     ctx.beginPath();
     ctx.moveTo(x1, y1);
     ctx.lineTo(x2, y2);
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+
+  // ── Layer 2c: vector asteroid silhouettes hurtling past at parallax
+  if (progress > 0.15 && progress < 0.70 && now - lastAsteroidSpawnAt > 650 + Math.random() * 350) {
+    spawnWarpAsteroid(now);
+    lastAsteroidSpawnAt = now;
+  }
+  warpAsteroids = warpAsteroids.filter(a => now - a.startedAt < a.durMs);
+  for (const a of warpAsteroids) {
+    const t = (now - a.startedAt) / a.durMs;
+    if (t < 0 || t >= 1) continue;
+    const distance = t * reachMax * 1.4;
+    const px = cx + Math.cos(a.angle) * distance;
+    const py = cy + Math.sin(a.angle) * distance;
+    const size = 25 + t * 220;
+    const spin = a.spinSpeed * t;
+    const alpha = Math.min(1, t * 3) * Math.max(0, 1 - (t - 0.7) * 3.3);
+    if (alpha < 0.02) continue;
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(spin);
+    ctx.globalAlpha = alpha * 0.55;
+    ctx.strokeStyle = '#a3d958';
+    ctx.lineWidth = 1.6;
+    ctx.shadowColor = '#a3d958';
+    ctx.shadowBlur = 14;
+    ctx.beginPath();
+    for (let i = 0; i < a.vertices.length; i++) {
+      const angle = (i / a.vertices.length) * Math.PI * 2;
+      const r = a.vertices[i] * size;
+      const x = Math.cos(angle) * r;
+      const y = Math.sin(angle) * r;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
   ctx.shadowBlur = 0;
 
-  // ── Layer 3: destination specimen tumbler
-  // Appears at progress=0.10, grows ease-in-cubic to fill the screen by 0.92.
-  if (progress > 0.10) {
-    const t = Math.min(1, (progress - 0.10) / 0.82);
+  // ── Layer 2d: warp flares — periodic shockwave rings from the centre
+  if (progress < 0.85 && now - lastFlareSpawnAt > 600) {
+    warpFlares.push({ startedAt: now, durMs: 900 });
+    lastFlareSpawnAt = now;
+  }
+  warpFlares = warpFlares.filter(f => now - f.startedAt < f.durMs);
+  ctx.globalCompositeOperation = 'lighter';
+  for (const f of warpFlares) {
+    const t = (now - f.startedAt) / f.durMs;
+    if (t < 0 || t >= 1) continue;
+    const r = t * reachMax * 1.2;
+    const a = (1 - t) * 0.5;
+    const grad = ctx.createRadialGradient(cx, cy, r * 0.85, cx, cy, r * 1.05);
+    grad.addColorStop(0, 'rgba(255,255,255,0)');
+    grad.addColorStop(0.6, `rgba(255,255,255,${a * 0.7})`);
+    grad.addColorStop(0.9, `rgba(255,216,74,${a})`);
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 1.05, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
+  ctx.restore();  // unwrap camera shake + rotation
+
+  // ── Layer 3: destination specimen disc (stable; no camera shake on focal)
+  if (progress > 0.30) {
+    const t = Math.min(1, (progress - 0.30) / 0.62);
     const growth = t * t * t;  // ease-in-cubic
-    const minR = 14;
+    const minR = 12;
     const maxR = Math.max(WORLD_W, WORLD_H) * 0.95;
     const r = minR + (maxR - minR) * growth;
-    const rotate = progress * Math.PI * 1.1 + Math.sin(progress * Math.PI * 5) * 0.07;
-
+    const rotate = progress * Math.PI * 0.6 + Math.sin(progress * Math.PI * 4) * 0.05;
     const target = tryLoadOverride(s.warpTargetWave);
 
-    // Disc body — clip to circle, fill with the bg image (or hue-tinted radial
-    // gradient as a fallback while the image streams in).
+    // Chromatic-aberration "lensing" fake: render the bg image multiple times
+    // with offset positions while small, sharpening as we arrive.
+    const aberration = (1 - t) * 9;
+
     ctx.save();
     ctx.translate(cx, cy);
     ctx.beginPath();
     ctx.arc(0, 0, r, 0, Math.PI * 2);
     ctx.clip();
     if (target) {
-      ctx.save();
       ctx.rotate(rotate);
-      const imgScale = (r * 2.2) / Math.min(target.width, target.height);  // 2.2 → slight overscan so rotation never reveals an empty corner
+      const imgScale = (r * 2.4) / Math.min(target.width, target.height);
       const w = target.width * imgScale;
       const h = target.height * imgScale;
-      ctx.drawImage(target, -w / 2, -h / 2, w, h);
-      ctx.restore();
+      if (aberration > 1) {
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = 0.55;
+        ctx.drawImage(target, -w / 2 - aberration, -h / 2, w, h);
+        ctx.drawImage(target, -w / 2 + aberration, -h / 2, w, h);
+        ctx.drawImage(target, -w / 2, -h / 2 - aberration * 0.7, w, h);
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1 - aberration / 12;
+        ctx.drawImage(target, -w / 2, -h / 2, w, h);
+        ctx.globalAlpha = 1;
+      } else {
+        ctx.drawImage(target, -w / 2, -h / 2, w, h);
+      }
     } else {
       const grad = ctx.createRadialGradient(0, -r * 0.3, r * 0.1, 0, 0, r);
       grad.addColorStop(0, `hsl(${nebulaHue}, 60%, 55%)`);
@@ -1580,24 +1755,24 @@ function drawWarp(ctx: CanvasRenderingContext2D, s: GameState, now: number): voi
     }
     ctx.restore();
 
-    // Rim light (drawn after clip release so the glow sits outside the disc)
+    // Rim glow drawn after clip release so the bloom sits outside the disc
     ctx.save();
     ctx.translate(cx, cy);
     const rimAlpha = Math.min(1, 0.55 + intensity * 0.45);
     ctx.strokeStyle = `rgba(255,216,74,${rimAlpha})`;
     ctx.shadowColor = '#ffd84a';
-    ctx.shadowBlur = 24 + r * 0.06;
-    ctx.lineWidth = 1.6 + r * 0.004;
+    ctx.shadowBlur = 28 + r * 0.06;
+    ctx.lineWidth = 1.8 + r * 0.005;
     ctx.beginPath();
     ctx.arc(0, 0, r, 0, Math.PI * 2);
     ctx.stroke();
     ctx.restore();
   }
 
-  // ── Layer 4: approach flash for the arrival beat
-  if (progress > 0.84) {
-    const flashT = (progress - 0.84) / 0.16;
-    const flashAlpha = Math.sin(flashT * Math.PI);  // 0 → 1 → 0 across the window
+  // ── Layer 4: ARRIVAL flash
+  if (progress > 0.86) {
+    const flashT = (progress - 0.86) / 0.14;
+    const flashAlpha = Math.sin(flashT * Math.PI);
     const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(WORLD_W, WORLD_H));
     grad.addColorStop(0, `rgba(255,250,235,${flashAlpha * 0.95})`);
     grad.addColorStop(0.4, `rgba(255,216,74,${flashAlpha * 0.45})`);
