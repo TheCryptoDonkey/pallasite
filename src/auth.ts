@@ -122,11 +122,32 @@ export async function handleAuthCallback(): Promise<SignetSession | null> {
   if (!window.Signet?.handleRedirectCallback) return null;
   try {
     const result = await window.Signet.handleRedirectCallback();
+    // Whether the callback resolved to a session, denied, or invalid, the
+    // SDK should have torn down its dialog. Reports of "buttons don't work
+    // after returning from sign-in" are consistent with a stale dialog
+    // covering the title screen — belt-and-braces sweep here keeps the
+    // title interactive even if the SDK leaves something behind.
+    if (result.kind !== 'no-callback') cleanupRedirectArtefacts();
     return result.kind === 'session' ? result.session : null;
-  } catch {
-    // The SDK already logs invalid-callback diagnostics. Swallow here so a
-    // stray bookmark with stale params can't block the title screen.
+  } catch (err) {
+    // The SDK already logs invalid-callback diagnostics. Sweep artefacts
+    // and swallow so a stray bookmark with stale params can't strand the UI.
+    console.warn('[auth] handleRedirectCallback threw:', err);
+    cleanupRedirectArtefacts();
     return null;
+  }
+}
+
+/**
+ * Remove any Signet SDK dialog/callback overlays from the DOM. Called after
+ * handleRedirectCallback resolves so a stale modal can't intercept clicks
+ * on the title screen. Also strips the URL hash if one survived consume.
+ */
+function cleanupRedirectArtefacts(): void {
+  document.querySelectorAll('.signet-login-dialog').forEach(el => el.remove());
+  document.querySelectorAll('.signet-login-callback').forEach(el => el.remove());
+  if (location.hash) {
+    history.replaceState(null, '', location.pathname + location.search);
   }
 }
 
