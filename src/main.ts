@@ -12,7 +12,7 @@ import { render, preloadBackground, setRenderMode } from './render.js';
 import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding } from './ui.js';
 import { handleAuthCallback, tryRestore, sweepSignetArtefacts } from './auth.js';
 import * as audio from './audio.js';
-import { musicSetTrackForState, preloadAllTracks, musicSetPaused } from './music.js';
+import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicForceRefresh } from './music.js';
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, setDisplayMode } from './display.js';
@@ -360,8 +360,18 @@ window.addEventListener('pointerdown', () => {
 // unlock from its own row taps reliably on iOS. A pointerdown anywhere on
 // the page (logo long-press, IGNITE, settings tap, even a stray tap) covers
 // every entry path.
+//
+// Two independent locks on iOS Safari: the AudioContext (cleared by ctx.resume
+// inside a gesture) AND each HTMLAudioElement (cleared by an in-gesture play).
+// The title music's element had its first .play() attempted by the game loop
+// before any user gesture, so iOS marks it blocked — even after we resume the
+// context, that specific element stays silent. We force-refresh the music
+// memo and trigger a fresh musicSetTrackForState pass *inside* this gesture
+// so the title track's .play() is re-issued under the gesture.
 const firstUnlock = (): void => {
   void audio.unlockAudio();
+  musicForceRefresh();
+  musicSetTrackForState(state);
   window.removeEventListener('pointerdown', firstUnlock);
   window.removeEventListener('keydown', firstUnlock);
 };
