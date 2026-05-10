@@ -556,8 +556,9 @@ export function beginWave(s: GameState, wave: number): void {
   // the heist (5), curtain (12), and boss (25) keep their hand-authored
   // shapes. Vein streams sats per hit, brings a UFO swarm 2s later.
   if (!setPiece && wave >= VEIN_SPAWN_MIN_WAVE && wave <= VEIN_SPAWN_MAX_WAVE
-      && wave !== FINAL_WAVE && gameRng() < VEIN_SPAWN_CHANCE) {
-    spawnVein(s, wave);
+      && wave !== FINAL_WAVE) {
+    const roll = gameRng();
+    if (roll < VEIN_SPAWN_CHANCE) spawnVein(s, wave);
   }
   // Switch to wavestart unconditionally — the warp transition is done by the
   // time beginWave fires (1300ms after startWarp), so leaving phase='warp' just
