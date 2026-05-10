@@ -1443,22 +1443,42 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState, now: number
 
 // ── Warp transition ───────────────────────────────────────────────────────────
 
-interface WarpStar { angle: number; depth: number; speed: number; }
+type WarpColour = 'white' | 'olive' | 'silver' | 'gold';
+interface WarpStar { angle: number; depth: number; speed: number; colour: WarpColour; }
+const WARP_PALETTE: Record<WarpColour, { line: string; glow: string }> = {
+  white:  { line: '#ffffff', glow: '#5b9dff' },
+  olive:  { line: '#a3d958', glow: '#7bb83a' },  // olivine green
+  silver: { line: '#cbd5e1', glow: '#94a3b8' },  // nickel-iron
+  gold:   { line: '#ffd84a', glow: '#ff9933' },
+};
 let warpStars: WarpStar[] | null = null;
 
 function ensureWarpStars(): WarpStar[] {
   if (warpStars) return warpStars;
   warpStars = [];
-  for (let i = 0; i < 90; i++) {
+  for (let i = 0; i < 160; i++) {
+    const r = Math.random();
+    const colour: WarpColour = r < 0.5 ? 'white' : r < 0.78 ? 'olive' : r < 0.93 ? 'silver' : 'gold';
     warpStars.push({
       angle: Math.random() * Math.PI * 2,
       depth: Math.random() * 0.05,
-      speed: 1 + Math.random() * 1.5,
+      speed: 1 + Math.random() * 1.6,
+      colour,
     });
   }
   return warpStars;
 }
 
+/**
+ * Inter-wave warp cutscene. Layered build:
+ *   1. Black-fill + drifting nebula glow keyed off the destination wave's hue
+ *   2. Multi-coloured tunnel of star streaks (white + olivine + silver + gold)
+ *   3. Destination specimen tumbling in a circular disc, growing as we
+ *      "approach" — uses the wave bg image (or a procedural disc if not yet
+ *      loaded). Slow yaw + slight wobble.
+ *   4. Approach flash + rim glow for the arrival beat
+ * No text — the wavestart banner that follows handles the wave name + lore.
+ */
 function drawWarp(ctx: CanvasRenderingContext2D, s: GameState, now: number): void {
   ctx.save();
   // Black-fill the entire canvas first (in canvas-pixel coords) so modern-mode
@@ -1478,26 +1498,41 @@ function drawWarp(ctx: CanvasRenderingContext2D, s: GameState, now: number): voi
   const elapsed = (now - s.phaseStart) / WARP_MS;  // 0..1 across phase
   const progress = Math.min(1, elapsed);
   const intensity = Math.sin(progress * Math.PI);  // ease in/out
+  const reachMax = Math.max(WORLD_W, WORLD_H) * 0.7;
 
+  // ── Layer 1: distant nebula glow keyed off the destination wave's hue
+  const nebulaHue = (s.warpTargetWave * 47 + 200) % 360;
+  const nebulaGlow = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(WORLD_W, WORLD_H));
+  nebulaGlow.addColorStop(0, `hsla(${nebulaHue}, 75%, 38%, ${0.42 * intensity})`);
+  nebulaGlow.addColorStop(0.45, `hsla(${nebulaHue}, 60%, 22%, ${0.20 * intensity})`);
+  nebulaGlow.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = nebulaGlow;
+  ctx.fillRect(0, 0, WORLD_W, WORLD_H);
+
+  // ── Layer 2: warp tunnel star streaks
   const list = ensureWarpStars();
   ctx.lineCap = 'round';
+  // Tunnel fades as the specimen disc takes over the centre — gives focal depth.
+  const tunnelFade = 1 - Math.max(0, progress - 0.55) * 1.4;
   for (const st of list) {
     st.depth += st.speed * 0.025 * (1 + intensity * 4);
     if (st.depth > 1) {
       st.depth = 0.02;
       st.angle = Math.random() * Math.PI * 2;
     }
-    const reach = st.depth * Math.max(WORLD_W, WORLD_H) * 0.7;
-    const reachPrev = Math.max(0.001, (st.depth - 0.04) * Math.max(WORLD_W, WORLD_H) * 0.7);
+    const reach = st.depth * reachMax;
+    const reachPrev = Math.max(0.001, (st.depth - 0.04) * reachMax);
     const x1 = cx + Math.cos(st.angle) * reachPrev;
     const y1 = cy + Math.sin(st.angle) * reachPrev;
     const x2 = cx + Math.cos(st.angle) * reach;
     const y2 = cy + Math.sin(st.angle) * reach;
 
-    const alpha = Math.min(1, st.depth * 4);
+    const alpha = Math.min(1, st.depth * 4) * Math.max(0, tunnelFade);
+    if (alpha <= 0.02) continue;
     ctx.globalAlpha = alpha;
-    ctx.strokeStyle = '#ffffff';
-    ctx.shadowColor = '#5b9dff';
+    const c = WARP_PALETTE[st.colour];
+    ctx.strokeStyle = c.line;
+    ctx.shadowColor = c.glow;
     ctx.shadowBlur = 10;
     ctx.lineWidth = 0.8 + st.depth * 2;
     ctx.beginPath();
@@ -1508,36 +1543,68 @@ function drawWarp(ctx: CanvasRenderingContext2D, s: GameState, now: number): voi
   ctx.globalAlpha = 1;
   ctx.shadowBlur = 0;
 
-  // Banner: fade in across the first 12% of the phase, hold, fade out across
-  // the last 12%. Long warp + holding alpha=1 lets the lore read clearly.
-  const bannerAlpha = progress < 0.12 ? progress / 0.12 : progress > 0.88 ? (1 - progress) / 0.12 : 1;
-  ctx.globalAlpha = Math.max(0, bannerAlpha);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
+  // ── Layer 3: destination specimen tumbler
+  // Appears at progress=0.10, grows ease-in-cubic to fill the screen by 0.92.
+  if (progress > 0.10) {
+    const t = Math.min(1, (progress - 0.10) / 0.82);
+    const growth = t * t * t;  // ease-in-cubic
+    const minR = 14;
+    const maxR = Math.max(WORLD_W, WORLD_H) * 0.95;
+    const r = minR + (maxR - minR) * growth;
+    const rotate = progress * Math.PI * 1.1 + Math.sin(progress * Math.PI * 5) * 0.07;
 
-  // Specimen name front-and-centre — the wavestart banner repeats it big.
-  ctx.font = 'bold 36px ui-monospace, monospace';
-  ctx.fillStyle = '#ffd84a';
-  ctx.shadowColor = '#ffd84a';
-  ctx.shadowBlur = 18;
-  ctx.fillText(waveName(s.warpTargetWave), cx, cy - 8);
+    const target = tryLoadOverride(s.warpTargetWave);
 
-  // Specimen lore underneath.
-  const warpLore = waveSubtitle(s.warpTargetWave);
-  if (warpLore) {
-    ctx.font = '15px ui-monospace, monospace';
-    ctx.fillStyle = '#b48cff';
-    ctx.shadowColor = '#b48cff';
-    ctx.shadowBlur = 8;
-    ctx.fillText(warpLore, cx, cy + 30);
+    // Disc body — clip to circle, fill with the bg image (or hue-tinted radial
+    // gradient as a fallback while the image streams in).
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.clip();
+    if (target) {
+      ctx.save();
+      ctx.rotate(rotate);
+      const imgScale = (r * 2.2) / Math.min(target.width, target.height);  // 2.2 → slight overscan so rotation never reveals an empty corner
+      const w = target.width * imgScale;
+      const h = target.height * imgScale;
+      ctx.drawImage(target, -w / 2, -h / 2, w, h);
+      ctx.restore();
+    } else {
+      const grad = ctx.createRadialGradient(0, -r * 0.3, r * 0.1, 0, 0, r);
+      grad.addColorStop(0, `hsl(${nebulaHue}, 60%, 55%)`);
+      grad.addColorStop(0.6, `hsl(${nebulaHue}, 55%, 30%)`);
+      grad.addColorStop(1, `hsl(${nebulaHue}, 50%, 12%)`);
+      ctx.fillStyle = grad;
+      ctx.fillRect(-r, -r, r * 2, r * 2);
+    }
+    ctx.restore();
+
+    // Rim light (drawn after clip release so the glow sits outside the disc)
+    ctx.save();
+    ctx.translate(cx, cy);
+    const rimAlpha = Math.min(1, 0.55 + intensity * 0.45);
+    ctx.strokeStyle = `rgba(255,216,74,${rimAlpha})`;
+    ctx.shadowColor = '#ffd84a';
+    ctx.shadowBlur = 24 + r * 0.06;
+    ctx.lineWidth = 1.6 + r * 0.004;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
   }
 
-  // Quiet "HOLD COURSE" line as the warp settles.
-  ctx.font = '13px ui-monospace, monospace';
-  ctx.fillStyle = 'rgba(180,140,255,0.7)';
-  ctx.shadowBlur = 4;
-  ctx.letterSpacing = '0.2em' as unknown as string;
-  ctx.fillText('HOLD COURSE', cx, cy + 64);
+  // ── Layer 4: approach flash for the arrival beat
+  if (progress > 0.84) {
+    const flashT = (progress - 0.84) / 0.16;
+    const flashAlpha = Math.sin(flashT * Math.PI);  // 0 → 1 → 0 across the window
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(WORLD_W, WORLD_H));
+    grad.addColorStop(0, `rgba(255,250,235,${flashAlpha * 0.95})`);
+    grad.addColorStop(0.4, `rgba(255,216,74,${flashAlpha * 0.45})`);
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, WORLD_W, WORLD_H);
+  }
 
   ctx.restore();
 }
