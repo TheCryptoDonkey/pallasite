@@ -353,6 +353,12 @@ interface WaveSetPiece {
    *  drive spawns themselves via tick() so the loop's automatic spawn
    *  shouldn't fire. */
   suppressDefaultUfos?: boolean;
+  /** Override the player's spawn position + facing for both the
+   *  wavestart entry AND mid-wave respawns after death. Without this
+   *  the player respawns at WORLD_W/2, WORLD_H/2 — which on the heist
+   *  drops them straight onto the pallasite + into the mine ring.
+   *  Returned `rot` defaults to -PI/2 (facing up). */
+  playerSpawn?: { x: number; y: number; rot?: number };
   /** Display tag shown on the wavestart banner. */
   banner?: string;
 }
@@ -365,17 +371,9 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
   // the ring — the heist isn't just a target, it's a moving-cover scrap
   // with one obvious prize.
   5: {
+    playerSpawn: { x: WORLD_W / 2, y: WORLD_H - 90 },
     setup(s) {
       const cx = WORLD_W / 2, cy = WORLD_H / 2;
-      // Park the player at the bottom edge facing up, so they have to
-      // travel to the prize instead of spawning inside the pallasite.
-      if (s.ship.alive) {
-        s.ship.pos.x = cx;
-        s.ship.pos.y = WORLD_H - 90;
-        s.ship.rot = -Math.PI / 2;
-        s.ship.vel.x = 0;
-        s.ship.vel.y = 0;
-      }
       // The prize.
       s.asteroids.push(spawnAsteroid('large', s.wave, { x: cx, y: cy }, { x: 0, y: 0 }, 'pallasite'));
       // Vault — 5 mines in a tight ring. Tight enough that brute-forcing
@@ -468,14 +466,17 @@ export function beginWave(s: GameState, wave: number): void {
   s.bulletCurtainKillTarget = 0;
   // 1979 homage: each new wave re-centres the ship and grants brief invuln,
   // matching the original arcade behaviour. Skips on wave 1 (startGame already
-  // placed the ship there) but harmless to repeat.
+  // placed the ship there) but harmless to repeat. Set pieces with their own
+  // spawn override get those coords so the player doesn't drop straight onto
+  // a hand-placed hazard.
   if (s.ship.alive) {
-    s.ship.pos.x = WORLD_W / 2;
-    s.ship.pos.y = WORLD_H / 2;
+    const spawn = WAVE_SET_PIECES[wave]?.playerSpawn;
+    s.ship.pos.x = spawn?.x ?? WORLD_W / 2;
+    s.ship.pos.y = spawn?.y ?? WORLD_H / 2;
     s.ship.vel.x = 0;
     s.ship.vel.y = 0;
     s.ship.rotVel = 0;
-    s.ship.rot = -Math.PI / 2;
+    s.ship.rot = spawn?.rot ?? -Math.PI / 2;
     s.ship.invulnerableUntil = performance.now() + SHIP_INVULN_MS;
   }
   const setPiece = WAVE_SET_PIECES[wave];
@@ -2616,6 +2617,15 @@ function killShip(s: GameState): void {
 function respawnShip(s: GameState): void {
   if (s.phase === 'gameover') return;
   s.ship = makeShip();
+  // Set-piece waves with a custom player spawn (e.g. heist drops you at
+  // the bottom edge) need the same coords on respawn — otherwise the
+  // player's lost a life only to be re-dropped on the hand-placed hazard.
+  const spawn = WAVE_SET_PIECES[s.wave]?.playerSpawn;
+  if (spawn) {
+    s.ship.pos.x = spawn.x;
+    s.ship.pos.y = spawn.y;
+    s.ship.rot = spawn.rot ?? -Math.PI / 2;
+  }
   s.ship.invulnerableUntil = performance.now() + SHIP_INVULN_MS;
   toastNow(s, '');
 }
