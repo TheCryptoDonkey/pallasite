@@ -1748,9 +1748,14 @@ function renderRunCredits(
     renderSocialActions(socialWrap, state);
   }
 
-  // Credits scroll — 24 specimens + powered-by + lore. Pinned below the
-  // primary actions so it doesn't push them off screen.
-  renderCreditsRoll(overlay, undefined, state);
+  // Credits scroll — 24 specimens + powered-by + lore. Completion only:
+  // on a regular gameover the 460px panel sits empty for ~6s while the inner
+  // scrolls in, which dominates the screen when there's little above it
+  // (especially when not signed in, since faucet status + social actions
+  // are skipped). Beating the game earns the credits; dying does not.
+  if (opts.isCompletion) {
+    renderCreditsRoll(overlay, undefined, state);
+  }
 
   // Auto-skip timer — counts down to TITLE. Resets on any keydown so a
   // player who's reading the credits doesn't get yanked away. The SKIP
