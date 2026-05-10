@@ -11,7 +11,7 @@ import { getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRel
 import { getTouchMode, setTouchMode, type TouchInputMode } from './touch.js';
 import { getDisplayMode, setDisplayMode, type DisplayMode } from './display.js';
 import * as auth from './auth.js';
-import { addLocalHighScore, getLocalHighScores, isHighScore, publishScore } from './score.js';
+import { addLocalHighScore, getLocalHighScores, isHighScore, publishScore, fetchGlobalHighScores, type GlobalHighScore } from './score.js';
 import { startGame, startDeathReplay, toastNow } from './game.js';
 import * as audio from './audio.js';
 import { fetchProfile, getCachedProfile, bestName } from './profile.js';
@@ -176,8 +176,55 @@ export function renderTitle(state: GameState): void {
     renderLeaderboardBlock(overlay, list, '— LOCAL HIGH SCORES —');
   }
 
+  // Global leaderboard from kind 30762 events on relays. Rendered async so
+  // the title screen never blocks on a network round-trip — show a placeholder
+  // while it loads, swap in the real list when the relays answer.
+  renderGlobalLeaderboard(overlay);
+
   // Keyboard cheatsheet removed — HOW TO PLAY button covers the same content
   // and the duplicate strip cramped the desktop layout against the high scores.
+}
+
+function renderGlobalLeaderboard(parent: HTMLElement): void {
+  const container = el('div', { parent });
+  const block = el('div', { className: 'leaderboard-block', parent: container });
+  el('p', { className: 'leaderboard-title', parent: block, text: '— GLOBAL HIGH SCORES —' });
+  const status = el('p', { parent: block, text: 'Loading from relays…' });
+  status.style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.7);letter-spacing:0.06em;margin:0;';
+
+  void fetchGlobalHighScores().then(async raw => {
+    if (!container.isConnected) return;
+    if (raw.length === 0) {
+      status.textContent = 'No global scores yet — be the first.';
+      return;
+    }
+    const top = raw.slice(0, 5);
+    const entries = await Promise.all(top.map(resolveDisplayName));
+    if (!container.isConnected) return;
+    container.innerHTML = '';
+    renderLeaderboardBlock(container, entries.map(globalToLocal), '— GLOBAL HIGH SCORES —');
+  }).catch(() => {
+    if (!container.isConnected) return;
+    status.textContent = 'Could not reach relays.';
+  });
+}
+
+async function resolveDisplayName(entry: GlobalHighScore): Promise<GlobalHighScore & { displayName: string }> {
+  const cached = getCachedProfile(entry.pubkey);
+  const profile = cached ?? await fetchProfile(entry.pubkey).catch(() => null);
+  return { ...entry, displayName: bestName(profile, entry.pubkey) };
+}
+
+function globalToLocal(entry: GlobalHighScore & { displayName: string }): ReturnType<typeof getLocalHighScores>[number] {
+  return {
+    name: entry.displayName,
+    score: entry.score,
+    sats: entry.sats,
+    wave: entry.wave,
+    at: entry.at,
+    pubkey: entry.pubkey,
+    eventId: entry.eventId,
+  };
 }
 
 function renderDifficultyRow(parent: HTMLElement): void {

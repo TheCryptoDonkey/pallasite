@@ -122,6 +122,166 @@ export async function publishScore(
   return { event: signed, publishedTo, failed };
 }
 
+/**
+ * A score event we read off the wire. Same shape as NostrEvent but pinned to
+ * kind 30762 so the global-leaderboard code doesn't have to keep re-asserting.
+ */
+interface ScoreEvent {
+  id: string;
+  pubkey: string;
+  kind: 30762;
+  created_at: number;
+  content: string;
+  tags: string[][];
+  sig: string;
+}
+
+function isScoreEvent(value: unknown): value is ScoreEvent {
+  if (typeof value !== 'object' || value === null) return false;
+  const e = value as Record<string, unknown>;
+  return e.kind === 30762
+    && typeof e.id === 'string'
+    && typeof e.pubkey === 'string'
+    && typeof e.created_at === 'number'
+    && Array.isArray(e.tags);
+}
+
+function tagValue(tags: string[][], name: string): string | undefined {
+  for (const t of tags) {
+    if (t[0] === name && typeof t[1] === 'string') return t[1];
+  }
+  return undefined;
+}
+
+function hasTagValue(tags: string[][], name: string, value: string): boolean {
+  for (const t of tags) {
+    if (t[0] === name && t[1] === value) return true;
+  }
+  return false;
+}
+
+/**
+ * One entry on the global leaderboard. Pubkey is hex (no display name yet —
+ * the UI layer resolves kind 0 separately so name fetches don't block the
+ * scores from rendering).
+ */
+export interface GlobalHighScore {
+  pubkey: string;
+  score: number;
+  sats: number;
+  wave: number;
+  /** ISO timestamp of the event's `created_at`. */
+  at: string;
+  eventId: string;
+}
+
+const GLOBAL_CACHE_TTL_MS = 30_000;
+let globalCache: { at: number; entries: GlobalHighScore[] } | null = null;
+
+/**
+ * Pull kind 30762 score events for this game from the active relays and
+ * collapse them into a per-player best-score leaderboard.
+ *
+ * - Filters out events tagged `cheated:true`.
+ * - Keeps the highest score per pubkey across all that player's runs.
+ * - Caches the result for 30s so navigating in and out of the title screen
+ *   doesn't re-query relays.
+ *
+ * Resolves with `[]` rather than rejecting if relays are unreachable — the
+ * leaderboard should fail quietly, not crash the title screen.
+ */
+export async function fetchGlobalHighScores(
+  relays: readonly string[] = getActiveRelays(),
+  opts: { force?: boolean; timeoutMs?: number; limit?: number } = {},
+): Promise<GlobalHighScore[]> {
+  if (!opts.force && globalCache && Date.now() - globalCache.at < GLOBAL_CACHE_TTL_MS) {
+    return globalCache.entries;
+  }
+  if (relays.length === 0) return [];
+
+  const timeoutMs = opts.timeoutMs ?? 5000;
+  const limit = opts.limit ?? 200;
+
+  return new Promise<GlobalHighScore[]>(resolve => {
+    const sockets: WebSocket[] = [];
+    const bestByPubkey = new Map<string, GlobalHighScore>();
+    let settled = false;
+    let doneCount = 0;
+
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      sockets.forEach(s => { try { s.close(); } catch { /* ignore */ } });
+      const entries = Array.from(bestByPubkey.values()).sort((a, b) => b.score - a.score);
+      globalCache = { at: Date.now(), entries };
+      resolve(entries);
+    };
+
+    const timer = setTimeout(settle, timeoutMs);
+
+    const consider = (event: ScoreEvent): void => {
+      if (hasTagValue(event.tags, 'cheated', 'true')) return;
+      const scoreStr = tagValue(event.tags, 'score');
+      const score = scoreStr ? parseInt(scoreStr, 10) : NaN;
+      if (!Number.isFinite(score) || score <= 0) return;
+      const existing = bestByPubkey.get(event.pubkey);
+      if (existing && existing.score >= score) return;
+      bestByPubkey.set(event.pubkey, {
+        pubkey: event.pubkey,
+        score,
+        sats: parseInt(tagValue(event.tags, 'sats') ?? '0', 10) || 0,
+        wave: parseInt(tagValue(event.tags, 'wave') ?? '0', 10) || 0,
+        at: new Date(event.created_at * 1000).toISOString(),
+        eventId: event.id,
+      });
+    };
+
+    for (const url of relays) {
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(url);
+      } catch {
+        doneCount += 1;
+        if (doneCount >= relays.length) settle();
+        continue;
+      }
+      sockets.push(ws);
+      const subId = 'g' + Math.random().toString(36).slice(2, 10);
+      let relayDone = false;
+      const markDone = (): void => {
+        if (relayDone) return;
+        relayDone = true;
+        doneCount += 1;
+        if (doneCount >= relays.length) settle();
+      };
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify(['REQ', subId, {
+          kinds: [30762],
+          '#game': [GAME_ID],
+          limit,
+        }]));
+      };
+
+      ws.onmessage = (ev: MessageEvent) => {
+        let msg: unknown;
+        try { msg = JSON.parse(typeof ev.data === 'string' ? ev.data : ''); } catch { return; }
+        if (!Array.isArray(msg)) return;
+        if (msg[0] === 'EVENT' && msg[1] === subId) {
+          const event = msg[2];
+          if (isScoreEvent(event)) consider(event);
+        } else if (msg[0] === 'EOSE' && msg[1] === subId) {
+          markDone();
+        }
+      };
+
+      ws.onerror = markDone;
+      ws.onclose = markDone;
+    }
+  });
+}
+
 function publishToRelay(url: string, event: NostrEvent): Promise<void> {
   return new Promise((resolve, reject) => {
     let ws: WebSocket;
