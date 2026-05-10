@@ -27,6 +27,9 @@ import {
   ASTEROID_BASE_SPEED, ASTEROID_SPEED_PER_WAVE,
   COIN_RADIUS, COIN_TTL_MS,
   POINTS_PER_SIZE, SATS_PER_SIZE, RADIUS_PER_SIZE,
+  VEIN_HP, VEIN_RADIUS_MUL, VEIN_SATS_PER_HIT, VEIN_SCORE_PER_HIT,
+  VEIN_JACKPOT_SATS, VEIN_JACKPOT_SCORE, VEIN_SPAWN_CHANCE,
+  VEIN_SPAWN_MIN_WAVE, VEIN_SPAWN_MAX_WAVE, VEIN_SWARM_DELAY_MS,
   UFO_RADIUS, UFO_SPEED, UFO_HP, UFO_SHOT_SPREAD, UFO_SHOOT_INTERVAL, UFO_BULLET_SPEED_MUL,
   UFO_BULLET_SPEED, UFO_BULLET_TTL_MS, UFO_LIFETIME_MS,
   UFO_ZIG_INTERVAL_MS, UFO_POINTS, UFO_SATS,
@@ -116,6 +119,7 @@ export function makeInitialState(): GameState {
     ufoKilledThisWave: false,
     ufoKillsThisWave: 0,
     bulletCurtainKillTarget: 0,
+    veinSwarmDueAt: 0,
   };
 }
 
@@ -267,12 +271,18 @@ function pickAsteroidType(wave: number): AsteroidType {
   return 'stony';
 }
 
-export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?: Vec2, type?: AsteroidType): Asteroid {
+export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?: Vec2, type?: AsteroidType, opts?: { vein?: boolean }): Asteroid {
   const mods = currentMods();
-  const radius = RADIUS_PER_SIZE[size];
+  const isVein = opts?.vein === true;
+  // Veins are oversized and drift slowly — they're a fixed-position target,
+  // not a hazard the player has to dodge. Standard asteroids use the per-wave
+  // speed band as before.
+  const radius = RADIUS_PER_SIZE[size] * (isVein ? VEIN_RADIUS_MUL : 1);
   const speedBase = (ASTEROID_BASE_SPEED + wave * ASTEROID_SPEED_PER_WAVE) * mods.asteroidSpeedMul;
   const sizeMul = size === 'large' ? 0.7 : size === 'medium' ? 1 : 1.5;
-  const speed = speedBase * sizeMul * (0.7 + Math.random() * 0.6);
+  const speed = isVein
+    ? speedBase * 0.2 * (0.7 + Math.random() * 0.6)
+    : speedBase * sizeMul * (0.7 + Math.random() * 0.6);
 
   // For an edge-spawned asteroid (no explicit pos given), use the inward angle
   // ± 60° so velocity always has a meaningful inward component. For explicit
@@ -295,7 +305,7 @@ export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?
     velocity = vel ?? { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed };
   }
 
-  const t = type ?? pickAsteroidType(wave);
+  const t = isVein ? 'pallasite' : (type ?? pickAsteroidType(wave));
   const cfg = ASTEROID_TYPE_CONFIG[t];
 
   return {
@@ -305,12 +315,13 @@ export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?
     alive: true,
     size,
     type: t,
-    hp: size === 'large' ? cfg.hp : 1,
+    hp: isVein ? VEIN_HP : (size === 'large' ? cfg.hp : 1),
     hitFlash: 0,
     rot: Math.random() * Math.PI * 2,
-    rotVel: (Math.random() - 0.5) * 1.6,
+    rotVel: (Math.random() - 0.5) * (isVein ? 0.6 : 1.6),
     shape: makeAsteroidShape(),
     hue: Math.random() * 60 - 30,
+    isVein,
   };
 }
 
@@ -429,29 +440,72 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
   },
 };
 
-/** Spawn a curtain cruiser from the visible band edge (so they enter
- *  on-screen on phones too) with the standard cruiser stats. */
-function makeCurtainCruiser(s: GameState, dir: 1 | -1): Ufo {
+/**
+ * Spawn the pallasite-vein event. Picks the candidate position furthest
+ * from any mine so the player has room to engage without the gravity
+ * wells biting. Sets veinSwarmDueAt so the UFO swarm arrives after a
+ * brief telegraph window. Plays a chime + toast.
+ */
+function spawnVein(s: GameState, wave: number): void {
+  const margin = 120;
+  const candidates: Vec2[] = [
+    { x: margin,           y: margin },
+    { x: WORLD_W - margin, y: margin },
+    { x: margin,           y: WORLD_H - margin },
+    { x: WORLD_W - margin, y: WORLD_H - margin },
+    { x: WORLD_W / 2,      y: margin },
+    { x: WORLD_W / 2,      y: WORLD_H - margin },
+  ];
+  // Pick the candidate that's furthest from the nearest mine — gives the
+  // player a clear approach. Falls back to the first candidate when there
+  // are no mines.
+  let best = candidates[Math.floor(gameRng() * candidates.length)];
+  let bestMin = -Infinity;
+  for (const c of candidates) {
+    let minDist = Infinity;
+    for (const m of s.mines) {
+      const dx = m.pos.x - c.x;
+      const dy = m.pos.y - c.y;
+      const d = Math.hypot(dx, dy);
+      if (d < minDist) minDist = d;
+    }
+    if (minDist > bestMin) { bestMin = minDist; best = c; }
+  }
+  const vein = spawnAsteroid('large', wave, best, { x: 0, y: 0 }, 'pallasite', { vein: true });
+  s.asteroids.push(vein);
+  s.veinSwarmDueAt = performance.now() + VEIN_SWARM_DELAY_MS;
+  audio.coinPickup();
+  toastNow(s, 'PALLASITE VEIN · STAKE YOUR CLAIM');
+}
+
+/** Spawn a UFO from the visible band edge so it enters on-screen even on
+ *  cropped portrait. Used by the curtain (cruisers) and vein-swarm (elites)
+ *  paths that need direction control beyond the random spawnUfo. */
+function makeEdgeUfo(type: UfoType, dir: 1 | -1): Ufo {
   const visBounds = getVisibleBoundsW();
   const y = visBounds.top + (visBounds.bottom - visBounds.top) * (0.25 + gameRng() * 0.5);
-  const x = dir === 1 ? visBounds.left - UFO_RADIUS.cruiser : visBounds.right + UFO_RADIUS.cruiser;
-  const speed = UFO_SPEED.cruiser;
-  void s;  // touched for symmetry / future use
+  const x = dir === 1 ? visBounds.left - UFO_RADIUS[type] : visBounds.right + UFO_RADIUS[type];
   return {
     pos: { x, y },
-    vel: { x: dir * speed, y: 0 },
-    radius: UFO_RADIUS.cruiser,
+    vel: { x: dir * UFO_SPEED[type], y: 0 },
+    radius: UFO_RADIUS[type],
     alive: true,
-    type: 'cruiser',
-    hp: UFO_HP.cruiser,
+    type,
+    hp: UFO_HP[type],
     dir,
     zigTimer: UFO_ZIG_INTERVAL_MS,
-    shootTimer: 1100,
+    shootTimer: type === 'sniper' ? 1800 : 1100,
     lifetime: UFO_LIFETIME_MS,
     blink: 0,
     hitFlash: 0,
     bossPhase: 1,
   };
+}
+
+/** Backwards-compatible alias used by the curtain set-piece. */
+function makeCurtainCruiser(s: GameState, dir: 1 | -1): Ufo {
+  void s;
+  return makeEdgeUfo('cruiser', dir);
 }
 
 export function beginWave(s: GameState, wave: number): void {
@@ -498,6 +552,13 @@ export function beginWave(s: GameState, wave: number): void {
   }
   // Place static mines for this wave unless the set piece supplied its own.
   if (!setPiece?.suppressDefaultMines) placeWaveMines(s, wave);
+  // Rare pallasite-vein event — roll on procedural waves only (6..24) so
+  // the heist (5), curtain (12), and boss (25) keep their hand-authored
+  // shapes. Vein streams sats per hit, brings a UFO swarm 2s later.
+  if (!setPiece && wave >= VEIN_SPAWN_MIN_WAVE && wave <= VEIN_SPAWN_MAX_WAVE
+      && wave !== FINAL_WAVE && gameRng() < VEIN_SPAWN_CHANCE) {
+    spawnVein(s, wave);
+  }
   // Switch to wavestart unconditionally — the warp transition is done by the
   // time beginWave fires (1300ms after startWarp), so leaving phase='warp' just
   // suppresses the cinematic drawWaveBanner that wave 1 gets. Wave 1 from a
@@ -1950,6 +2011,21 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   // Set-piece per-frame tick — curtain respawns cruisers as they die.
   setPiece?.tick?.(s, dt);
 
+  // Vein-event swarm trigger. Two elites arrive from opposite edges a
+  // beat after the vein appeared, so the player has time to read the
+  // event before the heat shows up. Only fires if the vein is still
+  // alive — if the player one-shot it via nova/heavy fire, no swarm.
+  if (s.veinSwarmDueAt > 0 && now >= s.veinSwarmDueAt) {
+    s.veinSwarmDueAt = 0;
+    const veinAlive = s.asteroids.some(a => a.alive && a.isVein);
+    if (veinAlive) {
+      s.ufos.push(makeEdgeUfo('elite', 1));
+      s.ufos.push(makeEdgeUfo('elite', -1));
+      audio.ufoSirenStart();
+      toastNow(s, 'HEAT INBOUND');
+    }
+  }
+
   // ── Mines (static — placed once at wave start by placeWaveMines) ──
   updateMines(s, dt, now);
 
@@ -2399,15 +2475,46 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
   a.hitFlash = 1;
   if (a.hp <= 0) {
     breakAsteroid(s, a, opts);
-  } else {
-    const cfg = ASTEROID_TYPE_CONFIG[a.type];
-    audio.hit();
-    spawnParticles(s, a.pos.x, a.pos.y, 5, cfg.glow, 110, 280);
+    return;
   }
+  // Vein streams sats per hit. Signed-in players get real sats credited
+  // live; guests get a score-only payout. Either way, a yellow burst
+  // flies toward the ship so the reward reads instantly.
+  if (a.isVein) {
+    if (s.session) {
+      s.sats += VEIN_SATS_PER_HIT;
+    } else {
+      s.score += VEIN_SCORE_PER_HIT;
+    }
+    audio.coinPickup();
+    spawnParticles(s, a.pos.x, a.pos.y, 10, '#ffd84a', 200, 480);
+    return;
+  }
+  const cfg = ASTEROID_TYPE_CONFIG[a.type];
+  audio.hit();
+  spawnParticles(s, a.pos.x, a.pos.y, 5, cfg.glow, 110, 280);
 }
 
 function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boolean; isCarom?: boolean; isWrap?: boolean }): void {
   a.alive = false;
+  // Vein collapse: jackpot, big bloom, no fragments. Vapourises clean.
+  if (a.isVein) {
+    if (s.session) s.sats += VEIN_JACKPOT_SATS;
+    s.score += VEIN_JACKPOT_SCORE;
+    bumpTrauma(s, 0.55);
+    hitStop(s, 220);
+    audio.pulseDuck(0.45, 240);
+    haptic('rumble');
+    // Layered burst — gold core, white sparkle, magenta shockwave.
+    spawnParticles(s, a.pos.x, a.pos.y, 36, '#ffd84a', 320, 900);
+    spawnParticles(s, a.pos.x, a.pos.y, 18, '#fff5d8', 220, 700);
+    spawnParticles(s, a.pos.x, a.pos.y, 14, '#ff8ad6', 280, 600);
+    audio.explosion(1.2);
+    if (s.session) toastNow(s, `VEIN COLLAPSED · +${VEIN_JACKPOT_SATS} sats`);
+    else           toastNow(s, `VEIN COLLAPSED · +${VEIN_JACKPOT_SCORE}`);
+    maybeExtraLife(s);
+    return;
+  }
   const cfg = ASTEROID_TYPE_CONFIG[a.type];
   const mul = recordCombo(s, performance.now());
   // Trick-shot bonuses stack multiplicatively on top of combo: a wrapped carom

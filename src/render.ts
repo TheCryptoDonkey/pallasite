@@ -557,12 +557,36 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   const style = getAsteroidStyle(a.type);
   ctx.save();
   ctx.translate(a.pos.x, a.pos.y);
+  // Vein halo — outer pulsing gold ring drawn BEFORE the rotate so the
+  // halo doesn't spin with the asteroid. Reads as a fixed corona around
+  // a slowly-rotating prize. Heavy bloom + sin-driven scale.
+  if (a.isVein) {
+    const pulse = 0.85 + 0.15 * Math.sin(now * 0.005);
+    const haloR = a.radius * 1.55 * pulse;
+    ctx.save();
+    ctx.shadowColor = '#ffd84a';
+    ctx.shadowBlur = 28;
+    ctx.strokeStyle = `rgba(255, 216, 74, ${0.45 * pulse})`;
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    ctx.arc(0, 0, haloR, 0, Math.PI * 2);
+    ctx.stroke();
+    // Inner glow disc
+    const grad = ctx.createRadialGradient(0, 0, a.radius * 0.4, 0, 0, a.radius * 1.3);
+    grad.addColorStop(0, `rgba(255, 216, 74, ${0.18 * pulse})`);
+    grad.addColorStop(1, 'rgba(255, 216, 74, 0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(0, 0, a.radius * 1.3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
   ctx.rotate(a.rot);
-  ctx.lineWidth = a.type === 'iron' ? 2.0 : 1.4;
+  ctx.lineWidth = a.type === 'iron' ? 2.0 : (a.isVein ? 2.4 : 1.4);
   const lightness = 60 + a.hue * 0.2;
-  ctx.strokeStyle = `hsl(${style.hueBase}, 70%, ${lightness}%)`;
-  ctx.shadowColor = style.glow;
-  ctx.shadowBlur = a.type === 'pallasite' ? 14 : 8;
+  ctx.strokeStyle = a.isVein ? '#ffd84a' : `hsl(${style.hueBase}, 70%, ${lightness}%)`;
+  ctx.shadowColor = a.isVein ? '#ffd84a' : style.glow;
+  ctx.shadowBlur = a.isVein ? 22 : (a.type === 'pallasite' ? 14 : 8);
 
   const n = a.shape.length;
   ctx.beginPath();
@@ -593,6 +617,26 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
     ctx.closePath();
     ctx.stroke();
     ctx.globalAlpha = 1;
+  }
+
+  // Vein: radial gold lines from centre, like cracks of light bleeding
+  // out of the rock. Layered before the sparkle so the dots sit on top.
+  if (a.isVein) {
+    ctx.save();
+    ctx.lineWidth = 1.2;
+    const veinCount = 8;
+    for (let i = 0; i < veinCount; i++) {
+      const angle = (Math.PI * 2 * i) / veinCount + Math.sin(now * 0.001 + i) * 0.08;
+      const lit = 0.6 + 0.4 * Math.sin(now * 0.004 + i * 0.7);
+      ctx.strokeStyle = `rgba(255, 240, 160, ${0.55 * lit})`;
+      ctx.shadowColor = '#fff5d8';
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(Math.cos(angle) * a.radius * 0.85, Math.sin(angle) * a.radius * 0.85);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   // Pallasite: olivine sparkle dots — animated, signals jackpot
