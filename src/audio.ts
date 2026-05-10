@@ -1185,3 +1185,50 @@ export function stopAmbient(): void {
   }, 700);
   ambient = null;
 }
+
+// ── Arcade initials entry — square-wave bleeps for the high-score widget ─────
+
+/** Internal square-wave blip helper for the initials sounds. Short, punchy. */
+function squareBlip(startFreq: number, endFreq: number, durationMs: number, volume: number): void {
+  if (settings.muted) return;
+  const c = getCtx();
+  const t0 = c.currentTime;
+  const dur = durationMs / 1000;
+  const osc = c.createOscillator();
+  osc.type = 'square';
+  const gain = c.createGain();
+  osc.frequency.setValueAtTime(startFreq, t0);
+  if (endFreq !== startFreq) osc.frequency.linearRampToValueAtTime(endFreq, t0 + dur);
+  // Snap-attack envelope, no exponential decay tail — keeps the chiptune
+  // staccato feel rather than the softer sine arpeggios used elsewhere.
+  gain.gain.setValueAtTime(0, t0);
+  gain.gain.linearRampToValueAtTime(volume, t0 + 0.005);
+  gain.gain.linearRampToValueAtTime(volume, t0 + dur - 0.01);
+  gain.gain.linearRampToValueAtTime(0, t0 + dur);
+  osc.connect(gain);
+  gain.connect(destination());
+  osc.start(t0);
+  osc.stop(t0 + dur + 0.01);
+}
+
+/** ↑/↓ — character cycle. Mid-pitch beep, no slide. */
+export function initialCycle(): void {
+  squareBlip(880, 880, 45, 0.07);
+}
+
+/** ←/→ — cursor slot move. Lower, even shorter click. */
+export function initialMove(): void {
+  squareBlip(523, 523, 30, 0.06);
+}
+
+/** Backspace — descending bleep. */
+export function initialBackspace(): void {
+  squareBlip(660, 330, 70, 0.07);
+}
+
+/** Enter / auto-submit — two-note ascending confirm. */
+export function initialCommit(): void {
+  if (settings.muted) return;
+  squareBlip(660, 660, 50, 0.09);
+  setTimeout(() => squareBlip(990, 990, 80, 0.10), 60);
+}
