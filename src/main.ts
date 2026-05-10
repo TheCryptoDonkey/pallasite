@@ -12,7 +12,7 @@ import { render, preloadBackground, setRenderMode } from './render.js';
 import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding } from './ui.js';
 import { handleAuthCallback, tryRestore, sweepSignetArtefacts } from './auth.js';
 import * as audio from './audio.js';
-import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicForceRefresh, musicStop } from './music.js';
+import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicResetElements } from './music.js';
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, setDisplayMode } from './display.js';
@@ -370,15 +370,15 @@ window.addEventListener('pointerdown', () => {
 // so the title track's .play() is re-issued under the gesture.
 const firstUnlock = (): void => {
   void audio.unlockAudio();
-  // The loop's earliest tick already attempted crossfadeTo('pallasite-idle')
-  // and set currentId to it even though the play() rejected (no gesture yet).
-  // A naive musicSetTrackForState now would resolve back to the same id,
-  // hit the `id === currentId` early-return in crossfadeTo, and never re-
-  // issue play(). Force currentId to null with musicStop(0), then let the
-  // state-driven path re-resolve and play the title track within this
-  // gesture.
-  musicStop(0);
-  musicForceRefresh();
+  // Dispose every audio element created during the loop's pre-gesture
+  // ticks. iOS Safari refuses to ever output sound through a
+  // MediaElementSourceNode whose underlying <audio> had its first .play()
+  // rejected without a gesture — even after the AudioContext has
+  // resumed. Resetting the cache forces the next load() to construct
+  // fresh DOM elements + source nodes inside this gesture, which unlock
+  // cleanly. Then re-trigger the state-driven music so the title track
+  // plays from the gesture-bound load.
+  musicResetElements();
   musicSetTrackForState(state);
   window.removeEventListener('pointerdown', firstUnlock);
   window.removeEventListener('keydown', firstUnlock);

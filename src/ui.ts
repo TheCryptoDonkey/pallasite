@@ -1425,14 +1425,36 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
   const sub = el('p', { parent: overlay, text: 'Drift through the score.' });
   sub.style.cssText = 'font-size:0.95rem;letter-spacing:0.2em;color:var(--hud-yellow);margin:-12px 0 6px;';
 
-  // Spectacular analyser — mirrored frequency bars with bloom, an overlaid
-  // time-domain waveform line, and an amplitude-driven hue shift. Tall
-  // enough to feel like a centerpiece of the player rather than a side
-  // accent.
-  const vizWrap = el('div', { parent: overlay });
-  vizWrap.style.cssText = 'display:flex;justify-content:center;width:100%;max-width:420px;';
-  const canvas = el('canvas', { parent: vizWrap, attrs: { width: '840', height: '320' } }) as HTMLCanvasElement;
-  canvas.style.cssText = 'width:100%;max-width:420px;height:160px;border-radius:8px;background:radial-gradient(ellipse at center, rgba(180,140,255,0.08), rgba(0,0,0,0.4));border:1px solid rgba(180,140,255,0.25);box-shadow:0 0 24px rgba(180,140,255,0.15) inset;';
+  // Spectral analyser, sticky at the top of the overlay so it stays in
+  // view while the user scrolls through the track list. Log-scale bands
+  // give bass and treble equal visual weight, gradient fill (green→yellow
+  // →red) plus peak-hold caps with decay echo classic VU meters, strong
+  // bloom on bar tops makes the bass kicks read.
+  const vizSticky = el('div', { parent: overlay });
+  vizSticky.style.cssText = [
+    'position:sticky', 'top:-8px',  // -8px so the rounded corners overlap the overlay padding
+    'z-index:5',
+    'width:100%', 'max-width:480px',
+    'padding:8px 0',
+    'background:linear-gradient(180deg, rgba(0,0,0,0.85), rgba(0,0,0,0.55))',
+    'backdrop-filter:blur(6px)',
+    'border-radius:10px',
+    'display:flex', 'justify-content:center',
+  ].join(';');
+  const canvas = el('canvas', { parent: vizSticky, attrs: { width: '960', height: '360' } }) as HTMLCanvasElement;
+  canvas.style.cssText = 'width:100%;max-width:460px;height:172px;border-radius:6px;background:radial-gradient(ellipse at 50% 100%, rgba(180,140,255,0.18), rgba(0,0,0,0.7));';
+
+  const BAR_COUNT = 64;
+  const peaks = new Float32Array(BAR_COUNT);
+  const smoothed = new Float32Array(BAR_COUNT);  // smoothed bar values, fluid rise/fall
+  const PEAK_DECAY = 0.014;
+  const FALL_RATE = 0.045;     // how fast bars fall when freq drops (gravity)
+  let bgPulse = 0;
+  let flashAmp = 0;            // bass-kick driven full-canvas flash
+  let prevBass = 0;
+  type Spark = { x: number; y: number; vx: number; vy: number; life: number; hue: number };
+  const sparks: Spark[] = [];
+
   const drawViz = (): void => {
     if (!document.body.contains(canvas)) return;
     const analyser = getMusicAnalyser();
@@ -1445,63 +1467,146 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
     analyser.getByteTimeDomainData(time);
     const w = canvas.width;
     const h = canvas.height;
-    const mid = h * 0.55;  // mirror axis biased so top bars are taller
+    const baseline = h * 0.78;  // bars stand on this line; mirror below
+
+    // Bass envelope. Detect kicks via positive delta to drive the flash.
+    let bassAcc = 0;
+    for (let i = 0; i < 6; i++) bassAcc += freq[i];
+    const bass = bassAcc / 6 / 255;
+    const bassDelta = Math.max(0, bass - prevBass);
+    prevBass = bass;
+    if (bassDelta > 0.06) flashAmp = Math.min(1, flashAmp + bassDelta * 1.6);
+    flashAmp *= 0.86;
+    bgPulse = bgPulse * 0.83 + bass * 0.17;
+
     cctx.clearRect(0, 0, w, h);
 
-    // Average amplitude drives a global hue shift — quiet sections
-    // are blue/purple, loud sections push toward orange/yellow.
-    let acc = 0;
-    for (let i = 0; i < bins; i++) acc += freq[i];
-    const avg = acc / bins / 255;  // 0..1
-    const hueBase = 260 - avg * 220;  // ~260 (purple) → ~40 (orange)
-
-    // Frequency bars — mirrored top + bottom.
-    const barCount = 56;
-    const stride = Math.floor((bins * 0.78) / barCount);  // skip top noise bins
-    const gap = 2;
-    const bw = (w - gap * (barCount + 1)) / barCount;
-    for (let i = 0; i < barCount; i++) {
-      let s = 0;
-      const start = i * stride;
-      for (let j = 0; j < stride; j++) s += freq[start + j];
-      const v = s / stride / 255;
-      const eased = Math.pow(v, 0.85);  // gentle expansion of low values
-      const topH = eased * (mid - 6);
-      const botH = eased * (h - mid - 6) * 0.55;  // shorter mirror, faded
-      const x = gap + i * (bw + gap);
-      // Hue cycles across the bars + global shift from amplitude.
-      const hue = (hueBase + (i / barCount) * 90) % 360;
-      // Top bar (full).
-      cctx.fillStyle = `hsla(${hue}, 95%, 62%, 0.92)`;
-      cctx.shadowColor = `hsla(${hue}, 95%, 70%, 0.85)`;
-      cctx.shadowBlur = 10 + eased * 18;
-      cctx.fillRect(x, mid - topH, bw, topH);
-      // Mirror (bottom, dimmer).
-      cctx.shadowBlur = 4 + eased * 6;
-      cctx.fillStyle = `hsla(${hue}, 90%, 55%, 0.32)`;
-      cctx.fillRect(x, mid + 2, bw, botH);
+    // Background — radial gradient that pulses with bass; topped by a
+    // brief full-canvas flash on each kick.
+    const bgGrad = cctx.createRadialGradient(w * 0.5, baseline, h * 0.05, w * 0.5, baseline, h * (0.7 + bgPulse * 0.6));
+    bgGrad.addColorStop(0, `rgba(255, 100, 200, ${0.07 + bgPulse * 0.22})`);
+    bgGrad.addColorStop(0.55, `rgba(120, 90, 255, ${0.05 + bgPulse * 0.12})`);
+    bgGrad.addColorStop(1, 'rgba(0,0,0,0)');
+    cctx.fillStyle = bgGrad;
+    cctx.fillRect(0, 0, w, h);
+    if (flashAmp > 0.02) {
+      cctx.fillStyle = `rgba(255, 255, 255, ${flashAmp * 0.18})`;
+      cctx.fillRect(0, 0, w, h);
     }
 
-    // Time-domain waveform — bright line across the centre, modulated by
-    // the same amplitude hue so it feels of-a-piece with the bars.
+    // Vertical bar gradient — green→yellow→red top-up.
+    const barGrad = cctx.createLinearGradient(0, baseline, 0, 0);
+    barGrad.addColorStop(0.00, '#3afc7c');
+    barGrad.addColorStop(0.45, '#ffd84a');
+    barGrad.addColorStop(0.78, '#ff8a3a');
+    barGrad.addColorStop(1.00, '#ff4858');
+
+    const gap = 3;
+    const barW = (w - gap * (BAR_COUNT + 1)) / BAR_COUNT;
+    const usableBins = Math.floor(bins * 0.82);
+
+    for (let i = 0; i < BAR_COUNT; i++) {
+      // Log-scale band mapping for equal-weight bass/mid/treble.
+      const t0 = i / BAR_COUNT;
+      const t1 = (i + 1) / BAR_COUNT;
+      const lo = Math.floor(Math.pow(t0, 2.2) * usableBins);
+      const hi = Math.max(lo + 1, Math.floor(Math.pow(t1, 2.2) * usableBins));
+      let acc = 0;
+      for (let j = lo; j < hi; j++) acc += freq[j];
+      const raw = (acc / (hi - lo)) / 255;
+      const eased = Math.pow(raw, 0.78);
+
+      // Smooth fall — bars rise instantly to new peaks, decay back at FALL_RATE.
+      if (eased > smoothed[i]) smoothed[i] = eased;
+      else smoothed[i] = Math.max(0, smoothed[i] - FALL_RATE);
+      const v = smoothed[i];
+
+      // Peak hold cap.
+      if (v > peaks[i]) peaks[i] = v;
+      else peaks[i] = Math.max(0, peaks[i] - PEAK_DECAY);
+
+      const x = gap + i * (barW + gap);
+      const barH = v * (baseline - 6);
+      const y = baseline - barH;
+
+      // Main bar.
+      cctx.shadowColor = '#ff8a3a';
+      cctx.shadowBlur = 14 + v * 26;
+      cctx.fillStyle = barGrad;
+      cctx.fillRect(x, y, barW, barH);
+
+      // Mirror reflection — same gradient flipped, alpha fades to 0.
+      const refH = barH * 0.55;
+      const refGrad = cctx.createLinearGradient(0, baseline, 0, baseline + refH);
+      refGrad.addColorStop(0, 'rgba(255, 138, 58, 0.45)');
+      refGrad.addColorStop(1, 'rgba(255, 138, 58, 0)');
+      cctx.shadowBlur = 0;
+      cctx.fillStyle = refGrad;
+      cctx.fillRect(x, baseline + 1, barW, refH);
+
+      // Peak-hold cap — bright thin bar that lingers above as the bar falls.
+      const peakY = baseline - peaks[i] * (baseline - 6) - 2;
+      cctx.shadowBlur = 14;
+      cctx.shadowColor = '#fff5d8';
+      cctx.fillStyle = '#fff5d8';
+      cctx.fillRect(x, peakY, barW, 2);
+
+      // Spark burst on a fresh peak (raw amplitude high AND newly so).
+      if (raw > 0.78 && Math.random() < 0.18) {
+        const cx = x + barW / 2;
+        const cy = peakY;
+        for (let k = 0; k < 2; k++) {
+          sparks.push({
+            x: cx, y: cy,
+            vx: (Math.random() - 0.5) * 2.4,
+            vy: -1.5 - Math.random() * 1.8,
+            life: 1,
+            hue: 30 + Math.random() * 30,
+          });
+        }
+      }
+    }
     cctx.shadowBlur = 0;
-    cctx.lineWidth = 2;
-    cctx.strokeStyle = `hsla(${(hueBase + 60) % 360}, 100%, 75%, 0.85)`;
+
+    // Sparks — tiny dots flying upward on peak bursts.
+    for (const s of sparks) {
+      s.x += s.vx;
+      s.y += s.vy;
+      s.vy += 0.04;            // light gravity
+      s.life -= 0.025;
+    }
+    for (let i = sparks.length - 1; i >= 0; i--) {
+      if (sparks[i].life <= 0) sparks.splice(i, 1);
+    }
+    for (const s of sparks) {
+      cctx.fillStyle = `hsla(${s.hue}, 100%, 70%, ${s.life})`;
+      cctx.shadowColor = `hsla(${s.hue}, 100%, 80%, ${s.life})`;
+      cctx.shadowBlur = 8;
+      cctx.fillRect(s.x - 1.5, s.y - 1.5, 3, 3);
+    }
+    cctx.shadowBlur = 0;
+
+    // Time-domain waveform — bright cyan line scrolls across at the
+    // baseline, distorted by bass. Reads as the music's heartbeat.
+    cctx.lineWidth = 1.6;
+    cctx.strokeStyle = `rgba(120, 240, 255, ${0.55 + bass * 0.45})`;
+    cctx.shadowColor = '#7ff0ff';
+    cctx.shadowBlur = 12 + bass * 18;
     cctx.beginPath();
     const tStride = Math.max(1, Math.floor(time.length / w));
     for (let x = 0; x < w; x++) {
       const idx = Math.min(time.length - 1, x * tStride);
-      const sample = (time[idx] - 128) / 128;  // -1..1
-      const y = mid + sample * 24;             // ±24px around the mid
+      const sample = (time[idx] - 128) / 128;
+      const y = baseline + sample * (10 + bass * 28);
       if (x === 0) cctx.moveTo(x, y);
       else cctx.lineTo(x, y);
     }
     cctx.stroke();
+    cctx.shadowBlur = 0;
 
-    // Centre divider — subtle, helps the mirror illusion when audio is
-    // quiet and the bars all collapse.
-    cctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
-    cctx.fillRect(0, mid - 0.5, w, 1);
+    // Baseline rule — anchors the bars + mirror.
+    cctx.fillStyle = 'rgba(255, 255, 255, 0.10)';
+    cctx.fillRect(0, baseline, w, 1);
 
     requestAnimationFrame(drawViz);
   };

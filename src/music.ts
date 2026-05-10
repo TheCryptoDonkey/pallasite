@@ -206,6 +206,25 @@ export function musicForceRefresh(): void {
   lastAppliedKey = '';
 }
 
+/**
+ * Dispose every cached music element + audio node. The next load() call
+ * for any track id will create fresh DOM Audio + MediaElementSourceNode
+ * pairs. Used by the global first-interaction unlock on iOS, where the
+ * elements created during the loop's pre-gesture tick are silently
+ * blocked even after ctx.resume() — Web Audio gives them zeroes
+ * indefinitely. Replacing the elements is the only reliable cure.
+ */
+export function musicResetElements(): void {
+  for (const entry of loaded.values()) {
+    try { entry.el.pause(); } catch { /* ignore */ }
+    try { entry.src.disconnect(); } catch { /* ignore */ }
+    try { entry.gain.disconnect(); } catch { /* ignore */ }
+  }
+  loaded.clear();
+  currentId = null;
+  lastAppliedKey = '';
+}
+
 /** Display metadata for the secret music-player easter egg. Order is the
  *  order tracks appear in the menu — roughly the order they're heard
  *  through a campaign run. */
