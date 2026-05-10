@@ -236,9 +236,31 @@ export function currentTrackId(): string | null { return currentId; }
  *  chosen track. Leaving the memo at its title key means the loop returns
  *  early and the previewed track plays uninterrupted. The player's BACK
  *  button calls musicForceRefresh() on close so the loop re-resolves the
- *  current phase track on the next tick. */
+ *  current phase track on the next tick.
+ *
+ *  Defensive belt-and-braces for iOS: explicitly resume the AudioContext
+ *  here (even though the row tap also calls audio.unlockAudio) and snap
+ *  the new track's gain straight to its trim instead of relying on the
+ *  rampGainTo schedule, because a context that's still transitioning out
+ *  of 'suspended' has unreliable currentTime advancement and the ramp
+ *  can complete with the gain still at 0 (silent track). */
 export function musicPreviewPlay(id: string): void {
+  const dest = getMusicDestination();
+  const ctx = dest.context as AudioContext;
+  if (ctx.state === 'suspended') {
+    void ctx.resume().catch(() => undefined);
+  }
   crossfadeTo(id, 250);
+  // Snap the picked track's gain to full (bypass the 0→trim ramp). The
+  // crossfadeTo path is still doing the previous track's fade-out, so the
+  // transition isn't an audible cut — but the new track is guaranteed
+  // audible the moment its play() is called.
+  const entry = loaded.get(id);
+  const trim = TRACKS[id]?.trim ?? 1;
+  if (entry) {
+    entry.gain.gain.cancelScheduledValues(ctx.currentTime);
+    entry.gain.gain.value = trim;
+  }
 }
 
 export function musicStop(fadeMs = DEFAULT_FADE_MS): void {

@@ -223,6 +223,24 @@ export function getMusicDestination(): AudioNode {
   return musicBus!;
 }
 
+let musicAnalyser: AnalyserNode | null = null;
+
+/** AnalyserNode tapped off the music bus — feeds the secret music player's
+ *  waveform/spectrum visualiser. Lazy-created on first call so the audio
+ *  graph isn't burdened on boot. The analyser sits in parallel (musicBus
+ *  also stays connected to masterGain), so it observes without affecting
+ *  the audible output. */
+export function getMusicAnalyser(): AnalyserNode {
+  const c = getCtx();
+  if (!musicAnalyser) {
+    musicAnalyser = c.createAnalyser();
+    musicAnalyser.fftSize = 256;       // 128 frequency bins — plenty for bars
+    musicAnalyser.smoothingTimeConstant = 0.78;
+    musicBus!.connect(musicAnalyser);  // tap, not in-line
+  }
+  return musicAnalyser;
+}
+
 /** All non-dry SFX connect here — gets a reverb tail automatically. */
 function destination(): AudioNode {
   return sfxBus!;
