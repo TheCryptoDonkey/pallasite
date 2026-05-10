@@ -87,6 +87,7 @@ export function makeInitialState(): GameState {
     toastUntil: 0,
     replayBuffer: [],
     deathReplay: null,
+    initialsEnteredThisRun: false,
     lurking: false,
     lurkingSince: 0,
     lurkSatsBlocked: 0,
@@ -176,6 +177,7 @@ export function startGame(s: GameState): void {
   s.keys = {};
   s.replayBuffer = [];
   s.deathReplay = null;
+  s.initialsEnteredThisRun = false;
   s.debris = [];
   s.lurking = false;
   s.lurkingSince = 0;
@@ -1241,6 +1243,13 @@ function stopGameplayAudio(): void {
 export function startDeathReplay(s: GameState, after: 'gameover'): void {
   if (!s.deathReplay) return;
   s.deathReplay.startedAt = performance.now();
+  // Re-arm the impact-frame explosion spawn — the flag is sticky from the
+  // previous play, so a REPLAY KILL click would otherwise skip the explosion
+  // entirely. Clear lingering particles/debris from the prior replay so the
+  // prelude isn't haunted by faded remnants.
+  s.deathReplay.explosionSpawned = false;
+  s.particles = [];
+  s.debris = [];
   s.phase = 'deathreplay';
   s.phaseStart = s.deathReplay.startedAt;
   audio.thrustOff();
