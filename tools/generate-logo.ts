@@ -32,11 +32,13 @@ const OUT_DIR = join(process.cwd(), 'originals');
 const args = process.argv.slice(2);
 const force = args.includes('--force');
 const variantIdx = args.indexOf('--variant');
-const variant: 'crystal' | 'flat' | 'transparent' = variantIdx >= 0 && (args[variantIdx + 1] === 'flat' || args[variantIdx + 1] === 'transparent')
-  ? args[variantIdx + 1] as 'flat' | 'transparent'
-  : 'crystal';
+type Variant = 'crystal' | 'flat' | 'transparent' | 'meteorite';
+const variant: Variant = (variantIdx >= 0
+  && ['crystal', 'flat', 'transparent', 'meteorite'].includes(args[variantIdx + 1])
+  ? args[variantIdx + 1] as Variant
+  : 'crystal');
 
-const PROMPTS: Record<typeof variant, string> = {
+const PROMPTS: Record<Variant, string> = {
   // Default: photorealistic crystal-and-metal cross-section letterforms.
   crystal: `A futuristic vector-arcade game logo for the word "PALLASITE". The lettering itself appears as if cut from a pallasite meteorite cross-section: translucent olive-green olivine crystals (gem-quality peridot) embedded in a polished silver nickel-iron matrix, with bright reflective highlights along the metal. Letterforms are clean wide-tracked retro-futuristic monospace, centered horizontally, soft inner glow. Background: deep space black with a faint blue-purple nebula wash and a sparse scatter of distant stars. No tagline, no UI, no border, no extra text — just the single word "PALLASITE". Composition: 1024x1024 square, the lettering occupies roughly the middle 40% horizontally with negative space above and below. Photorealistic material rendering on the letters; clean graphic-design aesthetic overall. Centered, balanced, awe-inspiring. No misspellings — the word must read exactly P-A-L-L-A-S-I-T-E.`,
   // Fallback: flatter graphic-design style, in case crystal version comes out muddy.
@@ -44,6 +46,9 @@ const PROMPTS: Record<typeof variant, string> = {
   // True transparent — uses background: 'transparent' API param so the result
   // PNG has alpha. No starfield, no nebula, no boxing — just the wordmark.
   transparent: `A clean retro-futuristic vector logo: just the single word "PALLASITE", nothing else. Bold wide-tracked monospace letterforms in vivid heraldic green (#58ff58) with subtle yellow-gold (#ffd84a) inner highlights echoing pallasite meteorite olivine crystals. Soft outer green glow. Absolutely no background — the surrounding area must be fully transparent. No starfield, no nebula, no panel, no border, no shadow box, no decoration of any kind. Composition: 1024x1024 with the wordmark precisely centered on both axes, occupying roughly 60% of the width. Crisp, vector, graphic-design quality. No misspellings — the word must read exactly P-A-L-L-A-S-I-T-E.`,
+  // Meteorite cross-section letterforms with transparent background — combines
+  // the crystal aesthetic with no boxing, so it drops onto wave bgs cleanly.
+  meteorite: `A logo wordmark for "PALLASITE", with the lettering rendered as if each letter is a polished cross-section slice of an actual pallasite meteorite. The letterforms must be filled with a photorealistic pallasite material: gem-quality translucent olive-green olivine crystals (like peridot, varying in size from 5mm to 25mm relative to the letter height) tightly packed in a polished silver-grey nickel-iron metal matrix that flows between the crystals like a stained-glass leading. Specular highlights catch the metal. Each letter is a unique slice with a different crystal arrangement. The letters have crisp clean edges as if precision-cut. Subtle outer glow in warm gold (#ffd84a). Bold wide-tracked monospace typeface, the word centered horizontally, occupying about 65% of the canvas width. Absolutely no background — the surrounding area must be fully transparent. No starfield, no nebula, no panel, no border, no decoration. Just the eight pallasite-cross-section letters spelling PALLASITE. The word must read exactly P-A-L-L-A-S-I-T-E. Reference image style: high-resolution Brenham, Esquel, or Fukang pallasite cross-sections.`,
 };
 
 async function main(): Promise<void> {
@@ -54,7 +59,10 @@ async function main(): Promise<void> {
     return;
   }
 
-  const model = variant === 'transparent' ? MODEL_TRANSPARENT : MODEL_DEFAULT;
+  // Variants that need a transparent background go through gpt-image-1
+  // (gpt-image-2 doesn't support transparency).
+  const wantsTransparent = variant === 'transparent' || variant === 'meteorite';
+  const model = wantsTransparent ? MODEL_TRANSPARENT : MODEL_DEFAULT;
   console.log(`Generating PALLASITE logo (${variant} variant) via ${model} (${SIZE}, quality=${QUALITY})…`);
   process.stdout.write(`  → ${target} … `);
 
@@ -71,8 +79,8 @@ async function main(): Promise<void> {
       size: SIZE,
       quality: QUALITY,
       // gpt-image-1 supports `background: 'transparent'` (PNG output gets alpha).
-      // gpt-image-2 doesn't, so this is gated to the transparent variant only.
-      ...(variant === 'transparent' ? { background: 'transparent' } : {}),
+      // gpt-image-2 doesn't, so this is gated to the transparent-bg variants.
+      ...(wantsTransparent ? { background: 'transparent' } : {}),
     }),
   });
 

@@ -1601,8 +1601,10 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
   for (const b of snap.bullets) drawBullet(ctx, b, true);
   for (const b of snap.enemyBullets) drawBullet(ctx, b, false);
   // Reuse the live ship draw for thrust flame consistency. Shield/cloak skipped
-  // (the replay isn't a re-sim, just a playback).
-  if (snap.ship.alive) {
+  // (the replay isn't a re-sim, just a playback). Stop drawing the ship once
+  // we've crossed the impact frame — the explosion has consumed it, debris is
+  // animating; an intact ship floating in the middle of the boom looks wrong.
+  if (snap.ship.alive && gameTime < dr.spanMs) {
     const fauxShip: Ship = {
       pos: snap.ship.pos, vel: { x: 0, y: 0 }, radius: 12, alive: true,
       rot: snap.ship.rot, rotVel: 0, thrusting: snap.ship.thrusting,
