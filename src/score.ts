@@ -65,6 +65,13 @@ export function isHighScore(score: number): boolean {
   return score > list[list.length - 1].score;
 }
 
+/** Wipe the local top-10 list. Doesn't touch profile cache, relays, or
+ *  any Nostr-published scores — just the localStorage entry the title
+ *  screen renders from. */
+export function clearLocalHighScores(): void {
+  try { localStorage.removeItem(HIGHSCORE_KEY); } catch { /* ignore */ }
+}
+
 /**
  * A score event we read off the wire. Same shape as NostrEvent but pinned to
  * kind 30762 so the global-leaderboard code doesn't have to keep re-asserting.

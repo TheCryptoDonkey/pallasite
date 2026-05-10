@@ -11,7 +11,7 @@ import { getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRel
 import { getTouchMode, setTouchMode, type TouchInputMode } from './touch.js';
 import { getDisplayMode, setDisplayMode, type DisplayMode } from './display.js';
 import * as auth from './auth.js';
-import { addLocalHighScore, getLocalHighScores, isHighScore, fetchGlobalHighScores, type GlobalHighScore } from './score.js';
+import { addLocalHighScore, getLocalHighScores, isHighScore, fetchGlobalHighScores, clearLocalHighScores, type GlobalHighScore } from './score.js';
 import { submitClaim, fetchPool } from './faucet.js';
 import { renderLegalFooter } from './legal.js';
 import { startGame, startDeathReplay, toastNow } from './game.js';
@@ -914,6 +914,60 @@ export function renderSettings(onBack: () => void): void {
     });
   }
   paintDisplay();
+
+  // ── DATA ────────────────────────────────────────────────────────────────
+  // Single destructive action — clearing the local top-10 list. Two-tap
+  // confirm so a stray click doesn't blow it away. Auto-resets after 3s
+  // if the second tap doesn't happen.
+  const dataHeading = el('p', { parent: overlay, text: 'DATA' });
+  dataHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
+
+  const dataPanel = el('div', { parent: overlay });
+  dataPanel.style.cssText = 'display:flex;flex-direction:column;gap:6px;align-items:center;';
+
+  const clearBtn = el('button', { parent: dataPanel, text: 'CLEAR LOCAL SCORES' }) as HTMLButtonElement;
+  function paintClear(state: 'idle' | 'arming' | 'cleared'): void {
+    const colour = state === 'cleared' ? '#58ff58' : '#ff5050';
+    const fill = state === 'arming' ? 'rgba(255,80,80,0.18)'
+      : state === 'cleared' ? 'rgba(88,255,88,0.12)'
+      : 'transparent';
+    clearBtn.style.cssText = [
+      'background:' + fill,
+      'border:2px solid ' + (state === 'idle' ? 'rgba(255,80,80,0.4)' : colour),
+      'color:' + colour,
+      "font-family:'VT323',ui-monospace,monospace",
+      'font-size:0.95rem', 'padding:6px 18px', 'letter-spacing:0.18em',
+      'cursor:' + (state === 'cleared' ? 'default' : 'pointer'),
+      'border-radius:6px',
+    ].join(';');
+    clearBtn.textContent =
+      state === 'idle' ? 'CLEAR LOCAL SCORES'
+      : state === 'arming' ? 'TAP AGAIN TO CONFIRM'
+      : 'CLEARED';
+    clearBtn.disabled = state === 'cleared';
+  }
+  paintClear('idle');
+
+  let arming = false;
+  let armTimer: number | null = null;
+  clearBtn.addEventListener('click', () => {
+    if (!arming) {
+      arming = true;
+      paintClear('arming');
+      armTimer = window.setTimeout(() => {
+        arming = false;
+        paintClear('idle');
+      }, 3000);
+      return;
+    }
+    if (armTimer !== null) { clearTimeout(armTimer); armTimer = null; }
+    arming = false;
+    clearLocalHighScores();
+    paintClear('cleared');
+  });
+
+  const dataNote = el('p', { parent: dataPanel, text: "Removes the top-10 list shown on the title screen. Doesn't touch your relays, profile cache, or any Nostr-published scores." });
+  dataNote.style.cssText = 'font-size:0.7rem;color:rgba(180,140,255,0.6);letter-spacing:0.04em;margin:0;text-align:center;max-width:420px;';
 
   const row2 = el('div', { className: 'menu-row', parent: overlay });
   // Push the action row clear of the DISPLAY hint above so the buttons don't
