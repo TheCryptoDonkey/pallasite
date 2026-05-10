@@ -21,6 +21,7 @@ import {
   WORLD_W, WORLD_H, WARP_MS,
   SHIP_RADIUS, SHIP_THRUST, SHIP_DRAG, SHIP_ROT_ACCEL, SHIP_ROT_DAMPING, SHIP_MAX_ROT, SHIP_INVULN_MS, FIRE_COOLDOWN_MS,
   HYPERSPACE_COOLDOWN_MS, HYPERSPACE_CLOAK_MS, HYPERSPACE_MALFUNCTION_CHANCE, HYPERSPACE_SAFE_DIST,
+  HYPERSPACE_CONSECUTIVE_WINDOW_MS, HYPERSPACE_DETONATE_RANGE,
   SHIELD_DURATION_MS, SHIELD_COOLDOWN_MS,
   BULLET_SPEED, BULLET_TTL_MS, BULLET_RADIUS,
   ASTEROID_BASE_SPEED, ASTEROID_SPEED_PER_WAVE,
@@ -150,6 +151,7 @@ function makeShip(): Ship {
     shieldExpiresAt: 0,
     shieldReadyAt: 0,
     recoilOffset: 0,
+    lastHyperspaceAt: 0,
   };
 }
 
@@ -1178,26 +1180,54 @@ export function tryHyperspace(s: GameState, now: number): void {
   cancelShield(s);
   s.ship.hyperspaceReadyAt = now + HYPERSPACE_COOLDOWN_MS * mods.hyperspaceCooldownMul;
   s.ship.hyperspaceCloakMs = HYPERSPACE_CLOAK_MS;
+  // Capture the departure point before zeroing velocity — through-mine
+  // detonation needs the ship's current position, which is still valid
+  // because hyperspaceCloakMs is the only thing gating render/collision.
+  const departureX = s.ship.pos.x;
+  const departureY = s.ship.pos.y;
   s.ship.vel.x = 0;
   s.ship.vel.y = 0;
   s.ship.rotVel = 0;
-  // Roll the malfunction at jump time — the cloak then *visibly* signals it
-  // (red distortion particles + glitched audio) rather than the player taking
-  // an invisible RNG hit on emergence.
-  s.ship.hyperspaceMalfunction = gameRng() < HYPERSPACE_MALFUNCTION_CHANCE;
+  // Malfunction roll: standalone warps are safe. Only warps within
+  // HYPERSPACE_CONSECUTIVE_WINDOW_MS of the last successful jump risk a
+  // glitch. Reframes warp from "panic button with a tax" to "movement
+  // primitive that punishes spam".
+  const sinceLast = now - s.ship.lastHyperspaceAt;
+  const isConsecutive = s.ship.lastHyperspaceAt > 0 && sinceLast < HYPERSPACE_CONSECUTIVE_WINDOW_MS;
+  const malfunctionChance = isConsecutive ? HYPERSPACE_MALFUNCTION_CHANCE : 0;
+  s.ship.hyperspaceMalfunction = gameRng() < malfunctionChance;
+  s.ship.lastHyperspaceAt = now;
   if (s.ship.hyperspaceMalfunction) {
     audio.warpJumpGlitch();
     // Sprinkle warning particles at the departure point so the cloak is visibly off
-    spawnParticles(s, s.ship.pos.x, s.ship.pos.y, 18, '#ff5050', 140, 500);
+    spawnParticles(s, departureX, departureY, 18, '#ff5050', 140, 500);
     toastNow(s, 'WARP UNSTABLE');
   } else {
     audio.warpJump();
     // Outward white burst signals warp ignition at the departure point. Fast
     // particles, short ttl — reads as speed-lines for ~250ms before the cloak
     // takes over and the ship reappears elsewhere.
-    spawnParticles(s, s.ship.pos.x, s.ship.pos.y, 22, '#ffffff', 380, 260);
-    spawnParticles(s, s.ship.pos.x, s.ship.pos.y, 10, '#7fbfff', 220, 320);
-    toastNow(s, 'HYPERSPACE LOCK');
+    spawnParticles(s, departureX, departureY, 22, '#ffffff', 380, 260);
+    spawnParticles(s, departureX, departureY, 10, '#7fbfff', 220, 320);
+    // Through-mine detonation: any live mine inside the warp's energy
+    // radius gets ripped apart. Player approached, got pulled by the
+    // gravity well, and bailed via warp — and the warp took the mine
+    // with them. Awards the normal mine score+sats per kill.
+    let detonated = 0;
+    for (const m of s.mines) {
+      if (!m.alive) continue;
+      const dx = m.pos.x - departureX;
+      const dy = m.pos.y - departureY;
+      if (dx * dx + dy * dy <= HYPERSPACE_DETONATE_RANGE * HYPERSPACE_DETONATE_RANGE) {
+        destroyMine(s, m);
+        detonated += 1;
+      }
+    }
+    if (detonated > 0) {
+      toastNow(s, `WARP DETONATE ×${detonated}`);
+    } else {
+      toastNow(s, 'HYPERSPACE LOCK');
+    }
   }
   audio.thrustOff();
   // Re-emerge timer
@@ -1516,6 +1546,7 @@ export function updateGame(s: GameState, dt: number, now: number): void {
           shieldExpiresAt: 0,
           shieldReadyAt: 0,
           recoilOffset: 0,
+          lastHyperspaceAt: 0,
         };
         spawnShipDebris(s, fauxShip);
       }
