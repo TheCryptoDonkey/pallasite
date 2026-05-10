@@ -431,8 +431,13 @@ async function boot(): Promise<void> {
       canvas.style.imageRendering = 'auto';
       const ctx = canvas.getContext('2d')!;
       const isPortrait = vh > vw;
+      // Portrait zoom-out factor: pure cover-fit makes the visible band feel
+      // claustrophobic on phones. Pull the scale back so a bit more of the
+      // world is visible — gutters at top/bottom get filled by ±WORLD_H
+      // ghost-renders in render.ts.
+      const PORTRAIT_ZOOM = 0.85;
       const scale = isPortrait
-        ? Math.max(vw / 960, vh / 720)
+        ? Math.max(vw / 960, vh / 720) * PORTRAIT_ZOOM
         : Math.min(vw / 960, vh / 720);
       const tx = (vw - 960 * scale) / 2;
       const ty = (vh - 720 * scale) / 2;
