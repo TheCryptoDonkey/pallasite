@@ -78,8 +78,11 @@ export async function publishScore(
   }
 
   const state = scoreData.state ?? 'active';
-  const seedSuffix = scoreData.seed ? `:daily-${scoreData.seed}` : '';
-  const dTag = `${GAME_ID}:${session.pubkey}:wave-${scoreData.wave}${seedSuffix}`;
+  // Each publish gets a unique d-tag so a lower-scoring re-run cannot replace
+  // a higher-scoring earlier run for the same player. Replaceable events
+  // are keyed on (kind, pubkey, d) and relays keep only the latest by
+  // created_at — score isn't a tiebreaker. Wave/seed live in their own tags.
+  const dTag = `${GAME_ID}:${session.pubkey}:run-${Date.now()}`;
 
   const tags: string[][] = [
     ['d', dTag],
@@ -90,6 +93,10 @@ export async function publishScore(
     ['wave', scoreData.wave.toString()],
     ['sats', scoreData.sats.toString()],
     ['duration', scoreData.durationSeconds.toString()],
+    // NIP-01 only indexes single-letter tags, so this is the one consumers
+    // can filter on server-side. The `game` tag stays for spec compliance
+    // but gets post-filtered client-side.
+    ['t', 'pallasite'],
     ['t', 'arcade'],
     ['t', 'asteroids'],
     ['t', 'lightning'],
@@ -258,12 +265,14 @@ export async function fetchGlobalHighScores(
 
       ws.onopen = () => {
         // NIP-01 only indexes single-letter tags, so `#game` is not a valid
-        // server-side filter. We narrow with `#t: ['asteroids']` (a tag every
-        // score event already carries) then post-filter on `game=pallasite`
-        // below — necessary if anyone else ever publishes kind 30762.
+        // server-side filter. New publishes carry `#t=pallasite` for precise
+        // server-side narrowing; we also accept `#t=asteroids` so historical
+        // events from before the pallasite tag was added still surface. The
+        // post-filter on `game=pallasite` keeps us honest if other kind 30762
+        // games happen to share either of those `t` values.
         ws.send(JSON.stringify(['REQ', subId, {
           kinds: [30762],
-          '#t': ['asteroids'],
+          '#t': ['pallasite', 'asteroids'],
           limit,
         }]));
       };
