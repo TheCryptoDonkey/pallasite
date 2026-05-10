@@ -411,11 +411,34 @@ async function boot(): Promise<void> {
   // aspect — internal pixel resolution stays 960×720 (× dpr) so the game
   // logic and HUD coords don't need to know about display size; the browser
   // scales the bitmap. Centring is handled by the CSS absolute-translate.
+  // Read env(safe-area-inset-*) into pixel numbers via a sentinel div. iPhone
+  // notch / Dynamic Island / rounded corners surface here when the canvas runs
+  // edge-to-edge under viewport-fit=cover. Non-zero values get applied by the
+  // HUD so SCORE/WAVE/LIVES sit clear of cutouts.
+  function readSafeInsets(): { top: number; right: number; bottom: number; left: number } {
+    const el = document.createElement('div');
+    el.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;padding:'
+      + 'env(safe-area-inset-top) env(safe-area-inset-right) '
+      + 'env(safe-area-inset-bottom) env(safe-area-inset-left);'
+      + 'visibility:hidden;pointer-events:none;';
+    document.body.appendChild(el);
+    const cs = getComputedStyle(el);
+    const insets = {
+      top: parseFloat(cs.paddingTop) || 0,
+      right: parseFloat(cs.paddingRight) || 0,
+      bottom: parseFloat(cs.paddingBottom) || 0,
+      left: parseFloat(cs.paddingLeft) || 0,
+    };
+    document.body.removeChild(el);
+    return insets;
+  }
+
   function fit(): void {
     const mode = getDisplayMode();
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const vw = window.innerWidth;
     const vh = window.innerHeight;
+    const insets = readSafeInsets();
 
     if (mode === 'modern') {
       // Modern fill: canvas spans the entire viewport. World stays 960×720 so
@@ -443,7 +466,7 @@ async function boot(): Promise<void> {
       const tx = (vw - 960 * scale) / 2;
       const ty = (vh - 720 * scale) / 2;
       ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * tx, dpr * ty);
-      setRenderMode({ kind: 'modern', vw, vh, dpr, scale, tx, ty });
+      setRenderMode({ kind: 'modern', vw, vh, dpr, scale, tx, ty, insets });
       return;
     }
 
@@ -459,7 +482,7 @@ async function boot(): Promise<void> {
     canvas.style.imageRendering = 'pixelated';
     const ctx = canvas.getContext('2d')!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    setRenderMode({ kind: 'retro', vw: w, vh: h, dpr, scale: 1, tx: 0, ty: 0 });
+    setRenderMode({ kind: 'retro', vw: w, vh: h, dpr, scale: 1, tx: 0, ty: 0, insets: { top: 0, right: 0, bottom: 0, left: 0 } });
   }
   // Expose to the settings panel — flipping the mode needs to re-fit.
   (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit = fit;

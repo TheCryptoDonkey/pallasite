@@ -189,6 +189,12 @@ function syncBodyBackground(wave: number, hasOverride: boolean): void {
   document.body.style.backgroundImage = key ? `url(/backgrounds/wave-${wave}.webp)` : '';
 }
 
+/** Safe-area insets in CSS pixels. Zero on desktop and Android without notch;
+ *  non-zero on iPhone X+ where the canvas extends under the Dynamic Island /
+ *  rounded corners (we use viewport-fit=cover so the canvas does cover them). */
+export interface SafeInsets { top: number; right: number; bottom: number; left: number; }
+const ZERO_INSETS: SafeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
+
 /** Render mode info from main.ts fit() — tells drawBackground whether to use
  *  in-world coords (retro) or canvas-pixel coords (modern fill). */
 export interface RenderModeInfo {
@@ -199,8 +205,9 @@ export interface RenderModeInfo {
   scale: number;
   tx: number;
   ty: number;
+  insets: SafeInsets;
 }
-let renderMode: RenderModeInfo = { kind: 'retro', vw: 960, vh: 720, dpr: 1, scale: 1, tx: 0, ty: 0 };
+let renderMode: RenderModeInfo = { kind: 'retro', vw: 960, vh: 720, dpr: 1, scale: 1, tx: 0, ty: 0, insets: ZERO_INSETS };
 export function setRenderMode(info: RenderModeInfo): void { renderMode = info; }
 
 /**
@@ -1442,16 +1449,81 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState, now: number): void
   if (renderMode.kind === 'modern') {
     ctx.setTransform(renderMode.dpr, 0, 0, renderMode.dpr, 0, 0);
   }
+  // Notch / Dynamic Island awareness — push the HUD inside the safe area so
+  // labels don't sit under the cutout on iPhone X+ in modern fullscreen mode.
+  // Retro letterboxes the canvas inside the inscribed 4:3 area, so insets
+  // are zero there by design.
+  const insets = renderMode.insets;
+  const topY = 16 + insets.top;
+  const leftX = 24 + insets.left;
+  const rightX = w - 24 - insets.right;
+  const showSats = s.session && !s.cheatedThisRun;
+
   ctx.font = '24px ui-monospace, monospace';
   ctx.shadowBlur = 0;
   ctx.fillStyle = '#58ff58';
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
-  ctx.fillText('SCORE', 24, 16);
-  ctx.fillText(pad(s.score, 6), 24, 42);
+  ctx.fillText('SCORE', leftX, topY);
+  ctx.fillText(pad(s.score, 6), leftX, topY + 26);
 
-  // Combo + buff chips — stacked under SCORE
-  let chipY = 76;
+  // Sats column stacks under SCORE on the left rail. Was previously at
+  // x=w*0.32 alongside SCORE, which pushed WAVE off-centre and crowded the
+  // top row on narrow viewports. Stacking lets WAVE claim the centre.
+  // Hidden in guest mode (no sats to track) and once a cheat fires this run
+  // (the SATS VOID chip below signals the run is unranked anyway).
+  if (showSats) {
+    ctx.fillStyle = '#ffd84a';
+    ctx.fillText('SATS', leftX, topY + 60);
+    ctx.fillText('₿ ' + pad(Math.floor(s.displaySats), 6), leftX, topY + 86);
+  }
+
+  // WAVE — top-centre, the focal point. Specimen name underneath pulls the
+  // pallasite lore into the running HUD instead of leaving it only in the
+  // wavestart cinematic. Boss arena (wave 25) gets its own treatment.
+  ctx.fillStyle = '#5b9dff';
+  ctx.shadowColor = '#5b9dff';
+  ctx.shadowBlur = 8;
+  ctx.textAlign = 'center';
+  ctx.fillText('WAVE', w / 2, topY);
+  ctx.fillText(pad(s.wave, 2), w / 2, topY + 26);
+  ctx.shadowBlur = 0;
+  ctx.font = 'bold 13px ui-monospace, monospace';
+  ctx.fillStyle = '#fff5d8';
+  ctx.letterSpacing = '0.18em' as unknown as string;
+  ctx.fillText(waveName(s.wave).toUpperCase(), w / 2, topY + 56);
+  ctx.letterSpacing = '0em' as unknown as string;
+
+  ctx.font = '24px ui-monospace, monospace';
+  ctx.fillStyle = '#58ff58';
+  ctx.shadowColor = '#58ff58';
+  ctx.shadowBlur = 0;
+  ctx.textAlign = 'right';
+  ctx.fillText('LIVES', rightX, topY);
+  for (let i = 0; i < s.lives; i++) {
+    const x = rightX - i * 22;
+    const y = topY + 40;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(-Math.PI / 2);
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = '#58ff58';
+    ctx.shadowColor = '#58ff58';
+    ctx.shadowBlur = 6;
+    ctx.beginPath();
+    ctx.moveTo(8, 0);
+    ctx.lineTo(-6, 5);
+    ctx.lineTo(-3, 0);
+    ctx.lineTo(-6, -5);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Combo + buff chips — left rail, stacked below the SCORE/SATS column.
+  // The starting Y depends on whether SATS is showing so chips don't overlap.
+  ctx.textAlign = 'left';
+  let chipY = topY + (showSats ? 124 : 60);
   function drawChip(label: string, remaining: number, totalMs: number, colour: string): void {
     const fade = Math.min(1, remaining / 600);
     ctx.save();
@@ -1460,13 +1532,13 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState, now: number): void
     ctx.shadowColor = colour;
     ctx.shadowBlur = 10;
     ctx.font = 'bold 18px ui-monospace, monospace';
-    ctx.fillText(label, 24, chipY);
+    ctx.fillText(label, leftX, chipY);
     const barW = 80;
     const frac = Math.min(1, remaining / totalMs);
     ctx.fillStyle = `rgba(255,255,255,0.15)`;
-    ctx.fillRect(24, chipY + 22, barW, 3);
+    ctx.fillRect(leftX, chipY + 22, barW, 3);
     ctx.fillStyle = colour;
-    ctx.fillRect(24, chipY + 22, barW * frac, 3);
+    ctx.fillRect(leftX, chipY + 22, barW * frac, 3);
     ctx.restore();
     chipY += 32;
   }
@@ -1502,44 +1574,6 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState, now: number): void
     drawChip('CHEATED · SATS VOID', 1, 1, '#ff5050');
   }
 
-  // Sats column only appears in Nostr mode — guest runs are score-only.
-  // Also hidden once a cheat fires this run: the SATS VOID chip already
-  // signals the run is unranked, and a still-ticking counter beside it
-  // reads as a real payout, which it isn't.
-  if (s.session && !s.cheatedThisRun) {
-    ctx.fillStyle = '#ffd84a';
-    ctx.textAlign = 'center';
-    ctx.fillText('SATS', w * 0.32, 16);
-    ctx.fillText('₿ ' + pad(Math.floor(s.displaySats), 6), w * 0.32, 42);
-  }
-
-  ctx.fillStyle = '#5b9dff';
-  ctx.fillText('WAVE', w * 0.62, 16);
-  ctx.fillText(pad(s.wave, 2), w * 0.62, 42);
-
-  ctx.fillStyle = '#58ff58';
-  ctx.textAlign = 'right';
-  ctx.fillText('LIVES', w - 24, 16);
-  for (let i = 0; i < s.lives; i++) {
-    const x = w - 24 - i * 22;
-    const y = 56;
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(-Math.PI / 2);
-    ctx.lineWidth = 1.4;
-    ctx.strokeStyle = '#58ff58';
-    ctx.shadowColor = '#58ff58';
-    ctx.shadowBlur = 6;
-    ctx.beginPath();
-    ctx.moveTo(8, 0);
-    ctx.lineTo(-6, 5);
-    ctx.lineTo(-3, 0);
-    ctx.lineTo(-6, -5);
-    ctx.closePath();
-    ctx.stroke();
-    ctx.restore();
-  }
-
   drawGhostChip(ctx, s);
 
   ctx.restore();
@@ -1550,8 +1584,10 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState, now: number): void
  * top ghost is cached (set by the title-screen prefetch). Shows the leader's
  * score interpolated to the current run-time, and the live gap as +/-N.
  *
- * Sits at WORLD_W-24, y=86, just under the LIVES icon row. Stays out of the
- * way of HUD chips on the left rail and the WAVE banner on wavestart.
+ * Sits at viewport-right, just under the LIVES icon row, offset by the
+ * top/right safe-area insets so it stays clear of the notch on iPhone X+.
+ * Stays out of the way of HUD chips on the left rail and the WAVE banner on
+ * wavestart.
  */
 function drawGhostChip(ctx: CanvasRenderingContext2D, s: GameState): void {
   if (s.phase !== 'playing') return;
@@ -1568,8 +1604,9 @@ function drawGhostChip(ctx: CanvasRenderingContext2D, s: GameState): void {
   // transform to screen-pixel space in modern mode. Use viewport width
   // instead of world width so the chip stays glued to the actual top-right.
   const w = renderMode.kind === 'modern' ? renderMode.vw : WORLD_W;
-  const x = w - 24;
-  let y = 86;
+  const insets = renderMode.insets;
+  const x = w - 24 - insets.right;
+  let y = 86 + insets.top;
 
   ctx.save();
   ctx.textAlign = 'right';
