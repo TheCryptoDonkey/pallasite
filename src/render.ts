@@ -1703,18 +1703,39 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   drawBackground(ctx, state, now);
   drawStars(ctx, now);
 
-  for (const a of state.asteroids) drawAsteroid(ctx, a, now);
-  for (const m of state.mines) drawMine(ctx, m, now);
-  for (const u of state.ufos) drawUfo(ctx, u, now);
-  for (const b of state.bullets) drawBullet(ctx, b, true);
-  for (const b of state.enemyBullets) drawBullet(ctx, b, false);
-  for (const c of state.coins) drawCoin(ctx, c, now);
-  for (const p of state.powerups) drawPowerUp(ctx, p, now);
-  drawParticles(ctx, state.particles);
-  drawDebris(ctx, state.debris);
+  // Ghost-render offsets — when modern mode crops the world (cover-scale in
+  // portrait), the on-screen wrap distance is the visible window, not the
+  // 960×720 world. Drawing every entity at ±visibleWorld offsets makes the
+  // wrap appear seamless at the visible edges. Game logic still wraps at
+  // WORLD_W/WORLD_H so collisions stay consistent — these are render-only.
+  const ghostXs: number[] = [0];
+  const ghostYs: number[] = [0];
+  if (renderMode.kind === 'modern') {
+    const visW = renderMode.vw / renderMode.scale;
+    const visH = renderMode.vh / renderMode.scale;
+    if (visW < WORLD_W - 1) ghostXs.push(-visW, visW);
+    if (visH < WORLD_H - 1) ghostYs.push(-visH, visH);
+  }
 
-  drawShield(ctx, state.ship, now);
-  drawShip(ctx, state.ship, now);
+  for (const dx of ghostXs) {
+    for (const dy of ghostYs) {
+      const isGhost = dx !== 0 || dy !== 0;
+      if (isGhost) { ctx.save(); ctx.translate(dx, dy); }
+      for (const a of state.asteroids) drawAsteroid(ctx, a, now);
+      for (const m of state.mines) drawMine(ctx, m, now);
+      for (const u of state.ufos) drawUfo(ctx, u, now);
+      for (const b of state.bullets) drawBullet(ctx, b, true);
+      for (const b of state.enemyBullets) drawBullet(ctx, b, false);
+      for (const c of state.coins) drawCoin(ctx, c, now);
+      for (const p of state.powerups) drawPowerUp(ctx, p, now);
+      drawParticles(ctx, state.particles);
+      drawDebris(ctx, state.debris);
+      drawShield(ctx, state.ship, now);
+      drawShip(ctx, state.ship, now);
+      if (isGhost) ctx.restore();
+    }
+  }
+
   drawHud(ctx, state, now);
   drawWaveBanner(ctx, state, now);
 }
