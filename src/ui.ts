@@ -2028,24 +2028,35 @@ async function maybePublishScore(state: GameState, parent: HTMLElement): Promise
   ageWrap.style.cssText =
     'display:flex;flex-direction:column;gap:6px;margin:4px 0 6px 0;text-align:left';
 
+  // Tap target: native checkboxes render at 16-18px on mobile, well below
+  // the 44pt minimum the iOS HIG recommends. We bump the box itself + tie
+  // the label via id/for so tapping anywhere along the label row toggles
+  // the checkbox. Without the linkage the original code only registered
+  // hits on the bare checkbox pixels, which mobile users miss every time.
   const ageRow = el('div', { parent: ageWrap });
   ageRow.style.cssText =
-    'display:flex;gap:8px;align-items:flex-start;font-size:0.78rem;' +
-    'color:#cccccc;line-height:1.4';
+    'display:flex;gap:10px;align-items:flex-start;font-size:0.78rem;' +
+    'color:#cccccc;line-height:1.4;padding:8px 4px;' +
+    '-webkit-tap-highlight-color:rgba(91,157,255,0.18)';
   const ageCheckbox = document.createElement('input');
   ageCheckbox.type = 'checkbox';
-  ageCheckbox.style.cssText = 'margin-top:3px;cursor:pointer;flex-shrink:0';
+  ageCheckbox.id = 'signet-age-checkbox';
+  ageCheckbox.style.cssText = 'width:22px;height:22px;margin-top:1px;cursor:pointer;flex-shrink:0;accent-color:#5b9dff';
   const ageLabel = document.createElement('label');
-  ageLabel.style.cssText = 'cursor:pointer;flex:1';
+  ageLabel.htmlFor = 'signet-age-checkbox';
+  ageLabel.style.cssText = 'cursor:pointer;flex:1;user-select:none;-webkit-user-select:none';
   ageLabel.appendChild(
     document.createTextNode('I confirm I am 18 or older and have read the '),
   );
   const ageTermsLink = document.createElement('a');
   ageTermsLink.href = '#';
   ageTermsLink.textContent = 'terms';
-  ageTermsLink.style.cssText = 'color:#5b9dff;text-decoration:underline';
+  ageTermsLink.style.cssText = 'color:#5b9dff;text-decoration:underline;padding:2px 0';
+  // Stop the terms tap from bubbling — without this, opening terms also
+  // toggles the checkbox via the label-for binding.
   ageTermsLink.addEventListener('click', (e) => {
     e.preventDefault();
+    e.stopPropagation();
     openTermsModal();
   });
   ageLabel.appendChild(ageTermsLink);
