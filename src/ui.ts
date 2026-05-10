@@ -16,7 +16,7 @@ import {
 } from './a11y.js';
 import { getHapticsEnabled, setHapticsEnabled, hapticsSupported } from './haptics.js';
 import * as auth from './auth.js';
-import { addLocalHighScore, getLocalHighScores, isHighScore, fetchGlobalHighScores, clearLocalHighScores, type GlobalHighScore } from './score.js';
+import { addLocalHighScore, getLocalHighScores, isHighScore, subscribeGlobalHighScores, clearLocalHighScores, type GlobalHighScore } from './score.js';
 import { submitClaim, fetchPool, fetchPlayer, type PlayerTier } from './faucet.js';
 import { renderLegalFooter, openTermsModal } from './legal.js';
 import { startGame, startDeathReplay, toastNow } from './game.js';
@@ -512,24 +512,51 @@ function renderGlobalLeaderboard(parent: HTMLElement): void {
   const container = el('div', { parent });
   const block = el('div', { className: 'leaderboard-block', parent: container });
   el('p', { className: 'leaderboard-title', parent: block, text: '— GLOBAL HIGH SCORES —' });
-  const status = el('p', { parent: block, text: 'Loading from relays…' });
+  const status = el('p', { parent: block, text: 'Listening to relays…' });
   status.style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.7);letter-spacing:0.06em;margin:0;';
 
-  void fetchGlobalHighScores().then(async raw => {
-    if (!container.isConnected) return;
+  // Persistent subscription: scores stream in as relays propagate them and
+  // the leaderboard reflects the new state without reloading the title. The
+  // 30s cache that fetchGlobalHighScores used to apply is bypassed here on
+  // purpose -- we want live updates, not polled snapshots.
+  let renderToken = 0;
+  let receivedAny = false;
+  let cleanupTimer: number | null = null;
+
+  const teardown = (): void => {
+    unsubscribe();
+    if (cleanupTimer !== null) { clearInterval(cleanupTimer); cleanupTimer = null; }
+  };
+
+  const unsubscribe = subscribeGlobalHighScores(async raw => {
+    if (!container.isConnected) { teardown(); return; }
+    receivedAny = true;
     if (raw.length === 0) {
       status.textContent = 'No global scores yet — be the first.';
       return;
     }
+    const myToken = ++renderToken;
     const top = raw.slice(0, 5);
     const entries = await Promise.all(top.map(resolveDisplayName));
-    if (!container.isConnected) return;
+    if (!container.isConnected || myToken !== renderToken) return;
     container.innerHTML = '';
     renderLeaderboardBlock(container, entries.map(globalToLocal), '— GLOBAL HIGH SCORES —');
-  }).catch(() => {
-    if (!container.isConnected) return;
-    status.textContent = 'Could not reach relays.';
   });
+
+  // Backstop probe: if the title screen unmounts during a long quiet period
+  // the onUpdate-side disconnection check won't fire. Probe every 30s.
+  cleanupTimer = window.setInterval(() => {
+    if (!container.isConnected) teardown();
+  }, 30_000);
+
+  // Empty-state fallback if relays stay silent for 8s -- soften "Listening…"
+  // into the same "be the first" hint fetchGlobalHighScores used to show.
+  window.setTimeout(() => {
+    if (!container.isConnected) return;
+    if (!receivedAny && status.isConnected) {
+      status.textContent = 'No global scores yet — be the first.';
+    }
+  }, 8000);
 }
 
 async function resolveDisplayName(entry: GlobalHighScore): Promise<GlobalHighScore & { displayName: string }> {

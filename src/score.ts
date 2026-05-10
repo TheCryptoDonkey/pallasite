@@ -249,3 +249,107 @@ export async function fetchGlobalHighScores(
   });
 }
 
+/**
+ * Open a live subscription to kind 30762 score events on the active relays
+ * and emit `onUpdate` whenever the per-pubkey best leaderboard changes.
+ *
+ * Unlike `fetchGlobalHighScores`, this never closes on EOSE. Sockets stay
+ * open and any new event a relay propagates flows straight to the consumer,
+ * so the title-screen leaderboard reflects new scores as they land instead
+ * of every 30s.
+ *
+ * Emits are debounced (~200ms) to coalesce the burst of events that arrives
+ * during the initial backfill, and the per-pubkey best map is kept across
+ * the whole subscription lifetime so a fresh score only emits if it actually
+ * beats that player's previous best.
+ *
+ * Always call the returned unsubscribe when the consumer unmounts.
+ */
+export function subscribeGlobalHighScores(
+  onUpdate: (entries: GlobalHighScore[]) => void,
+  opts: { relays?: readonly string[]; limit?: number } = {},
+): () => void {
+  const relays = opts.relays ?? getActiveRelays();
+  const limit = opts.limit ?? 200;
+  if (relays.length === 0) {
+    setTimeout(() => onUpdate([]), 0);
+    return () => undefined;
+  }
+
+  const sockets: WebSocket[] = [];
+  const bestByPubkey = new Map<string, GlobalHighScore>();
+  let closed = false;
+  let pendingEmit: number | null = null;
+
+  const scheduleEmit = (): void => {
+    if (closed || pendingEmit !== null) return;
+    pendingEmit = window.setTimeout(() => {
+      pendingEmit = null;
+      if (closed) return;
+      const entries = Array.from(bestByPubkey.values()).sort((a, b) => b.score - a.score);
+      // Keep the legacy fetch cache warm so any sync reader sees the same data.
+      globalCache = { at: Date.now(), entries };
+      onUpdate(entries);
+    }, 200);
+  };
+
+  const consider = (event: ScoreEvent): boolean => {
+    if (hasTagValue(event.tags, 'cheated', 'true')) return false;
+    const scoreStr = tagValue(event.tags, 'score');
+    const score = scoreStr ? parseInt(scoreStr, 10) : NaN;
+    if (!Number.isFinite(score) || score <= 0) return false;
+    const playerPubkey = tagValue(event.tags, 'p') ?? event.pubkey;
+    if (!/^[0-9a-f]{64}$/i.test(playerPubkey)) return false;
+    const existing = bestByPubkey.get(playerPubkey);
+    if (existing && existing.score >= score) return false;
+    bestByPubkey.set(playerPubkey, {
+      pubkey: playerPubkey,
+      score,
+      sats: parseInt(tagValue(event.tags, 'sats') ?? '0', 10) || 0,
+      wave: parseInt(tagValue(event.tags, 'wave') ?? '0', 10) || 0,
+      at: new Date(event.created_at * 1000).toISOString(),
+      eventId: event.id,
+    });
+    return true;
+  };
+
+  for (const url of relays) {
+    let ws: WebSocket;
+    try { ws = new WebSocket(url); } catch { continue; }
+    sockets.push(ws);
+    const subId = 'gl' + Math.random().toString(36).slice(2, 10);
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify(['REQ', subId, {
+        kinds: [30762],
+        '#t': ['pallasite', 'asteroids'],
+        limit,
+      }]));
+    };
+
+    ws.onmessage = (ev: MessageEvent) => {
+      let msg: unknown;
+      try { msg = JSON.parse(typeof ev.data === 'string' ? ev.data : ''); } catch { return; }
+      if (!Array.isArray(msg)) return;
+      // EVENT only — no EOSE handling, the subscription stays open for live
+      // events. Relays that close the socket on idle will simply stop feeding;
+      // the others continue.
+      if (msg[0] === 'EVENT' && msg[1] === subId) {
+        const event = msg[2];
+        if (isScoreEvent(event) && hasTagValue(event.tags, 'game', GAME_ID)) {
+          if (consider(event)) scheduleEmit();
+        }
+      }
+    };
+
+    ws.onerror = () => { /* best-effort across relays; silent on per-relay failure */ };
+  }
+
+  return () => {
+    if (closed) return;
+    closed = true;
+    if (pendingEmit !== null) { clearTimeout(pendingEmit); pendingEmit = null; }
+    sockets.forEach(s => { try { s.close(); } catch { /* ignore */ } });
+  };
+}
+
