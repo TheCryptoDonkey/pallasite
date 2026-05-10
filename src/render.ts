@@ -2234,14 +2234,11 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   }
 
   // Ghost-render offsets so wraps look seamless at visible-band edges.
-  // We're only in "wrap visualisation" mode when at least one axis is
-  // cropped (vis < world). Pure contain (e.g. landscape with side gutters)
-  // shows the whole world centred against the bg — no ghosts there, or the
-  // player sees their ship doubled in the gutter.
-  //   - axis cropped (vis < world): ghost at ±vis so the wrap appears at
-  //     the visible-band edges.
-  //   - other axis oversized while a sibling is cropped: ghost at ±WORLD
-  //     so the gutters fill with the world's wrap rather than empty bg.
+  // Only the axis that's actually cropped (vis < world) gets ghosts; the
+  // older "fill the empty band" passes that copied the world into oversized
+  // gutters were tripling the per-frame entity work for a cosmetic gain
+  // (gutters already pick up the wave-bg). On portrait mobile this drops
+  // the entity render cost from 9 passes (3×3) down to 3.
   const ghostXs: number[] = [0];
   const ghostYs: number[] = [0];
   if (renderMode.kind === 'modern') {
@@ -2250,9 +2247,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     const cropX = visW < WORLD_W - 1;
     const cropY = visH < WORLD_H - 1;
     if (cropX) ghostXs.push(-visW, visW);
-    else if (cropY && visW > WORLD_W + 1) ghostXs.push(-WORLD_W, WORLD_W);
     if (cropY) ghostYs.push(-visH, visH);
-    else if (cropX && visH > WORLD_H + 1) ghostYs.push(-WORLD_H, WORLD_H);
   }
 
   // Shake wraps the entity layer only — HUD stays steady so readouts don't
@@ -2271,8 +2266,6 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       for (const b of state.enemyBullets) drawBullet(ctx, b, false);
       for (const c of state.coins) drawCoin(ctx, c, now);
       for (const p of state.powerups) drawPowerUp(ctx, p, now);
-      drawParticles(ctx, state.particles);
-      drawDebris(ctx, state.debris);
       drawGhostShip(ctx, state);
       drawGhostAttract(ctx, state, now);
       drawShield(ctx, state.ship, now);
@@ -2280,6 +2273,14 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       if (isGhost) ctx.restore();
     }
   }
+
+  // Particles + debris draw once at world coords — they're transient and
+  // never near the wrap edge long enough for a ghost copy to register
+  // before they fade. Pulling them out of the ghost loop saves up to N
+  // particle-arcs per pass on a death-explosion frame (80+ particles ×
+  // 3 passes = 240+ arcs reduced to 80).
+  drawParticles(ctx, state.particles);
+  drawDebris(ctx, state.debris);
 
   ctx.restore();
 
