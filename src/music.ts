@@ -207,17 +207,24 @@ export function musicStop(fadeMs = DEFAULT_FADE_MS): void {
 
 /**
  * Pause/resume music playback without changing the active track. Used by
- * the visibilitychange handler so backgrounded PWAs go silent instead of
- * decoding music in the background. On unpause only the currently active
- * track resumes -- previously faded-out tracks stay paused so they don't
- * suddenly play when the PWA returns.
+ * the visibilitychange / pagehide handlers so backgrounded PWAs go silent
+ * instead of decoding music in the background. iOS Safari is unreliable
+ * about honouring .pause() on its own when a PWA is swiped away — the OS
+ * may keep the element decoding for the lock-screen control centre — so
+ * we ALSO set muted=true to silence the output even if decode survives.
+ * On unpause only the currently active track resumes; previously faded-out
+ * tracks stay paused so they don't suddenly play when the PWA returns.
  */
 export function musicSetPaused(paused: boolean): void {
   if (paused) {
     for (const entry of loaded.values()) {
       try { entry.el.pause(); } catch { /* ignore */ }
+      try { entry.el.muted = true; } catch { /* ignore */ }
     }
     return;
+  }
+  for (const entry of loaded.values()) {
+    try { entry.el.muted = false; } catch { /* ignore */ }
   }
   if (currentId) {
     const entry = loaded.get(currentId);
