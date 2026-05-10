@@ -100,6 +100,7 @@ export function makeInitialState(): GameState {
       largestCombo: 0,
       powerupsCollected: 0,
     },
+    ghostSamples: [],
   };
 }
 
@@ -178,6 +179,8 @@ export function startGame(s: GameState): void {
     largestCombo: 0,
     powerupsCollected: 0,
   };
+  s.ghostSamples = [];
+  lastGhostSampleRunMs = -1;
   beginWave(s, 1);
   audio.startHeartbeat();
   audio.startAmbient();
@@ -1111,6 +1114,13 @@ function emergeHyperspace(s: GameState): void {
 const SAT_TICK_RATE = 9;
 
 let lastReplayRecordedAt = 0;
+/** ms since startGame at which we last pushed a ghost sample. Reset when
+ *  startGame zeroes runTimeMs; capture cadence is GHOST_SAMPLE_MS. */
+let lastGhostSampleRunMs = -1;
+const GHOST_SAMPLE_MS = 1000;
+/** Ceiling so a paused tab can't grow ghost samples without bound. 1h at 1Hz
+ *  is way past any realistic run length. */
+const GHOST_SAMPLE_CAP = 3600;
 
 /** Push an unconditional snapshot — used by killShip to bake the impact-
  *  moment frame into the buffer (the regular recorder runs at frame start,
@@ -1141,6 +1151,21 @@ function recordReplaySnapshot(s: GameState, now: number): void {
   // on asteroids is never mutated post-spawn so a shared ref is safe.
   s.replayBuffer.push(buildReplaySnapshot(s, now));
   if (s.replayBuffer.length > REPLAY_BUFFER_FRAMES) s.replayBuffer.shift();
+}
+
+/** Push a (t, score) pair to s.ghostSamples every GHOST_SAMPLE_MS of in-game
+ *  time. Keyed off s.runTimeMs (not wall-clock) so pause / phase transitions
+ *  don't bloat the timeline. The ghost decoder reconstructs t as i*intervalMs,
+ *  so we only sample on tight intervals — never on irregular boundaries. */
+function recordGhostSample(s: GameState): void {
+  if (s.phase !== 'playing') return;
+  const runMs = s.runTimeMs;
+  // First sample fires at t=0 (startGame seeded lastGhostSampleRunMs to -1).
+  if (lastGhostSampleRunMs >= 0 && runMs - lastGhostSampleRunMs < GHOST_SAMPLE_MS) return;
+  if (s.ghostSamples.length >= GHOST_SAMPLE_CAP) return;
+  const expectedT = s.ghostSamples.length * GHOST_SAMPLE_MS;
+  s.ghostSamples.push({ t: expectedT, score: s.score });
+  lastGhostSampleRunMs = runMs;
 }
 
 /** Tear down sirens / heartbeat / ambient — shared by the direct game-over path
@@ -1241,6 +1266,8 @@ export function updateGame(s: GameState, dt: number, now: number): void {
 
   // Snapshot the world state for the death replay buffer (no-op outside 'playing').
   recordReplaySnapshot(s, now);
+  // 1Hz score-pacing sample for the kind 30763 ghost replay.
+  recordGhostSample(s);
 
   // Detect the 1979 lurking exploit so coin credit can be withheld for it.
   updateLurkState(s, now);

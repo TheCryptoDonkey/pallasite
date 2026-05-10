@@ -13,6 +13,7 @@ import {
   WORLD_W, WORLD_H, WARP_MS, waveName, waveSubtitle, ASTEROID_TYPE_CONFIG, POWERUP_CONFIG,
   REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS,
 } from './types.js';
+import { getCachedGhost, ghostScoreAt } from './ghost.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
 
@@ -1433,6 +1434,60 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState, now: number): void
     ctx.stroke();
     ctx.restore();
   }
+
+  drawGhostChip(ctx, s);
+
+  ctx.restore();
+}
+
+/**
+ * Top-right "leader chip" — only renders during 'playing' phase, only when a
+ * top ghost is cached (set by the title-screen prefetch). Shows the leader's
+ * score interpolated to the current run-time, and the live gap as +/-N.
+ *
+ * Sits at WORLD_W-24, y=86, just under the LIVES icon row. Stays out of the
+ * way of HUD chips on the left rail and the WAVE banner on wavestart.
+ */
+function drawGhostChip(ctx: CanvasRenderingContext2D, s: GameState): void {
+  if (s.phase !== 'playing') return;
+  const ghost = getCachedGhost();
+  if (!ghost) return;
+  const t = s.runTimeMs;
+  // Once the player passes the leader's run-length, hide the chip — there's
+  // no honest gap to show past that point.
+  if (t > ghost.durationMs + 2000) return;
+  const leaderScore = ghostScoreAt(ghost, t);
+  if (leaderScore <= 0) return;
+  const gap = s.score - leaderScore;
+  const x = WORLD_W - 24;
+  let y = 86;
+
+  ctx.save();
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'top';
+
+  ctx.font = '13px ui-monospace, monospace';
+  ctx.fillStyle = 'rgba(160,160,160,0.9)';
+  ctx.shadowBlur = 0;
+  ctx.fillText('LEADER', x, y);
+  y += 16;
+
+  ctx.font = 'bold 18px ui-monospace, monospace';
+  ctx.fillStyle = '#5b9dff';
+  ctx.shadowColor = '#5b9dff';
+  ctx.shadowBlur = 6;
+  ctx.fillText(leaderScore.toLocaleString(), x, y);
+  y += 22;
+
+  const ahead = gap >= 0;
+  const colour = ahead ? '#58ff58' : '#ff8a3a';
+  const gapStr = (ahead ? '+' : '−') + Math.abs(gap).toLocaleString();
+  ctx.font = 'bold 15px ui-monospace, monospace';
+  ctx.fillStyle = colour;
+  ctx.shadowColor = colour;
+  ctx.shadowBlur = 6;
+  ctx.fillText(gapStr, x, y);
+
   ctx.restore();
 }
 

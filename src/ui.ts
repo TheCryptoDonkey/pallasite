@@ -22,6 +22,7 @@ import { getStoredDailyPref, setStoredDailyPref, todayUTC, getActiveSeed } from 
 import { DEV } from './credits.js';
 import { followUser, shareCompletion, endorseSubject, rankFromWave } from './social.js';
 import { requestZapInvoice, hasWebLN, payViaWebLN } from './zap.js';
+import { publishGhost, prefetchTopGhost } from './ghost.js';
 import {
   asteroidPreview, minePreview, sniperPreview, powerupPreview,
   dustPreview, satCoinPreview,
@@ -299,6 +300,12 @@ export function renderTitle(state: GameState): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
+
+  // Warm the leader-ghost cache so the in-game LEADER chip can render the
+  // moment IGNITE fires. Fire-and-forget; cache is shared module-state in
+  // ghost.ts. Phase A always pulls the global top — daily-mode filtering
+  // lands with Phase C.
+  prefetchTopGhost();
 
   // Wordmark image rendered with mix-blend-mode: screen so the baked-in
   // black starfield bg drops out and only the green lettering floats over
@@ -1486,6 +1493,22 @@ function renderRunCredits(
   // capability with a one-line status of its own.
   const publishWrap = el('div', { parent: overlay });
   void maybePublishScore(state, publishWrap);
+
+  // Best-effort kind 30763 ghost publish. Independent of the score claim so
+  // sign-capable sessions leave a ghost trail even when they don't claim
+  // (or the faucet is down). publishGhost no-ops on cheated / read-only /
+  // sub-2-sample runs, so unconditional invocation is safe.
+  if (state.session) {
+    void publishGhost({
+      session: state.session,
+      samples: state.ghostSamples,
+      finalScore: state.score,
+      finalWave: state.wave,
+      durationMs: Math.max(0, Math.floor(state.runTimeMs)),
+      seed: getActiveSeed(),
+      cheated: state.cheatedThisRun,
+    });
+  }
 
   // Prominent zap CTA — the entire reason this stage exists per the user
   // brief: "make zaps easy and frictionless".
