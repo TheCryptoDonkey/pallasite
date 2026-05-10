@@ -808,15 +808,18 @@ function renderDailyRow(parent: HTMLElement): void {
 }
 
 /**
- * Today's daily-seed leader chip. Polls the ghost cache (warmed by
+ * Today's daily-seed chase chip. Polls the ghost cache (warmed by
  * prefetchTopGhost in renderTitle) and updates when the relays answer.
  *
- * - Empty state reads as a hook: "DAILY 2026-05-10 · BE THE FIRST"
- * - Filled state shows leader pubkey (truncated) + score
+ * Framed as a chase target rather than a stat:
+ *   - Empty state: "TODAY IS FRESH · SET THE BAR"
+ *   - Filled state: "CHASING @name · 47,820"
  *
- * Read-only — the DAILY/FREE toggle directly above is the actual control.
- * This chip's job is to make the daily mode feel like there's something
- * to chase, not duplicate the affordance.
+ * Display name resolves via the kind 0 cache + fetch path used by the
+ * leaderboards. Falls back to a pubkey stub if the player has no
+ * profile metadata yet, then upgrades in place when the fetch lands.
+ *
+ * Read-only -- the DAILY/FREE toggle directly above is the actual control.
  */
 function renderDailyLeaderChip(parent: HTMLElement): void {
   const wrap = el('div', { parent });
@@ -830,17 +833,36 @@ function renderDailyLeaderChip(parent: HTMLElement): void {
   const heading = el('p', { parent: wrap, text: `DAILY ${todayUTC()}` });
   heading.style.cssText = 'font-size:0.7rem;color:rgba(180,140,255,0.7);letter-spacing:0.28em;margin:0;';
 
-  const body = el('p', { parent: wrap, text: 'BE THE FIRST' });
+  const body = el('p', { parent: wrap, text: 'TODAY IS FRESH · SET THE BAR' });
   body.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:1.1rem;color:#ffd84a;letter-spacing:0.16em;margin:0;text-shadow:0 0 6px rgba(255,216,74,0.45);";
+
+  let lastPaintedPubkey: string | null = null;
 
   function paint(): void {
     const seed = todayUTC();
     const run = getCachedGhost(seed);
     if (!run) return;
+    if (run.pubkey === lastPaintedPubkey) return;
+    lastPaintedPubkey = run.pubkey;
+
+    // Optimistic stub render now; swap in the real display name async once
+    // the kind 0 fetch lands (or hit cache for an instant swap).
     const stub = run.pubkey.slice(0, 8) + '…' + run.pubkey.slice(-4);
-    body.textContent = `${stub} · ${run.score.toLocaleString()}`;
+    const fmt = (name: string): string => `CHASING ${name} · ${run.score.toLocaleString()}`;
+    body.textContent = fmt(stub);
     body.style.color = '#7fffb0';
     body.style.textShadow = '0 0 6px rgba(127,255,176,0.45)';
+
+    const cached = getCachedProfile(run.pubkey);
+    if (cached) {
+      body.textContent = fmt(bestName(cached, run.pubkey));
+    } else {
+      void fetchProfile(run.pubkey).then(profile => {
+        if (!document.body.contains(wrap)) return;
+        if (lastPaintedPubkey !== run.pubkey) return;
+        body.textContent = fmt(bestName(profile, run.pubkey));
+      }).catch(() => undefined);
+    }
   }
   paint();
 
