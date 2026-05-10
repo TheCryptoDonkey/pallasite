@@ -99,6 +99,61 @@ export async function fetchPool(): Promise<PoolStatus | null> {
   }
 }
 
+export type PlayerTier = 'anon' | 'nip05' | 'close' | 'verified';
+
+export interface PlayerStatus {
+  pubkey: string;
+  tier: PlayerTier;
+  lifetime_paid_sats: number;
+  lifetime_cap_sats: number;
+  multiplier: number;
+  claims_count: number;
+  best_score: number;
+  best_wave: number;
+  flagged: boolean;
+}
+
+const VALID_TIERS: ReadonlySet<PlayerTier> = new Set([
+  'anon',
+  'nip05',
+  'close',
+  'verified',
+]);
+
+export async function fetchPlayer(pubkey: string): Promise<PlayerStatus | null> {
+  if (!/^[0-9a-f]{64}$/i.test(pubkey)) return null;
+  try {
+    const res = await fetch(`${API_BASE}/player/${pubkey.toLowerCase()}`, {
+      cache: 'no-cache',
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as Partial<PlayerStatus> & { ok?: boolean };
+    if (
+      !data.ok ||
+      typeof data.pubkey !== 'string' ||
+      typeof data.lifetime_paid_sats !== 'number' ||
+      typeof data.lifetime_cap_sats !== 'number' ||
+      typeof data.tier !== 'string' ||
+      !VALID_TIERS.has(data.tier as PlayerTier)
+    ) {
+      return null;
+    }
+    return {
+      pubkey: data.pubkey,
+      tier: data.tier as PlayerTier,
+      lifetime_paid_sats: data.lifetime_paid_sats,
+      lifetime_cap_sats: data.lifetime_cap_sats,
+      multiplier: data.multiplier ?? 0,
+      claims_count: data.claims_count ?? 0,
+      best_score: data.best_score ?? 0,
+      best_wave: data.best_wave ?? 0,
+      flagged: Boolean(data.flagged),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export interface ClaimInput {
   score: number;
   wave: number;

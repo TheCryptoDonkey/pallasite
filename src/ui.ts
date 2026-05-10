@@ -12,7 +12,7 @@ import { getTouchMode, setTouchMode, type TouchInputMode } from './touch.js';
 import { getDisplayMode, setDisplayMode, type DisplayMode } from './display.js';
 import * as auth from './auth.js';
 import { addLocalHighScore, getLocalHighScores, isHighScore, fetchGlobalHighScores, clearLocalHighScores, type GlobalHighScore } from './score.js';
-import { submitClaim, fetchPool } from './faucet.js';
+import { submitClaim, fetchPool, fetchPlayer, type PlayerTier } from './faucet.js';
 import { renderLegalFooter } from './legal.js';
 import { startGame, startDeathReplay, toastNow } from './game.js';
 import * as audio from './audio.js';
@@ -623,6 +623,63 @@ function renderLeaderboardBlock(parent: HTMLElement, list: ReturnType<typeof get
   });
 }
 
+/**
+ * Tier badge: small chip showing the player's WoT/NIP-05 tier, lifetime
+ * progress against their cap, and an upgrade hint when they're below the
+ * top. Lazy — fetches /api/player and renders into the same parent so the
+ * session panel can call it once and forget.
+ */
+function renderTierBadge(parent: HTMLElement, pubkey: string): void {
+  const wrap = el('div', { parent });
+  wrap.style.cssText =
+    'display:flex;flex-direction:column;align-items:center;gap:2px;margin:6px 0 0';
+
+  const chip = el('p', { parent: wrap, text: 'Loading tier…' });
+  chip.style.cssText =
+    'font-size:0.78rem;letter-spacing:0.08em;margin:0;color:rgba(180,180,180,0.7)';
+
+  const upgrade = el('p', { parent: wrap });
+  upgrade.style.cssText =
+    'font-size:0.72rem;color:rgba(180,180,180,0.55);margin:0;text-align:center;max-width:340px;line-height:1.4';
+
+  void fetchPlayer(pubkey).then((p) => {
+    if (!wrap.isConnected) return;
+    if (!p) {
+      chip.textContent = 'Tier unavailable';
+      upgrade.textContent = '';
+      return;
+    }
+    const colour: Record<PlayerTier, string> = {
+      anon: 'rgba(180,180,180,0.85)',
+      nip05: '#5b9dff',
+      close: '#b48cff',
+      verified: '#58ff58',
+    };
+    const label: Record<PlayerTier, string> = {
+      anon: 'ANON',
+      nip05: 'NIP-05',
+      close: 'CLOSE',
+      verified: 'VERIFIED',
+    };
+    const earned = p.lifetime_paid_sats.toLocaleString();
+    const cap = p.lifetime_cap_sats.toLocaleString();
+    chip.textContent = `${label[p.tier]} · ${earned}/${cap} sats`;
+    chip.style.color = colour[p.tier];
+
+    if (p.tier === 'anon') {
+      upgrade.textContent =
+        'Set NIP-05 in your profile to lift your cap to £5. Get followed by the dev for £20.';
+    } else if (p.tier === 'nip05') {
+      upgrade.textContent =
+        '2-hop in the dev’s WoT lifts to £10. Direct follow lifts to £20.';
+    } else if (p.tier === 'close') {
+      upgrade.textContent = 'A direct follow from the dev lifts to £20.';
+    } else {
+      upgrade.textContent = '';
+    }
+  });
+}
+
 function renderSessionPanel(parent: HTMLElement, state: GameState): void {
   parent.innerHTML = '';
   if (state.session) {
@@ -663,6 +720,7 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
       note.style.fontSize = '0.85rem';
       note.style.color = 'rgba(255,200,100,0.8)';
     }
+    renderTierBadge(parent, pubkey);
     const row = el('div', { className: 'menu-row', parent });
     const out = el('button', { className: 'menu-btn secondary', parent: row, text: 'EJECT' });
     out.addEventListener('click', async () => {
