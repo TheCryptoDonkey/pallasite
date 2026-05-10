@@ -1,12 +1,15 @@
 /**
- * Score persistence and Nostr leaderboard publishing.
+ * Score persistence and Nostr leaderboard reads.
  *
  * Local: top-10 in localStorage.
- * Nostr: kind 30762 player-signed events (gamestr.io spec).
- *        Server-side faucet payout endpoint deferred — first session ships read-only leaderboards.
+ * Nostr: read-only — `fetchGlobalHighScores` pulls kind 30762 events
+ *        from relays. Publishing now happens server-side via the faucet's
+ *        /api/claim flow (see src/faucet.ts), so this module no longer
+ *        signs or sends events. Existing player-signed events from before
+ *        the cutover still surface in the leaderboard during the migration
+ *        window.
  */
 
-import type { SignetSession, NostrEvent } from 'signet-login';
 import { GAME_ID } from './auth.js';
 import { getActiveRelays } from './relays.js';
 
@@ -63,75 +66,13 @@ export function isHighScore(score: number): boolean {
 }
 
 /**
- * Publish a kind 30762 score event to Nostr relays.
- *
- * Uses the consumer-side player-signed approach (gamestr.io). The signer is
- * the player's own NIP-07/bunker session. Score is signed by the player.
- */
-export async function publishScore(
-  session: SignetSession,
-  scoreData: { score: number; sats: number; wave: number; durationSeconds: number; state?: 'active' | 'completed'; seed?: string | null; cheated?: boolean },
-  relays: readonly string[] = getActiveRelays(),
-): Promise<{ event: NostrEvent; publishedTo: string[]; failed: string[] } | null> {
-  if (!session.signer.capabilities.canSignEvents) {
-    return null;
-  }
-
-  const state = scoreData.state ?? 'active';
-  // Each publish gets a unique d-tag so a lower-scoring re-run cannot replace
-  // a higher-scoring earlier run for the same player. Replaceable events
-  // are keyed on (kind, pubkey, d) and relays keep only the latest by
-  // created_at — score isn't a tiebreaker. Wave/seed live in their own tags.
-  const dTag = `${GAME_ID}:${session.pubkey}:run-${Date.now()}`;
-
-  const tags: string[][] = [
-    ['d', dTag],
-    ['game', GAME_ID],
-    ['score', scoreData.score.toString()],
-    ['p', session.pubkey],
-    ['state', state],
-    ['wave', scoreData.wave.toString()],
-    ['sats', scoreData.sats.toString()],
-    ['duration', scoreData.durationSeconds.toString()],
-    // NIP-01 only indexes single-letter tags, so this is the one consumers
-    // can filter on server-side. The `game` tag stays for spec compliance
-    // but gets post-filtered client-side.
-    ['t', 'pallasite'],
-    ['t', 'arcade'],
-    ['t', 'asteroids'],
-    ['t', 'lightning'],
-  ];
-  if (scoreData.seed) {
-    tags.push(['seed', scoreData.seed]);
-    tags.push(['t', 'daily']);
-  }
-  // Honest signal — leaderboard consumers can hide or sort cheated runs.
-  if (scoreData.cheated) {
-    tags.push(['cheated', 'true']);
-    tags.push(['t', 'cheated']);
-  }
-
-  const template = {
-    kind: 30762,
-    content: scoreData.sats > 0 ? `Earned ${scoreData.sats} sats on wave ${scoreData.wave}` : '',
-    tags,
-  };
-
-  const signed = await session.signer.signEvent(template);
-
-  const publishedTo: string[] = [];
-  const failed: string[] = [];
-  await Promise.all(relays.map(url => publishToRelay(url, signed).then(
-    () => publishedTo.push(url),
-    () => failed.push(url),
-  )));
-
-  return { event: signed, publishedTo, failed };
-}
-
-/**
  * A score event we read off the wire. Same shape as NostrEvent but pinned to
  * kind 30762 so the global-leaderboard code doesn't have to keep re-asserting.
+ *
+ * Note: the frontend no longer publishes player-signed score events — the
+ * faucet's /api/claim flow signs game-side via NIP-46 bunker. This module
+ * is read-only; existing player-signed events still surface in the
+ * leaderboard fallback during the migration window.
  */
 interface ScoreEvent {
   id: string;
@@ -295,40 +236,3 @@ export async function fetchGlobalHighScores(
   });
 }
 
-function publishToRelay(url: string, event: NostrEvent): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(url);
-    } catch (err) {
-      reject(err);
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      try { ws.close(); } catch { /* ignore */ }
-      reject(new Error('relay-timeout'));
-    }, 5000);
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify(['EVENT', event]));
-    };
-    ws.onmessage = ev => {
-      try {
-        const msg: unknown = JSON.parse(typeof ev.data === 'string' ? ev.data : '');
-        if (Array.isArray(msg) && msg[0] === 'OK' && msg[1] === event.id) {
-          clearTimeout(timer);
-          try { ws.close(); } catch { /* ignore */ }
-          if (msg[2] === true) resolve();
-          else reject(new Error(typeof msg[3] === 'string' ? msg[3] : 'rejected'));
-        }
-      } catch {
-        // ignore
-      }
-    };
-    ws.onerror = () => {
-      clearTimeout(timer);
-      reject(new Error('relay-error'));
-    };
-  });
-}

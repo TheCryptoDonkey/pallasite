@@ -71,6 +71,7 @@ export function makeInitialState(): GameState {
     nextMineSpawn: 0,
     warpTargetWave: 1,
     runTimeMs: 0,
+    runStartedAt: 0,
     bossDefeated: false,
     combo: 0,
     comboExpiresAt: 0,
@@ -141,6 +142,7 @@ export function startGame(s: GameState): void {
   s.nextUfoSpawn = UFO_FIRST_SPAWN_MS;
   s.nextMineSpawn = 0;
   s.runTimeMs = 0;
+  s.runStartedAt = Date.now();
   s.bossDefeated = false;
   s.combo = 0;
   s.comboExpiresAt = 0;

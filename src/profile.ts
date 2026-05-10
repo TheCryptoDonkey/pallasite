@@ -21,6 +21,9 @@ export interface NostrProfile {
   picture?: string;
   nip05?: string;
   about?: string;
+  /** LUD-16 lightning address from the kind 0 profile. Used as the default
+   *  payout target for faucet claims; falls back to a manual input if absent. */
+  lud16?: string;
   /** Unix-ms when this profile was fetched. */
   fetchedAt: number;
 }
@@ -81,6 +84,13 @@ function parseProfile(pubkey: string, event: Kind0Event): NostrProfile | null {
     }
     if (typeof c.nip05 === 'string') profile.nip05 = c.nip05.slice(0, 128);
     if (typeof c.about === 'string') profile.about = c.about.slice(0, 280);
+    if (
+      typeof c.lud16 === 'string' &&
+      /^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+(?::[0-9]+)?$/.test(c.lud16) &&
+      c.lud16.length < 128
+    ) {
+      profile.lud16 = c.lud16;
+    }
     return profile;
   } catch {
     return null;
