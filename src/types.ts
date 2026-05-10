@@ -382,16 +382,33 @@ export interface GameState {
    *  game.ts. Surfaced on the name-entry stage; not persisted anywhere. */
   runStats: RunStats;
 
-  /** 1Hz score-pacing samples for the kind 30763 ghost replay. Pushed by
-   *  the game loop while phase==='playing'; finalised on game-over /
+  /** 1Hz score-pacing samples for the kind 30763 v1 ghost replay. Pushed
+   *  by the game loop while phase==='playing'; finalised on game-over /
    *  completion and shipped to relays via publishGhost. */
   ghostSamples: GhostSample[];
+
+  /** 4Hz pose samples for the kind 30763 v2 ghost — only captured when a
+   *  daily seed is active (so the published overlay genuinely matches the
+   *  same RNG sequence the watching player will see). Empty in non-daily
+   *  runs to keep payload size small. */
+  ghostPoseSamples: GhostPoseSample[];
 }
 
 /** A single (t, score) pacing point. t is ms since startGame. */
 export interface GhostSample {
   t: number;
   score: number;
+}
+
+/** A single 4Hz pose-bearing sample for the daily-mode ghost overlay.
+ *  Coordinates are world-space; flags bit 0 = alive, bit 1 = thrusting. */
+export interface GhostPoseSample {
+  t: number;
+  score: number;
+  x: number;
+  y: number;
+  rot: number;
+  flags: number;
 }
 
 /** Per-run telemetry surfaced on the gameover / completion stat grid. */

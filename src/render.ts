@@ -13,7 +13,8 @@ import {
   WORLD_W, WORLD_H, WARP_MS, waveName, waveSubtitle, ASTEROID_TYPE_CONFIG, POWERUP_CONFIG,
   REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS,
 } from './types.js';
-import { getCachedGhost, ghostScoreAt } from './ghost.js';
+import { getCachedGhost, ghostScoreAt, ghostPoseAt } from './ghost.js';
+import { getActiveSeed } from './seed.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
 
@@ -342,6 +343,50 @@ function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number): void 
     ctx.stroke();
   }
 
+  ctx.restore();
+}
+
+/**
+ * Translucent leader-ghost ship. Daily-mode only — outside daily we don't
+ * race a ship-overlay (the leader was on a different RNG, so their path
+ * across the field is decorative noise). Cyan / 35% alpha so it reads
+ * clearly as "not the player" without competing with the player's outline.
+ */
+function drawGhostShip(ctx: CanvasRenderingContext2D, s: GameState): void {
+  if (s.phase !== 'playing') return;
+  const seed = getActiveSeed();
+  if (!seed) return;
+  const ghost = getCachedGhost(seed);
+  if (!ghost || !ghost.poseSamples) return;
+  const t = s.runTimeMs;
+  if (t > ghost.durationMs + 1000) return;
+  const pose = ghostPoseAt(ghost, t);
+  if (!pose || !pose.alive) return;
+
+  ctx.save();
+  ctx.globalAlpha = 0.35;
+  ctx.translate(pose.x, pose.y);
+  ctx.rotate(pose.rot);
+  ctx.lineWidth = 1.6;
+  ctx.strokeStyle = '#8ee0ff';
+  ctx.shadowColor = '#8ee0ff';
+  ctx.shadowBlur = 8;
+  ctx.beginPath();
+  ctx.moveTo(14, 0);
+  ctx.lineTo(-10, 8);
+  ctx.lineTo(-6, 0);
+  ctx.lineTo(-10, -8);
+  ctx.closePath();
+  ctx.stroke();
+  if (pose.thrusting) {
+    ctx.strokeStyle = '#cfeefb';
+    ctx.shadowColor = '#cfeefb';
+    ctx.beginPath();
+    ctx.moveTo(-6, 4);
+    ctx.lineTo(-14, 0);
+    ctx.lineTo(-6, -4);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -1450,7 +1495,7 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState, now: number): void
  */
 function drawGhostChip(ctx: CanvasRenderingContext2D, s: GameState): void {
   if (s.phase !== 'playing') return;
-  const ghost = getCachedGhost();
+  const ghost = getCachedGhost(getActiveSeed());
   if (!ghost) return;
   const t = s.runTimeMs;
   // Once the player passes the leader's run-length, hide the chip — there's
@@ -2058,6 +2103,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       for (const p of state.powerups) drawPowerUp(ctx, p, now);
       drawParticles(ctx, state.particles);
       drawDebris(ctx, state.debris);
+      drawGhostShip(ctx, state);
       drawShield(ctx, state.ship, now);
       drawShip(ctx, state.ship, now);
       if (isGhost) ctx.restore();

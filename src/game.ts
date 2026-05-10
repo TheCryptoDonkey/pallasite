@@ -42,7 +42,7 @@ import type { PowerUp, PowerUpType } from './types.js';
 import * as audio from './audio.js';
 import { preloadBackground } from './render.js';
 import { currentMods, lockInDifficulty, getStoredDifficulty } from './difficulty.js';
-import { gameRng } from './seed.js';
+import { gameRng, getActiveSeed } from './seed.js';
 
 // ── Initial state ─────────────────────────────────────────────────────────────
 
@@ -101,6 +101,7 @@ export function makeInitialState(): GameState {
       powerupsCollected: 0,
     },
     ghostSamples: [],
+    ghostPoseSamples: [],
   };
 }
 
@@ -180,7 +181,9 @@ export function startGame(s: GameState): void {
     powerupsCollected: 0,
   };
   s.ghostSamples = [];
+  s.ghostPoseSamples = [];
   lastGhostSampleRunMs = -1;
+  lastGhostPoseRunMs = -1;
   beginWave(s, 1);
   audio.startHeartbeat();
   audio.startAmbient();
@@ -1121,6 +1124,11 @@ const GHOST_SAMPLE_MS = 1000;
 /** Ceiling so a paused tab can't grow ghost samples without bound. 1h at 1Hz
  *  is way past any realistic run length. */
 const GHOST_SAMPLE_CAP = 3600;
+/** Pose sample cadence — daily-mode only. 250ms (4Hz) keeps the overlay
+ *  smooth while keeping the v2 payload under ~40KB for a 10-min run. */
+const GHOST_POSE_SAMPLE_MS = 250;
+const GHOST_POSE_SAMPLE_CAP = 14_400;
+let lastGhostPoseRunMs = -1;
 
 /** Push an unconditional snapshot — used by killShip to bake the impact-
  *  moment frame into the buffer (the regular recorder runs at frame start,
@@ -1161,11 +1169,32 @@ function recordGhostSample(s: GameState): void {
   if (s.phase !== 'playing') return;
   const runMs = s.runTimeMs;
   // First sample fires at t=0 (startGame seeded lastGhostSampleRunMs to -1).
-  if (lastGhostSampleRunMs >= 0 && runMs - lastGhostSampleRunMs < GHOST_SAMPLE_MS) return;
-  if (s.ghostSamples.length >= GHOST_SAMPLE_CAP) return;
-  const expectedT = s.ghostSamples.length * GHOST_SAMPLE_MS;
-  s.ghostSamples.push({ t: expectedT, score: s.score });
-  lastGhostSampleRunMs = runMs;
+  if (lastGhostSampleRunMs < 0 || runMs - lastGhostSampleRunMs >= GHOST_SAMPLE_MS) {
+    if (s.ghostSamples.length < GHOST_SAMPLE_CAP) {
+      const expectedT = s.ghostSamples.length * GHOST_SAMPLE_MS;
+      s.ghostSamples.push({ t: expectedT, score: s.score });
+    }
+    lastGhostSampleRunMs = runMs;
+  }
+  // Pose stream — daily mode only. We intentionally don't capture pose for
+  // free runs because the encoded payload is ~10x bigger than v1 and adds
+  // no value when the watching player won't see the same RNG.
+  if (getActiveSeed() === null) return;
+  if (lastGhostPoseRunMs < 0 || runMs - lastGhostPoseRunMs >= GHOST_POSE_SAMPLE_MS) {
+    if (s.ghostPoseSamples.length < GHOST_POSE_SAMPLE_CAP) {
+      const expectedT = s.ghostPoseSamples.length * GHOST_POSE_SAMPLE_MS;
+      const flags = (s.ship.alive ? 1 : 0) | (s.ship.thrusting ? 2 : 0);
+      s.ghostPoseSamples.push({
+        t: expectedT,
+        score: s.score,
+        x: s.ship.pos.x,
+        y: s.ship.pos.y,
+        rot: s.ship.rot,
+        flags,
+      });
+    }
+    lastGhostPoseRunMs = runMs;
+  }
 }
 
 /** Tear down sirens / heartbeat / ambient — shared by the direct game-over path

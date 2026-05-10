@@ -302,10 +302,10 @@ export function renderTitle(state: GameState): void {
   setupOverlayArrowNav(overlay);
 
   // Warm the leader-ghost cache so the in-game LEADER chip can render the
-  // moment IGNITE fires. Fire-and-forget; cache is shared module-state in
-  // ghost.ts. Phase A always pulls the global top — daily-mode filtering
-  // lands with Phase C.
-  prefetchTopGhost();
+  // moment IGNITE fires. Daily mode scopes to today's seed so the chip
+  // races a same-RNG ghost; outside daily we pull the global top. The
+  // ship-overlay (v2) only surfaces in daily mode.
+  prefetchTopGhost(getActiveSeed());
 
   // Wordmark image rendered with mix-blend-mode: screen so the baked-in
   // black starfield bg drops out and only the green lettering floats over
@@ -1497,11 +1497,14 @@ function renderRunCredits(
   // Best-effort kind 30763 ghost publish. Independent of the score claim so
   // sign-capable sessions leave a ghost trail even when they don't claim
   // (or the faucet is down). publishGhost no-ops on cheated / read-only /
-  // sub-2-sample runs, so unconditional invocation is safe.
+  // sub-2-sample runs, so unconditional invocation is safe. v2 (pose) is
+  // emitted automatically when the daily-mode pose stream is non-empty;
+  // free runs publish v1 (score-only).
   if (state.session) {
     void publishGhost({
       session: state.session,
       samples: state.ghostSamples,
+      poseSamples: state.ghostPoseSamples,
       finalScore: state.score,
       finalWave: state.wave,
       durationMs: Math.max(0, Math.floor(state.runTimeMs)),
