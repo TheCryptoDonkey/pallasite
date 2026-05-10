@@ -180,10 +180,16 @@ export async function fetchGlobalHighScores(
       const scoreStr = tagValue(event.tags, 'score');
       const score = scoreStr ? parseInt(scoreStr, 10) : NaN;
       if (!Number.isFinite(score) || score <= 0) return;
-      const existing = bestByPubkey.get(event.pubkey);
+      // Player attribution: the `p` tag is the player's pubkey on game-signed
+      // events (event.pubkey is the game key, same for everyone). Legacy
+      // player-signed events also carry a `p` tag that equals event.pubkey,
+      // so this works for both. Fall back to event.pubkey if `p` is absent.
+      const playerPubkey = tagValue(event.tags, 'p') ?? event.pubkey;
+      if (!/^[0-9a-f]{64}$/i.test(playerPubkey)) return;
+      const existing = bestByPubkey.get(playerPubkey);
       if (existing && existing.score >= score) return;
-      bestByPubkey.set(event.pubkey, {
-        pubkey: event.pubkey,
+      bestByPubkey.set(playerPubkey, {
+        pubkey: playerPubkey,
         score,
         sats: parseInt(tagValue(event.tags, 'sats') ?? '0', 10) || 0,
         wave: parseInt(tagValue(event.tags, 'wave') ?? '0', 10) || 0,
