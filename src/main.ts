@@ -15,6 +15,7 @@ import * as audio from './audio.js';
 import { musicSetTrackForState, preloadAllTracks } from './music.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, setDisplayMode } from './display.js';
+import { checkForUpdate } from './version.js';
 import type { GameState } from './types.js';
 import { DOWN_DOUBLE_TAP_WINDOW_MS } from './types.js';
 
@@ -435,7 +436,7 @@ async function boot(): Promise<void> {
       // Landscape stays at plain contain — zooming in makes cropY true with
       // visW > WORLD_W, which triggers the horizontal gutter ghost and the
       // player sees their ship doubled near the world's left/right edges.
-      const PORTRAIT_ZOOM = 0.65;
+      const PORTRAIT_ZOOM = 0.55;
       const scale = isPortrait
         ? Math.max(vw / 960, vh / 720) * PORTRAIT_ZOOM
         : Math.min(vw / 960, vh / 720);
@@ -513,6 +514,10 @@ async function boot(): Promise<void> {
   // browsers block it anyway.
 
   setupServiceWorker();
+
+  // Independent of the SW path so non-SW browsers also get an authoritative
+  // chip on the title screen.
+  void checkForUpdate();
 
   requestAnimationFrame(loop);
 }
@@ -620,7 +625,19 @@ function setupServiceWorker(): void {
 
     // Long-lived sessions get a periodic update check so a deploy from
     // yesterday isn't silently sat on for hours.
-    setInterval(() => { reg.update().catch(() => { /* ignore */ }); }, 60 * 1000);
+    setInterval(() => {
+      reg.update().catch(() => { /* ignore */ });
+      void checkForUpdate();
+    }, 60 * 1000);
+
+    // Re-check on PWA foreground — iOS suspends background tabs for hours,
+    // so the visibility transition is the right moment to refresh the
+    // "do I have the latest?" answer the user can see in the chip.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible') return;
+      reg.update().catch(() => { /* ignore */ });
+      void checkForUpdate();
+    });
   }).catch(() => { /* registration failures are non-fatal */ });
 }
 
