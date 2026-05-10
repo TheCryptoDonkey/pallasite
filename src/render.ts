@@ -18,22 +18,6 @@ import { getActiveSeed } from './seed.js';
 import { getAsteroidStyle, shouldReduceMotion } from './a11y.js';
 import { getActiveSkin } from './skins.js';
 
-// ── Performance helpers ─────────────────────────────────────────────────────
-
-/** Cached coarse-pointer flag. matchMedia('(pointer: coarse)') is fast but
- *  not free; we read it once per frame at the top of render() (or anywhere
- *  else) without re-querying the media list. Mobile = touchscreens, where
- *  shadowBlur, ghost passes, and per-bullet allocations cost more than on
- *  desktop. */
-let coarseCached: boolean | null = null;
-function isCoarsePointer(): boolean {
-  if (coarseCached !== null) return coarseCached;
-  coarseCached = typeof window !== 'undefined'
-    && typeof window.matchMedia === 'function'
-    && window.matchMedia('(pointer: coarse)').matches;
-  return coarseCached;
-}
-
 // ── Stars ─────────────────────────────────────────────────────────────────────
 
 const STAR_COUNT = 110;
@@ -2250,20 +2234,41 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   }
 
   // Ghost-render offsets so wraps look seamless at visible-band edges.
-  // On coarse pointer (touchscreens) we skip ghost passes entirely — even
-  // a single extra pass per frame can knock a phone below 60fps, which in
-  // turn starves Web Audio scheduling and makes the music stutter. The
-  // visual cost (asteroids appear to pop at the wrap edge instead of
-  // smooth-cycle through it) is acceptable for the framerate gain.
+  // We only spend the 3-pass cost when there's actually an entity near a
+  // wrap edge — in most frames every asteroid is mid-band, so a single pass
+  // is correct and 3× cheaper. When something approaches an edge we flip to
+  // full 3-pass for that axis so the wrap-copy can fade in smoothly. Cheap
+  // to detect: ~30 entities × a couple of comparisons each.
   const ghostXs: number[] = [0];
   const ghostYs: number[] = [0];
-  if (renderMode.kind === 'modern' && !isCoarsePointer()) {
+  if (renderMode.kind === 'modern') {
     const visW = renderMode.vw / renderMode.scale;
     const visH = renderMode.vh / renderMode.scale;
     const cropX = visW < WORLD_W - 1;
     const cropY = visH < WORLD_H - 1;
-    if (cropX) ghostXs.push(-visW, visW);
-    if (cropY) ghostYs.push(-visH, visH);
+    if (cropX || cropY) {
+      const visLeftW = -renderMode.tx / renderMode.scale;
+      const visRightW = (renderMode.vw - renderMode.tx) / renderMode.scale;
+      const visTopW = -renderMode.ty / renderMode.scale;
+      const visBotW = (renderMode.vh - renderMode.ty) / renderMode.scale;
+      const M = 50;  // margin; larger than any asteroid radius
+      let needX = false, needY = false;
+      const probe = (x: number, y: number): void => {
+        if (cropX && !needX && (x < visLeftW + M || x > visRightW - M)) needX = true;
+        if (cropY && !needY && (y < visTopW + M || y > visBotW - M)) needY = true;
+      };
+      for (const a of state.asteroids) { probe(a.pos.x, a.pos.y); if (needX && needY) break; }
+      if (!(needX && needY)) {
+        for (const u of state.ufos) { probe(u.pos.x, u.pos.y); if (needX && needY) break; }
+      }
+      if (!(needX && needY)) {
+        for (const m of state.mines) { probe(m.pos.x, m.pos.y); if (needX && needY) break; }
+      }
+      // Ship near edge counts too — its ghost is visible to the player.
+      if (!(needX && needY)) probe(state.ship.pos.x, state.ship.pos.y);
+      if (needX) ghostXs.push(-visW, visW);
+      if (needY) ghostYs.push(-visH, visH);
+    }
   }
 
   // Shake wraps the entity layer only — HUD stays steady so readouts don't
