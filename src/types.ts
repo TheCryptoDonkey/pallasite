@@ -302,6 +302,11 @@ export interface GameState {
 
   /** Total run time in ms (excluding pauses) — for completion screen */
   runTimeMs: number;
+  /** Wall-clock ms when the current run started (Date.now() in startGame).
+   *  Survives phase changes — `phaseStart` resets between phases, this does
+   *  not. Used as the `started_at` field on faucet claim submissions. 0 when
+   *  no run is in flight. */
+  runStartedAt: number;
   /** Wave 25 boss state */
   bossDefeated: boolean;
 

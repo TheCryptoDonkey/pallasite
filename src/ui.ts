@@ -11,7 +11,8 @@ import { getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRel
 import { getTouchMode, setTouchMode, type TouchInputMode } from './touch.js';
 import { getDisplayMode, setDisplayMode, type DisplayMode } from './display.js';
 import * as auth from './auth.js';
-import { addLocalHighScore, getLocalHighScores, isHighScore, publishScore, fetchGlobalHighScores, type GlobalHighScore } from './score.js';
+import { addLocalHighScore, getLocalHighScores, isHighScore, fetchGlobalHighScores, type GlobalHighScore } from './score.js';
+import { submitClaim } from './faucet.js';
 import { startGame, startDeathReplay, toastNow } from './game.js';
 import * as audio from './audio.js';
 import { fetchProfile, getCachedProfile, bestName } from './profile.js';
@@ -945,42 +946,160 @@ export function renderGameOver(state: GameState): void {
   });
 }
 
+const LN_ADDRESS_KEY = 'pallasite:lightning_address';
+const LN_ADDRESS_RE = /^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+(?::[0-9]+)?$/;
+
+function getStoredLnAddress(): string | null {
+  try {
+    const v = localStorage.getItem(LN_ADDRESS_KEY);
+    return v && LN_ADDRESS_RE.test(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function setStoredLnAddress(v: string): void {
+  try {
+    if (LN_ADDRESS_RE.test(v)) localStorage.setItem(LN_ADDRESS_KEY, v);
+  } catch {
+    // localStorage unavailable
+  }
+}
+
+function claimErrorMessage(error: string, detail?: string): string {
+  switch (error) {
+    case 'cap_reached': return 'Lifetime cap reached for this tier.';
+    case 'rate_limited': return 'Too many claims this hour. Try later.';
+    case 'daily_cap_reached': return 'Daily faucet cap hit. Try tomorrow.';
+    case 'pool_empty': return 'Float low — zap to refill the faucet.';
+    case 'pool_paused': return 'Faucet paused. Try later.';
+    case 'cheated_run': return 'Cheats used — no payout.';
+    case 'invalid_score':
+    case 'invalid_duration':
+    case 'invalid_run_clock':
+    case 'stale_run': return 'Run rejected (stat check).';
+    case 'invalid_lightning_address': return 'Invalid lightning address.';
+    case 'ln_resolve_failed':
+    case 'ln_invoice_failed': return 'Could not get an invoice from your wallet.';
+    case 'payment_failed': return 'Payment failed. Try later.';
+    case 'invoice_mismatch': return 'Invoice did not match expected amount.';
+    case 'signer_unavailable': return 'Game signer unreachable. Try later.';
+    case 'service_not_configured': return 'Faucet not configured yet.';
+    case 'no_signer': return 'Cannot sign with this session.';
+    case 'sign_failed': return 'Could not sign claim.';
+    case 'network_error': return 'Network error. Check connection.';
+    case 'invalid_payload':
+      return `Invalid payload${detail ? ': ' + detail.slice(0, 60) : ''}.`;
+    case 'player_flagged': return 'Account flagged. Contact dev.';
+    case 'replay_of_failed_claim': return 'A previous attempt for this run failed.';
+    default:
+      return `Claim failed: ${error}${detail ? ' — ' + detail.slice(0, 100) : ''}`;
+  }
+}
+
 async function maybePublishScore(state: GameState, parent: HTMLElement): Promise<void> {
-  if (!state.session?.signer.capabilities.canSignEvents) {
-    el('p', { parent, text: 'Saved locally. Bark or bunker publishes to Nostr.' }).style.fontSize = '0.85rem';
+  if (!state.session) {
+    const cta = el('p', { parent });
+    cta.style.cssText = 'font-size:0.85rem;color:#5b9dff;margin:8px 0 0 0';
+    cta.textContent = 'Sign in with Nostr next time to claim sats.';
+    return;
+  }
+  if (!state.session.signer.capabilities.canSignEvents) {
+    const note = el('p', { parent });
+    note.style.cssText = 'font-size:0.85rem;color:#999;margin:8px 0 0 0';
+    note.textContent = 'Signed-in session cannot sign — switch to a NIP-07 extension or NIP-46 bunker to claim.';
+    return;
+  }
+  if (state.cheatedThisRun) {
+    const note = el('p', { parent });
+    note.style.cssText = 'font-size:0.85rem;color:#ff8050;margin:8px 0 0 0';
+    note.textContent = 'Cheats were used — no payout.';
     return;
   }
 
-  const status = el('p', { parent, text: 'Plotting to Nostr…' });
-  status.style.color = '#5b9dff';
-  status.style.fontSize = '0.85rem';
+  const profileLud = state.profile?.lud16 ?? null;
+  const stored = getStoredLnAddress();
+  const initial = stored ?? profileLud ?? '';
 
-  try {
-    // runTimeMs accumulates dt per frame during play and excludes pauses, so
-    // it's the right "how long did this run last" value. Previously we read
-    // `phaseStart` here, but at game-over that's the start of the death
-    // phase — so every published event had duration ~0. Same change marks
-    // state as 'completed' since this only fires on death/end-of-run.
-    const elapsed = Math.floor(state.runTimeMs / 1000);
-    const result = await publishScore(state.session, {
-      score: state.score,
-      sats: state.sats,
-      wave: state.wave,
-      durationSeconds: elapsed,
-      state: 'completed',
-      seed: getActiveSeed(),
-      cheated: state.cheatedThisRun,
-    });
-    if (result) {
-      status.textContent = `✓ Plotted on ${result.publishedTo.length}/${result.publishedTo.length + result.failed.length} relays`;
-      status.style.color = '#58ff58';
-    } else {
-      status.textContent = 'Signer cannot plot.';
+  const wrapper = el('div', { parent });
+  wrapper.style.cssText =
+    'display:flex;flex-direction:column;gap:6px;margin-top:12px;align-items:stretch';
+
+  const label = el('p', { parent: wrapper });
+  label.style.cssText = 'font-size:0.85rem;color:#cccccc;margin:0';
+  label.textContent = profileLud
+    ? `Claim sats to your wallet (${profileLud}).`
+    : 'Claim sats — paste a lightning address to receive them.';
+
+  const inputRow = el('div', { parent: wrapper });
+  inputRow.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap';
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = initial;
+  input.placeholder = 'alice@yourwallet.com';
+  input.spellcheck = false;
+  input.autocapitalize = 'off';
+  input.autocomplete = 'off';
+  input.style.cssText =
+    'flex:1;min-width:220px;padding:6px 8px;font-family:inherit;font-size:0.9rem;' +
+    'background:#0a0a0a;color:#eee;border:1px solid #333;border-radius:4px';
+  inputRow.appendChild(input);
+
+  const button = el('button', { className: 'menu-btn', parent: inputRow, text: 'CLAIM' });
+  button.style.cssText = 'padding:6px 14px;cursor:pointer;font-size:0.9rem';
+
+  const status = el('p', { parent: wrapper, text: '' });
+  status.style.cssText = 'font-size:0.85rem;margin:4px 0 0 0;min-height:1.2em';
+
+  const setStatus = (msg: string, color: string): void => {
+    status.textContent = msg;
+    status.style.color = color;
+  };
+
+  const session = state.session;
+
+  const onClick = async (): Promise<void> => {
+    const addr = input.value.trim();
+    if (!LN_ADDRESS_RE.test(addr)) {
+      setStatus('Invalid lightning address.', '#ff5050');
+      return;
     }
-  } catch (err) {
-    status.textContent = `✗ Plot failed: ${err instanceof Error ? err.message : String(err)}`;
-    status.style.color = '#ff5050';
-  }
+    setStoredLnAddress(addr);
+
+    button.disabled = true;
+    setStatus('Validating…', '#5b9dff');
+
+    const finishedAt = Date.now();
+    const duration = Math.max(0, Math.floor(state.runTimeMs));
+    const startedAt =
+      state.runStartedAt > 0 ? state.runStartedAt : finishedAt - duration;
+
+    const seed = getActiveSeed();
+    const result = await submitClaim(session, {
+      score: state.score,
+      wave: state.wave,
+      duration_ms: duration,
+      started_at: startedAt,
+      finished_at: finishedAt,
+      sats_claimed: state.sats,
+      lightning_address: addr,
+      cheated: state.cheatedThisRun,
+      ...(seed ? { daily_seed: seed } : {}),
+    });
+
+    if (result.ok) {
+      const tail = result.status === 'paid_but_unannounced' ? ' (announce pending)' : '';
+      setStatus(`✓ Paid ${result.payout_sats} sats${tail}`, '#58ff58');
+    } else {
+      setStatus(claimErrorMessage(result.error, result.detail), '#ff8050');
+      button.disabled = false;
+    }
+  };
+
+  button.addEventListener('click', () => {
+    void onClick();
+  });
 }
 
 // ── Completion screen (wave 25 cleared) ──────────────────────────────────────
@@ -1920,37 +2039,9 @@ function renderCreditsRoll(parent: HTMLElement, applyStage?: (e: HTMLElement) =>
   `;
 }
 
-async function maybePublishCompletion(state: GameState, parent: HTMLElement): Promise<void> {
-  if (!state.session?.signer.capabilities.canSignEvents) {
-    el('p', { parent, text: 'Saved locally. Bark or bunker plots completion to Nostr.' }).style.fontSize = '0.85rem';
-    return;
-  }
-
-  const status = el('p', { parent, text: 'Plotting completion to Nostr (state=completed)…' });
-  status.style.color = '#5b9dff';
-  status.style.fontSize = '0.85rem';
-
-  try {
-    const elapsed = Math.floor(state.runTimeMs / 1000);
-    const result = await publishScore(state.session, {
-      score: state.score,
-      sats: state.sats,
-      wave: 25,
-      durationSeconds: elapsed,
-      state: 'completed',
-      seed: getActiveSeed(),
-      cheated: state.cheatedThisRun,
-    });
-    if (result) {
-      status.textContent = `✓ Plotted on ${result.publishedTo.length}/${result.publishedTo.length + result.failed.length} relays`;
-      status.style.color = '#58ff58';
-    } else {
-      status.textContent = 'Signer cannot plot.';
-    }
-  } catch (err) {
-    status.textContent = `✗ Plot failed: ${err instanceof Error ? err.message : String(err)}`;
-    status.style.color = '#ff5050';
-  }
+function maybePublishCompletion(state: GameState, parent: HTMLElement): Promise<void> {
+  // Wave 25 completion uses the same claim path as a regular game-over.
+  return maybePublishScore(state, parent);
 }
 
 // ── Toast (tiny notification) ─────────────────────────────────────────────────
