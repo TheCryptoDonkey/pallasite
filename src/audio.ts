@@ -234,8 +234,8 @@ export function getMusicAnalyser(): AnalyserNode {
   const c = getCtx();
   if (!musicAnalyser) {
     musicAnalyser = c.createAnalyser();
-    musicAnalyser.fftSize = 256;       // 128 frequency bins — plenty for bars
-    musicAnalyser.smoothingTimeConstant = 0.78;
+    musicAnalyser.fftSize = 1024;      // 512 freq bins for sharper bars + time-domain waveform
+    musicAnalyser.smoothingTimeConstant = 0.82;
     musicBus!.connect(musicAnalyser);  // tap, not in-line
   }
   return musicAnalyser;

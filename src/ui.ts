@@ -1425,47 +1425,84 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
   const sub = el('p', { parent: overlay, text: 'Drift through the score.' });
   sub.style.cssText = 'font-size:0.95rem;letter-spacing:0.2em;color:var(--hud-yellow);margin:-12px 0 6px;';
 
-  // Waveform — frequency-bin bars driven by the music bus's analyser tap.
-  // Lives just above the track list so the active track has a visible
-  // signal of being heard. Reduced-motion: still drawn, just at lower
-  // frame cadence (the bars are per-frame, not animation, so they're not
-  // really motion in the reduced-motion sense — leave on).
+  // Spectacular analyser — mirrored frequency bars with bloom, an overlaid
+  // time-domain waveform line, and an amplitude-driven hue shift. Tall
+  // enough to feel like a centerpiece of the player rather than a side
+  // accent.
   const vizWrap = el('div', { parent: overlay });
   vizWrap.style.cssText = 'display:flex;justify-content:center;width:100%;max-width:420px;';
-  const canvas = el('canvas', { parent: vizWrap, attrs: { width: '420', height: '64' } }) as HTMLCanvasElement;
-  canvas.style.cssText = 'width:100%;max-width:420px;height:64px;border-radius:8px;background:rgba(180,140,255,0.04);border:1px solid rgba(180,140,255,0.18);';
+  const canvas = el('canvas', { parent: vizWrap, attrs: { width: '840', height: '320' } }) as HTMLCanvasElement;
+  canvas.style.cssText = 'width:100%;max-width:420px;height:160px;border-radius:8px;background:radial-gradient(ellipse at center, rgba(180,140,255,0.08), rgba(0,0,0,0.4));border:1px solid rgba(180,140,255,0.25);box-shadow:0 0 24px rgba(180,140,255,0.15) inset;';
   const drawViz = (): void => {
-    if (!document.body.contains(canvas)) return;  // stop when overlay torn down
+    if (!document.body.contains(canvas)) return;
     const analyser = getMusicAnalyser();
     const cctx = canvas.getContext('2d');
     if (!cctx) return;
     const bins = analyser.frequencyBinCount;
-    const data = new Uint8Array(bins);
-    analyser.getByteFrequencyData(data);
+    const freq = new Uint8Array(bins);
+    const time = new Uint8Array(analyser.fftSize);
+    analyser.getByteFrequencyData(freq);
+    analyser.getByteTimeDomainData(time);
     const w = canvas.width;
     const h = canvas.height;
+    const mid = h * 0.55;  // mirror axis biased so top bars are taller
     cctx.clearRect(0, 0, w, h);
-    const barCount = 48;
-    const stride = Math.floor(bins / barCount);
-    const bw = w / barCount;
+
+    // Average amplitude drives a global hue shift — quiet sections
+    // are blue/purple, loud sections push toward orange/yellow.
+    let acc = 0;
+    for (let i = 0; i < bins; i++) acc += freq[i];
+    const avg = acc / bins / 255;  // 0..1
+    const hueBase = 260 - avg * 220;  // ~260 (purple) → ~40 (orange)
+
+    // Frequency bars — mirrored top + bottom.
+    const barCount = 56;
+    const stride = Math.floor((bins * 0.78) / barCount);  // skip top noise bins
+    const gap = 2;
+    const bw = (w - gap * (barCount + 1)) / barCount;
     for (let i = 0; i < barCount; i++) {
-      // Sample a small slice for smoother visual; skip top bins (mostly noise).
-      let acc = 0;
+      let s = 0;
       const start = i * stride;
-      for (let j = 0; j < stride; j++) acc += data[start + j];
-      const avg = acc / stride;
-      const v = avg / 255;
-      const barH = Math.max(1, v * (h - 4));
-      const x = i * bw + 1;
-      const y = h - barH;
-      // Yellow → purple gradient by bin index for some life.
-      const t = i / barCount;
-      const r = Math.round(255 * (1 - t) + 180 * t);
-      const g = Math.round(216 * (1 - t) + 140 * t);
-      const b = Math.round(74  * (1 - t) + 255 * t);
-      cctx.fillStyle = `rgba(${r},${g},${b},0.85)`;
-      cctx.fillRect(x, y, bw - 2, barH);
+      for (let j = 0; j < stride; j++) s += freq[start + j];
+      const v = s / stride / 255;
+      const eased = Math.pow(v, 0.85);  // gentle expansion of low values
+      const topH = eased * (mid - 6);
+      const botH = eased * (h - mid - 6) * 0.55;  // shorter mirror, faded
+      const x = gap + i * (bw + gap);
+      // Hue cycles across the bars + global shift from amplitude.
+      const hue = (hueBase + (i / barCount) * 90) % 360;
+      // Top bar (full).
+      cctx.fillStyle = `hsla(${hue}, 95%, 62%, 0.92)`;
+      cctx.shadowColor = `hsla(${hue}, 95%, 70%, 0.85)`;
+      cctx.shadowBlur = 10 + eased * 18;
+      cctx.fillRect(x, mid - topH, bw, topH);
+      // Mirror (bottom, dimmer).
+      cctx.shadowBlur = 4 + eased * 6;
+      cctx.fillStyle = `hsla(${hue}, 90%, 55%, 0.32)`;
+      cctx.fillRect(x, mid + 2, bw, botH);
     }
+
+    // Time-domain waveform — bright line across the centre, modulated by
+    // the same amplitude hue so it feels of-a-piece with the bars.
+    cctx.shadowBlur = 0;
+    cctx.lineWidth = 2;
+    cctx.strokeStyle = `hsla(${(hueBase + 60) % 360}, 100%, 75%, 0.85)`;
+    cctx.beginPath();
+    const tStride = Math.max(1, Math.floor(time.length / w));
+    for (let x = 0; x < w; x++) {
+      const idx = Math.min(time.length - 1, x * tStride);
+      const sample = (time[idx] - 128) / 128;  // -1..1
+      const y = mid + sample * 24;             // ±24px around the mid
+      if (x === 0) cctx.moveTo(x, y);
+      else cctx.lineTo(x, y);
+    }
+    cctx.stroke();
+
+    // Centre divider — subtle, helps the mirror illusion when audio is
+    // quiet and the bars all collapse.
+    cctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+    cctx.fillRect(0, mid - 0.5, w, 1);
+
     requestAnimationFrame(drawViz);
   };
   requestAnimationFrame(drawViz);
