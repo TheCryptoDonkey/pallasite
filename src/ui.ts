@@ -2144,7 +2144,11 @@ function claimErrorMessage(error: string, detail?: string): string {
   }
 }
 
-async function maybePublishScore(state: GameState, parent: HTMLElement): Promise<void> {
+async function maybePublishScore(
+  state: GameState,
+  parent: HTMLElement,
+  setIdlePaused?: (paused: boolean) => void,
+): Promise<void> {
   if (!state.session) {
     const cta = el('p', { parent });
     cta.style.cssText = 'font-size:0.85rem;color:#5b9dff;margin:8px 0 0 0';
@@ -2442,30 +2446,43 @@ async function maybePublishScore(state: GameState, parent: HTMLElement): Promise
     claimBtn.disabled = true;
     setStatus('Validating…', '#5b9dff');
 
-    const finishedAt = Date.now();
-    const duration = Math.max(0, Math.floor(state.runTimeMs));
-    const startedAt =
-      state.runStartedAt > 0 ? state.runStartedAt : finishedAt - duration;
+    // Pause the auto-skip-to-title countdown for the duration of the claim.
+    // Lightning + bunker round-trip + relay publish can take 20-30s on a
+    // cold path; without the pause, the credits-screen idle timer would
+    // navigate the player back to title mid-payment and they'd see no
+    // confirmation that their sats actually landed.
+    setIdlePaused?.(true);
 
-    const seed = getActiveSeed();
-    const result = await submitClaim(session, {
-      score: state.score,
-      wave: state.wave,
-      duration_ms: duration,
-      started_at: startedAt,
-      finished_at: finishedAt,
-      sats_claimed: state.sats,
-      lightning_address: currentAddress,
-      cheated: state.cheatedThisRun,
-      ...(seed ? { daily_seed: seed } : {}),
-    });
+    try {
+      const finishedAt = Date.now();
+      const duration = Math.max(0, Math.floor(state.runTimeMs));
+      const startedAt =
+        state.runStartedAt > 0 ? state.runStartedAt : finishedAt - duration;
 
-    if (result.ok) {
-      const tail = result.status === 'paid_but_unannounced' ? ' (announce pending)' : '';
-      setStatus(`✓ Paid ${result.payout_sats} sats${tail}`, '#58ff58');
-    } else {
-      setStatus(claimErrorMessage(result.error, result.detail), '#ff8050');
-      claimBtn.disabled = false;
+      const seed = getActiveSeed();
+      const result = await submitClaim(session, {
+        score: state.score,
+        wave: state.wave,
+        duration_ms: duration,
+        started_at: startedAt,
+        finished_at: finishedAt,
+        sats_claimed: state.sats,
+        lightning_address: currentAddress,
+        cheated: state.cheatedThisRun,
+        ...(seed ? { daily_seed: seed } : {}),
+      });
+
+      if (result.ok) {
+        const tail = result.status === 'paid_but_unannounced' ? ' (announce pending)' : '';
+        setStatus(`✓ Paid ${result.payout_sats} sats${tail}`, '#58ff58');
+      } else {
+        setStatus(claimErrorMessage(result.error, result.detail), '#ff8050');
+        claimBtn.disabled = false;
+      }
+    } finally {
+      // Always release the idle hold and reset the countdown so the player
+      // gets a fresh window to read the result before the auto-skip resumes.
+      setIdlePaused?.(false);
     }
   };
   claimBtn.addEventListener('click', () => {
@@ -2583,9 +2600,12 @@ function renderRunCredits(
 
   // Score-publish / faucet status — only Nostr-mode runs trigger a claim.
   // Returns immediately for guests / cheated runs / signers without sign
-  // capability with a one-line status of its own.
+  // capability with a one-line status of its own. We pass setIdlePaused
+  // through so the claim flow can hold the auto-skip-to-title timer while
+  // a long Lightning round-trip is in flight (binding defined further
+  // below; hoisted via let).
   const publishWrap = el('div', { parent: overlay });
-  void maybePublishScore(state, publishWrap);
+  void maybePublishScore(state, publishWrap, (paused) => setIdlePaused(paused));
 
   // Best-effort kind 30763 ghost publish. Independent of the score claim so
   // sign-capable sessions leave a ghost trail even when they don't claim
@@ -2626,13 +2646,22 @@ function renderRunCredits(
     renderCreditsRoll(overlay, undefined, state);
   }
 
-  // Auto-skip timer — counts down to TITLE. Resets on any keydown so a
-  // player who's reading the credits doesn't get yanked away. The SKIP
-  // TO TITLE button below also exits immediately.
+  // Auto-skip timer — counts down to TITLE. Resets on any user input
+  // (keydown OR pointerdown — mobile users tap, never fire keydown, so
+  // a key-only listener kept ticking through their interaction). The
+  // claim flow can also hold the timer via setIdlePaused while a slow
+  // Lightning round-trip is mid-payment so the player isn't yanked back
+  // to title before the result lands. The SKIP TO TITLE button exits
+  // immediately.
   let secondsLeft = idleSeconds;
+  let idlePaused = false;
   const skipBar = el('p', { parent: overlay });
   skipBar.style.cssText = 'font-size:0.85rem;letter-spacing:0.18em;color:#ffd84a;margin:6px 0 0;';
-  const renderSkip = (): void => { skipBar.textContent = `RETURNING TO TITLE IN ${secondsLeft}`; };
+  const renderSkip = (): void => {
+    skipBar.textContent = idlePaused
+      ? 'CLAIM IN PROGRESS — HOLDING'
+      : `RETURNING TO TITLE IN ${secondsLeft}`;
+  };
   renderSkip();
 
   const goToTitle = (): void => {
@@ -2642,16 +2671,26 @@ function renderRunCredits(
     renderTitle(state);
   };
   const idleTick = window.setInterval(() => {
+    if (idlePaused) return;
     secondsLeft -= 1;
     renderSkip();
     if (secondsLeft <= 0) goToTitle();
   }, 1000);
   const resetIdle = (): void => { secondsLeft = idleSeconds; renderSkip(); };
-  const onAnyKey = (): void => resetIdle();
-  window.addEventListener('keydown', onAnyKey);
+  const setIdlePaused = (paused: boolean): void => {
+    idlePaused = paused;
+    if (!paused) resetIdle();
+    else renderSkip();
+  };
+  const onActivity = (): void => resetIdle();
+  window.addEventListener('keydown', onActivity);
+  // Pointerdown covers mouse, pen, AND touch — so a tap on mobile
+  // counts as "still here" the same way a key press does on desktop.
+  window.addEventListener('pointerdown', onActivity);
   const cleanup = (): void => {
     window.clearInterval(idleTick);
-    window.removeEventListener('keydown', onAnyKey);
+    window.removeEventListener('keydown', onActivity);
+    window.removeEventListener('pointerdown', onActivity);
   };
 
   const row = el('div', { className: 'menu-row', parent: overlay });
