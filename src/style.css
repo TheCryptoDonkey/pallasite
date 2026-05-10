@@ -131,6 +131,10 @@ body[data-display="modern"] #game {
   height: auto;
   -webkit-user-drag: none;
   user-select: none;
+  /* iOS shows the Save Image / Copy callout on touch-and-hold of any <img>.
+     The secret long-press easter egg sits on this exact element, so the
+     native callout intercepts the gesture every time. Disable it here. */
+  -webkit-touch-callout: none;
 }
 /* Letter-spacing adds trailing space after the last glyph that text-align:
    center counts as content width, drifting the visible text right of true
