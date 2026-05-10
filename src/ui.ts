@@ -87,7 +87,9 @@ function setupOverlayArrowNav(overlay: HTMLElement): void {
  *   • →   advance the cursor; pressing → from the 4th slot submits
  *   • ←   move the cursor back one slot
  *   • Backspace clears the active slot to space and steps back
- *   • Enter submits immediately from any slot
+ *   • Enter / Space / Escape are swallowed (no-op) so they can't trigger
+ *     the global "Enter restarts game" / "Space fires" / "Escape pauses"
+ *     handlers while the player is locking in initials
  *   • An idle countdown auto-submits after `idleSeconds` of no input
  *
  * The handler runs in capture phase and stops immediate propagation on the
@@ -112,6 +114,14 @@ function renderArcadeInitials(
 
   const wrap = el('div', { parent });
   wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:10px;margin:6px 0;';
+  // Marker for the global Enter-to-restart handler in main.ts. Capture-phase
+  // stopImmediatePropagation isn't enough on its own: when key events target
+  // window itself (no focused element), capture vs bubble doesn't apply and
+  // listeners fire in registration order — main.ts's window keydown listener
+  // is registered at module load, so it can fire before this widget's
+  // capture handler ever gets a chance. Belt and braces: main.ts checks for
+  // this attribute before treating Enter as "restart game".
+  wrap.dataset.arcadeInitials = 'open';
 
   const slotsRow = el('div', { parent: wrap });
   slotsRow.style.cssText = 'display:flex;gap:8px;';
