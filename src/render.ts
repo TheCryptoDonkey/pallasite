@@ -202,6 +202,25 @@ export interface RenderModeInfo {
 let renderMode: RenderModeInfo = { kind: 'retro', vw: 960, vh: 720, dpr: 1, scale: 1, tx: 0, ty: 0 };
 export function setRenderMode(info: RenderModeInfo): void { renderMode = info; }
 
+/**
+ * Effective wrap distance for collisions. In modern portrait mode the canvas
+ * shows a cropped slice of the 960×720 world and we ghost-render entities at
+ * ±visW so the wrap appears seamless to the player. Collisions must use the
+ * same shorter wrap distance — otherwise a bullet aimed at a visible ghost
+ * asteroid passes through it because the real entity sits one full visW away
+ * in world coordinates. Returns world dimensions for retro/landscape, where
+ * the visible band already covers the world.
+ */
+export function getCollisionWrap(): { w: number; h: number } {
+  if (renderMode.kind !== 'modern') return { w: WORLD_W, h: WORLD_H };
+  const visW = renderMode.vw / renderMode.scale;
+  const visH = renderMode.vh / renderMode.scale;
+  return {
+    w: Math.min(WORLD_W, visW),
+    h: Math.min(WORLD_H, visH),
+  };
+}
+
 /** Title-screen background cycling: rotates through wave bgs every 30s,
  *  skipping the wave-25 finale image so the boss reveal stays for in-game. */
 let titleBgStartedAt = 0;

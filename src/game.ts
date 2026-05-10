@@ -40,7 +40,7 @@ import {
 } from './types.js';
 import type { PowerUp, PowerUpType } from './types.js';
 import * as audio from './audio.js';
-import { preloadBackground } from './render.js';
+import { preloadBackground, getCollisionWrap } from './render.js';
 import { currentMods, lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { gameRng } from './seed.js';
 
@@ -987,17 +987,17 @@ function wrap(p: Vec2, margin = 0): void {
 }
 
 function circlesHit(a: { pos: Vec2; radius: number }, b: { pos: Vec2; radius: number }): boolean {
-  // Wrap-aware shortest delta. The world is toroidal (everything that respects
-  // wrap reappears on the opposite edge), and we ghost-render copies at the
-  // wrap offsets in modern crop. Without this, an asteroid sitting just inside
-  // one edge while the ship is just inside the opposite edge reads ~960 px
-  // apart and never collides — the asteroid effectively becomes invincible.
+  // Wrap-aware shortest delta. In modern portrait mode the world is rendered
+  // cropped with ghosts at ±visW; collisions must use the same shorter wrap
+  // distance or the player aims at a visible ghost and the bullet passes
+  // through it (the real entity sits one full visW away in world coords).
+  const wrap = getCollisionWrap();
   let dx = a.pos.x - b.pos.x;
   let dy = a.pos.y - b.pos.y;
-  if (dx > WORLD_W / 2) dx -= WORLD_W;
-  else if (dx < -WORLD_W / 2) dx += WORLD_W;
-  if (dy > WORLD_H / 2) dy -= WORLD_H;
-  else if (dy < -WORLD_H / 2) dy += WORLD_H;
+  if (dx > wrap.w / 2) dx -= wrap.w;
+  else if (dx < -wrap.w / 2) dx += wrap.w;
+  if (dy > wrap.h / 2) dy -= wrap.h;
+  else if (dy < -wrap.h / 2) dy += wrap.h;
   const r = a.radius + b.radius;
   return dx * dx + dy * dy <= r * r;
 }
@@ -1627,13 +1627,14 @@ export function updateGame(s: GameState, dt: number, now: number): void {
       if (!a.alive) continue;
       if (circlesHit(s.ship, a)) {
         // Use wrap-aware delta so reflections at the edges push the asteroid
-        // along the actual contact normal, not a normal flipped by ~WORLD_W.
+        // along the actual contact normal, not a normal flipped by the wrap.
+        const wrap = getCollisionWrap();
         let dx = a.pos.x - s.ship.pos.x;
         let dy = a.pos.y - s.ship.pos.y;
-        if (dx > WORLD_W / 2) dx -= WORLD_W;
-        else if (dx < -WORLD_W / 2) dx += WORLD_W;
-        if (dy > WORLD_H / 2) dy -= WORLD_H;
-        else if (dy < -WORLD_H / 2) dy += WORLD_H;
+        if (dx > wrap.w / 2) dx -= wrap.w;
+        else if (dx < -wrap.w / 2) dx += wrap.w;
+        if (dy > wrap.h / 2) dy -= wrap.h;
+        else if (dy < -wrap.h / 2) dy += wrap.h;
         const distSq = dx * dx + dy * dy;
         const dist = Math.sqrt(distSq) || 1;
         const nx = dx / dist;
