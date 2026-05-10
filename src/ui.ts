@@ -956,12 +956,18 @@ async function maybePublishScore(state: GameState, parent: HTMLElement): Promise
   status.style.fontSize = '0.85rem';
 
   try {
-    const elapsed = Math.floor((performance.now() - state.phaseStart) / 1000);
+    // runTimeMs accumulates dt per frame during play and excludes pauses, so
+    // it's the right "how long did this run last" value. Previously we read
+    // `phaseStart` here, but at game-over that's the start of the death
+    // phase — so every published event had duration ~0. Same change marks
+    // state as 'completed' since this only fires on death/end-of-run.
+    const elapsed = Math.floor(state.runTimeMs / 1000);
     const result = await publishScore(state.session, {
       score: state.score,
       sats: state.sats,
       wave: state.wave,
       durationSeconds: elapsed,
+      state: 'completed',
       seed: getActiveSeed(),
       cheated: state.cheatedThisRun,
     });
