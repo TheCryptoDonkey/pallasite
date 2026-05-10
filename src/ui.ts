@@ -1261,26 +1261,18 @@ async function maybePublishScore(state: GameState, parent: HTMLElement): Promise
     return;
   }
 
-  const profileLud = state.profile?.lud16 ?? null;
-  const stored = getStoredLnAddress();
-  const initial = stored ?? profileLud ?? '';
-
   const wrapper = el('div', { parent });
   wrapper.style.cssText =
     'display:flex;flex-direction:column;gap:6px;margin-top:12px;align-items:stretch';
 
   const label = el('p', { parent: wrapper });
   label.style.cssText = 'font-size:0.85rem;color:#cccccc;margin:0';
-  label.textContent = profileLud
-    ? `Claim sats to your wallet (${profileLud}).`
-    : 'Claim sats — paste a lightning address to receive them.';
 
   const inputRow = el('div', { parent: wrapper });
   inputRow.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap';
 
   const input = document.createElement('input');
   input.type = 'text';
-  input.value = initial;
   input.placeholder = 'alice@yourwallet.com';
   input.spellcheck = false;
   input.autocapitalize = 'off';
@@ -1289,6 +1281,41 @@ async function maybePublishScore(state: GameState, parent: HTMLElement): Promise
     'flex:1;min-width:220px;padding:6px 8px;font-family:inherit;font-size:0.9rem;' +
     'background:#0a0a0a;color:#eee;border:1px solid #333;border-radius:4px';
   inputRow.appendChild(input);
+
+  // Prefill: profile lud16 wins (it's the user's canonical declaration), then
+  // last-used localStorage value, then empty. If a force-refresh later turns
+  // up a fresher lud16, we update the field — but only if the user hasn't
+  // already edited it. Track the last default we set to detect manual edits.
+  let lastDefault = '';
+  const setDefault = (next: string): void => {
+    if (input.value === '' || input.value === lastDefault) {
+      input.value = next;
+    }
+    lastDefault = next;
+  };
+
+  const refreshLabel = (lud: string | null): void => {
+    label.textContent = lud
+      ? `Claim sats to your wallet (${lud}).`
+      : 'Claim sats — paste a lightning address to receive them.';
+  };
+
+  const profileLud = state.profile?.lud16 ?? null;
+  const stored = getStoredLnAddress();
+  setDefault(profileLud ?? stored ?? '');
+  refreshLabel(profileLud);
+
+  // Best-effort: force-refresh the cached profile in case it was stored before
+  // lud16 parsing existed (the cache TTL is 24h). If a fresher lud16 lands and
+  // the user hasn't typed anything yet, slot it into the input.
+  void fetchProfile(state.session.pubkey, { force: true }).then((p) => {
+    if (!p) return;
+    state.profile = p;
+    if (p.lud16) {
+      setDefault(p.lud16);
+      refreshLabel(p.lud16);
+    }
+  });
 
   const button = el('button', { className: 'menu-btn', parent: inputRow, text: 'CLAIM' });
   button.style.cssText = 'padding:6px 14px;cursor:pointer;font-size:0.9rem';
