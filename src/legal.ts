@@ -5,13 +5,18 @@
  * (no hash router in this codebase). Click the backdrop or press
  * Escape to dismiss.
  *
- * Wording is tuned for UK hobby scale: free prize competition under
- * Schedule 11 of the Gambling Act 2005, 18+ self-attestation only,
- * no purchase required, sats are gifts. No solicitor review at this
- * scale; iterate as the project grows.
+ * Wording is tuned for UK hobby scale: the game itself is open to
+ * all ages; only the Lightning sats claim flow is gated to 18+ as
+ * a self-attestation, sitting under Schedule 11 of the Gambling
+ * Act 2005 (free prize competition — no purchase required, sats
+ * are gifts). No solicitor review at this scale; iterate as the
+ * project grows.
  */
 
 import { DEV } from './credits.js';
+import {
+  versionChipText, versionChipColour, subscribeVersionState, checkForUpdate,
+} from './version.js';
 
 const MODAL_ID = 'pallasite-legal-modal';
 
@@ -89,9 +94,12 @@ function closeModal(): void {
 export function renderLegalFooter(parent: HTMLElement): void {
   const footer = document.createElement('div');
   footer.style.cssText =
-    'display:flex;gap:18px;justify-content:center;align-items:center;' +
+    'display:flex;flex-direction:column;gap:6px;justify-content:center;align-items:center;' +
     'margin:18px 0 4px;font-size:0.72rem;letter-spacing:0.16em;' +
     'color:rgba(180,180,180,0.55)';
+
+  const linksRow = document.createElement('div');
+  linksRow.style.cssText = 'display:flex;gap:18px;align-items:center;';
 
   const mkLink = (label: string, onClick: () => void): HTMLAnchorElement => {
     const a = document.createElement('a');
@@ -105,24 +113,59 @@ export function renderLegalFooter(parent: HTMLElement): void {
     return a;
   };
 
-  footer.appendChild(mkLink('TERMS', openTermsModal));
+  linksRow.appendChild(mkLink('TERMS', openTermsModal));
   const dot = document.createElement('span');
   dot.textContent = '·';
-  footer.appendChild(dot);
-  footer.appendChild(mkLink('PRIVACY', openPrivacyModal));
+  linksRow.appendChild(dot);
+  linksRow.appendChild(mkLink('PRIVACY', openPrivacyModal));
+  footer.appendChild(linksRow);
+
+  // Build chip — clickable, forces a fresh /version.json check. Three states
+  // (latest / stale / offline) each colour-coded so the player can see at a
+  // glance whether they're on the current build, especially on mobile PWA
+  // where there's no URL bar to inspect.
+  const chip = document.createElement('a');
+  chip.href = '#';
+  chip.style.cssText =
+    'text-decoration:none;cursor:pointer;font-size:0.66rem;letter-spacing:0.18em;';
+  function paintChip(): void {
+    chip.textContent = versionChipText();
+    chip.style.color = versionChipColour();
+  }
+  paintChip();
+  const unsubscribe = subscribeVersionState(paintChip);
+  chip.addEventListener('click', (e) => {
+    e.preventDefault();
+    void checkForUpdate();
+  });
+  // Tear down the subscription if the footer leaves the DOM (overlay swap).
+  // MutationObserver is overkill; the next renderTitle/renderRecap clears the
+  // overlay root, so leaking listeners is bounded — but be tidy anyway.
+  const obs = new MutationObserver(() => {
+    if (!document.body.contains(chip)) {
+      unsubscribe();
+      obs.disconnect();
+    }
+  });
+  obs.observe(document.body, { childList: true, subtree: true });
+
+  footer.appendChild(chip);
   parent.appendChild(footer);
 }
 
 function termsHtml(): string {
   const npub = DEV.npub;
   return `
-    <p>Pallasite is a free arcade game. Skill-based scores can earn small Lightning sats payouts from a community-funded faucet. By claiming sats you agree to these terms.</p>
+    <p>Pallasite is a free arcade game, open to players of any age. Skill-based scores can also earn small Lightning sats payouts from a community-funded faucet — that part of the game is restricted to adults. By claiming sats you agree to these terms.</p>
+
+    <h3>Playing the game</h3>
+    <p>The game itself — flying the ship, surviving waves, posting high scores, sharing run cards — is free for everyone, including under-18s. No sign-in is required to play.</p>
 
     <h3>Free prize competition</h3>
     <p>Sats payouts are gifts under a free prize competition (Schedule 11, Gambling Act 2005). No purchase or payment is required to play, claim, or win. Payouts are funded by voluntary donations from the developer and community zaps.</p>
 
-    <h3>Eligibility</h3>
-    <p>You must be 18 or older. You must not be a designated person under any UK or international sanctions regime, and you must not be located in a sanctioned jurisdiction. This is a self-attestation — we do not perform technical screening.</p>
+    <h3>Eligibility to claim sats</h3>
+    <p>To claim sats you must be 18 or older. You must not be a designated person under any UK or international sanctions regime, and you must not be located in a sanctioned jurisdiction. This is a self-attestation — we do not perform technical age or identity screening. If you are under 18, please keep playing for high scores and bragging rights, but do not attempt to claim payouts on your own behalf or on behalf of an adult.</p>
 
     <h3>How claims work</h3>
     <ul>

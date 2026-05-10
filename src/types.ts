@@ -392,6 +392,13 @@ export interface GameState {
    *  same RNG sequence the watching player will see). Empty in non-daily
    *  runs to keep payload size small. */
   ghostPoseSamples: GhostPoseSample[];
+
+  /** Accumulated screen-shake "trauma", clamped 0..1. Bumped by impact events
+   *  (hull breach, large asteroid break, mine destroyed, shield ignite, boss
+   *  hit), decays exponentially per frame. Render layer reads trauma², which
+   *  gives a quadratic feel: small jolts barely shake, big hits punch. The
+   *  reduced-motion preference zeroes out the visual at the render call. */
+  cameraTrauma: number;
 }
 
 /** A single (t, score) pacing point. t is ms since startGame. */

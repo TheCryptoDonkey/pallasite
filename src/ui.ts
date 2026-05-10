@@ -10,10 +10,15 @@ import { WAVE_LORE } from './types.js';
 import { getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRelay, removeRelay, resetRelays } from './relays.js';
 import { getTouchMode, setTouchMode, type TouchInputMode } from './touch.js';
 import { getDisplayMode, setDisplayMode, type DisplayMode } from './display.js';
+import {
+  getReducedMotionPref, setReducedMotionPref, type ReducedMotionPref,
+  getPalette, setPalette, type ColourPalette,
+} from './a11y.js';
+import { getHapticsEnabled, setHapticsEnabled, hapticsSupported } from './haptics.js';
 import * as auth from './auth.js';
 import { addLocalHighScore, getLocalHighScores, isHighScore, fetchGlobalHighScores, clearLocalHighScores, type GlobalHighScore } from './score.js';
 import { submitClaim, fetchPool, fetchPlayer, type PlayerTier } from './faucet.js';
-import { renderLegalFooter } from './legal.js';
+import { renderLegalFooter, openTermsModal } from './legal.js';
 import { startGame, startDeathReplay, toastNow } from './game.js';
 import * as audio from './audio.js';
 import { fetchProfile, getCachedProfile, bestName } from './profile.js';
@@ -21,8 +26,9 @@ import { type Difficulty, getStoredDifficulty, setStoredDifficulty, lockInDiffic
 import { getStoredDailyPref, setStoredDailyPref, todayUTC, getActiveSeed } from './seed.js';
 import { DEV } from './credits.js';
 import { followUser, shareCompletion, endorseSubject, rankFromWave } from './social.js';
+import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, hasWebLN, payViaWebLN } from './zap.js';
-import { publishGhost, prefetchTopGhost } from './ghost.js';
+import { publishGhost, prefetchTopGhost, getCachedGhost } from './ghost.js';
 import {
   asteroidPreview, minePreview, sniperPreview, powerupPreview,
   dustPreview, satCoinPreview,
@@ -380,6 +386,11 @@ export function renderTitle(state: GameState): void {
   // Daily / Free toggle
   renderDailyRow(overlay);
 
+  // Today's daily-seed leader — surfaces the standing top score on the
+  // current daily seed so the title screen always has a visible "duel of
+  // the day" hook. Empty state ("be the first") is itself motivating.
+  renderDailyLeaderChip(overlay);
+
   const row = el('div', { className: 'menu-row', parent: overlay });
   const startBtn = el('button', { className: 'menu-btn', parent: row, text: 'IGNITE · PRESS ENTER' });
   startBtn.addEventListener('click', () => {
@@ -471,7 +482,7 @@ function renderPoolChip(parent: HTMLElement): void {
       lineFloat.textContent = `${floatStr} — paused`;
       lineFloat.style.color = '#ff8050';
     } else if (lowFloat) {
-      lineFloat.textContent = `${floatStr} — zap to refill`;
+      lineFloat.textContent = `${floatStr} — running low`;
       lineFloat.style.color = '#ff8050';
     } else {
       lineFloat.textContent = floatStr;
@@ -656,6 +667,56 @@ function renderDailyRow(parent: HTMLElement): void {
   }
   refresh();
   void getActiveSeed;  // keep import bound for cross-references
+}
+
+/**
+ * Today's daily-seed leader chip. Polls the ghost cache (warmed by
+ * prefetchTopGhost in renderTitle) and updates when the relays answer.
+ *
+ * - Empty state reads as a hook: "DAILY 2026-05-10 · BE THE FIRST"
+ * - Filled state shows leader pubkey (truncated) + score
+ *
+ * Read-only — the DAILY/FREE toggle directly above is the actual control.
+ * This chip's job is to make the daily mode feel like there's something
+ * to chase, not duplicate the affordance.
+ */
+function renderDailyLeaderChip(parent: HTMLElement): void {
+  const wrap = el('div', { parent });
+  wrap.style.cssText = [
+    'display:flex', 'flex-direction:column', 'align-items:center', 'gap:2px',
+    'margin:8px 0 0', 'padding:6px 14px',
+    'border:1px solid rgba(180,140,255,0.25)', 'border-radius:8px',
+    'min-width:280px', 'text-align:center',
+  ].join(';');
+
+  const heading = el('p', { parent: wrap, text: `DAILY ${todayUTC()}` });
+  heading.style.cssText = 'font-size:0.7rem;color:rgba(180,140,255,0.7);letter-spacing:0.28em;margin:0;';
+
+  const body = el('p', { parent: wrap, text: 'BE THE FIRST' });
+  body.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:1.1rem;color:#ffd84a;letter-spacing:0.16em;margin:0;text-shadow:0 0 6px rgba(255,216,74,0.45);";
+
+  function paint(): void {
+    const seed = todayUTC();
+    const run = getCachedGhost(seed);
+    if (!run) return;
+    const stub = run.pubkey.slice(0, 8) + '…' + run.pubkey.slice(-4);
+    body.textContent = `${stub} · ${run.score.toLocaleString()}`;
+    body.style.color = '#7fffb0';
+    body.style.textShadow = '0 0 6px rgba(127,255,176,0.45)';
+  }
+  paint();
+
+  // Relay round-trip can land after this render. Poll the cache for ~5s
+  // and update once the leader arrives. Bail when the chip leaves the DOM
+  // (overlay swap) or after ticks burn.
+  let ticks = 0;
+  const interval = window.setInterval(() => {
+    ticks += 1;
+    paint();
+    if (getCachedGhost(todayUTC()) || ticks > 12 || !document.body.contains(wrap)) {
+      window.clearInterval(interval);
+    }
+  }, 400);
 }
 
 function renderLeaderboardBlock(parent: HTMLElement, list: ReturnType<typeof getLocalHighScores>, title: string, max = 5): void {
@@ -1090,6 +1151,112 @@ export function renderSettings(onBack: () => void): void {
   }
   paintDisplay();
 
+  // ── ACCESSIBILITY ───────────────────────────────────────────────────────
+  // Three independent axes:
+  //   reduced motion: kills shake / chromatic split / future bloom pulses.
+  //     'AUTO' follows the OS prefers-reduced-motion media query.
+  //   high-contrast palette: shifts the four asteroid hues into a
+  //     deuteranopia/protanopia-safer set (red, blue, cyan, yellow).
+  //   haptics: toggle whether navigator.vibrate fires on impact events.
+  //     Hidden entirely on platforms without vibrate support (iOS Safari).
+  const a11yHeading = el('p', { parent: overlay, text: 'ACCESSIBILITY' });
+  a11yHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
+
+  const a11yPanel = el('div', { parent: overlay });
+  a11yPanel.style.cssText = 'display:flex;flex-direction:column;gap:14px;align-items:stretch;min-width:340px;';
+
+  // Reduced-motion tri-state
+  const motionRow = el('div', { parent: a11yPanel });
+  motionRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;';
+  const motionLab = el('label', { parent: motionRow, text: 'REDUCED MOTION' });
+  motionLab.style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
+  const motionBtnWrap = el('div', { parent: motionRow });
+  motionBtnWrap.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;';
+  const motionOpts: ReadonlyArray<{ value: ReducedMotionPref; label: string }> = [
+    { value: 'auto', label: 'AUTO' },
+    { value: 'on',   label: 'ON' },
+    { value: 'off',  label: 'OFF' },
+  ];
+  const motionBtns = new Map<ReducedMotionPref, HTMLButtonElement>();
+  function paintMotion(): void {
+    const cur = getReducedMotionPref();
+    for (const [v, btn] of motionBtns) {
+      const on = v === cur;
+      btn.style.cssText = [
+        'background:' + (on ? 'rgba(91,157,255,0.22)' : 'transparent'),
+        'border:2px solid ' + (on ? '#5b9dff' : 'rgba(180,140,255,0.4)'),
+        'color:' + (on ? '#5b9dff' : 'rgba(220,210,255,0.85)'),
+        "font-family:'VT323',ui-monospace,monospace",
+        'font-size:0.9rem', 'padding:5px 12px', 'letter-spacing:0.16em',
+        'cursor:pointer', 'border-radius:6px', 'min-width:62px',
+      ].join(';');
+    }
+  }
+  for (const opt of motionOpts) {
+    const btn = el('button', { parent: motionBtnWrap, text: opt.label });
+    motionBtns.set(opt.value, btn);
+    btn.addEventListener('click', () => { setReducedMotionPref(opt.value); paintMotion(); });
+  }
+  paintMotion();
+
+  // High-contrast palette toggle
+  const paletteRow = el('div', { parent: a11yPanel });
+  paletteRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;';
+  const paletteLab = el('label', { parent: paletteRow, text: 'PALETTE' });
+  paletteLab.style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
+  const paletteBtnWrap = el('div', { parent: paletteRow });
+  paletteBtnWrap.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;';
+  const paletteOpts: ReadonlyArray<{ value: ColourPalette; label: string }> = [
+    { value: 'default',        label: 'DEFAULT' },
+    { value: 'high-contrast',  label: 'HI-CONTRAST' },
+  ];
+  const paletteBtns = new Map<ColourPalette, HTMLButtonElement>();
+  function paintPalette(): void {
+    const cur = getPalette();
+    for (const [v, btn] of paletteBtns) {
+      const on = v === cur;
+      btn.style.cssText = [
+        'background:' + (on ? 'rgba(91,157,255,0.22)' : 'transparent'),
+        'border:2px solid ' + (on ? '#5b9dff' : 'rgba(180,140,255,0.4)'),
+        'color:' + (on ? '#5b9dff' : 'rgba(220,210,255,0.85)'),
+        "font-family:'VT323',ui-monospace,monospace",
+        'font-size:0.9rem', 'padding:5px 12px', 'letter-spacing:0.16em',
+        'cursor:pointer', 'border-radius:6px', 'min-width:108px',
+      ].join(';');
+    }
+  }
+  for (const opt of paletteOpts) {
+    const btn = el('button', { parent: paletteBtnWrap, text: opt.label });
+    paletteBtns.set(opt.value, btn);
+    btn.addEventListener('click', () => { setPalette(opt.value); paintPalette(); });
+  }
+  paintPalette();
+
+  // Haptics toggle — only render on platforms where vibrate is available
+  if (hapticsSupported()) {
+    const hapticsRow = el('div', { parent: a11yPanel });
+    hapticsRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;';
+    const hapticsLab = el('label', { parent: hapticsRow, text: 'HAPTICS' });
+    hapticsLab.style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
+    const hapticsBtnWrap = el('div', { parent: hapticsRow });
+    hapticsBtnWrap.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;';
+    const hapticsBtn = el('button', { parent: hapticsBtnWrap, text: getHapticsEnabled() ? 'ON' : 'OFF' });
+    function paintHaptics(): void {
+      const on = getHapticsEnabled();
+      hapticsBtn.textContent = on ? 'ON' : 'OFF';
+      hapticsBtn.style.cssText = [
+        'background:' + (on ? 'rgba(91,157,255,0.22)' : 'transparent'),
+        'border:2px solid ' + (on ? '#5b9dff' : 'rgba(180,140,255,0.4)'),
+        'color:' + (on ? '#5b9dff' : 'rgba(220,210,255,0.85)'),
+        "font-family:'VT323',ui-monospace,monospace",
+        'font-size:0.9rem', 'padding:5px 12px', 'letter-spacing:0.16em',
+        'cursor:pointer', 'border-radius:6px', 'min-width:62px',
+      ].join(';');
+    }
+    paintHaptics();
+    hapticsBtn.addEventListener('click', () => { setHapticsEnabled(!getHapticsEnabled()); paintHaptics(); });
+  }
+
   // ── DATA ────────────────────────────────────────────────────────────────
   // Single destructive action — clearing the local top-10 list. Two-tap
   // confirm so a stray click doesn't blow it away. Auto-resets after 3s
@@ -1345,6 +1512,24 @@ function renderGameOverRecap(state: GameState): void {
 const LN_ADDRESS_KEY = 'pallasite:lightning_address';
 const LN_ADDRESS_RE = /^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+(?::[0-9]+)?$/;
 
+const AGE_ATTEST_KEY_PREFIX = 'pallasite:age_attested_18:';
+
+function hasAgeAttestation(pubkey: string): boolean {
+  try {
+    return localStorage.getItem(AGE_ATTEST_KEY_PREFIX + pubkey.toLowerCase()) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function setAgeAttestation(pubkey: string): void {
+  try {
+    localStorage.setItem(AGE_ATTEST_KEY_PREFIX + pubkey.toLowerCase(), '1');
+  } catch {
+    // localStorage unavailable
+  }
+}
+
 function getStoredLnAddress(): string | null {
   try {
     const v = localStorage.getItem(LN_ADDRESS_KEY);
@@ -1424,8 +1609,56 @@ async function maybePublishScore(state: GameState, parent: HTMLElement): Promise
   const compactView = el('div', { parent: wrapper });
   compactView.style.cssText = 'display:flex;flex-direction:column;gap:4px;align-items:stretch';
 
+  // 18+ self-attestation gate. The game is open to all ages, but the sats
+  // claim flow is adults-only (free prize competition, Schedule 11 norms).
+  // One-time per pubkey, persisted in localStorage. We re-prompt on every
+  // sign-in for a different pubkey rather than treating the device as
+  // attested — the attestation is the *player's*, not the browser's.
+  const ageRow = el('div', { parent: compactView });
+  ageRow.style.cssText =
+    'display:flex;gap:8px;align-items:flex-start;font-size:0.78rem;' +
+    'color:#cccccc;margin:4px 0 6px 0;line-height:1.4;text-align:left';
+  const ageCheckbox = document.createElement('input');
+  ageCheckbox.type = 'checkbox';
+  ageCheckbox.style.cssText = 'margin-top:3px;cursor:pointer;flex-shrink:0';
+  const ageLabel = document.createElement('label');
+  ageLabel.style.cssText = 'cursor:pointer;flex:1';
+  ageLabel.appendChild(
+    document.createTextNode('I confirm I am 18 or older and have read the '),
+  );
+  const ageTermsLink = document.createElement('a');
+  ageTermsLink.href = '#';
+  ageTermsLink.textContent = 'terms';
+  ageTermsLink.style.cssText = 'color:#5b9dff;text-decoration:underline';
+  ageTermsLink.addEventListener('click', (e) => {
+    e.preventDefault();
+    openTermsModal();
+  });
+  ageLabel.appendChild(ageTermsLink);
+  ageLabel.appendChild(document.createTextNode('.'));
+  ageRow.appendChild(ageCheckbox);
+  ageRow.appendChild(ageLabel);
+
   const claimBtn = el('button', { className: 'menu-btn', parent: compactView, text: 'CLAIM' });
   claimBtn.style.cssText = 'padding:8px 16px;cursor:pointer;font-size:0.95rem';
+
+  // Gate the claim button on the attestation. If already attested for this
+  // pubkey, drop the row entirely so the recap stays compact.
+  const sessionPubkey = state.session.pubkey;
+  if (hasAgeAttestation(sessionPubkey)) {
+    ageRow.remove();
+  } else {
+    claimBtn.disabled = true;
+    claimBtn.style.opacity = '0.55';
+    ageCheckbox.addEventListener('change', () => {
+      if (ageCheckbox.checked) {
+        setAgeAttestation(sessionPubkey);
+        claimBtn.disabled = false;
+        claimBtn.style.opacity = '1';
+        ageRow.remove();
+      }
+    });
+  }
 
   const subline = el('p', { parent: compactView });
   subline.style.cssText = 'font-size:0.78rem;color:#888;margin:2px 0 0 0;text-align:center';
@@ -1808,6 +2041,18 @@ function renderRunCredits(
       onStartCb?.();
     });
   }
+  // SHARE CARD — system share sheet with a rendered run summary image.
+  // Available to guests (no auth needed); complements the signed-in
+  // SHARE / FOLLOW / ENDORSE row that publishes to Nostr relays.
+  const shareBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'SHARE CARD' }) as HTMLButtonElement;
+  shareBtn.addEventListener('click', () => {
+    shareBtn.disabled = true;
+    shareBtn.style.opacity = '0.6';
+    void shareRunCard(state).finally(() => {
+      shareBtn.disabled = false;
+      shareBtn.style.opacity = '1';
+    });
+  });
   const home = el('button', { className: 'menu-btn secondary', parent: row, text: 'SKIP TO TITLE' });
   home.addEventListener('click', goToTitle);
 
@@ -2000,15 +2245,22 @@ function renderSocialActions(parent: HTMLElement, state: GameState): void {
 function renderZapButton(parent: HTMLElement, state: GameState): void {
   // Without a Nostr session the LNURL-pay path still works, but the resulting
   // payment can't be signed as a NIP-57 zap — so the player gets no public
-  // credit linking them to the game. Per UX direction: don't bother offering
-  // the button without a signer; show a sign-in prompt instead.
+  // credit linking them to the game. Show a Ko-fi link instead so non-Nostr
+  // players have a real path to support the project, not a dead-end prompt.
   if (!state.session) {
     const wrap = el('div', { parent });
-    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:6px;margin-top:6px;';
-    const label = el('p', { parent: wrap, text: '⚡ SIGN IN TO ZAP ⚡' });
-    label.style.cssText = 'font-size:0.9rem;letter-spacing:0.2em;color:rgba(255,216,74,0.7);margin:0;';
-    const sub = el('p', { parent: wrap, text: 'zaps need a Nostr key so the credit links back to you' });
-    sub.style.cssText = 'font-size:0.7rem;letter-spacing:0.12em;color:rgba(180,140,255,0.55);margin:0;text-align:center;';
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:8px;margin-top:6px;';
+    const label = el('p', { parent: wrap, text: '☕ TIP VIA KO-FI' });
+    label.style.cssText = 'font-size:0.95rem;letter-spacing:0.22em;color:#ffd84a;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:0;';
+    const sub = el('p', { parent: wrap, text: 'no Nostr needed · card or PayPal' });
+    sub.style.cssText = 'font-size:0.7rem;letter-spacing:0.12em;color:rgba(180,140,255,0.6);margin:0;text-align:center;';
+    const ko = el('a', { parent: wrap, text: '☕ KO-FI ·  ko-fi.com/brays' }) as HTMLAnchorElement;
+    ko.href = 'https://ko-fi.com/brays';
+    ko.target = '_blank';
+    ko.rel = 'noopener';
+    ko.style.cssText = koFiButtonStyle();
+    const orZap = el('p', { parent: wrap, text: 'or sign in with Nostr to zap' });
+    orZap.style.cssText = 'font-size:0.66rem;letter-spacing:0.1em;color:rgba(180,140,255,0.45);margin:6px 0 0;text-align:center;';
     return;
   }
 
@@ -2052,6 +2304,37 @@ function renderZapButton(parent: HTMLElement, state: GameState): void {
     'transition:all 0.12s ease',
   ].join(';');
   custom.addEventListener('click', () => openZapModal(state));
+
+  // Secondary Ko-fi link for signed-in players who'd rather pay via card —
+  // no judgement, sats and ko-fi both fund the faucet float.
+  const koRow = el('div', { parent: wrap });
+  koRow.style.cssText = 'display:flex;justify-content:center;margin-top:4px;';
+  const ko = el('a', { parent: koRow, text: '☕ or tip via ko-fi' }) as HTMLAnchorElement;
+  ko.href = 'https://ko-fi.com/brays';
+  ko.target = '_blank';
+  ko.rel = 'noopener';
+  ko.style.cssText = [
+    'font-size:0.72rem', 'letter-spacing:0.16em',
+    'color:rgba(180,140,255,0.7)', 'text-decoration:none',
+    'cursor:pointer',
+  ].join(';');
+}
+
+function koFiButtonStyle(): string {
+  return [
+    'background:rgba(255,216,74,0.1)',
+    'border:2px solid #ffd84a',
+    'color:#ffd84a',
+    "font-family:'VT323',ui-monospace,monospace",
+    'font-size:1rem',
+    'padding:10px 18px',
+    'letter-spacing:0.16em',
+    'cursor:pointer', 'text-decoration:none',
+    'border-radius:6px',
+    'text-shadow:0 0 6px rgba(255,216,74,0.6)',
+    'box-shadow:0 0 12px rgba(255,216,74,0.2)',
+    'transition:all 0.12s ease',
+  ].join(';');
 }
 
 function zapPresetStyle(): string {

@@ -10,11 +10,12 @@ import type {
   GameState, Ship, Asteroid, AsteroidType, Bullet, Coin, Particle, Ufo, Mine, PowerUp, ReplaySnapshot, Debris,
 } from './types.js';
 import {
-  WORLD_W, WORLD_H, WARP_MS, waveName, waveSubtitle, ASTEROID_TYPE_CONFIG, POWERUP_CONFIG,
+  WORLD_W, WORLD_H, WARP_MS, waveName, waveSubtitle, POWERUP_CONFIG,
   REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS,
 } from './types.js';
 import { getCachedGhost, ghostScoreAt, ghostPoseAt } from './ghost.js';
 import { getActiveSeed } from './seed.js';
+import { getAsteroidStyle, shouldReduceMotion } from './a11y.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
 
@@ -483,14 +484,14 @@ function drawHyperspaceMalfunction(ctx: CanvasRenderingContext2D, ship: Ship, no
 
 function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): void {
   if (!a.alive) return;
-  const cfg = ASTEROID_TYPE_CONFIG[a.type];
+  const style = getAsteroidStyle(a.type);
   ctx.save();
   ctx.translate(a.pos.x, a.pos.y);
   ctx.rotate(a.rot);
   ctx.lineWidth = a.type === 'iron' ? 2.0 : 1.4;
   const lightness = 60 + a.hue * 0.2;
-  ctx.strokeStyle = `hsl(${cfg.hueBase}, 70%, ${lightness}%)`;
-  ctx.shadowColor = cfg.glow;
+  ctx.strokeStyle = `hsl(${style.hueBase}, 70%, ${lightness}%)`;
+  ctx.shadowColor = style.glow;
   ctx.shadowBlur = a.type === 'pallasite' ? 14 : 8;
 
   const n = a.shape.length;
@@ -1212,10 +1213,10 @@ function drawCoin(ctx: CanvasRenderingContext2D, c: Coin, now: number): void {
   // the rarer rocks get distinct silhouettes.
   const tumble = now * 0.003 + c.pos.x * 0.02;
   const sourceType = c.sourceType ?? 'stony';
-  const cfg = ASTEROID_TYPE_CONFIG[sourceType];
+  const style = getAsteroidStyle(sourceType);
   // Stony intentionally overrides to peridot green; the others use the
   // asteroid's glow colour for at-a-glance recognition.
-  const dustColour = sourceType === 'stony' ? '#7fffb0' : cfg.glow;
+  const dustColour = sourceType === 'stony' ? '#7fffb0' : style.glow;
   const r = c.radius * 0.95;
   ctx.save();
   ctx.translate(c.pos.x, c.pos.y);
@@ -2139,6 +2140,16 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   drawBackground(ctx, state, now);
   drawStars(ctx, now);
 
+  // Camera shake from accumulated trauma. trauma² gives a quadratic feel —
+  // small hits barely shake, big hits punch. Reduced-motion zeros amplitude.
+  let shakeX = 0, shakeY = 0;
+  const trauma = state.cameraTrauma;
+  if (trauma > 0 && !shouldReduceMotion()) {
+    const amp = trauma * trauma * 14;
+    shakeX = (Math.sin(now * 0.073) + Math.sin(now * 0.127) * 0.6) * amp;
+    shakeY = (Math.cos(now * 0.091) + Math.cos(now * 0.151) * 0.6) * amp;
+  }
+
   // Ghost-render offsets so wraps look seamless at visible-band edges.
   // We're only in "wrap visualisation" mode when at least one axis is
   // cropped (vis < world). Pure contain (e.g. landscape with side gutters)
@@ -2161,6 +2172,11 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     else if (cropX && visH > WORLD_H + 1) ghostYs.push(-WORLD_H, WORLD_H);
   }
 
+  // Shake wraps the entity layer only — HUD stays steady so readouts don't
+  // judder during impacts.
+  ctx.save();
+  ctx.translate(shakeX, shakeY);
+
   for (const dx of ghostXs) {
     for (const dy of ghostYs) {
       const isGhost = dx !== 0 || dy !== 0;
@@ -2182,6 +2198,40 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     }
   }
 
+  ctx.restore();
+
+  // Hyperspace-malfunction chromatic split — red+cyan vignettes nudged
+  // opposite directions sell the "something's wrong" frame. Cheap (two
+  // gradient draws), and visually distinct from any other in-world effect.
+  if (state.ship.hyperspaceCloakMs > 0 && state.ship.hyperspaceMalfunction && !shouldReduceMotion()) {
+    drawChromaticSplit(ctx, now);
+  }
+
   drawHud(ctx, state, now);
   drawWaveBanner(ctx, state, now);
+}
+
+/**
+ * Cheap RGB-split overlay for hyperspace-malfunction frames. Two full-screen
+ * radial gradients — red pushed left, cyan pushed right — pulsing with the
+ * malfunction ring cadence so it reads as one effect, not two.
+ */
+function drawChromaticSplit(ctx: CanvasRenderingContext2D, now: number): void {
+  const t = (now * 0.012) % 1;
+  const amp = 6 + Math.sin(now * 0.04) * 2;
+  const alpha = 0.18 + 0.10 * t;
+  const cx = WORLD_W / 2, cy = WORLD_H / 2;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const red = ctx.createRadialGradient(cx - amp, cy, 100, cx - amp, cy, 600);
+  red.addColorStop(0, 'rgba(255,80,80,0)');
+  red.addColorStop(1, `rgba(255,60,60,${alpha})`);
+  ctx.fillStyle = red;
+  ctx.fillRect(0, 0, WORLD_W, WORLD_H);
+  const cyan = ctx.createRadialGradient(cx + amp, cy, 100, cx + amp, cy, 600);
+  cyan.addColorStop(0, 'rgba(80,255,255,0)');
+  cyan.addColorStop(1, `rgba(60,200,255,${alpha})`);
+  ctx.fillStyle = cyan;
+  ctx.fillRect(0, 0, WORLD_W, WORLD_H);
+  ctx.restore();
 }
