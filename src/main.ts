@@ -10,7 +10,7 @@ import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadBackground, setRenderMode } from './render.js';
 import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner } from './ui.js';
-import { tryRestore } from './auth.js';
+import { handleAuthCallback, tryRestore } from './auth.js';
 import * as audio from './audio.js';
 import { musicSetTrackForState, preloadAllTracks } from './music.js';
 import { setupTouchControls } from './touch.js';
@@ -317,8 +317,12 @@ window.addEventListener('keydown', e => {
     state.phase = 'wavestart';
     clearOverlay();
   }
-  // Enter to play again from gameover
-  if (e.code === 'Enter' && state.phase === 'gameover') {
+  // Enter to play again from gameover. Gated on the arcade-initials widget
+  // not being open — when the player is locking in initials, Enter is a
+  // no-op (see renderArcadeInitials in ui.ts). Without this gate, Enter on
+  // the name-entry screen restarts the game and the player never sees the
+  // submit / countdown.
+  if (e.code === 'Enter' && state.phase === 'gameover' && !document.querySelector('[data-arcade-initials="open"]')) {
     void audio.unlockAudio();
     lockInDifficulty(getStoredDifficulty());
     setDailySeed(getStoredDailyPref() ? todayUTC() : null);
@@ -459,8 +463,10 @@ async function boot(): Promise<void> {
   // browsers but the explicit listener catches stragglers.
   window.addEventListener('orientationchange', fit);
 
-  // Try restoring a session
-  state.session = await tryRestore();
+  // First, consume an in-flight signet redirect callback if one's on the URL —
+  // returning from signet with auth params persists a session and strips them
+  // from the URL. Then fall back to restoring a stored session for normal loads.
+  state.session = (await handleAuthCallback()) ?? (await tryRestore());
   // Kick off profile fetch in the background — UI updates when it lands
   if (state.session) {
     void import('./profile.js').then(({ fetchProfile, getCachedProfile }) => {
