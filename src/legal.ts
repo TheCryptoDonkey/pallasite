@@ -156,13 +156,13 @@ export function renderLegalFooter(parent: HTMLElement): void {
 function termsHtml(): string {
   const npub = DEV.npub;
   return `
-    <p>Pallasite is a free arcade game, open to players of any age. Skill-based scores can also earn small Lightning sats payouts from a community-funded faucet — that part of the game is restricted to adults. By claiming sats you agree to these terms.</p>
+    <p>Pallasite is a free arcade game, open to players of any age. Skill-based scores can also earn small Lightning sats payouts from a developer-funded faucet — that part of the game is restricted to adults. By claiming sats you agree to these terms.</p>
 
     <h3>Playing the game</h3>
     <p>The game itself — flying the ship, surviving waves, posting high scores, sharing run cards — is free for everyone, including under-18s. No sign-in is required to play.</p>
 
     <h3>Free prize competition</h3>
-    <p>Sats payouts are gifts under a free prize competition (Schedule 11, Gambling Act 2005). No purchase or payment is required to play, claim, or win. Payouts are funded by voluntary donations from the developer and community zaps.</p>
+    <p>Sats payouts are gifts under a free prize competition (Schedule 11, Gambling Act 2005). No purchase or payment is required to play, claim, or win. Payouts are funded by the developer.</p>
 
     <h3>Eligibility to claim sats</h3>
     <p>To claim sats you must be 18 or older. You must not be a designated person under any UK or international sanctions regime, and you must not be located in a sanctioned jurisdiction. This is a self-attestation — we do not perform technical age or identity screening. If you are under 18, please keep playing for high scores and bragging rights, but do not attempt to claim payouts on your own behalf or on behalf of an adult.</p>
@@ -187,7 +187,7 @@ function termsHtml(): string {
     <p>The faucet is provided as-is. We may pause, modify, or discontinue payouts at any time. We are not liable for downstream Lightning Network failures, custodial wallet issues, or losses arising from your use of the game or the faucet.</p>
 
     <h3>Cheating</h3>
-    <p>Runs flagged as cheats (in-game cheat key used, or stat checks failed) are not paid out. Repeated abuse may result in your pubkey being flagged on the server.</p>
+    <p>Runs flagged as cheats by automated stat checks are not paid out. Repeated abuse may result in your pubkey being flagged on the server.</p>
 
     <h3>Contact</h3>
     <p>Reach the developer via Nostr at
