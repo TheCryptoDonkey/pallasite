@@ -685,7 +685,25 @@ function drawEngineGlow(ctx: CanvasRenderingContext2D, dir: 1 | -1, x: number, y
 function drawUfo(ctx: CanvasRenderingContext2D, u: Ufo, now: number): void {
   if (!u.alive) return;
   const r = u.radius;
-  const col = UFO_PALETTE[u.type];
+  // Per-phase boss palette override — escalates from baseline red+gold
+  // through enraged orange-red into a critical hot-white core. Non-boss
+  // and phase-1 boss use the static lookup.
+  let col = UFO_PALETTE[u.type];
+  if (u.type === 'boss' && u.bossPhase !== 1) {
+    if (u.bossPhase === 2) {
+      col = { primary: '#ff2a2a', accent: '#ff8c4a', shadow: '#1a0303', cockpit: '#ffd84a' };
+    } else {
+      // Phase 3 — critical. Bright core, white cockpit, slight strobe on
+      // the primary via a sine on `now` so the boss visibly thrashes.
+      const strobe = 0.85 + 0.15 * Math.sin(now * 0.018);
+      col = {
+        primary: `rgba(255, ${Math.round(80 * strobe)}, ${Math.round(80 * strobe)}, 1)`,
+        accent: '#fff5d8',
+        shadow: '#2a0606',
+        cockpit: '#ffffff',
+      };
+    }
+  }
 
   ctx.save();
   ctx.translate(u.pos.x, u.pos.y);
