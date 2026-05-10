@@ -99,6 +99,11 @@ function bindLogoLongPress(target: HTMLElement, fn: () => void): void {
   let sx = 0, sy = 0;
   const clear = (): void => { if (timer !== null) { clearTimeout(timer); timer = null; } };
   target.addEventListener('pointerdown', e => {
+    // Pre-warm audio on the gesture that initiates the long-press. The
+    // setTimeout fn() runs without a gesture context, so unlocking later
+    // (in the row-tap handler) is unreliable on iOS. By the time the
+    // player opens 700ms after this, the AudioContext is already running.
+    void audio.unlockAudio();
     sx = e.clientX; sy = e.clientY;
     clear();
     timer = window.setTimeout(() => { timer = null; fn(); }, HOLD_MS);

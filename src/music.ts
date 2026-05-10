@@ -70,7 +70,13 @@ function load(track: Track): Loaded {
   const el = new Audio(track.src);
   el.loop = track.loop !== false;
   el.preload = 'auto';
-  el.crossOrigin = 'anonymous';
+  // Don't set crossOrigin — the music files are same-origin so it's
+  // redundant, AND on iOS Safari setting it without matching CORS
+  // response headers from the server taints the MediaElementSource and
+  // makes Web Audio output silent zeroes (the visualiser still gets a
+  // signal because the analyser tap reads pre-taint, but the gain →
+  // destination chain plays nothing). The waveform was visible while
+  // the audio was silent — exactly that fingerprint.
   const src = ctx.createMediaElementSource(el);
   const gain = ctx.createGain();
   gain.gain.value = 0;
