@@ -36,6 +36,7 @@ import {
   COMBO_WINDOW_MS, COMBO_MAX,
   POWERUP_CONFIG, POWERUP_DROP_CHANCE, POWERUP_TTL_MS, POWERUP_RADIUS,
   RAPID_COOLDOWN_MUL, SATBOOST_MUL,
+  TRIDENT_SPREAD, MAGNET_MAX_ACCEL, MAGNET_RANGE,
 } from './types.js';
 import type { PowerUp, PowerUpType } from './types.js';
 import * as audio from './audio.js';
@@ -75,6 +76,8 @@ export function makeInitialState(): GameState {
     comboExpiresAt: 0,
     rapidExpiresAt: 0,
     satboostExpiresAt: 0,
+    tridentExpiresAt: 0,
+    magnetExpiresAt: 0,
     session: null,
     profile: null,
     keys: {},
@@ -143,6 +146,8 @@ export function startGame(s: GameState): void {
   s.comboExpiresAt = 0;
   s.rapidExpiresAt = 0;
   s.satboostExpiresAt = 0;
+  s.tridentExpiresAt = 0;
+  s.magnetExpiresAt = 0;
   s.warpTargetWave = 1;
   s.elapsed = 0;
   s.toast = null;
@@ -378,8 +383,8 @@ export function cheatJumpToWave(s: GameState, wave: number): void {
 
 // ── Power-ups ─────────────────────────────────────────────────────────────────
 
-const POWERUP_TYPES_NOSTR: PowerUpType[] = ['rapid', 'satboost', 'bomb'];
-const POWERUP_TYPES_GUEST: PowerUpType[] = ['rapid', 'bomb'];  // satboost has nothing to boost
+const POWERUP_TYPES_NOSTR: PowerUpType[] = ['rapid', 'satboost', 'nova', 'trident', 'magnet'];
+const POWERUP_TYPES_GUEST: PowerUpType[] = ['rapid', 'nova', 'trident', 'magnet'];  // satboost has nothing to boost in guest mode
 
 /** Maybe drop a power-up at the given position. Called from UFO kills. */
 function maybeDropPowerUp(s: GameState, x: number, y: number, force?: PowerUpType): void {
@@ -415,21 +420,25 @@ function applyPowerUp(s: GameState, p: PowerUp, now: number): void {
     s.rapidExpiresAt = Math.max(s.rapidExpiresAt, now) + cfg.durationMs;
   } else if (p.type === 'satboost') {
     s.satboostExpiresAt = Math.max(s.satboostExpiresAt, now) + cfg.durationMs;
-  } else if (p.type === 'bomb') {
-    detonateBomb(s);
+  } else if (p.type === 'trident') {
+    s.tridentExpiresAt = Math.max(s.tridentExpiresAt, now) + cfg.durationMs;
+  } else if (p.type === 'magnet') {
+    s.magnetExpiresAt = Math.max(s.magnetExpiresAt, now) + cfg.durationMs;
+  } else if (p.type === 'nova') {
+    detonateNova(s);
   }
   toastNow(s, cfg.pickupLabel);
   audio.powerupPickup();
 }
 
 /**
- * Smart bomb effect: clears enemy bullets, breaks every asteroid, destroys
- * non-boss UFOs (boss takes 3 damage), wipes mines. Triggers each kill through
- * the standard destroy paths so combo/score chain naturally.
+ * NOVA: clears enemy bullets, breaks every asteroid, destroys non-boss UFOs
+ * (boss takes 3 damage), wipes mines. SCORE-ONLY — wiped asteroids skip the
+ * coin spawn so the player can't farm sats with a powerup. Combo still chains.
  */
-function detonateBomb(s: GameState): void {
+function detonateNova(s: GameState): void {
   for (const a of [...s.asteroids]) {
-    if (a.alive) breakAsteroid(s, a);
+    if (a.alive) breakAsteroid(s, a, { suppressCoins: true });
   }
   for (const u of [...s.ufos]) {
     if (!u.alive) continue;
@@ -446,7 +455,8 @@ function detonateBomb(s: GameState): void {
   }
   s.enemyBullets = [];
   audio.explosion(1.8);
-  spawnParticles(s, WORLD_W / 2, WORLD_H / 2, 60, '#ffd84a', 360, 1100);
+  spawnParticles(s, WORLD_W / 2, WORLD_H / 2, 60, '#ff5050', 360, 1100);
+  spawnParticles(s, WORLD_W / 2, WORLD_H / 2, 30, '#ffffff', 480, 700);
 }
 
 /** Wipe entities so the new wave starts clean. Optionally bank uncollected coins. */
@@ -802,8 +812,8 @@ function destroyUfo(s: GameState, u: Ufo): void {
   if (u.type === 'boss') {
     s.bossDefeated = true;
     // Banked music carries the moment now — no synth triumph chime.
-    // Victory drop — guaranteed bomb so any straggler debris vanishes
-    maybeDropPowerUp(s, u.pos.x, u.pos.y, 'bomb');
+    // Victory drop — guaranteed nova so any straggler debris vanishes
+    maybeDropPowerUp(s, u.pos.x, u.pos.y, 'nova');
   } else {
     // Random power-up drop on regular UFO kills
     maybeDropPowerUp(s, u.pos.x, u.pos.y);
@@ -821,13 +831,25 @@ export function fireBullet(s: GameState): void {
   const muzzleX = s.ship.pos.x + cos * (SHIP_RADIUS + 4);
   const muzzleY = s.ship.pos.y + sin * (SHIP_RADIUS + 4);
   const speed = BULLET_SPEED * mods.bulletSpeedMul;
-  s.bullets.push({
-    pos: { x: muzzleX, y: muzzleY },
-    vel: { x: cos * speed + s.ship.vel.x * 0.4, y: sin * speed + s.ship.vel.y * 0.4 },
-    radius: BULLET_RADIUS,
-    alive: true,
-    ttl: BULLET_TTL_MS,
-  });
+  // Trident active: fan three bullets at ±TRIDENT_SPREAD around the centre
+  // heading. Same speed and cooldown as a normal shot — the value is the
+  // wider arc, not faster fire.
+  const tridentActive = performance.now() < s.tridentExpiresAt;
+  const angles = tridentActive
+    ? [-TRIDENT_SPREAD, 0, TRIDENT_SPREAD]
+    : [0];
+  for (const dAng of angles) {
+    const a = s.ship.rot + dAng;
+    const dx = Math.cos(a);
+    const dy = Math.sin(a);
+    s.bullets.push({
+      pos: { x: muzzleX, y: muzzleY },
+      vel: { x: dx * speed + s.ship.vel.x * 0.4, y: dy * speed + s.ship.vel.y * 0.4 },
+      radius: BULLET_RADIUS,
+      alive: true,
+      ttl: BULLET_TTL_MS,
+    });
+  }
   audio.fire();
 }
 
@@ -1404,6 +1426,7 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   s.debris = s.debris.filter(d => d.ttl > 0);
 
   // ── Coins ──
+  const magnetActive = now < s.magnetExpiresAt;
   for (const c of s.coins) {
     c.pos.x += c.vel.x * dt;
     c.pos.y += c.vel.y * dt;
@@ -1413,7 +1436,8 @@ export function updateGame(s: GameState, dt: number, now: number): void {
     if (c.ttl <= 0) c.alive = false;
     wrap(c.pos);
 
-    // Pull toward ship within range
+    // Pull toward ship — short-range natural magnetism always, plus a strong
+    // whole-screen pull while the MAGNET powerup is active.
     if (s.ship.alive) {
       const dx = s.ship.pos.x - c.pos.x;
       const dy = s.ship.pos.y - c.pos.y;
@@ -1424,6 +1448,13 @@ export function updateGame(s: GameState, dt: number, now: number): void {
         const pull = 380 * (1 - dist / pullRange);
         c.vel.x += (dx / dist) * pull * dt;
         c.vel.y += (dy / dist) * pull * dt;
+      }
+      if (magnetActive && distSq > pullRange * pullRange && distSq < MAGNET_RANGE * MAGNET_RANGE) {
+        // Constant accel toward ship — coins always reach the ship within a
+        // couple of seconds regardless of distance, even across wrap edges.
+        const dist = Math.sqrt(distSq);
+        c.vel.x += (dx / dist) * MAGNET_MAX_ACCEL * dt;
+        c.vel.y += (dy / dist) * MAGNET_MAX_ACCEL * dt;
       }
     }
   }
@@ -1672,7 +1703,7 @@ function damageAsteroid(s: GameState, a: Asteroid): void {
   }
 }
 
-function breakAsteroid(s: GameState, a: Asteroid): void {
+function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boolean }): void {
   a.alive = false;
   const cfg = ASTEROID_TYPE_CONFIG[a.type];
   const mul = recordCombo(s, performance.now());
@@ -1682,10 +1713,12 @@ function breakAsteroid(s: GameState, a: Asteroid): void {
   // Particles tinted to the type's accent
   spawnParticles(s, a.pos.x, a.pos.y, a.size === 'large' ? 18 : a.size === 'medium' ? 12 : 8, cfg.glow, 140, 700);
 
-  // Coins drop — value scales with type's sat multiplier; pallasite asteroids
-  // always drop sats (the headline jackpot), other types roll the rarity dice.
-  const coinCount = a.size === 'large' ? 4 : a.size === 'medium' ? 2 : 1;
-  spawnCoins(s, a.pos.x, a.pos.y, satsValue, coinCount, undefined, a.type);
+  // Coins drop — suppressed for NOVA so it can't be farmed for sats. Pallasite
+  // asteroids always drop sats; other types roll for sat-vs-dust.
+  if (!opts?.suppressCoins) {
+    const coinCount = a.size === 'large' ? 4 : a.size === 'medium' ? 2 : 1;
+    spawnCoins(s, a.pos.x, a.pos.y, satsValue, coinCount, undefined, a.type);
+  }
 
   audio.explosion(a.size === 'large' ? 1.0 : a.size === 'medium' ? 0.8 : 0.6);
 

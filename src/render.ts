@@ -1302,6 +1302,12 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState, now: number): void
   if (now < s.satboostExpiresAt) {
     drawChip('₿ ×2 SATS', s.satboostExpiresAt - now, 12000, '#ffd84a');
   }
+  if (now < s.tridentExpiresAt) {
+    drawChip('⋔ TRIDENT', s.tridentExpiresAt - now, 6000, '#ffd84a');
+  }
+  if (now < s.magnetExpiresAt) {
+    drawChip('◎ MAGNET', s.magnetExpiresAt - now, 8000, '#5b9dff');
+  }
   if (s.lurking) {
     // Persistent indicator — no countdown, so render a steady chip without
     // the time-bar (passing big remaining/total pair keeps the bar full).

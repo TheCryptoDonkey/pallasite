@@ -441,6 +441,14 @@ export function renderHowToPlay(onBack: () => void): void {
     ['Pallasite rocks', 'Rare jackpot — the yellow-green ones'],
   ]);
 
+  section('POWERUPS — drop from UFO kills', [
+    ['⚡ RAPID', 'Faster fire cadence for 8 seconds'],
+    ['₿ ×2 SATS', 'Doubles sat value of dropped coins for 12 seconds'],
+    ['⋔ TRIDENT', 'Three-bullet fan instead of single shot · 6 seconds'],
+    ['◎ MAGNET', 'Pulls coins + dust to your ship across the screen · 8 seconds'],
+    ['◉ NOVA', 'One-shot — destroys every asteroid on screen · score-only, no sats'],
+  ]);
+
   section('SIGN IN WITH NOSTR', [
     ['Optional', 'Guests play for score only · sign in to earn real sats and publish to leaderboards'],
     ['Daily run', 'Same seed for everyone today · clean leaderboard'],
