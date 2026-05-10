@@ -12,14 +12,22 @@
  * can at least free our own state and surface the error to the player.
  */
 
-import type { SignetSession } from 'signet-login';
+import type { ConsumeCallbackResult, SignetSession } from 'signet-login';
+import { getActiveRelays } from './relays.js';
 
 declare global {
   interface Window {
     Signet?: {
-      login: (opts: { appName: string; theme?: 'light' | 'dark' | 'auto'; relayUrl?: string }) => Promise<SignetSession | null>;
+      login: (opts: {
+        appName: string;
+        theme?: 'light' | 'dark' | 'auto';
+        relayUrl?: string;
+        mode?: 'relay' | 'redirect';
+        redirectCallback?: string;
+      }) => Promise<SignetSession | null>;
       restoreSession: () => Promise<SignetSession | null>;
       logout: (s?: SignetSession) => Promise<void>;
+      handleRedirectCallback: () => Promise<ConsumeCallbackResult>;
     };
   }
 }
@@ -52,11 +60,46 @@ function withTimeout<T>(p: Promise<T>, ms: number, onTimeout: () => Error): Prom
 
 export async function signIn(): Promise<SignetSession | null> {
   if (!window.Signet) return null;
+  // Use the player's chosen relay (game has its own relay config) — the SDK's
+  // wss://relay.damus.io default doesn't match what publishing/scoring use, so
+  // a relay-mode handshake there would be cross-traffic the game never uses.
+  // Fall back to the SDK default only if the player has zero relays enabled.
+  const active = getActiveRelays();
+  const relayUrl = active[0];
+  // Prefer redirect mode: a same-tab navigation to signet, then back. Avoids
+  // the relay-delivery handshake entirely on the auth path so a temporarily
+  // unreachable relay can't kill sign-in. The game-side relay still matters
+  // for scoring and social, but those have their own retry behaviour.
   return withTimeout(
-    window.Signet.login({ appName: APP_NAME, theme: 'dark' }),
+    window.Signet.login({
+      appName: APP_NAME,
+      theme: 'dark',
+      mode: 'redirect',
+      ...(relayUrl ? { relayUrl } : {}),
+    }),
     SIGN_IN_TIMEOUT_MS,
     () => new SignInTimeoutError(),
   );
+}
+
+/**
+ * Consume an in-flight redirect callback if the URL has one. Call once on
+ * boot, before tryRestore — a fresh redirect-mode login persists a session
+ * via the standard storage layer, so the next tryRestore picks it up. The
+ * tagged-union return is ignored here; consumers that want to surface
+ * 'denied' / 'invalid' to the UI can call window.Signet.handleRedirectCallback
+ * directly.
+ */
+export async function handleAuthCallback(): Promise<SignetSession | null> {
+  if (!window.Signet?.handleRedirectCallback) return null;
+  try {
+    const result = await window.Signet.handleRedirectCallback();
+    return result.kind === 'session' ? result.session : null;
+  } catch {
+    // The SDK already logs invalid-callback diagnostics. Swallow here so a
+    // stray bookmark with stale params can't block the title screen.
+    return null;
+  }
 }
 
 export async function tryRestore(): Promise<SignetSession | null> {
