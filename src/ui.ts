@@ -99,8 +99,11 @@ function renderArcadeInitials(
   parent: HTMLElement,
   opts: { onSubmit: (name: string) => void; idleSeconds?: number },
 ): void {
-  const idleSeconds = opts.idleSeconds ?? 60;
-  const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ';
+  const idleSeconds = opts.idleSeconds ?? 30;
+  // Letters + digits + a small set of classic arcade-cabinet symbols,
+  // ending in a space (rendered as `_` in the slots so it reads as
+  // "blank" rather than vanishing).
+  const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!?.-+*<> ';
   const SPACE_IDX = CHARS.length - 1;
   const slots = [0, SPACE_IDX, SPACE_IDX, SPACE_IDX];
   let cursor = 0;
@@ -120,7 +123,7 @@ function renderArcadeInitials(
     slotEls.push(box);
   }
 
-  const hint = el('p', { parent: wrap, text: '↑↓ CYCLE   ←→ MOVE   ENTER SAVE' });
+  const hint = el('p', { parent: wrap, text: '↑↓ CYCLE   ←→ MOVE   → AT END SAVES' });
   hint.style.cssText = 'font-size:0.7rem;color:rgba(180,140,255,0.7);letter-spacing:0.18em;margin:0;';
 
   const timerLine = el('p', { parent: wrap });
@@ -174,6 +177,7 @@ function renderArcadeInitials(
   function handler(e: KeyboardEvent): void {
     if (submitted || !document.body.contains(wrap)) { cleanup(); return; }
     let consumed = true;
+    let interacted = true;
     switch (e.code) {
       case 'ArrowUp':
         slots[cursor] = (slots[cursor] + 1) % CHARS.length;
@@ -201,16 +205,25 @@ function renderArcadeInitials(
         audio.initialBackspace();
         break;
       case 'Enter':
-        commit();
-        return;
+      case 'Space':
+      case 'Escape':
+        // Swallowed but no-op. Without this, Enter falls through to the
+        // global "restart game from gameover" listener, Space to "fire",
+        // Escape to "pause" — none of which the player wants while
+        // they're locking in initials. Submission happens only via → at
+        // slot 4 or the idle auto-save. These don't count as
+        // engagement, so the idle timer keeps counting down.
+        interacted = false;
+        break;
       default:
         consumed = false;
+        interacted = false;
     }
     if (consumed) {
       e.preventDefault();
       e.stopImmediatePropagation();
-      resetIdle();
     }
+    if (interacted) resetIdle();
   }
 
   window.addEventListener('keydown', handler, true);
@@ -1163,7 +1176,7 @@ function renderGameOverNameEntry(state: GameState): void {
     },
   });
 
-  const help = el('p', { parent: overlay, text: 'ENTER YOUR INITIALS · ↑↓ CYCLE   ←→ MOVE   ENTER SAVE' });
+  const help = el('p', { parent: overlay, text: 'ENTER YOUR INITIALS · ↑↓ CYCLE   ←→ MOVE   → AT END SAVES' });
   help.style.cssText = 'font-size:0.72rem;color:rgba(180,140,255,0.5);letter-spacing:0.16em;margin:8px 0 0;text-align:center;';
 }
 
@@ -1430,7 +1443,7 @@ function renderCompletionNameEntry(state: GameState): void {
     },
   });
 
-  const help = el('p', { parent: overlay, text: 'ENTER YOUR INITIALS · ↑↓ CYCLE   ←→ MOVE   ENTER SAVE' });
+  const help = el('p', { parent: overlay, text: 'ENTER YOUR INITIALS · ↑↓ CYCLE   ←→ MOVE   → AT END SAVES' });
   help.style.cssText = 'font-size:0.72rem;color:rgba(180,140,255,0.5);letter-spacing:0.16em;margin:8px 0 0;text-align:center;';
 }
 
