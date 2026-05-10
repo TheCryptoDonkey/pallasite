@@ -1274,11 +1274,30 @@ async function maybePublishScore(state: GameState, parent: HTMLElement): Promise
   wrapper.style.cssText =
     'display:flex;flex-direction:column;gap:6px;margin-top:12px;align-items:stretch';
 
-  const label = el('p', { parent: wrapper });
-  label.style.cssText = 'font-size:0.85rem;color:#cccccc;margin:0';
+  // Two views: COMPACT (CLAIM N SATS button + tiny "to addr · change" line)
+  // and EDIT (input + SAVE button). Default to compact when we have an
+  // address; flip to edit when we don't.
 
-  const inputRow = el('div', { parent: wrapper });
-  inputRow.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap';
+  const compactView = el('div', { parent: wrapper });
+  compactView.style.cssText = 'display:flex;flex-direction:column;gap:4px;align-items:stretch';
+
+  const claimBtn = el('button', { className: 'menu-btn', parent: compactView, text: 'CLAIM' });
+  claimBtn.style.cssText = 'padding:8px 16px;cursor:pointer;font-size:0.95rem';
+
+  const subline = el('p', { parent: compactView });
+  subline.style.cssText = 'font-size:0.78rem;color:#888;margin:2px 0 0 0;text-align:center';
+
+  const editView = el('div', { parent: wrapper });
+  editView.style.cssText = 'display:none;flex-direction:column;gap:6px';
+
+  const editLabel = el('p', {
+    parent: editView,
+    text: 'Lightning address — where do you want sats sent?',
+  });
+  editLabel.style.cssText = 'font-size:0.85rem;color:#cccccc;margin:0';
+
+  const editRow = el('div', { parent: editView });
+  editRow.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap';
 
   const input = document.createElement('input');
   input.type = 'text';
@@ -1289,65 +1308,126 @@ async function maybePublishScore(state: GameState, parent: HTMLElement): Promise
   input.style.cssText =
     'flex:1;min-width:220px;padding:6px 8px;font-family:inherit;font-size:0.9rem;' +
     'background:#0a0a0a;color:#eee;border:1px solid #333;border-radius:4px';
-  inputRow.appendChild(input);
+  editRow.appendChild(input);
 
-  // Prefill: profile lud16 wins (it's the user's canonical declaration), then
-  // last-used localStorage value, then empty. If a force-refresh later turns
-  // up a fresher lud16, we update the field — but only if the user hasn't
-  // already edited it. Track the last default we set to detect manual edits.
-  let lastDefault = '';
-  const setDefault = (next: string): void => {
-    if (input.value === '' || input.value === lastDefault) {
-      input.value = next;
-    }
-    lastDefault = next;
-  };
-
-  const refreshLabel = (lud: string | null): void => {
-    label.textContent = lud
-      ? `Claim sats to your wallet (${lud}).`
-      : 'Claim sats — paste a lightning address to receive them.';
-  };
-
-  const profileLud = state.profile?.lud16 ?? null;
-  const stored = getStoredLnAddress();
-  setDefault(profileLud ?? stored ?? '');
-  refreshLabel(profileLud);
-
-  // Best-effort: force-refresh the cached profile in case it was stored before
-  // lud16 parsing existed (the cache TTL is 24h). If a fresher lud16 lands and
-  // the user hasn't typed anything yet, slot it into the input.
-  void fetchProfile(state.session.pubkey, { force: true }).then((p) => {
-    if (!p) return;
-    state.profile = p;
-    if (p.lud16) {
-      setDefault(p.lud16);
-      refreshLabel(p.lud16);
-    }
-  });
-
-  const button = el('button', { className: 'menu-btn', parent: inputRow, text: 'CLAIM' });
-  button.style.cssText = 'padding:6px 14px;cursor:pointer;font-size:0.9rem';
+  const saveBtn = el('button', { className: 'menu-btn secondary', parent: editRow, text: 'SAVE' });
+  saveBtn.style.cssText = 'padding:6px 14px;cursor:pointer;font-size:0.9rem';
 
   const status = el('p', { parent: wrapper, text: '' });
   status.style.cssText = 'font-size:0.85rem;margin:4px 0 0 0;min-height:1.2em';
+
+  // Single source of truth for the chosen address. Updated by setDefault on
+  // initial fill / async profile arrival, or by the SAVE button when the user
+  // edits.
+  let currentAddress = '';
+  let lastDefault = '';
+
+  const setDefault = (next: string): void => {
+    if (currentAddress === '' || currentAddress === lastDefault) {
+      currentAddress = next;
+    }
+    lastDefault = next;
+  };
 
   const setStatus = (msg: string, color: string): void => {
     status.textContent = msg;
     status.style.color = color;
   };
 
-  const session = state.session;
+  const updateClaimLabel = (): void => {
+    claimBtn.textContent = state.sats > 0 ? `CLAIM ${state.sats} SATS` : 'CLAIM';
+  };
 
-  const onClick = async (): Promise<void> => {
+  const renderSubline = (): void => {
+    subline.replaceChildren();
+    if (currentAddress) {
+      subline.appendChild(document.createTextNode(`to ${currentAddress} · `));
+      const a = document.createElement('a');
+      a.href = '#';
+      a.textContent = 'change';
+      a.style.color = '#5b9dff';
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        showEdit();
+      });
+      subline.appendChild(a);
+    } else {
+      const a = document.createElement('a');
+      a.href = '#';
+      a.textContent = 'set lightning address';
+      a.style.color = '#5b9dff';
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        showEdit();
+      });
+      subline.appendChild(a);
+    }
+  };
+
+  const showCompact = (): void => {
+    editView.style.display = 'none';
+    compactView.style.display = 'flex';
+    renderSubline();
+  };
+
+  const showEdit = (): void => {
+    compactView.style.display = 'none';
+    editView.style.display = 'flex';
+    input.value = currentAddress;
+    setTimeout(() => input.focus(), 0);
+  };
+
+  // Initial fill: profile lud16 wins, then localStorage, then empty.
+  const profileLud = state.profile?.lud16 ?? null;
+  const stored = getStoredLnAddress();
+  setDefault(profileLud ?? stored ?? '');
+  updateClaimLabel();
+  if (currentAddress) showCompact();
+  else showEdit();
+
+  // Async profile refresh — picks up a fresher lud16 if the cache is stale.
+  void fetchProfile(state.session.pubkey, { force: true }).then((p) => {
+    if (!p) return;
+    state.profile = p;
+    if (p.lud16) {
+      setDefault(p.lud16);
+      if (compactView.style.display !== 'none') {
+        renderSubline();
+      } else if (input.value === '' || input.value === lastDefault) {
+        input.value = p.lud16;
+      }
+    }
+  });
+
+  const onSave = (): void => {
     const addr = input.value.trim();
     if (!LN_ADDRESS_RE.test(addr)) {
       setStatus('Invalid lightning address.', '#ff5050');
       return;
     }
+    currentAddress = addr;
     setStoredLnAddress(addr);
+    setStatus('', '');
+    showCompact();
+  };
+  saveBtn.addEventListener('click', onSave);
+  input.addEventListener('keydown', (e: Event) => {
+    if ((e as KeyboardEvent).key === 'Enter') {
+      e.preventDefault();
+      onSave();
+    }
+  });
 
-    button.disabled = true;
+  const session = state.session;
+
+  const onClaim = async (): Promise<void> => {
+    if (!currentAddress) {
+      setStatus('Set a lightning address first.', '#ff5050');
+      showEdit();
+      return;
+    }
+
+    claimBtn.disabled = true;
     setStatus('Validating…', '#5b9dff');
 
     const finishedAt = Date.now();
@@ -1363,7 +1443,7 @@ async function maybePublishScore(state: GameState, parent: HTMLElement): Promise
       started_at: startedAt,
       finished_at: finishedAt,
       sats_claimed: state.sats,
-      lightning_address: addr,
+      lightning_address: currentAddress,
       cheated: state.cheatedThisRun,
       ...(seed ? { daily_seed: seed } : {}),
     });
@@ -1373,12 +1453,11 @@ async function maybePublishScore(state: GameState, parent: HTMLElement): Promise
       setStatus(`✓ Paid ${result.payout_sats} sats${tail}`, '#58ff58');
     } else {
       setStatus(claimErrorMessage(result.error, result.detail), '#ff8050');
-      button.disabled = false;
+      claimBtn.disabled = false;
     }
   };
-
-  button.addEventListener('click', () => {
-    void onClick();
+  claimBtn.addEventListener('click', () => {
+    void onClaim();
   });
 }
 
