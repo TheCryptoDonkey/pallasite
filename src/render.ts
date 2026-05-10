@@ -230,6 +230,32 @@ export function getCollisionWrap(): { w: number; h: number } {
   };
 }
 
+/**
+ * Visible world bounds for the current render mode. Used by entity spawn
+ * logic that wants to enter/exit the visible band cleanly: in modern
+ * portrait the world is wider than the band, so spawning at world-edge
+ * (x=-radius) hides the entity off-screen for seconds AND the +visW ghost
+ * pops it into the middle of the visible band immediately. UFOs and other
+ * "drift across the screen" entities should spawn at the band edge instead.
+ *
+ * Retro mode returns the full world rect (band == world). Modern landscape
+ * with visW>=WORLD_W also returns the full world (no horizontal crop).
+ * Modern portrait crop on iPhone returns the narrower visible band.
+ */
+export function getVisibleBoundsW(): { left: number; right: number; top: number; bottom: number } {
+  if (renderMode.kind !== 'modern') return { left: 0, right: WORLD_W, top: 0, bottom: WORLD_H };
+  const visLeft = -renderMode.tx / renderMode.scale;
+  const visRight = (renderMode.vw - renderMode.tx) / renderMode.scale;
+  const visTop = -renderMode.ty / renderMode.scale;
+  const visBot = (renderMode.vh - renderMode.ty) / renderMode.scale;
+  return {
+    left: Math.max(0, visLeft),
+    right: Math.min(WORLD_W, visRight),
+    top: Math.max(0, visTop),
+    bottom: Math.min(WORLD_H, visBot),
+  };
+}
+
 /** Title-screen background cycling: rotates through wave bgs every 30s,
  *  skipping the wave-25 finale image so the boss reveal stays for in-game. */
 let titleBgStartedAt = 0;
@@ -265,6 +291,13 @@ function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: nu
       const dx = (renderMode.vw - w) / 2 + Math.sin(now * 0.00029) * 12;
       const dy = (renderMode.vh - h) / 2 + Math.cos(now * 0.00021) * 7;
       ctx.drawImage(override, dx, dy, w, h);
+      // Wave images vary wildly in luminosity — wave 15 (Itzawisis) and
+      // wave 25 (Event Horizon) in particular wash out the asteroid line
+      // art on phones. A flat black overlay knocks the brightest cases
+      // back without making the dim ones look starved. 0.32 was tuned by
+      // eye against wave 15 + 25.
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.32)';
+      ctx.fillRect(0, 0, renderMode.vw, renderMode.vh);
     } else {
       // Procedural fallback also stretches to canvas — cheap solid black so
       // the canvas isn't the underlying body bg (which we deliberately hid).
@@ -285,6 +318,10 @@ function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: nu
     const dx = (WORLD_W - w) / 2 + Math.sin(now * 0.00029) * 9;
     const dy = (WORLD_H - h) / 2 + Math.cos(now * 0.00021) * 5;
     ctx.drawImage(override, dx, dy, w, h);
+    // Same darkening as modern — bright wave images need a knock-back so
+    // the asteroid outlines don't disappear into the bg.
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.32)';
+    ctx.fillRect(0, 0, WORLD_W, WORLD_H);
     return;
   }
   if (!bgCache || bgCache.wave !== wave) {
@@ -2295,7 +2332,14 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       if (isGhost) { ctx.save(); ctx.translate(dx, dy); }
       for (const a of state.asteroids) drawAsteroid(ctx, a, now);
       for (const m of state.mines) drawMine(ctx, m, now);
-      for (const u of state.ufos) drawUfo(ctx, u, now);
+      // UFOs and mines don't wrap — they traverse the world (or sit
+      // stationary) without crossing the wrap cycle. Drawing them in
+      // ghost passes paints a phantom copy at ±visW that the player
+      // reads as a duplicate UFO, especially during the spawn approach
+      // where the real UFO is just off the visible band.
+      if (!isGhost) {
+        for (const u of state.ufos) drawUfo(ctx, u, now);
+      }
       for (const b of state.bullets) drawBullet(ctx, b, true);
       for (const b of state.enemyBullets) drawBullet(ctx, b, false);
       for (const c of state.coins) drawCoin(ctx, c, now);
