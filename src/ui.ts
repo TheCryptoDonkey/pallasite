@@ -79,6 +79,139 @@ function setupOverlayArrowNav(overlay: HTMLElement): void {
 }
 
 /**
+ * Classic arcade initials entry — replaces the freeform <input> + SAVE button
+ * for high-score naming.
+ *
+ *   • 4 fixed slots, A in the first, space in the rest
+ *   • ↑/↓ cycle the active slot through A-Z, 0-9, space (37 chars)
+ *   • →   advance the cursor; pressing → from the 4th slot submits
+ *   • ←   move the cursor back one slot
+ *   • Backspace clears the active slot to space and steps back
+ *   • Enter submits immediately from any slot
+ *   • An idle countdown auto-submits after `idleSeconds` of no input
+ *
+ * The handler runs in capture phase and stops immediate propagation on the
+ * keys it consumes, so the overlay's arrow-key button-cycling listener
+ * doesn't also fire on the same press. Cleans up the listener and the two
+ * intervals (blink + idle) once submitted or once the wrapper detaches.
+ */
+function renderArcadeInitials(
+  parent: HTMLElement,
+  opts: { onSubmit: (name: string) => void; idleSeconds?: number },
+): void {
+  const idleSeconds = opts.idleSeconds ?? 60;
+  const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ';
+  const SPACE_IDX = CHARS.length - 1;
+  const slots = [0, SPACE_IDX, SPACE_IDX, SPACE_IDX];
+  let cursor = 0;
+  let secondsLeft = idleSeconds;
+  let submitted = false;
+
+  const wrap = el('div', { parent });
+  wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:10px;margin:6px 0;';
+
+  const slotsRow = el('div', { parent: wrap });
+  slotsRow.style.cssText = 'display:flex;gap:8px;';
+
+  const slotEls: HTMLDivElement[] = [];
+  for (let i = 0; i < 4; i++) {
+    const box = el('div', { parent: slotsRow }) as HTMLDivElement;
+    box.style.cssText = 'width:42px;height:54px;display:flex;align-items:center;justify-content:center;font-family:inherit;font-size:1.6rem;background:rgba(0,0,0,0.4);border:2px solid rgba(88,255,88,0.3);color:#58ff58;letter-spacing:0;transition:opacity 120ms;';
+    slotEls.push(box);
+  }
+
+  const hint = el('p', { parent: wrap, text: '↑↓ CYCLE   ←→ MOVE   ENTER SAVE' });
+  hint.style.cssText = 'font-size:0.7rem;color:rgba(180,140,255,0.7);letter-spacing:0.18em;margin:0;';
+
+  const timerLine = el('p', { parent: wrap });
+  timerLine.style.cssText = 'font-size:0.78rem;color:#ffd84a;letter-spacing:0.18em;margin:0;';
+
+  const renderSlots = (): void => {
+    for (let i = 0; i < 4; i++) {
+      const ch = CHARS[slots[i]];
+      slotEls[i].textContent = ch === ' ' ? '_' : ch;
+      const isActive = i === cursor;
+      slotEls[i].style.borderColor = isActive ? '#ffd84a' : 'rgba(88,255,88,0.3)';
+      slotEls[i].style.color = isActive ? '#ffd84a' : '#58ff58';
+    }
+  };
+  const renderTimer = (): void => { timerLine.textContent = `AUTO SAVE IN ${secondsLeft}`; };
+  renderSlots();
+  renderTimer();
+
+  // Cursor blink — only the active slot pulses, so the player knows where
+  // input lands without any other moving parts on the screen.
+  let blinkOn = true;
+  const blinkInterval = window.setInterval(() => {
+    blinkOn = !blinkOn;
+    for (let i = 0; i < 4; i++) slotEls[i].style.opacity = i === cursor && !blinkOn ? '0.5' : '1';
+  }, 450);
+
+  const idleInterval = window.setInterval(() => {
+    secondsLeft -= 1;
+    renderTimer();
+    if (secondsLeft <= 0) commit();
+  }, 1000);
+
+  const resetIdle = (): void => { secondsLeft = idleSeconds; renderTimer(); };
+
+  const cleanup = (): void => {
+    window.removeEventListener('keydown', handler, true);
+    window.clearInterval(blinkInterval);
+    window.clearInterval(idleInterval);
+    for (const s of slotEls) s.style.opacity = '1';
+  };
+
+  const commit = (): void => {
+    if (submitted) return;
+    submitted = true;
+    cleanup();
+    const name = slots.map(i => CHARS[i]).join('').replace(/\s+$/, '') || 'YOU';
+    opts.onSubmit(name);
+  };
+
+  function handler(e: KeyboardEvent): void {
+    if (submitted || !document.body.contains(wrap)) { cleanup(); return; }
+    let consumed = true;
+    switch (e.code) {
+      case 'ArrowUp':
+        slots[cursor] = (slots[cursor] + 1) % CHARS.length;
+        renderSlots();
+        break;
+      case 'ArrowDown':
+        slots[cursor] = (slots[cursor] - 1 + CHARS.length) % CHARS.length;
+        renderSlots();
+        break;
+      case 'ArrowRight':
+        if (cursor === 3) { commit(); return; }
+        cursor += 1;
+        renderSlots();
+        break;
+      case 'ArrowLeft':
+        if (cursor > 0) { cursor -= 1; renderSlots(); }
+        break;
+      case 'Backspace':
+        slots[cursor] = SPACE_IDX;
+        if (cursor > 0) cursor -= 1;
+        renderSlots();
+        break;
+      case 'Enter':
+        commit();
+        return;
+      default:
+        consumed = false;
+    }
+    if (consumed) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      resetIdle();
+    }
+  }
+
+  window.addEventListener('keydown', handler, true);
+}
+
+/**
  * Floating banner that appears when the service worker has a new version
  * waiting. Tap RELOAD → posts SKIP_WAITING to the worker → controllerchange
  * triggers a clean reload into the new build.
@@ -953,39 +1086,29 @@ export function renderGameOver(state: GameState): void {
       addLocalHighScore(entry);
       maybePublishScore(state, overlay);
     } else {
-      // Ask for initials. The leaderboard renders below; we keep a handle
-      // to it so the SAVE click can re-render with the freshly-added entry
-      // (otherwise the user sees a stale list missing their just-saved row).
+      // Arcade-style 4-slot initials. After commit we re-render the
+      // leaderboard block in place so the freshly-added row shows up.
       const inputRow = el('div', { className: 'menu-row', parent: overlay });
-      const input = el('input', { parent: inputRow, attrs: { maxlength: '8', placeholder: 'INIT', type: 'text' } });
-      input.style.cssText = 'background:transparent;border:2px solid #58ff58;color:#58ff58;font-family:inherit;font-size:1.3rem;padding:8px 12px;text-align:center;text-transform:uppercase;letter-spacing:0.2em;width:140px;';
-      const save = el('button', { className: 'menu-btn', parent: inputRow, text: 'SAVE' });
-      save.addEventListener('click', () => {
-        const name = input.value.trim().toUpperCase().slice(0, 8) || 'YOU';
-        addLocalHighScore({
-          name,
-          score: state.score,
-          sats: state.sats,
-          wave: state.wave,
-          at: new Date().toISOString(),
-        });
-        input.disabled = true;
-        save.disabled = true;
-        save.textContent = 'SAVED';
-        // Re-render the leaderboard in place so the new row appears immediately.
-        const lb = overlay.querySelector('.leaderboard-block');
-        if (lb) {
-          const fresh = getLocalHighScores();
-          const replacement = document.createElement('div');
-          overlay.replaceChild(replacement, lb);
-          renderLeaderboardBlock(replacement, fresh, '— LOCAL HIGH SCORES —');
-          // renderLeaderboardBlock appends to its parent, so we move its
-          // single child up and ditch the wrapper.
-          const block = replacement.firstElementChild;
-          if (block) overlay.replaceChild(block, replacement);
-        }
+      renderArcadeInitials(inputRow, {
+        onSubmit: (name) => {
+          addLocalHighScore({
+            name,
+            score: state.score,
+            sats: state.sats,
+            wave: state.wave,
+            at: new Date().toISOString(),
+          });
+          const lb = overlay.querySelector('.leaderboard-block');
+          if (lb) {
+            const fresh = getLocalHighScores();
+            const replacement = document.createElement('div');
+            overlay.replaceChild(replacement, lb);
+            renderLeaderboardBlock(replacement, fresh, '— LOCAL HIGH SCORES —');
+            const block = replacement.firstElementChild;
+            if (block) overlay.replaceChild(block, replacement);
+          }
+        },
       });
-      input.focus();
     }
   }
 
@@ -1257,24 +1380,18 @@ export function renderCompletion(state: GameState): void {
     maybePublishCompletion(state, pubBlock);
     stage(3.0)(pubBlock);
   } else {
-    // Guest finished the run — prompt for initials instead of silently
-    // saving as YOU. Mirrors the gameover flow.
+    // Guest finished the run — same arcade entry as the gameover flow.
     const inputWrap = el('div', { className: 'menu-row', parent: overlay });
-    const input = el('input', { parent: inputWrap, attrs: { maxlength: '8', placeholder: 'INIT', type: 'text' } });
-    input.style.cssText = 'background:transparent;border:2px solid #58ff58;color:#58ff58;font-family:inherit;font-size:1.3rem;padding:8px 12px;text-align:center;text-transform:uppercase;letter-spacing:0.2em;width:140px;';
-    const save = el('button', { className: 'menu-btn', parent: inputWrap, text: 'BANK NAME' });
-    save.addEventListener('click', () => {
-      const name = input.value.trim().toUpperCase().slice(0, 8) || 'YOU';
-      addLocalHighScore({
-        name,
-        score: state.score,
-        sats: state.sats,
-        wave: 25,
-        at: new Date().toISOString(),
-      });
-      input.disabled = true;
-      save.disabled = true;
-      save.textContent = 'BANKED';
+    renderArcadeInitials(inputWrap, {
+      onSubmit: (name) => {
+        addLocalHighScore({
+          name,
+          score: state.score,
+          sats: state.sats,
+          wave: 25,
+          at: new Date().toISOString(),
+        });
+      },
     });
     stage(3.0)(inputWrap);
   }
