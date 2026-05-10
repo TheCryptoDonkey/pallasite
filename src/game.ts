@@ -43,6 +43,7 @@ import * as audio from './audio.js';
 import { preloadBackground, getCollisionWrap } from './render.js';
 import { currentMods, lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { gameRng } from './seed.js';
+import { haptic } from './haptics.js';
 
 // ── Initial state ─────────────────────────────────────────────────────────────
 
@@ -102,7 +103,17 @@ export function makeInitialState(): GameState {
     },
     ghostSamples: [],
     ghostPoseSamples: [],
+    cameraTrauma: 0,
   };
+}
+
+/** Add to the screen-shake trauma accumulator. Clamped 0..1 so a barrage of
+ *  small hits never builds past death-impact magnitude. The renderer reads
+ *  trauma² so headshake feels quadratic anyway. Reduced-motion users have
+ *  this drained to zero by render rather than by skipping bumps — keeps the
+ *  state machine honest. */
+export function bumpTrauma(s: GameState, amount: number): void {
+  s.cameraTrauma = Math.min(1, s.cameraTrauma + amount);
 }
 
 function makeShip(): Ship {
@@ -182,6 +193,7 @@ export function startGame(s: GameState): void {
   };
   s.ghostSamples = [];
   s.ghostPoseSamples = [];
+  s.cameraTrauma = 0;
   lastGhostSampleRunMs = -1;
   lastGhostPoseRunMs = -1;
   beginWave(s, 1);
@@ -372,6 +384,7 @@ function startWarp(s: GameState, targetWave?: number): void {
   s.phaseStart = performance.now();
   s.warpTargetWave = next;
   audio.warpJump();
+  haptic('celebrate');
   setTimeout(() => {
     if (s.phase === 'warp') {
       beginWave(s, next);
@@ -790,6 +803,10 @@ function destroyMine(s: GameState, m: Mine): void {
   audio.explosion(0.7);
   spawnParticles(s, m.pos.x, m.pos.y, 14, '#ff5050', 200, 600);
   spawnCoins(s, m.pos.x, m.pos.y, MINE_SATS_DROP, 2);
+  // Mines are anchored danger — clearing one should feel substantial.
+  bumpTrauma(s, 0.32);
+  audio.pulseDuck(0.55, 220);
+  haptic('thump');
   toastNow(s, `MINE CLEARED  +${MINE_POINTS * mul}`);
 }
 
@@ -1019,6 +1036,11 @@ export function tryActivateShield(s: GameState, now: number): boolean {
   s.ship.shieldExpiresAt = now + SHIELD_DURATION_MS;
   s.ship.shieldReadyAt = now + SHIELD_DURATION_MS + SHIELD_COOLDOWN_MS * mods.shieldCooldownMul;
   audio.shieldUp();
+  // Small punch on activation — the shield ignite reads as a meaningful
+  // event, not a button click.
+  bumpTrauma(s, 0.18);
+  audio.pulseDuck(0.7, 180);
+  haptic('tap');
   toastNow(s, 'SHIELD UP');
   return true;
 }
@@ -1297,6 +1319,13 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   // HUD ticker eases toward s.sats every frame regardless of phase, so the
   // counter still finishes its run-up under gameover / wavestart overlays.
   updateDisplaySats(s, dt);
+
+  // Camera trauma decays linearly. Half-life ~0.5s at trauma=1 — long enough
+  // that a death-impact shake reads as a single thwack, short enough that
+  // back-to-back hits don't compound into a permanent rumble.
+  if (s.cameraTrauma > 0) {
+    s.cameraTrauma = Math.max(0, s.cameraTrauma - dt * 1.8);
+  }
 
   // Snapshot the world state for the death replay buffer (no-op outside 'playing').
   recordReplaySnapshot(s, now);
@@ -1833,6 +1862,19 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
   s.score += Math.round(POINTS_PER_SIZE[a.size] * cfg.scoreMul * mul);
   const satsValue = SATS_PER_SIZE[a.size] * cfg.satMul;
 
+  // Trauma scales with mass — a large rock's break should feel weightier than
+  // a small shard popping. Iron gets a bonus because the armoured crack hits
+  // harder. Range ~0.05..0.40 per break.
+  const sizeFactor = a.size === 'large' ? 0.32 : a.size === 'medium' ? 0.16 : 0.05;
+  const ironBonus = a.type === 'iron' ? 1.25 : 1;
+  bumpTrauma(s, sizeFactor * ironBonus);
+  // Only large breaks duck the music or buzz the haptics — smaller breaks
+  // are too frequent for the bed to handle without pumping.
+  if (a.size === 'large') {
+    audio.pulseDuck(0.65, 180);
+    haptic('thump');
+  }
+
   // Particles tinted to the type's accent
   spawnParticles(s, a.pos.x, a.pos.y, a.size === 'large' ? 18 : a.size === 'medium' ? 12 : 8, cfg.glow, 140, 700);
 
@@ -1952,6 +1994,10 @@ function killShip(s: GameState): void {
   resetCombo(s);
   audio.explosion(1.4);
   audio.thrustOff();
+  // Maximum trauma + deepest duck + rumble — death is the loudest impact.
+  bumpTrauma(s, 1.0);
+  audio.pulseDuck(0.35, 360);
+  haptic('rumble');
   // Layered explosion: ship-green burst + yellow flash + white sparks +
   // line-segment debris. Bigger and more cinematic than the old 30-particle
   // single-colour puff.

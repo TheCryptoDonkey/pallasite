@@ -10,7 +10,8 @@
  */
 
 import type { AsteroidType, PowerUpType } from './types.js';
-import { ASTEROID_TYPE_CONFIG, POWERUP_CONFIG } from './types.js';
+import { POWERUP_CONFIG } from './types.js';
+import { getAsteroidStyle } from './a11y.js';
 
 const PREVIEW_SIZE = 38;
 
@@ -27,11 +28,11 @@ function makeCanvas(size = PREVIEW_SIZE): { canvas: HTMLCanvasElement; ctx: Canv
 
 export function asteroidPreview(type: AsteroidType): HTMLCanvasElement {
   const { canvas, ctx } = makeCanvas();
-  const cfg = ASTEROID_TYPE_CONFIG[type];
+  const style = getAsteroidStyle(type);
   const r = PREVIEW_SIZE * 0.38;
   ctx.lineWidth = 1.6;
-  ctx.strokeStyle = `hsl(${cfg.hueBase}, 78%, 70%)`;
-  ctx.shadowColor = cfg.glow;
+  ctx.strokeStyle = `hsl(${style.hueBase}, 78%, 70%)`;
+  ctx.shadowColor = style.glow;
   ctx.shadowBlur = 6;
   ctx.beginPath();
   const verts = 12;
@@ -134,7 +135,7 @@ export function dustPreview(sourceType?: AsteroidType): HTMLCanvasElement {
   const { canvas, ctx } = makeCanvas();
   const r = PREVIEW_SIZE * 0.3;
   const type: AsteroidType = sourceType ?? 'stony';
-  const colour = type === 'stony' ? '#7fffb0' : ASTEROID_TYPE_CONFIG[type].glow;
+  const colour = type === 'stony' ? '#7fffb0' : getAsteroidStyle(type).glow;
   ctx.lineWidth = 1.4;
   ctx.strokeStyle = colour;
   ctx.shadowColor = colour;

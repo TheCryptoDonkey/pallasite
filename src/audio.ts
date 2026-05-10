@@ -168,6 +168,30 @@ export function setMusicDuck(amount: number): void {
   rampGain(musicBus, settings.music * musicDuck, 200);
 }
 
+/**
+ * Transient music duck — quick attack, short hold, gentle release. Used by
+ * impact SFX (hull breach, mine destroyed, shield ignite) so the punch of the
+ * effect cuts through without permanently riding the music gain.
+ *
+ * Schedules directly on the music bus via Web Audio events. Doesn't touch the
+ * `musicDuck` constant, so a pause/resume mid-pulse still lands at the right
+ * baseline once the release ramp finishes.
+ */
+export function pulseDuck(depth: number, totalMs: number = 240): void {
+  if (!musicBus || !ctx) return;
+  const baseline = settings.music * musicDuck;
+  const ducked = baseline * clamp01(depth);
+  const t = ctx.currentTime;
+  const attackS = 0.025;
+  const sustainS = (totalMs / 1000) * 0.30;
+  const releaseEndS = totalMs / 1000;
+  musicBus.gain.cancelScheduledValues(t);
+  musicBus.gain.setValueAtTime(musicBus.gain.value, t);
+  musicBus.gain.linearRampToValueAtTime(ducked, t + attackS);
+  musicBus.gain.setValueAtTime(ducked, t + attackS + sustainS);
+  musicBus.gain.linearRampToValueAtTime(baseline, t + releaseEndS);
+}
+
 /** Returned for music.ts to wire MediaElementAudioSourceNode into the music bus. */
 export function getMusicDestination(): AudioNode {
   getCtx();  // ensure bus exists
