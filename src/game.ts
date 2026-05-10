@@ -938,8 +938,17 @@ function wrap(p: Vec2, margin = 0): void {
 }
 
 function circlesHit(a: { pos: Vec2; radius: number }, b: { pos: Vec2; radius: number }): boolean {
-  const dx = a.pos.x - b.pos.x;
-  const dy = a.pos.y - b.pos.y;
+  // Wrap-aware shortest delta. The world is toroidal (everything that respects
+  // wrap reappears on the opposite edge), and we ghost-render copies at the
+  // wrap offsets in modern crop. Without this, an asteroid sitting just inside
+  // one edge while the ship is just inside the opposite edge reads ~960 px
+  // apart and never collides — the asteroid effectively becomes invincible.
+  let dx = a.pos.x - b.pos.x;
+  let dy = a.pos.y - b.pos.y;
+  if (dx > WORLD_W / 2) dx -= WORLD_W;
+  else if (dx < -WORLD_W / 2) dx += WORLD_W;
+  if (dy > WORLD_H / 2) dy -= WORLD_H;
+  else if (dy < -WORLD_H / 2) dy += WORLD_H;
   const r = a.radius + b.radius;
   return dx * dx + dy * dy <= r * r;
 }
@@ -1516,8 +1525,14 @@ export function updateGame(s: GameState, dt: number, now: number): void {
     for (const a of s.asteroids) {
       if (!a.alive) continue;
       if (circlesHit(s.ship, a)) {
-        const dx = a.pos.x - s.ship.pos.x;
-        const dy = a.pos.y - s.ship.pos.y;
+        // Use wrap-aware delta so reflections at the edges push the asteroid
+        // along the actual contact normal, not a normal flipped by ~WORLD_W.
+        let dx = a.pos.x - s.ship.pos.x;
+        let dy = a.pos.y - s.ship.pos.y;
+        if (dx > WORLD_W / 2) dx -= WORLD_W;
+        else if (dx < -WORLD_W / 2) dx += WORLD_W;
+        if (dy > WORLD_H / 2) dy -= WORLD_H;
+        else if (dy < -WORLD_H / 2) dy += WORLD_H;
         const distSq = dx * dx + dy * dy;
         const dist = Math.sqrt(distSq) || 1;
         const nx = dx / dist;
