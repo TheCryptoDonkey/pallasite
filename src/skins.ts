@@ -100,22 +100,41 @@ const UNLOCKED_KEY = 'pallasite:skin-unlocks';
 const SKIN_KIND = 30764;
 const SKIN_DTAG = 'pallasite-skins';
 
+// In-memory caches. localStorage reads are synchronous and slow on mobile
+// Safari (1-5ms per call), and getActiveSkin runs every frame from drawShip.
+// Without this cache, the renderer would hit storage 60+ times a second and
+// burn most of a frame budget on a value that almost never changes.
+let cachedUnlockSet: Set<SkinId> | null = null;
+let cachedActiveSkin: SkinDef | null = null;
+
 function readUnlockSet(): Set<SkinId> {
+  if (cachedUnlockSet) return cachedUnlockSet;
   const set = new Set<SkinId>(['default']);
   try {
     const raw = localStorage.getItem(UNLOCKED_KEY);
-    if (!raw) return set;
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return set;
-    for (const id of parsed) {
-      if (typeof id === 'string' && SKINS.some(s => s.id === id)) set.add(id as SkinId);
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const id of parsed) {
+          if (typeof id === 'string' && SKINS.some(s => s.id === id)) set.add(id as SkinId);
+        }
+      }
     }
   } catch { /* fall through to default-only */ }
+  cachedUnlockSet = set;
   return set;
 }
 
 function writeUnlockSet(set: Set<SkinId>): void {
+  cachedUnlockSet = new Set(set);
   try { localStorage.setItem(UNLOCKED_KEY, JSON.stringify([...set])); } catch { /* ignore */ }
+}
+
+/** Drop the in-memory caches. Used after a remote sync merges new unlocks
+ *  so the next read picks the fresh state up. */
+function invalidateCaches(): void {
+  cachedUnlockSet = null;
+  cachedActiveSkin = null;
 }
 
 export function getUnlockedSkins(): Set<SkinId> {
@@ -134,30 +153,44 @@ export function isSkinUnlocked(id: SkinId): boolean {
 export function markSkinUnlocked(id: SkinId): boolean {
   const set = readUnlockSet();
   if (set.has(id)) return false;
-  set.add(id);
-  writeUnlockSet(set);
+  const next = new Set(set);
+  next.add(id);
+  writeUnlockSet(next);
+  // Invalidate active cache too -- though setActive isn't auto-changed,
+  // future calls that resolve through readUnlockSet should see the new set.
+  cachedActiveSkin = null;
   return true;
 }
 
 export function getActiveSkinId(): SkinId {
-  try {
-    const raw = localStorage.getItem(ACTIVE_KEY);
-    if (raw && SKINS.some(s => s.id === raw) && readUnlockSet().has(raw as SkinId)) {
-      return raw as SkinId;
-    }
-  } catch { /* ignore */ }
-  return 'default';
+  return getActiveSkin().id;
 }
 
 export function setActiveSkinId(id: SkinId): boolean {
   if (!isSkinUnlocked(id)) return false;
   try { localStorage.setItem(ACTIVE_KEY, id); } catch { /* ignore */ }
+  cachedActiveSkin = null;
   return true;
 }
 
+/**
+ * Hot path -- called from drawShip every frame. Caches in memory so the
+ * 60fps renderer doesn't hit localStorage at all in the common case. The
+ * cache is invalidated on setActiveSkinId, markSkinUnlocked (in case the
+ * active selection became valid), and after a Nostr sync merges new
+ * unlocks. */
 export function getActiveSkin(): SkinDef {
-  const id = getActiveSkinId();
-  return SKINS.find(s => s.id === id) ?? SKINS[0];
+  if (cachedActiveSkin) return cachedActiveSkin;
+  let resolved: SkinDef = SKINS[0];
+  try {
+    const raw = localStorage.getItem(ACTIVE_KEY);
+    if (raw) {
+      const found = SKINS.find(s => s.id === raw);
+      if (found && readUnlockSet().has(found.id)) resolved = found;
+    }
+  } catch { /* fall through to default */ }
+  cachedActiveSkin = resolved;
+  return resolved;
 }
 
 // ── Nostr sync (kind 30764) ──────────────────────────────────────────────────
@@ -251,14 +284,19 @@ export async function syncSkinUnlocksFromNostr(pubkey: string): Promise<Set<Skin
     if (!latest || e.created_at > latest.created_at) latest = e;
   }
   if (!latest) return readUnlockSet();
-  const set = readUnlockSet();
+  const merged = new Set(readUnlockSet());
+  let added = false;
   for (const t of latest.tags) {
     if (t[0] === 'skin' && typeof t[1] === 'string' && SKINS.some(s => s.id === t[1])) {
-      set.add(t[1] as SkinId);
+      const id = t[1] as SkinId;
+      if (!merged.has(id)) { merged.add(id); added = true; }
     }
   }
-  writeUnlockSet(set);
-  return set;
+  if (added) {
+    writeUnlockSet(merged);
+    invalidateCaches();
+  }
+  return merged;
 }
 
 function publishToRelay(url: string, event: NostrEvent, timeoutMs = 5000): Promise<void> {
