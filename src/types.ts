@@ -381,6 +381,17 @@ export interface GameState {
    *  startGame, incremented at the relevant kill / pickup / fire sites in
    *  game.ts. Surfaced on the name-entry stage; not persisted anywhere. */
   runStats: RunStats;
+
+  /** 1Hz score-pacing samples for the kind 30763 ghost replay. Pushed by
+   *  the game loop while phase==='playing'; finalised on game-over /
+   *  completion and shipped to relays via publishGhost. */
+  ghostSamples: GhostSample[];
+}
+
+/** A single (t, score) pacing point. t is ms since startGame. */
+export interface GhostSample {
+  t: number;
+  score: number;
 }
 
 /** Per-run telemetry surfaced on the gameover / completion stat grid. */
