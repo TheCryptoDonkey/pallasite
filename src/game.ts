@@ -41,7 +41,7 @@ import {
 } from './types.js';
 import type { PowerUp, PowerUpType } from './types.js';
 import * as audio from './audio.js';
-import { preloadBackground, getCollisionWrap } from './render.js';
+import { preloadBackground, getCollisionWrap, getVisibleBoundsW } from './render.js';
 import { currentMods, lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { gameRng } from './seed.js';
 import { haptic } from './haptics.js';
@@ -598,8 +598,15 @@ function spawnUfo(s: GameState): void {
   s.ufoSpawnedThisWave = true;
   const type = pickUfoType(s.wave);
   const dir: 1 | -1 = gameRng() < 0.5 ? 1 : -1;
-  const y = WORLD_H * (0.15 + gameRng() * 0.7);
-  const x = dir === 1 ? -UFO_RADIUS[type] : WORLD_W + UFO_RADIUS[type];
+  // Spawn the UFO just off the *visible* edge so it drifts onto the screen
+  // from off-screen on phones. Spawning at the world edge (-radius) in
+  // modern portrait crop puts the +visW ghost copy directly in the middle
+  // of the visible band — the player sees a UFO blink into existence
+  // mid-screen instead of arriving from outside. getVisibleBoundsW returns
+  // the world-edge in retro/landscape, so this is a no-op there.
+  const visBounds = getVisibleBoundsW();
+  const y = visBounds.top + (visBounds.bottom - visBounds.top) * (0.15 + gameRng() * 0.7);
+  const x = dir === 1 ? visBounds.left - UFO_RADIUS[type] : visBounds.right + UFO_RADIUS[type];
   const speed = UFO_SPEED[type];
   s.ufos.push({
     pos: { x, y },
@@ -659,10 +666,15 @@ function updateUfos(s: GameState, dt: number): void {
     u.pos.x += u.vel.x * dt;
     u.pos.y += u.vel.y * dt;
 
-    // Despawn when leaves the screen on its travel side (boss never despawns this way)
+    // Despawn when the UFO leaves the visible band on its travel side. Using
+    // the visible band rather than the world edge so a UFO that spawns at
+    // the band edge in modern portrait actually exits cleanly — otherwise
+    // it lingers off-screen for seconds while traversing the wider world.
+    // Boss never despawns this way.
     if (u.type !== 'boss') {
-      if (u.dir === 1 && u.pos.x > WORLD_W + u.radius * 2) u.alive = false;
-      if (u.dir === -1 && u.pos.x < -u.radius * 2) u.alive = false;
+      const visBounds = getVisibleBoundsW();
+      if (u.dir === 1  && u.pos.x > visBounds.right + u.radius * 2) u.alive = false;
+      if (u.dir === -1 && u.pos.x < visBounds.left  - u.radius * 2) u.alive = false;
     }
 
     // Wrap Y so vertical drift stays on-screen
