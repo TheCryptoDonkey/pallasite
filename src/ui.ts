@@ -32,7 +32,9 @@ import { followUser, shareCompletion, endorseSubject, rankFromWave } from './soc
 import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, hasWebLN, payViaWebLN } from './zap.js';
 import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, ghostPoseAt, ghostScoreAt, type GhostRun } from './ghost.js';
-import { savePersonalGhost, isPersonalGhostEnabled, setPersonalGhostEnabled } from './personal-ghost.js';
+import { savePersonalGhost } from './personal-ghost.js';
+import { canCaptureClip, captureClip, shareClip } from './clip.js';
+import { REPLAY_TOTAL_WALL_MS, REPLAY_EXPLOSION_WALL_MS } from './types.js';
 import { WORLD_W as PALL_WORLD_W, WORLD_H as PALL_WORLD_H } from './types.js';
 import {
   SKINS, getActiveSkinId, setActiveSkinId, isSkinUnlocked,
@@ -2227,34 +2229,6 @@ export function renderSettings(onBack: () => void): void {
     hapticsBtn.addEventListener('click', () => { setHapticsEnabled(!getHapticsEnabled()); paintHaptics(); });
   }
 
-  // Personal-ghost replay — off by default. When on AND the player is
-  // running on a daily seed AND they have a saved attempt for that
-  // seed, an amber ghost ship overlays their previous run alongside
-  // the current one. Saving happens on every run end regardless, so
-  // turning it on later picks up the most recent attempt.
-  const ghostRow = el('div', { parent: a11yPanel });
-  ghostRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;';
-  const ghostLab = el('label', { parent: ghostRow, text: 'PERSONAL GHOST' });
-  ghostLab.style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
-  const ghostBtnWrap = el('div', { parent: ghostRow });
-  ghostBtnWrap.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;';
-  const ghostBtn = el('button', { parent: ghostBtnWrap, text: isPersonalGhostEnabled() ? 'ON' : 'OFF' });
-  function paintGhost(): void {
-    const on = isPersonalGhostEnabled();
-    ghostBtn.textContent = on ? 'ON' : 'OFF';
-    ghostBtn.style.cssText = [
-      'background:' + (on ? 'rgba(255,180,74,0.22)' : 'transparent'),
-      'border:2px solid ' + (on ? '#ffb44a' : 'rgba(180,140,255,0.4)'),
-      'color:' + (on ? '#ffb44a' : 'rgba(220,210,255,0.85)'),
-      "font-family:'VT323',ui-monospace,monospace",
-      'font-size:0.9rem', 'padding:5px 12px', 'letter-spacing:0.16em',
-      'cursor:pointer', 'border-radius:6px', 'min-width:62px',
-    ].join(';');
-  }
-  paintGhost();
-  ghostBtn.addEventListener('click', () => { setPersonalGhostEnabled(!isPersonalGhostEnabled()); paintGhost(); });
-  const ghostHint = el('p', { parent: a11yPanel, text: 'Race your last attempt on each daily seed (amber overlay).' });
-  ghostHint.style.cssText = 'font-size:0.74rem;color:rgba(180,140,255,0.6);letter-spacing:0.04em;margin:4px 0 0 0;';
 
   // ── DATA ────────────────────────────────────────────────────────────────
   // Single destructive action — clearing the local top-10 list. Two-tap
@@ -3166,6 +3140,45 @@ function renderRunCredits(
         clearOverlay();
         startDeathReplay(state, 'gameover');
       });
+      // SHARE CLIP — re-trigger the death replay AND record the canvas
+      // for the same window via MediaRecorder, then hand the resulting
+      // file to the system share sheet. Only shown when the recording
+      // path is supported (MediaRecorder + canvas.captureStream).
+      if (canCaptureClip()) {
+        const clip = el('button', { className: 'menu-btn secondary', parent: row, text: 'SHARE CLIP' }) as HTMLButtonElement;
+        onTap(clip, () => {
+          clip.disabled = true;
+          clip.textContent = 'CAPTURING…';
+          clip.style.opacity = '0.6';
+          const canvas = document.getElementById('game') as HTMLCanvasElement | null;
+          if (!canvas) {
+            clip.disabled = false;
+            clip.textContent = 'SHARE CLIP';
+            clip.style.opacity = '1';
+            return;
+          }
+          // Trigger replay first so frames flow, then capture for the
+          // full replay window plus a small tail so the explosion lands.
+          startDeathReplay(state, 'gameover');
+          const captureMs = REPLAY_TOTAL_WALL_MS + REPLAY_EXPLOSION_WALL_MS + 200;
+          void captureClip(canvas, captureMs).then(async (captured) => {
+            if (!captured) {
+              clip.disabled = false;
+              clip.textContent = 'SHARE CLIP';
+              clip.style.opacity = '1';
+              return;
+            }
+            const result = await shareClip(captured, {
+              filenameStem: `pallasite-w${state.wave}-s${state.score}`,
+              title: 'Pallasite',
+              text: `W${state.wave} · ${state.score} score · pallasite.app`,
+            });
+            clip.disabled = false;
+            clip.textContent = result === 'shared' ? 'SHARED ✓' : result === 'downloaded' ? 'DOWNLOADED ✓' : 'CLIP FAILED';
+            clip.style.opacity = '1';
+          });
+        });
+      }
     }
   } else {
     const again = el('button', { className: 'menu-btn', parent: row, text: 'IGNITE AGAIN' });

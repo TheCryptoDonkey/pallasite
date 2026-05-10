@@ -14,7 +14,6 @@ import {
   REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS, COMBO_MAX,
 } from './types.js';
 import { getCachedGhost, ghostScoreAt, ghostPoseAt } from './ghost.js';
-import { getPersonalGhost, isPersonalGhostEnabled, type PersonalGhost } from './personal-ghost.js';
 import { getActiveSeed } from './seed.js';
 import { getAsteroidStyle, shouldReduceMotion } from './a11y.js';
 import { getActiveSkin } from './skins.js';
@@ -447,20 +446,6 @@ function drawGhostShip(ctx: CanvasRenderingContext2D, s: GameState): void {
   if (s.phase !== 'playing') return;
   const seed = getActiveSeed();
   if (!seed) return;
-  // Personal ghost takes precedence when the setting is on and one
-  // exists for the active seed — racing your own previous attempt is
-  // more meaningful than chasing an unknown leader. Falls back to the
-  // leader ghost otherwise. Personal renders amber so the "this is you"
-  // reading is unambiguous; leader stays cyan.
-  const personal = isPersonalGhostEnabled() ? getPersonalGhost(seed) : null;
-  if (personal) {
-    const t = s.runTimeMs;
-    if (t > personal.durationMs + 1000) return;
-    const pose = personalGhostPoseAt(personal, t);
-    if (!pose || !pose.alive) return;
-    drawGhostShipAt(ctx, pose.x, pose.y, pose.rot, pose.thrusting, 0.45, '#ffb44a');
-    return;
-  }
   const ghost = getCachedGhost(seed);
   if (!ghost || !ghost.poseSamples) return;
   const t = s.runTimeMs;
@@ -469,40 +454,6 @@ function drawGhostShip(ctx: CanvasRenderingContext2D, s: GameState): void {
   if (!pose || !pose.alive) return;
 
   drawGhostShipAt(ctx, pose.x, pose.y, pose.rot, pose.thrusting, 0.35);
-}
-
-/** Linear-interp pose lookup at time `t` (ms) into a personal ghost's
- *  4Hz pose stream. Mirrors the public ghostPoseAt but takes a
- *  PersonalGhost (which carries poseSamples directly without the v1
- *  score-pacing wrapper). */
-function personalGhostPoseAt(g: PersonalGhost, t: number): { x: number; y: number; rot: number; thrusting: boolean; alive: boolean } | null {
-  const samples = g.poseSamples;
-  if (samples.length === 0) return null;
-  if (t <= samples[0].t) {
-    const s = samples[0];
-    return { x: s.x, y: s.y, rot: s.rot, thrusting: (s.flags & 2) !== 0, alive: (s.flags & 1) !== 0 };
-  }
-  if (t >= samples[samples.length - 1].t) {
-    const s = samples[samples.length - 1];
-    return { x: s.x, y: s.y, rot: s.rot, thrusting: (s.flags & 2) !== 0, alive: (s.flags & 1) !== 0 };
-  }
-  // Linear scan; pose streams are short (< few hundred samples).
-  for (let i = 1; i < samples.length; i++) {
-    if (samples[i].t >= t) {
-      const a = samples[i - 1];
-      const b = samples[i];
-      const span = b.t - a.t;
-      const u = span > 0 ? (t - a.t) / span : 0;
-      return {
-        x: a.x + (b.x - a.x) * u,
-        y: a.y + (b.y - a.y) * u,
-        rot: a.rot + (b.rot - a.rot) * u,
-        thrusting: (a.flags & 2) !== 0,
-        alive: (a.flags & 1) !== 0,
-      };
-    }
-  }
-  return null;
 }
 
 /** Title-screen attract loop. Plays back the cached top ghost on a
