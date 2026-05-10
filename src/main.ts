@@ -9,7 +9,7 @@ import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHype
 import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadBackground, setRenderMode } from './render.js';
-import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay } from './ui.js';
+import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner } from './ui.js';
 import { tryRestore } from './auth.js';
 import * as audio from './audio.js';
 import { musicSetTrackForState, preloadAllTracks } from './music.js';
@@ -482,7 +482,53 @@ async function boot(): Promise<void> {
   // game-loop call to musicSetTrackForState. No need to play it before unlock —
   // browsers block it anyway.
 
+  setupServiceWorker();
+
   requestAnimationFrame(loop);
+}
+
+/**
+ * Register the service worker and wire up the new-version detection. When a
+ * fresh worker reaches 'installed' state alongside an existing controller,
+ * surface the update banner; on confirmation, post SKIP_WAITING + listen for
+ * controllerchange to trigger a single clean reload.
+ */
+function setupServiceWorker(): void {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('/sw.js').then(reg => {
+    if (!reg) return;
+
+    // Reload exactly once when a new worker takes control.
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloaded) return;
+      reloaded = true;
+      window.location.reload();
+    });
+
+    const promptIfWaiting = (): void => {
+      const waiting = reg.waiting;
+      if (!waiting) return;
+      // Only prompt if there's already a controller — otherwise this is the
+      // first install and no reload is needed.
+      if (!navigator.serviceWorker.controller) return;
+      showUpdateBanner(() => waiting.postMessage({ type: 'SKIP_WAITING' }));
+    };
+
+    promptIfWaiting();
+
+    reg.addEventListener('updatefound', () => {
+      const sw = reg.installing;
+      if (!sw) return;
+      sw.addEventListener('statechange', () => {
+        if (sw.state === 'installed') promptIfWaiting();
+      });
+    });
+
+    // Long-lived sessions get a periodic update check so a deploy from
+    // yesterday isn't silently sat on for hours.
+    setInterval(() => { reg.update().catch(() => { /* ignore */ }); }, 60 * 1000);
+  }).catch(() => { /* registration failures are non-fatal */ });
 }
 
 void boot();

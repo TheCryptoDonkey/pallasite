@@ -11,6 +11,7 @@ import type {
 import {
   waveName, FINAL_WAVE, ASTEROID_TYPE_CONFIG,
   REPLAY_RECORD_INTERVAL_MS, REPLAY_BUFFER_FRAMES, REPLAY_TOTAL_WALL_MS, REPLAY_EXPLOSION_WALL_MS,
+  REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS,
   LURK_CENTRE_RADIUS_PX, LURK_VEL_THRESHOLD, LURK_DURATION_MS, LURK_TOAST_MS,
   SAT_DROP_CHANCE_DENOM,
 } from './types.js';
@@ -1170,8 +1171,62 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   // Detect the 1979 lurking exploit so coin credit can be withheld for it.
   updateLurkState(s, now);
 
-  // Particles always update so they fade out across phase changes
-  if (s.phase === 'title' || s.phase === 'paused' || s.phase === 'gameover' || s.phase === 'completed' || s.phase === 'deathreplay') {
+  // Particles + debris always update so they fade out across phase changes
+  // (and so the death-replay's impact-frame explosion animates).
+  const fadeOnly = s.phase === 'title' || s.phase === 'paused' || s.phase === 'gameover' || s.phase === 'completed' || s.phase === 'deathreplay';
+  if (fadeOnly) {
+    // Death-replay specific: when replay-time crosses the impact moment,
+    // re-spawn the same particles+debris that killShip emitted during live
+    // play so the explosion matches exactly. Guarded by explosionSpawned.
+    if (s.phase === 'deathreplay' && s.deathReplay && !s.deathReplay.explosionSpawned) {
+      const dr = s.deathReplay;
+      const wallElapsed = now - dr.startedAt;
+      const slowGameTime = Math.min(REPLAY_SLOW_MS, dr.spanMs);
+      const fastGameTime = Math.max(0, dr.spanMs - slowGameTime);
+      const fastWallEnd = fastGameTime;
+      const slowWall = Math.max(0, wallElapsed - fastWallEnd);
+      const gameTime = Math.min(dr.spanMs + REPLAY_EXPLOSION_MS, fastGameTime + slowWall * REPLAY_SLOW_RATE);
+      if (gameTime >= dr.spanMs) {
+        dr.explosionSpawned = true;
+        spawnParticles(s, dr.explosionAt.x, dr.explosionAt.y, 42, '#58ff58', 280, 1100);
+        spawnParticles(s, dr.explosionAt.x, dr.explosionAt.y, 22, '#ffd84a', 200,  700);
+        spawnParticles(s, dr.explosionAt.x, dr.explosionAt.y, 18, '#ffffff', 380,  450);
+        const fauxShip: Ship = {
+          pos: dr.explosionShip.pos,
+          vel: dr.explosionShip.vel,
+          radius: SHIP_RADIUS,
+          alive: false,
+          rot: dr.explosionShip.rot,
+          rotVel: 0,
+          thrusting: false,
+          invulnerableUntil: 0,
+          thrustFrame: 0,
+          hyperspaceReadyAt: 0,
+          hyperspaceCloakMs: 0,
+          hyperspaceMalfunction: false,
+          shieldUp: false,
+          shieldExpiresAt: 0,
+          shieldReadyAt: 0,
+        };
+        spawnShipDebris(s, fauxShip);
+      }
+    }
+    // Particles + debris physics tick (so the explosion animates regardless
+    // of phase). Cheaper than the full update path.
+    for (const p of s.particles) {
+      p.pos.x += p.vel.x * dt; p.pos.y += p.vel.y * dt;
+      p.ttl -= dt * 1000;
+      p.vel.x *= Math.exp(-1.5 * dt); p.vel.y *= Math.exp(-1.5 * dt);
+    }
+    s.particles = s.particles.filter(p => p.ttl > 0);
+    for (const d of s.debris) {
+      d.pos.x += d.vel.x * dt; d.pos.y += d.vel.y * dt;
+      d.rot += d.rotVel * dt;
+      d.ttl -= dt * 1000;
+      d.vel.x *= Math.exp(-0.6 * dt); d.vel.y *= Math.exp(-0.6 * dt);
+      wrap(d.pos, 20);
+    }
+    s.debris = s.debris.filter(d => d.ttl > 0);
     return;
   }
 
@@ -1759,7 +1814,18 @@ function killShip(s: GameState): void {
         startedAt: performance.now(),
         spanMs: s.replayBuffer[s.replayBuffer.length - 1].t - s.replayBuffer[0].t,
         explosionAt: deathPos,
+        explosionShip: {
+          pos: { x: s.ship.pos.x, y: s.ship.pos.y },
+          vel: { x: s.ship.vel.x, y: s.ship.vel.y },
+          rot: s.ship.rot,
+        },
+        explosionSpawned: false,
       };
+      // Clear the live particle/debris pools so the killShip burst doesn't
+      // visibly haunt the replay's prelude — the replay re-spawns identical
+      // particles+debris when it reaches the impact frame.
+      s.particles = [];
+      s.debris = [];
       startDeathReplay(s, 'gameover');
     } else {
       s.phase = 'gameover';
