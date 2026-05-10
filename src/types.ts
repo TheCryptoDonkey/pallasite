@@ -198,7 +198,7 @@ export const VEIN_SATS_PER_HIT = 5;
 export const VEIN_SCORE_PER_HIT = 50;  // guest payout (no sats)
 export const VEIN_JACKPOT_SATS = 100;
 export const VEIN_JACKPOT_SCORE = 1500;
-export const VEIN_SPAWN_CHANCE = 0.125;
+export const VEIN_SPAWN_CHANCE = 0.25;
 export const VEIN_SPAWN_MIN_WAVE = 6;
 export const VEIN_SPAWN_MAX_WAVE = 24;
 /** ms after vein spawn before the UFO swarm arrives — player should

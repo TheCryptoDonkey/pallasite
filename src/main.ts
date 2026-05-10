@@ -97,14 +97,21 @@ function openCheatInput(): void {
   resetCheatIdleTimer();
 }
 
-/** Long-press the WAVE indicator on the HUD (~1.5s) to open the cheat input
- *  on touch devices where there's no `+` key. Hot zone is the top-middle of
- *  the canvas where the WAVE label is drawn (around x=0.62*WORLD_W, y<80). */
+/** WAVE-HUD touch shortcuts.
+ *  Long-press (~1.5s) — opens the cheat input box where the player types a
+ *  target wave number, same as the `+` key on desktop.
+ *  Double-tap (~300ms) — warps straight to the next wave, useful for fast
+ *  testing of set pieces / vein rolls without typing. Both flag the run as
+ *  cheated and void sat earnings.
+ *  Hot zone is the top strip of the canvas (where the WAVE label sits). */
 function setupWaveLongPress(): void {
   const HOLD_MS = 1500;
+  const DOUBLE_TAP_MS = 320;
   const MOVE_TOL_PX = 14;
   let timer: number | null = null;
   let sx = 0, sy = 0;
+  let lastTapAt = 0;
+  let didMove = false;
 
   function inWaveZone(clientX: number, clientY: number): boolean {
     // Hot zone is the top strip of the canvas (where the WAVE label is drawn,
@@ -124,6 +131,7 @@ function setupWaveLongPress(): void {
     if (cheatInputOpen) return;
     if (!inWaveZone(e.clientX, e.clientY)) return;
     sx = e.clientX; sy = e.clientY;
+    didMove = false;
     clear();
     timer = window.setTimeout(() => {
       timer = null;
@@ -137,9 +145,33 @@ function setupWaveLongPress(): void {
   });
   canvas.addEventListener('pointermove', e => {
     if (timer === null) return;
-    if (Math.hypot(e.clientX - sx, e.clientY - sy) > MOVE_TOL_PX) clear();
+    if (Math.hypot(e.clientX - sx, e.clientY - sy) > MOVE_TOL_PX) {
+      didMove = true;
+      clear();
+    }
   });
-  canvas.addEventListener('pointerup',     clear);
+  canvas.addEventListener('pointerup', e => {
+    clear();
+    // Double-tap on the wave HUD warps to the next wave (flags the run as
+    // cheated, same as the typed cheat). Skip if the tap drifted (treated
+    // as a scroll) or the long-press already fired.
+    if (didMove) return;
+    if (state.phase !== 'playing' && state.phase !== 'wavestart') return;
+    if (cheatInputOpen) return;
+    if (!inWaveZone(e.clientX, e.clientY)) return;
+    const now = performance.now();
+    if (now - lastTapAt < DOUBLE_TAP_MS) {
+      lastTapAt = 0;
+      if (getActiveSeed() !== null) {
+        state.toast = 'CHEATS LOCKED · DAILY RUN';
+        state.toastUntil = performance.now() + 1800;
+        return;
+      }
+      cheatJumpToWave(state, state.wave + 1);
+    } else {
+      lastTapAt = now;
+    }
+  });
   canvas.addEventListener('pointercancel', clear);
   canvas.addEventListener('pointerleave',  clear);
 }
