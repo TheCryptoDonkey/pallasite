@@ -10,7 +10,7 @@ import type {
   GameState, Ship, Asteroid, Bullet, Coin, Particle, Ufo, Mine, PowerUp, ReplaySnapshot, Debris,
 } from './types.js';
 import {
-  WORLD_W, WORLD_H, waveName, waveSubtitle, ASTEROID_TYPE_CONFIG, POWERUP_CONFIG,
+  WORLD_W, WORLD_H, WARP_MS, waveName, waveSubtitle, ASTEROID_TYPE_CONFIG, POWERUP_CONFIG,
   REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS,
 } from './types.js';
 
@@ -1475,7 +1475,7 @@ function drawWarp(ctx: CanvasRenderingContext2D, s: GameState, now: number): voi
 
   const cx = WORLD_W / 2;
   const cy = WORLD_H / 2;
-  const elapsed = (now - s.phaseStart) / 1300;  // 0..1 across phase
+  const elapsed = (now - s.phaseStart) / WARP_MS;  // 0..1 across phase
   const progress = Math.min(1, elapsed);
   const intensity = Math.sin(progress * Math.PI);  // ease in/out
 

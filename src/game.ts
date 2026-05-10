@@ -18,7 +18,7 @@ import {
 import type { PickupKind } from './types.js';
 import type { ReplaySnapshot, Debris } from './types.js';
 import {
-  WORLD_W, WORLD_H,
+  WORLD_W, WORLD_H, WARP_MS,
   SHIP_RADIUS, SHIP_THRUST, SHIP_DRAG, SHIP_ROT_ACCEL, SHIP_ROT_DAMPING, SHIP_MAX_ROT, SHIP_INVULN_MS, FIRE_COOLDOWN_MS,
   HYPERSPACE_COOLDOWN_MS, HYPERSPACE_CLOAK_MS, HYPERSPACE_MALFUNCTION_CHANCE, HYPERSPACE_SAFE_DIST,
   SHIELD_DURATION_MS, SHIELD_COOLDOWN_MS,
@@ -356,7 +356,7 @@ function startWarp(s: GameState, targetWave?: number): void {
     if (s.phase === 'warp') {
       beginWave(s, next);
     }
-  }, 1300);
+  }, WARP_MS);
 }
 
 /** Cheat: skip to a specific wave. Clears stage, kicks off warp. */
