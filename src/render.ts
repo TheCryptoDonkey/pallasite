@@ -1465,6 +1465,15 @@ function ensureWarpStars(): WarpStar[] {
 
 function drawWarp(ctx: CanvasRenderingContext2D, s: GameState, now: number): void {
   ctx.save();
+  // Black-fill the entire canvas first (in canvas-pixel coords) so modern-mode
+  // letterbox gutters don't expose the body bg through the warp tunnel.
+  if (renderMode.kind === 'modern') {
+    ctx.save();
+    ctx.setTransform(renderMode.dpr, 0, 0, renderMode.dpr, 0, 0);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, renderMode.vw, renderMode.vh);
+    ctx.restore();
+  }
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, WORLD_W, WORLD_H);
 

@@ -602,8 +602,10 @@ export function warpJump(): void {
   const subGain = c.createGain();
   sub.frequency.setValueAtTime(40, t0);
   sub.frequency.exponentialRampToValueAtTime(220, t0 + 0.6);
+  // Halved gains across all three layers to make room for the warp-transition
+  // music opus that plays during this same 1300ms window. Was drowning it out.
   subGain.gain.setValueAtTime(0.0, t0);
-  subGain.gain.linearRampToValueAtTime(0.4, t0 + 0.3);
+  subGain.gain.linearRampToValueAtTime(0.18, t0 + 0.3);
   subGain.gain.exponentialRampToValueAtTime(0.001, t0 + 1.2);
   sub.connect(subGain);
   subGain.connect(destination());
@@ -623,7 +625,7 @@ export function warpJump(): void {
   filter.frequency.exponentialRampToValueAtTime(4500, t0 + 0.8);
   const noiseGain = c.createGain();
   noiseGain.gain.setValueAtTime(0.0, t0);
-  noiseGain.gain.linearRampToValueAtTime(0.55, t0 + 0.4);
+  noiseGain.gain.linearRampToValueAtTime(0.22, t0 + 0.4);
   noiseGain.gain.exponentialRampToValueAtTime(0.001, t0 + 1.1);
   noise.connect(filter);
   filter.connect(noiseGain);
@@ -642,7 +644,7 @@ export function warpJump(): void {
   pad2.frequency.setValueAtTime(335, t0 + 0.2);
   pad2.frequency.linearRampToValueAtTime(665, t0 + 1.0);
   padGain.gain.setValueAtTime(0, t0 + 0.2);
-  padGain.gain.linearRampToValueAtTime(0.18, t0 + 0.5);
+  padGain.gain.linearRampToValueAtTime(0.07, t0 + 0.5);
   padGain.gain.exponentialRampToValueAtTime(0.001, t0 + 1.2);
   pad1.connect(padGain);
   pad2.connect(padGain);

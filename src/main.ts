@@ -12,7 +12,7 @@ import { render, preloadBackground, setRenderMode } from './render.js';
 import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay } from './ui.js';
 import { tryRestore } from './auth.js';
 import * as audio from './audio.js';
-import { musicSetTrackForState } from './music.js';
+import { musicSetTrackForState, preloadAllTracks } from './music.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, setDisplayMode } from './display.js';
 import type { GameState } from './types.js';
@@ -459,6 +459,10 @@ async function boot(): Promise<void> {
   // Preload first two wave backgrounds so the start of the game is seamless
   preloadBackground(1);
   preloadBackground(2);
+
+  // Prime music tracks so warp-transition (1.3s window) doesn't miss its
+  // first cue waiting on a cold fetch.
+  preloadAllTracks();
 
   // Touch controls — buttons reveal themselves on first real touch
   setupTouchControls(state, tryHyperspace, tryActivateShield);
