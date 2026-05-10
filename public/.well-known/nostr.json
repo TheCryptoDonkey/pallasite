@@ -1,0 +1,16 @@
+{
+  "names": {
+    "_": "fa9291d038fd1d3e4439364f289f2e53a64a1d32776ee52c000da53ebc718cdc",
+    "pallasite": "fa9291d038fd1d3e4439364f289f2e53a64a1d32776ee52c000da53ebc718cdc"
+  },
+  "relays": {
+    "fa9291d038fd1d3e4439364f289f2e53a64a1d32776ee52c000da53ebc718cdc": [
+      "wss://relay.trotters.cc",
+      "wss://nos.lol",
+      "wss://relay.damus.io",
+      "wss://relay.nostr.band",
+      "wss://relay.primal.net",
+      "wss://nostr.wine"
+    ]
+  }
+}
