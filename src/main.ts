@@ -13,6 +13,7 @@ import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion
 import { handleAuthCallback, tryRestore } from './auth.js';
 import * as audio from './audio.js';
 import { musicSetTrackForState, preloadAllTracks } from './music.js';
+import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, setDisplayMode } from './display.js';
 import { checkForUpdate } from './version.js';
@@ -393,6 +394,9 @@ function loop(now: number): void {
 
   // Music keeps in step with phase + wave (idempotent — diffs internally)
   musicSetTrackForState(state);
+  // Adaptive stems on top of the recorded track: combo bass while a chain
+  // is live, boss-lead motif on wave 25 until the boss is downed.
+  stemsTickForState(state, performance.now());
 
   // Toast updates
   if (state.toast) {
