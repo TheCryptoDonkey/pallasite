@@ -187,6 +187,15 @@ export function musicSetTrackForState(state: GameState): void {
 }
 
 /** Reset the memo so the next musicSetTrackForState() will re-resolve and play. */
+/** Prime all tracks into the audio graph so the first crossfade doesn't have
+ *  to wait for the file to download. Especially matters for warp-transition,
+ *  whose 1300ms window is shorter than a cold fetch on slow networks. */
+export function preloadAllTracks(): void {
+  for (const id of Object.keys(TRACKS)) {
+    try { load(TRACKS[id]); } catch { /* ignore — will lazy-load on first use */ }
+  }
+}
+
 export function musicForceRefresh(): void {
   lastAppliedKey = '';
 }
