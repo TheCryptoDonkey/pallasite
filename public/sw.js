@@ -11,7 +11,7 @@
  * Bump SW_VERSION below to invalidate all caches on the next visit.
  */
 
-const SW_VERSION = 'v5';
+const SW_VERSION = 'v6';
 const CACHE_HTML = `pallasite-html-${SW_VERSION}`;
 const CACHE_ASSET = `pallasite-asset-${SW_VERSION}`;
 
@@ -43,9 +43,14 @@ self.addEventListener('fetch', event => {
   // Don't intercept cross-origin requests — let them hit the network direct.
   if (url.origin !== self.location.origin) return;
 
-  // HTML / navigation: network-first
+  // HTML / navigation AND the signet-login IIFE: network-first.
+  // The IIFE lives at a stable, non-hashed path (`/signet-login.iife.js`), so
+  // a deploy that ships a new SDK build needs the SW to fetch fresh — otherwise
+  // a previously-cached copy can mask redirect-mode and route users back into
+  // the older relay/popup flow on next sign-in.
   const isNav = req.mode === 'navigate' || req.headers.get('accept')?.includes('text/html');
-  if (isNav) {
+  const isSdk = url.pathname === '/signet-login.iife.js';
+  if (isNav || isSdk) {
     event.respondWith((async () => {
       try {
         const fresh = await fetch(req);
@@ -66,8 +71,7 @@ self.addEventListener('fetch', event => {
     || url.pathname.startsWith('/backgrounds/')
     || url.pathname.endsWith('.svg')
     || url.pathname.endsWith('.png')
-    || url.pathname.endsWith('.webp')
-    || url.pathname === '/signet-login.iife.js';
+    || url.pathname.endsWith('.webp');
   if (isAsset) {
     event.respondWith((async () => {
       const cached = await caches.match(req);
