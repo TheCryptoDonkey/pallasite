@@ -76,6 +76,7 @@ export function makeInitialState(): GameState {
     bossDefeated: false,
     combo: 0,
     comboExpiresAt: 0,
+    hitStopUntil: 0,
     rapidExpiresAt: 0,
     satboostExpiresAt: 0,
     tridentExpiresAt: 0,
@@ -1323,6 +1324,11 @@ function updateDisplaySats(s: GameState, dt: number): void {
 }
 
 export function updateGame(s: GameState, dt: number, now: number): void {
+  // Hit-stop crescendo: freeze the simulation while a milestone-kill punch
+  // frame holds. The renderer still draws the static state so the player
+  // sees the moment land. dt is discarded -- next frame's natural dt picks
+  // play back up; main.ts caps dt at 50ms so any drift is minor.
+  if (now < s.hitStopUntil) return;
   s.elapsed += dt * 1000;
 
   // HUD ticker eases toward s.sats every frame regardless of phase, so the
@@ -1832,6 +1838,7 @@ export function updateGame(s: GameState, dt: number, now: number): void {
  * return 2, 3, 4, 5 (capped). Plays a rising tick at each step.
  */
 function recordCombo(s: GameState, now: number): number {
+  const prev = s.combo;
   if (now < s.comboExpiresAt && s.combo > 0) {
     s.combo = Math.min(COMBO_MAX, s.combo + 1);
   } else {
@@ -1840,6 +1847,13 @@ function recordCombo(s: GameState, now: number): number {
   s.comboExpiresAt = now + COMBO_WINDOW_MS;
   if (s.combo > s.runStats.largestCombo) s.runStats.largestCombo = s.combo;
   if (s.combo >= 2) audio.comboTick(s.combo);
+  // Crescendo on first reaching the cap in this chain: short hit-stop and
+  // a trauma bump so the moment lands. Only fires once per chain because
+  // subsequent kills find prev already at COMBO_MAX.
+  if (s.combo === COMBO_MAX && prev < COMBO_MAX) {
+    s.hitStopUntil = now + 80;
+    bumpTrauma(s, 0.18);
+  }
   return s.combo;
 }
 

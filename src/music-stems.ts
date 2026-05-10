@@ -27,9 +27,18 @@ let stemBus: GainNode | null = null;
 let nextComboPulseAt = 0;
 let nextBossPingAt = 0;
 
-/** Pulse cadence for the combo bass. ~125 BPM at 480ms feels driving without
- *  overwhelming the recorded track. */
+/** Base pulse cadence for the combo bass. ~125 BPM at 480ms feels driving
+ *  without overwhelming the recorded track. The interval shortens as the
+ *  combo level rises (see comboPulseInterval) so a 5x chain sits around
+ *  167 BPM and feels like the music is leaning into the player's run. */
 const COMBO_PULSE_INTERVAL_MS = 480;
+
+/** Combo level → pulse interval ms. 2x base cadence, 5x ~25% faster.
+ *  Linear ramp, clamped at the floor so it never gets twitchy. */
+function comboPulseInterval(level: number): number {
+  if (level <= 2) return COMBO_PULSE_INTERVAL_MS;
+  return Math.max(360, COMBO_PULSE_INTERVAL_MS - (level - 2) * 40);
+}
 /** Cadence for the boss lead motif. Long enough to feel ominous, short enough
  *  to remind the player who they are fighting. */
 const BOSS_PING_INTERVAL_MS = 2400;
@@ -160,7 +169,7 @@ export function stemsTickForState(state: GameState, nowMs: number): void {
     if (nextComboPulseAt === 0) nextComboPulseAt = nowMs;
     if (nowMs >= nextComboPulseAt) {
       fireComboPulse(state.combo);
-      nextComboPulseAt = nowMs + COMBO_PULSE_INTERVAL_MS;
+      nextComboPulseAt = nowMs + comboPulseInterval(state.combo);
     }
   } else {
     nextComboPulseAt = 0;
