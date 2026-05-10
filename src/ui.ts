@@ -1386,6 +1386,55 @@ function formatRunTime(ms: number): string {
 }
 
 export function renderCompletion(state: GameState): void {
+  // Two-stage completion, mirroring gameover: focus the player on the
+  // arcade name entry first, then unfurl the celebration. Non-high-score
+  // wave-25 clears (rare but possible — local list already full of higher
+  // scores) skip stage 1 and land on the celebration directly.
+  const isNewHigh = isHighScore(state.score) && state.score > 0;
+  if (isNewHigh) renderCompletionNameEntry(state);
+  else renderCompletionRecap(state);
+}
+
+function renderCompletionNameEntry(state: GameState): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  overlay.style.background = 'rgba(0, 0, 0, 0.85)';
+  // No setupOverlayArrowNav — arrow keys belong to the arcade widget on
+  // this stage, full stop.
+
+  el('h1', { parent: overlay, text: 'PALLASITE COMPLETE' });
+  const sub = el('p', { parent: overlay, text: 'EVENT HORIZON · BREACHED' });
+  sub.style.cssText = 'font-size:1.2rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin-top:-12px;';
+
+  const rank = predictedLocalRank(state.score);
+  const banner = el('p', { parent: overlay, text: `RANK ${String(rank).padStart(2, '0')} · NEW HIGH SCORE` });
+  banner.style.cssText = 'font-size:1.1rem;color:#ffd84a;letter-spacing:0.22em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:8px 0 -4px;';
+
+  const scoreLabel = el('p', { parent: overlay, text: 'SCORE' });
+  scoreLabel.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:8px 0 -8px;';
+  const scoreValue = el('div', { parent: overlay, text: state.score.toLocaleString() });
+  scoreValue.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:3.6rem;color:#ffd84a;letter-spacing:0.06em;line-height:1;";
+
+  const inputWrap = el('div', { className: 'menu-row', parent: overlay });
+  renderArcadeInitials(inputWrap, {
+    onSubmit: (name) => {
+      addLocalHighScore({
+        name,
+        score: state.score,
+        sats: state.sats,
+        wave: 25,
+        at: new Date().toISOString(),
+        pubkey: state.session?.pubkey,
+      });
+      renderCompletionRecap(state);
+    },
+  });
+
+  const help = el('p', { parent: overlay, text: 'ENTER YOUR INITIALS · ↑↓ CYCLE   ←→ MOVE   ENTER SAVE' });
+  help.style.cssText = 'font-size:0.72rem;color:rgba(180,140,255,0.5);letter-spacing:0.16em;margin:8px 0 0;text-align:center;';
+}
+
+function renderCompletionRecap(state: GameState): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
@@ -1438,29 +1487,13 @@ export function renderCompletion(state: GameState): void {
   renderDevCard(devWrap, state);
   stage(2.6)(devWrap);
 
-  // Arcade initials for everyone — signed-in players still get their
-  // pubkey attached and the completion publish still fires server-side
-  // after commit, but the local leaderboard name is whatever the player
-  // chooses. Stops the wave-25 banner from silently logging "DA19F1CD"
-  // for someone whose Nostr name they never set.
-  const inputWrap = el('div', { className: 'menu-row', parent: overlay });
-  renderArcadeInitials(inputWrap, {
-    onSubmit: (name) => {
-      addLocalHighScore({
-        name,
-        score: state.score,
-        sats: state.sats,
-        wave: 25,
-        at: new Date().toISOString(),
-        pubkey: state.session?.pubkey,
-      });
-      if (state.session) {
-        const pubBlock = el('div', { parent: overlay });
-        maybePublishCompletion(state, pubBlock);
-      }
-    },
-  });
-  stage(3.0)(inputWrap);
+  // Faucet / publish flow — pulled out of the arcade onSubmit callback now
+  // that name entry is its own stage. Stays Nostr-mode-only.
+  if (state.session) {
+    const pubBlock = el('div', { parent: overlay });
+    maybePublishCompletion(state, pubBlock);
+    stage(3.0)(pubBlock);
+  }
 
   // Social actions + zap — Nostr mode only. Guests already see the X handle on
   // the dev card; no point showing them auth-gated buttons that just nag.
