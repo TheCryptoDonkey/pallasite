@@ -119,15 +119,14 @@ body[data-display="modern"] #game {
   line-height: 1.05;
   text-align: center;
 }
-/* PALLASITE wordmark — gpt-image-1 generated with transparent background, so
-   it drops onto any wave bg cleanly without blend-mode tricks. Sized to sit
-   roughly where the previous text H1 did. */
+/* PALLASITE wordmark — gpt-image-1 generated with transparent background. No
+   drop-shadow / glow — the letterforms have their own inner highlights and a
+   surrounding glow would read as a box. */
 .overlay .title-logo {
   display: block;
   margin: 0 auto;
   width: clamp(220px, 42vw, 420px);
   height: auto;
-  filter: drop-shadow(0 0 18px rgba(88, 255, 88, 0.35));
   -webkit-user-drag: none;
   user-select: none;
 }
