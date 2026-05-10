@@ -354,6 +354,20 @@ window.addEventListener('pointerdown', () => {
   else if (state.phase === 'warp') skipWarp(state);
 }, { capture: true });
 
+// One-shot global audio unlock on any first user interaction. Without it, a
+// fresh title screen sits in autoplay-blocked silence until the player taps
+// IGNITE — title music never gets going, and the secret music player can't
+// unlock from its own row taps reliably on iOS. A pointerdown anywhere on
+// the page (logo long-press, IGNITE, settings tap, even a stray tap) covers
+// every entry path.
+const firstUnlock = (): void => {
+  void audio.unlockAudio();
+  window.removeEventListener('pointerdown', firstUnlock);
+  window.removeEventListener('keydown', firstUnlock);
+};
+window.addEventListener('pointerdown', firstUnlock);
+window.addEventListener('keydown', firstUnlock);
+
 // Lose focus → release keys & pause
 window.addEventListener('blur', () => {
   state.keys = {};
