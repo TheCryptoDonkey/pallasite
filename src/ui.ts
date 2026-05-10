@@ -424,24 +424,20 @@ export function renderTitle(state: GameState): void {
 }
 
 /**
- * Two-line faucet status chip. Float = working balance on the box;
- * Paid lifetime = sum of payouts. Polled every 60s while the title is
- * visible. Float drops on each Sunday sweep — Paid does not — so showing
- * both keeps the sweep from looking like a faucet drain.
+ * Faucet status chip. Shows a single live/paused signal plus the daily-cap
+ * meter — never the absolute float or lifetime payout, since advertising
+ * pot size is a honey-pot for abuse. Polled every 60s while the title is
+ * visible.
  */
 function renderPoolChip(parent: HTMLElement): void {
   const wrapper = el('div', { parent });
   wrapper.style.cssText =
     'display:flex;flex-direction:column;align-items:center;gap:4px;margin:6px 0 4px';
 
-  const lineFloat = el('p', { parent: wrapper });
-  const linePaid = el('p', { parent: wrapper });
-  for (const line of [lineFloat, linePaid]) {
-    line.style.cssText =
-      'font-size:0.78rem;color:rgba(255,216,74,0.65);letter-spacing:0.08em;margin:0';
-  }
-  lineFloat.textContent = 'Float: …';
-  linePaid.textContent = 'Paid lifetime: …';
+  const lineStatus = el('p', { parent: wrapper });
+  lineStatus.style.cssText =
+    'font-size:0.78rem;color:rgba(255,216,74,0.65);letter-spacing:0.08em;margin:0';
+  lineStatus.textContent = 'Faucet: …';
 
   // Daily-faucet meter: thin horizontal bar + spent/cap text. Hidden until
   // the first /api/pool response with daily_cap_sats arrives.
@@ -470,25 +466,18 @@ function renderPoolChip(parent: HTMLElement): void {
       return;
     }
     if (!pool) {
-      lineFloat.textContent = 'Faucet status unavailable';
-      lineFloat.style.color = 'rgba(180,180,180,0.6)';
-      linePaid.textContent = '';
+      lineStatus.textContent = 'Faucet status unavailable';
+      lineStatus.style.color = 'rgba(180,180,180,0.6)';
       meterWrap.style.display = 'none';
       return;
     }
-    const lowFloat = pool.balance_sats < 1000;
-    const floatStr = `Float: ${pool.balance_sats.toLocaleString()} sats`;
     if (pool.paused) {
-      lineFloat.textContent = `${floatStr} — paused`;
-      lineFloat.style.color = '#ff8050';
-    } else if (lowFloat) {
-      lineFloat.textContent = `${floatStr} — running low`;
-      lineFloat.style.color = '#ff8050';
+      lineStatus.textContent = 'Faucet paused';
+      lineStatus.style.color = '#ff8050';
     } else {
-      lineFloat.textContent = floatStr;
-      lineFloat.style.color = 'rgba(255,216,74,0.65)';
+      lineStatus.textContent = 'Faucet active';
+      lineStatus.style.color = 'rgba(255,216,74,0.65)';
     }
-    linePaid.textContent = `Paid lifetime: ${pool.total_paid_sats.toLocaleString()} sats`;
 
     // Daily meter — green / amber / red as the cap fills.
     if (typeof pool.daily_cap_sats === 'number' && pool.daily_cap_sats > 0) {
@@ -1609,15 +1598,22 @@ async function maybePublishScore(state: GameState, parent: HTMLElement): Promise
   const compactView = el('div', { parent: wrapper });
   compactView.style.cssText = 'display:flex;flex-direction:column;gap:4px;align-items:stretch';
 
-  // 18+ self-attestation gate. The game is open to all ages, but the sats
-  // claim flow is adults-only (free prize competition, Schedule 11 norms).
-  // One-time per pubkey, persisted in localStorage. We re-prompt on every
-  // sign-in for a different pubkey rather than treating the device as
-  // attested — the attestation is the *player's*, not the browser's.
-  const ageRow = el('div', { parent: compactView });
+  // 18+ gate. The game is open to all ages, but the sats claim flow is
+  // adults-only (free prize competition, Schedule 11 norms). Two paths:
+  //   - Self-attestation checkbox: localStorage flag per pubkey, fast.
+  //   - Signet verifyAge('18+'): cryptographic proof from a confirmed
+  //     professional verifier (GMC/SRA/TRA via signet-verification-bot).
+  // Either path satisfies the gate. We re-prompt on every sign-in for a
+  // different pubkey rather than treating the device as attested — the
+  // attestation is the *player's*, not the browser's.
+  const ageWrap = el('div', { parent: compactView });
+  ageWrap.style.cssText =
+    'display:flex;flex-direction:column;gap:6px;margin:4px 0 6px 0;text-align:left';
+
+  const ageRow = el('div', { parent: ageWrap });
   ageRow.style.cssText =
     'display:flex;gap:8px;align-items:flex-start;font-size:0.78rem;' +
-    'color:#cccccc;margin:4px 0 6px 0;line-height:1.4;text-align:left';
+    'color:#cccccc;line-height:1.4';
   const ageCheckbox = document.createElement('input');
   ageCheckbox.type = 'checkbox';
   ageCheckbox.style.cssText = 'margin-top:3px;cursor:pointer;flex-shrink:0';
@@ -1639,25 +1635,77 @@ async function maybePublishScore(state: GameState, parent: HTMLElement): Promise
   ageRow.appendChild(ageCheckbox);
   ageRow.appendChild(ageLabel);
 
+  // Signet verify button + status line. Only render the button if the SDK
+  // actually exposes verifyAge — older bundles or environments without the
+  // script tag won't, and we'd rather hide the option than show a broken
+  // button.
+  const ageStatus = el('p', { parent: ageWrap, text: '' });
+  ageStatus.style.cssText =
+    'font-size:0.72rem;margin:0;min-height:1em;color:#888;letter-spacing:0.04em';
+  const setAgeStatus = (msg: string, color: string): void => {
+    ageStatus.textContent = msg;
+    ageStatus.style.color = color;
+  };
+
+  let verifyBtn: HTMLButtonElement | null = null;
+  if (typeof window.Signet?.verifyAge === 'function') {
+    const verifyRow = el('div', { parent: ageWrap });
+    verifyRow.style.cssText =
+      'display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#888';
+    verifyRow.appendChild(document.createTextNode('or'));
+    verifyBtn = el('button', {
+      className: 'menu-btn secondary',
+      parent: verifyRow,
+      text: 'VERIFY WITH SIGNET',
+    }) as HTMLButtonElement;
+    verifyBtn.style.cssText = 'padding:4px 10px;font-size:0.72rem;cursor:pointer';
+  }
+
   const claimBtn = el('button', { className: 'menu-btn', parent: compactView, text: 'CLAIM' });
   claimBtn.style.cssText = 'padding:8px 16px;cursor:pointer;font-size:0.95rem';
 
   // Gate the claim button on the attestation. If already attested for this
   // pubkey, drop the row entirely so the recap stays compact.
   const sessionPubkey = state.session.pubkey;
+  const onAttested = (): void => {
+    setAgeAttestation(sessionPubkey);
+    claimBtn.disabled = false;
+    claimBtn.style.opacity = '1';
+    ageWrap.remove();
+  };
   if (hasAgeAttestation(sessionPubkey)) {
-    ageRow.remove();
+    ageWrap.remove();
   } else {
     claimBtn.disabled = true;
     claimBtn.style.opacity = '0.55';
     ageCheckbox.addEventListener('change', () => {
-      if (ageCheckbox.checked) {
-        setAgeAttestation(sessionPubkey);
-        claimBtn.disabled = false;
-        claimBtn.style.opacity = '1';
-        ageRow.remove();
-      }
+      if (ageCheckbox.checked) onAttested();
     });
+    if (verifyBtn) {
+      verifyBtn.addEventListener('click', () => {
+        void (async () => {
+          if (!window.Signet?.verifyAge) return;
+          verifyBtn!.disabled = true;
+          setAgeStatus('Opening Signet…', '#5b9dff');
+          try {
+            const result = await window.Signet.verifyAge('18+', { theme: 'dark' });
+            if (result.verified) {
+              setAgeStatus('✓ Verified by Signet', '#58ff58');
+              onAttested();
+            } else if (result.error === 'cancelled') {
+              setAgeStatus('Verification cancelled.', '#888');
+              verifyBtn!.disabled = false;
+            } else {
+              setAgeStatus(`Verification failed (${result.error ?? 'unknown'}).`, '#ff8050');
+              verifyBtn!.disabled = false;
+            }
+          } catch {
+            setAgeStatus('Signet unavailable. Use the checkbox.', '#ff8050');
+            verifyBtn!.disabled = false;
+          }
+        })();
+      });
+    }
   }
 
   const subline = el('p', { parent: compactView });

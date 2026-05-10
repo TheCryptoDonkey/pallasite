@@ -49,8 +49,6 @@ export async function fetchGameInfo(): Promise<GameInfo | null> {
 }
 
 export interface PoolStatus {
-  balance_sats: number;
-  total_paid_sats: number;
   paused: boolean;
   /** Sats already paid out today (cap counter). */
   daily_spent_sats?: number;
@@ -66,23 +64,13 @@ export async function fetchPool(): Promise<PoolStatus | null> {
     if (!res.ok) return null;
     const data = (await res.json()) as {
       ok?: boolean;
-      balance_sats?: number;
-      total_paid_sats?: number;
       paused?: boolean;
       daily_spent_sats?: number;
       daily_cap_sats?: number;
       daily_reset_at?: number;
     };
-    if (
-      !data.ok ||
-      typeof data.balance_sats !== 'number' ||
-      typeof data.total_paid_sats !== 'number'
-    ) {
-      return null;
-    }
+    if (!data.ok) return null;
     return {
-      balance_sats: data.balance_sats,
-      total_paid_sats: data.total_paid_sats,
       paused: Boolean(data.paused),
       ...(typeof data.daily_spent_sats === 'number'
         ? { daily_spent_sats: data.daily_spent_sats }
