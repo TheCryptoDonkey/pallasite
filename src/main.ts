@@ -575,9 +575,17 @@ async function boot(): Promise<void> {
   // then hits browser-back without completing returns to a frozen page that
   // still has the SDK dialog in the DOM. The dialog is opaque to clicks even
   // when not visually obvious, so the title screen below is unresponsive.
-  // On pageshow with persisted=true, sweep any stale dialog and re-render
-  // the title so the sign-in panel's `signing` flag is reset to a fresh
-  // closure that can be tapped again.
+  // Two-sided defence:
+  //   - pagehide (persisted=true): the page is about to enter bfcache.
+  //     Strip the dialog now so the cached page state is clean.
+  //   - pageshow (persisted=true): the page is being restored. Strip again
+  //     in case pagehide didn't fire (some browsers skip it on redirect)
+  //     and re-render the title to reset the sign-in panel's `signing`
+  //     flag to a fresh closure that can be tapped again.
+  window.addEventListener('pagehide', e => {
+    if (!e.persisted) return;
+    sweepSignetArtefacts();
+  });
   window.addEventListener('pageshow', e => {
     if (!e.persisted) return;
     sweepSignetArtefacts();
