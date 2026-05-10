@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "sync-sdk": "if [ -f ../signet-login/dist/signet-login.iife.js ]; then cp ../signet-login/dist/signet-login.iife.js public/signet-login.iife.js; else echo 'sync-sdk: signet-login sibling not present, using committed copy'; fi",
     "gen-backgrounds": "tsx tools/generate-backgrounds.ts",
-    "optimise-backgrounds": "tsx tools/optimise-backgrounds.ts"
+    "optimise-backgrounds": "tsx tools/optimise-backgrounds.ts",
+    "gen-logo": "tsx tools/generate-logo.ts"
   },
   "dependencies": {
     "qrcode": "^1.5.4"
