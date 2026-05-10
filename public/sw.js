@@ -11,14 +11,20 @@
  * Bump SW_VERSION below to invalidate all caches on the next visit.
  */
 
-const SW_VERSION = 'v1';
+const SW_VERSION = 'v2';
 const CACHE_HTML = `pallasite-html-${SW_VERSION}`;
 const CACHE_ASSET = `pallasite-asset-${SW_VERSION}`;
 
 self.addEventListener('install', () => {
-  // Skip waiting so the new SW activates the moment the user reloads,
-  // rather than only after every tab closes.
-  self.skipWaiting();
+  // Don't auto-skipWaiting — the page detects the waiting worker and prompts
+  // the user to reload. They confirm, the page posts SKIP_WAITING, then this
+  // worker activates and controllerchange triggers a clean reload.
+});
+
+self.addEventListener('message', event => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener('activate', event => {

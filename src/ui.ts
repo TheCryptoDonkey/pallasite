@@ -39,6 +39,40 @@ export function clearOverlay(): void {
   root.innerHTML = '';
 }
 
+/**
+ * Floating banner that appears when the service worker has a new version
+ * waiting. Tap RELOAD → posts SKIP_WAITING to the worker → controllerchange
+ * triggers a clean reload into the new build.
+ */
+export function showUpdateBanner(onReload: () => void): void {
+  if (document.getElementById('pal-update-banner')) return;
+  const banner = document.createElement('div');
+  banner.id = 'pal-update-banner';
+  banner.style.cssText = [
+    'position:fixed',
+    'top:max(12px, env(safe-area-inset-top, 0px))',
+    'left:50%', 'transform:translateX(-50%)',
+    'z-index:200',
+    'background:rgba(10,4,24,0.95)',
+    'border:2px solid #ffd84a', 'border-radius:10px',
+    'padding:12px 16px',
+    "font-family:'VT323',ui-monospace,monospace",
+    'font-size:1rem', 'letter-spacing:0.12em',
+    'color:#ffd84a',
+    'text-shadow:0 0 8px rgba(255,216,74,0.6)',
+    'box-shadow:0 0 20px rgba(255,216,74,0.35)',
+    'display:flex', 'gap:14px', 'align-items:center',
+    'pointer-events:auto',
+  ].join(';');
+  banner.innerHTML = `<span>NEW VERSION READY</span><button type="button" style="font-family:inherit;font-size:0.95rem;letter-spacing:0.18em;padding:6px 14px;background:rgba(255,216,74,0.15);border:1px solid #ffd84a;color:#ffd84a;border-radius:6px;cursor:pointer;">RELOAD</button>`;
+  banner.querySelector('button')!.addEventListener('click', () => {
+    banner.querySelector('span')!.textContent = 'UPDATING...';
+    (banner.querySelector('button') as HTMLButtonElement).disabled = true;
+    onReload();
+  });
+  document.body.appendChild(banner);
+}
+
 function escapeHtml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }

@@ -232,11 +232,17 @@ export interface DeathReplay {
   startedAt: number;
   /** Captured game-time span, ms — last sample.t minus first sample.t.
    *  This is the SNAPSHOT span; the actual playback runs an additional
-   *  REPLAY_EXPLOSION_MS past this to render the synthetic ship explosion. */
+   *  REPLAY_EXPLOSION_MS past this to render the death explosion. */
   spanMs: number;
-  /** Where the ship exploded — synthesised explosion centre for the post-
-   *  buffer extension. Captured in killShip from the ship's last position. */
+  /** Where the ship exploded — explosion centre for the post-buffer
+   *  re-spawn. Captured in killShip from the ship's last position. */
   explosionAt: Vec2;
+  /** Ship snapshot at the moment of death — replays use this to re-spawn
+   *  the same particle burst + line-segment debris that killShip emitted
+   *  during live play, so the cinematic matches exactly. */
+  explosionShip: { pos: Vec2; vel: Vec2; rot: number };
+  /** Guard so the impact-frame spawn fires once per replay loop. */
+  explosionSpawned: boolean;
 }
 
 export interface GameState {

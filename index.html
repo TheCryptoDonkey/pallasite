@@ -23,14 +23,7 @@
   <!-- signet-login SDK (IIFE bundle attaches login/restoreSession/logout to window.Signet) -->
   <script src="/signet-login.iife.js"></script>
   <script type="module" src="/src/main.ts"></script>
-  <script>
-    // Register the service worker after the page loads — keeps the boot path
-    // unchanged for users without SW support and avoids racing first paint.
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js').catch(() => { /* registration failures are non-fatal */ });
-      });
-    }
-  </script>
+  <!-- Service worker registration moved to main.ts so the update-detection
+       hook can talk to the in-app UI directly. -->
 </body>
 </html>

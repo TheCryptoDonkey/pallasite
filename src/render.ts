@@ -1568,46 +1568,6 @@ function replayGameTime(spanMs: number, wallElapsed: number): number {
   return Math.min(spanMs + REPLAY_EXPLOSION_MS, fastGameTime + slowWall * REPLAY_SLOW_RATE);
 }
 
-/**
- * Synthetic explosion bloom for the replay tail. `t` is 0..1 progress
- * over REPLAY_EXPLOSION_MS. Three expanding rings + radial sparks; no
- * shadowBlur (cheap and crisp at slow-mo). Renders at the ship's death
- * position so the replay genuinely shows the moment of impact.
- */
-function drawSyntheticExplosion(ctx: CanvasRenderingContext2D, centre: { x: number; y: number }, t: number): void {
-  ctx.save();
-  ctx.translate(centre.x, centre.y);
-  // Outer green shock ring (ship colour)
-  for (let ring = 0; ring < 3; ring++) {
-    const phase = Math.min(1, Math.max(0, (t - ring * 0.12) / 0.55));
-    if (phase <= 0 || phase >= 1) continue;
-    const r = 8 + phase * 80;
-    const alpha = (1 - phase) * 0.85;
-    ctx.globalAlpha = alpha;
-    ctx.strokeStyle = ring === 0 ? '#ffffff' : ring === 1 ? '#ffd84a' : '#58ff58';
-    ctx.lineWidth = 2.4;
-    ctx.beginPath();
-    ctx.arc(0, 0, r, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-  // Radial sparks — 12 short lines fanning out
-  ctx.lineWidth = 1.6;
-  ctx.lineCap = 'round';
-  const sparkOut = 10 + t * 70;
-  const sparkIn = sparkOut - 12;
-  ctx.globalAlpha = (1 - t) * 0.95;
-  ctx.strokeStyle = '#ffd84a';
-  for (let i = 0; i < 12; i++) {
-    const a = (Math.PI * 2 * i) / 12;
-    const cos = Math.cos(a), sin = Math.sin(a);
-    ctx.beginPath();
-    ctx.moveTo(cos * sparkIn, sin * sparkIn);
-    ctx.lineTo(cos * sparkOut, sin * sparkOut);
-    ctx.stroke();
-  }
-  ctx.restore();
-}
-
 function pickSnapshot(snapshots: ReplaySnapshot[], gameTime: number): ReplaySnapshot {
   const baseT = snapshots[0].t;
   const targetT = baseT + gameTime;
@@ -1647,13 +1607,12 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
     drawShip(ctx, fauxShip, now);
   }
 
-  // Synthetic explosion bloom — fires past the captured span as the
-  // replay's grand finale. Replicates the kill moment with concentric
-  // rings + radial sparks at the ship's last position.
-  if (gameTime > dr.spanMs) {
-    const t = Math.min(1, (gameTime - dr.spanMs) / REPLAY_EXPLOSION_MS);
-    drawSyntheticExplosion(ctx, dr.explosionAt, t);
-  }
+  // Real death-explosion: particles + ship debris that updateGame re-spawns
+  // when replay-time crosses the impact frame. Same composition as killShip
+  // during live play so the cinematic matches exactly. The synthetic ring
+  // overlay is gone — particles + debris carry the moment.
+  drawParticles(ctx, state.particles);
+  drawDebris(ctx, state.debris);
 
   // Red vignette — softer at the centre, stronger at the edges
   const grad = ctx.createRadialGradient(WORLD_W / 2, WORLD_H / 2, 180, WORLD_W / 2, WORLD_H / 2, 620);
