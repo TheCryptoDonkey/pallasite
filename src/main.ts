@@ -12,7 +12,7 @@ import { render, preloadBackground, setRenderMode } from './render.js';
 import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding } from './ui.js';
 import { handleAuthCallback, tryRestore, sweepSignetArtefacts } from './auth.js';
 import * as audio from './audio.js';
-import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicForceRefresh } from './music.js';
+import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicForceRefresh, musicStop } from './music.js';
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, setDisplayMode } from './display.js';
@@ -370,6 +370,14 @@ window.addEventListener('pointerdown', () => {
 // so the title track's .play() is re-issued under the gesture.
 const firstUnlock = (): void => {
   void audio.unlockAudio();
+  // The loop's earliest tick already attempted crossfadeTo('pallasite-idle')
+  // and set currentId to it even though the play() rejected (no gesture yet).
+  // A naive musicSetTrackForState now would resolve back to the same id,
+  // hit the `id === currentId` early-return in crossfadeTo, and never re-
+  // issue play(). Force currentId to null with musicStop(0), then let the
+  // state-driven path re-resolve and play the title track within this
+  // gesture.
+  musicStop(0);
   musicForceRefresh();
   musicSetTrackForState(state);
   window.removeEventListener('pointerdown', firstUnlock);
