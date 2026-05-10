@@ -395,8 +395,11 @@ export const WORLD_H = 720;
 
 /** Inter-wave warp transition duration. Drives the visual envelope in render
  *  (drawWarp uses elapsed/WARP_MS) and the setTimeout in startWarp that calls
- *  beginWave. Long enough for warp-transition.opus to actually be heard. */
-export const WARP_MS = 3000;
+ *  beginWave. Sized to fit warp-transition.opus (14.5s) so the track plays
+ *  through end-to-end. Skippable from WARP_SKIP_AFTER_MS onward. */
+export const WARP_MS = 14000;
+/** Earliest tap/key after warp begins that can skip the rest of the transition. */
+export const WARP_SKIP_AFTER_MS = 1000;
 
 export const SHIP_RADIUS = 12;
 export const SHIP_THRUST = 240;       // px/s²

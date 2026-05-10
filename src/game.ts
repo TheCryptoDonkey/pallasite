@@ -13,7 +13,7 @@ import {
   REPLAY_RECORD_INTERVAL_MS, REPLAY_BUFFER_FRAMES, REPLAY_TOTAL_WALL_MS, REPLAY_EXPLOSION_WALL_MS,
   REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS,
   LURK_CENTRE_RADIUS_PX, LURK_VEL_THRESHOLD, LURK_DURATION_MS, LURK_TOAST_MS,
-  SAT_DROP_CHANCE_DENOM,
+  SAT_DROP_CHANCE_DENOM, WARP_SKIP_AFTER_MS,
 } from './types.js';
 import type { PickupKind } from './types.js';
 import type { ReplaySnapshot, Debris } from './types.js';
@@ -357,6 +357,15 @@ function startWarp(s: GameState, targetWave?: number): void {
       beginWave(s, next);
     }
   }, WARP_MS);
+}
+
+/** Cut a long warp short on user input. No-op outside warp or before the
+ *  skip window opens (so accidental taps right at warp-start don't skip). */
+export function skipWarp(s: GameState): void {
+  if (s.phase !== 'warp') return;
+  const elapsed = performance.now() - s.phaseStart;
+  if (elapsed < WARP_SKIP_AFTER_MS) return;
+  beginWave(s, s.warpTargetWave);
 }
 
 /** Cheat: skip to a specific wave. Clears stage, kicks off warp. */
