@@ -63,4 +63,11 @@ declare module 'signet-login' {
     expiresAt?: number;
     displayName?: string;
   }
+
+  /** Result shape from Signet.handleRedirectCallback(). */
+  export type ConsumeCallbackResult =
+    | { kind: 'session'; session: SignetSession }
+    | { kind: 'denied' }
+    | { kind: 'no-callback' }
+    | { kind: 'invalid'; reason: string };
 }
