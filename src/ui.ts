@@ -301,11 +301,13 @@ export function renderTitle(state: GameState): void {
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
 
-  // Warm the leader-ghost cache so the in-game LEADER chip can render the
-  // moment IGNITE fires. Daily mode scopes to today's seed so the chip
-  // races a same-RNG ghost; outside daily we pull the global top. The
-  // ship-overlay (v2) only surfaces in daily mode.
-  prefetchTopGhost(getActiveSeed());
+  // Warm both leader-ghost cache slots: today's seed (for the daily-mode
+  // race + chip) and the global top (for the title attract-loop and
+  // non-daily races). Both go into the cache so whichever mode the player
+  // chooses on IGNITE has a hot ghost. getActiveSeed isn't usable here —
+  // the seed only locks on IGNITE — so we read the stored preference
+  // directly to anticipate.
+  prefetchTopGhost(getStoredDailyPref() ? todayUTC() : null);
 
   // Wordmark image rendered with mix-blend-mode: screen so the baked-in
   // black starfield bg drops out and only the green lettering floats over
