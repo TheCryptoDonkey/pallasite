@@ -39,18 +39,31 @@ const DEFAULTS: A11ySettings = { reducedMotion: 'auto', palette: 'default' };
 let settings: A11ySettings = load();
 const listeners = new Set<() => void>();
 
+function defaultsForDevice(): A11ySettings {
+  // Mobile-first default: high-contrast palette tracks better on small
+  // screens where the four asteroid hues blur into each other under glare
+  // and motion. Desktop keeps the default palette since the larger canvas
+  // and steadier viewing conditions already separate the colours cleanly.
+  if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) {
+    return { ...DEFAULTS, palette: 'high-contrast' };
+  }
+  return { ...DEFAULTS };
+}
+
 function load(): A11ySettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { ...DEFAULTS };
+    if (!raw) return defaultsForDevice();
     const parsed = JSON.parse(raw) as Partial<A11ySettings>;
+    const fallback = defaultsForDevice();
     return {
       reducedMotion: parsed.reducedMotion === 'on' || parsed.reducedMotion === 'off'
-        ? parsed.reducedMotion : DEFAULTS.reducedMotion,
-      palette: parsed.palette === 'high-contrast' ? 'high-contrast' : DEFAULTS.palette,
+        ? parsed.reducedMotion : fallback.reducedMotion,
+      palette: parsed.palette === 'high-contrast' || parsed.palette === 'default'
+        ? parsed.palette : fallback.palette,
     };
   } catch {
-    return { ...DEFAULTS };
+    return defaultsForDevice();
   }
 }
 
