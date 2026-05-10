@@ -459,6 +459,14 @@ export interface GameState {
   missedShotsThisWave: number;
   ufoSpawnedThisWave: boolean;
   ufoKilledThisWave: boolean;
+
+  /** Per-wave UFO kill counter, used by set-piece waves whose clear
+   *  condition is "kill N UFOs" rather than "clear the asteroids". */
+  ufoKillsThisWave: number;
+
+  /** Active target kill count for the bullet-curtain set-piece (wave 12).
+   *  0 when not on a curtain wave. */
+  bulletCurtainKillTarget: number;
 }
 
 /** A single (t, score) pacing point. t is ms since startGame. */

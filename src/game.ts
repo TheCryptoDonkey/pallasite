@@ -114,6 +114,8 @@ export function makeInitialState(): GameState {
     missedShotsThisWave: 0,
     ufoSpawnedThisWave: false,
     ufoKilledThisWave: false,
+    ufoKillsThisWave: 0,
+    bulletCurtainKillTarget: 0,
   };
 }
 
@@ -329,6 +331,107 @@ function randomEdgePosition(): EdgeSpawn {
   }
 }
 
+/**
+ * Hand-authored set piece for a specific wave. Three slots used so far —
+ * one heist, one bullet curtain, one boss-intro reuse — each replaces the
+ * default procedural fill at fixed wave numbers to give the campaign a
+ * memorable beat between the procedural waves.
+ */
+interface WaveSetPiece {
+  /** Custom wave setup — replaces the default asteroid spawn loop. */
+  setup(s: GameState): void;
+  /** Per-frame hook for waves with active spawning logic (e.g. curtain
+   *  respawning UFOs as the player kills them). Called from updateGame
+   *  after the standard ufo update. */
+  tick?(s: GameState, dt: number): void;
+  /** Override the wave-clear check. Defaults to "no asteroids alive". */
+  isCleared?(s: GameState): boolean;
+  /** Suppress the default placeWaveMines pass — set pieces with custom
+   *  mine layouts use this so the procedural mines don't pile on. */
+  suppressDefaultMines?: boolean;
+  /** Suppress the standard UFO respawn timer — curtain/heist pieces
+   *  drive spawns themselves via tick() so the loop's automatic spawn
+   *  shouldn't fire. */
+  suppressDefaultUfos?: boolean;
+  /** Display tag shown on the wavestart banner. */
+  banner?: string;
+}
+
+const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
+  // Wave 5 — Pallasite Heist. A single large pallasite parked at centre
+  // ringed by mines. Player must navigate the ring (or warp through) for
+  // a fat sat payout. No other asteroids; no procedural mines on top.
+  5: {
+    setup(s) {
+      const cx = WORLD_W / 2, cy = WORLD_H / 2;
+      s.asteroids.push(spawnAsteroid('large', s.wave, { x: cx, y: cy }, { x: 0, y: 0 }, 'pallasite'));
+      const ringR = 110;
+      for (let i = 0; i < 3; i++) {
+        const angle = (Math.PI * 2 * i) / 3 + Math.PI / 6;
+        s.mines.push(makeMine({ x: cx + Math.cos(angle) * ringR, y: cy + Math.sin(angle) * ringR }));
+      }
+    },
+    suppressDefaultMines: true,
+    banner: 'PALLASITE HEIST',
+  },
+
+  // Wave 12 — Bullet Curtain. No asteroids. Cruisers respawn as they die,
+  // up to a target kill count. Pure dodge wave — the player has to read
+  // bullet patterns instead of clearing rocks.
+  12: {
+    setup(s) {
+      s.bulletCurtainKillTarget = 6;
+      // Two starters from opposite sides. Push directly so we control y
+      // and dir rather than the random spawnUfo placement.
+      s.ufos.push(makeCurtainCruiser(s, 1));
+      s.ufos.push(makeCurtainCruiser(s, -1));
+      s.ufoSpawnedThisWave = true;
+    },
+    tick(s, dt) {
+      void dt;
+      if (s.ufoKillsThisWave >= s.bulletCurtainKillTarget) return;
+      const aliveMinions = s.ufos.filter(u => u.alive && u.type !== 'boss').length;
+      // Keep two cruisers in play until the kill target is reached.
+      if (aliveMinions < 2 && (s.ufoKillsThisWave + aliveMinions) < s.bulletCurtainKillTarget) {
+        const dir: 1 | -1 = Math.random() < 0.5 ? 1 : -1;
+        s.ufos.push(makeCurtainCruiser(s, dir));
+      }
+    },
+    isCleared(s) {
+      return s.ufoKillsThisWave >= s.bulletCurtainKillTarget
+          && s.ufos.every(u => !u.alive || u.type === 'boss');
+    },
+    suppressDefaultMines: true,
+    suppressDefaultUfos: true,
+    banner: 'BULLET CURTAIN',
+  },
+};
+
+/** Spawn a curtain cruiser from the visible band edge (so they enter
+ *  on-screen on phones too) with the standard cruiser stats. */
+function makeCurtainCruiser(s: GameState, dir: 1 | -1): Ufo {
+  const visBounds = getVisibleBoundsW();
+  const y = visBounds.top + (visBounds.bottom - visBounds.top) * (0.25 + gameRng() * 0.5);
+  const x = dir === 1 ? visBounds.left - UFO_RADIUS.cruiser : visBounds.right + UFO_RADIUS.cruiser;
+  const speed = UFO_SPEED.cruiser;
+  void s;  // touched for symmetry / future use
+  return {
+    pos: { x, y },
+    vel: { x: dir * speed, y: 0 },
+    radius: UFO_RADIUS.cruiser,
+    alive: true,
+    type: 'cruiser',
+    hp: UFO_HP.cruiser,
+    dir,
+    zigTimer: UFO_ZIG_INTERVAL_MS,
+    shootTimer: 1100,
+    lifetime: UFO_LIFETIME_MS,
+    blink: 0,
+    hitFlash: 0,
+    bossPhase: 1,
+  };
+}
+
 export function beginWave(s: GameState, wave: number): void {
   s.wave = wave;
   // Wave-end bonus tracking — reset every wave so each one stands on its own.
@@ -337,6 +440,8 @@ export function beginWave(s: GameState, wave: number): void {
   s.missedShotsThisWave = 0;
   s.ufoSpawnedThisWave = false;
   s.ufoKilledThisWave = false;
+  s.ufoKillsThisWave = 0;
+  s.bulletCurtainKillTarget = 0;
   // 1979 homage: each new wave re-centres the ship and grants brief invuln,
   // matching the original arcade behaviour. Skips on wave 1 (startGame already
   // placed the ship there) but harmless to repeat.
@@ -349,7 +454,10 @@ export function beginWave(s: GameState, wave: number): void {
     s.ship.rot = -Math.PI / 2;
     s.ship.invulnerableUntil = performance.now() + SHIP_INVULN_MS;
   }
-  if (wave === FINAL_WAVE) {
+  const setPiece = WAVE_SET_PIECES[wave];
+  if (setPiece) {
+    setPiece.setup(s);
+  } else if (wave === FINAL_WAVE) {
     // Wave 25: BOSS arena — spawn boss + lighter asteroid garnish
     s.ufos.push(makeBossUfo());
     audio.ufoSirenStart();
@@ -363,8 +471,8 @@ export function beginWave(s: GameState, wave: number): void {
       s.asteroids.push(spawnAsteroid('large', wave));
     }
   }
-  // Place static mines for this wave (deterministic per wave so player can learn the layout)
-  placeWaveMines(s, wave);
+  // Place static mines for this wave unless the set piece supplied its own.
+  if (!setPiece?.suppressDefaultMines) placeWaveMines(s, wave);
   // Switch to wavestart unconditionally — the warp transition is done by the
   // time beginWave fires (1300ms after startWarp), so leaving phase='warp' just
   // suppresses the cinematic drawWaveBanner that wave 1 gets. Wave 1 from a
@@ -1003,6 +1111,7 @@ function damageUfo(s: GameState, u: Ufo): void {
 function destroyUfo(s: GameState, u: Ufo): void {
   u.alive = false;
   s.ufoKilledThisWave = true;
+  if (u.type !== 'boss') s.ufoKillsThisWave += 1;
   s.runStats.ufoKills[u.type] += 1;
   const mul = recordCombo(s, performance.now());
   // Risk-proximity also pays out on UFO kills — sniping from safety is fine,
@@ -1799,17 +1908,22 @@ export function updateGame(s: GameState, dt: number, now: number): void {
 
   // ── UFOs (boss never replaced; minions spawn alongside on boss wave) ──
   // Easy mode boss arena gets no sniper minions — the boss + its mine ring
-  // is enough fight on its own. Normal and hard keep the harassment.
+  // is enough fight on its own. Set-piece waves with their own UFO logic
+  // (curtain) also suppress the default spawn timer.
   const mods = currentMods();
   const easyBossArena = s.wave === FINAL_WAVE && currentDifficulty() === 'easy';
+  const setPiece = WAVE_SET_PIECES[s.wave];
+  const suppressSpawn = easyBossArena || setPiece?.suppressDefaultUfos === true;
   const minionCount = s.ufos.filter(u => u.type !== 'boss').length;
   s.nextUfoSpawn -= dt * 1000;
-  if (!easyBossArena && s.nextUfoSpawn <= 0 && minionCount === 0) {
+  if (!suppressSpawn && s.nextUfoSpawn <= 0 && minionCount === 0) {
     spawnUfo(s);
     const baseInterval = Math.max(UFO_RESPAWN_MIN_MS, UFO_RESPAWN_BASE_MS - s.wave * UFO_RESPAWN_PER_WAVE_MS);
     s.nextUfoSpawn = baseInterval * mods.ufoIntervalMul;
   }
   updateUfos(s, dt);
+  // Set-piece per-frame tick — curtain respawns cruisers as they die.
+  setPiece?.tick?.(s, dt);
 
   // ── Mines (static — placed once at wave start by placeWaveMines) ──
   updateMines(s, dt, now);
@@ -2117,6 +2231,11 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   // Wave clear? Trigger warp transition (or completion if wave 25 boss is down).
   if (s.phase === 'playing') {
     const asteroidsClear = s.asteroids.length === 0;
+    const setPiece = WAVE_SET_PIECES[s.wave];
+    // Set-piece waves can override the clear condition (e.g. bullet curtain
+    // clears on UFO kill count, not on empty asteroid array). Falls back to
+    // the standard asteroidsClear check.
+    const cleared = setPiece?.isCleared ? setPiece.isCleared(s) : asteroidsClear;
     if (s.wave === FINAL_WAVE) {
       // Wave 25 completion: boss down AND the arena is fully clean. Mopping
       // up the lingering asteroids and UFO escorts after the kill is the
@@ -2125,7 +2244,7 @@ export function updateGame(s: GameState, dt: number, now: number): void {
       if (s.bossDefeated && asteroidsClear && ufosClear) {
         triggerCompletion(s);
       }
-    } else if (asteroidsClear) {
+    } else if (cleared) {
       // Award NO SHIELD / NO MISS / PACIFIST UFO bonuses before clearing the
       // stage so the per-wave flags still reflect what the player did. The
       // toast lands a beat before warp so the bonuses register.
