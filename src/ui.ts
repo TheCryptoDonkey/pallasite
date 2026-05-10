@@ -22,6 +22,7 @@ import { renderLegalFooter, openTermsModal } from './legal.js';
 import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow } from './game.js';
 import * as audio from './audio.js';
 import { listTracks, currentTrackId, musicPreviewPlay, musicForceRefresh, musicStop } from './music.js';
+import { getMusicAnalyser } from './audio.js';
 import { fetchProfile, getCachedProfile, bestName } from './profile.js';
 import { type Difficulty, getStoredDifficulty, setStoredDifficulty, lockInDifficulty } from './difficulty.js';
 import { getStoredDailyPref, setStoredDailyPref, todayUTC, getActiveSeed } from './seed.js';
@@ -1418,6 +1419,51 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
   el('h2', { parent: overlay, text: 'PALLASITE TRACKS' });
   const sub = el('p', { parent: overlay, text: 'Drift through the score.' });
   sub.style.cssText = 'font-size:0.95rem;letter-spacing:0.2em;color:var(--hud-yellow);margin:-12px 0 6px;';
+
+  // Waveform — frequency-bin bars driven by the music bus's analyser tap.
+  // Lives just above the track list so the active track has a visible
+  // signal of being heard. Reduced-motion: still drawn, just at lower
+  // frame cadence (the bars are per-frame, not animation, so they're not
+  // really motion in the reduced-motion sense — leave on).
+  const vizWrap = el('div', { parent: overlay });
+  vizWrap.style.cssText = 'display:flex;justify-content:center;width:100%;max-width:420px;';
+  const canvas = el('canvas', { parent: vizWrap, attrs: { width: '420', height: '64' } }) as HTMLCanvasElement;
+  canvas.style.cssText = 'width:100%;max-width:420px;height:64px;border-radius:8px;background:rgba(180,140,255,0.04);border:1px solid rgba(180,140,255,0.18);';
+  const drawViz = (): void => {
+    if (!document.body.contains(canvas)) return;  // stop when overlay torn down
+    const analyser = getMusicAnalyser();
+    const cctx = canvas.getContext('2d');
+    if (!cctx) return;
+    const bins = analyser.frequencyBinCount;
+    const data = new Uint8Array(bins);
+    analyser.getByteFrequencyData(data);
+    const w = canvas.width;
+    const h = canvas.height;
+    cctx.clearRect(0, 0, w, h);
+    const barCount = 48;
+    const stride = Math.floor(bins / barCount);
+    const bw = w / barCount;
+    for (let i = 0; i < barCount; i++) {
+      // Sample a small slice for smoother visual; skip top bins (mostly noise).
+      let acc = 0;
+      const start = i * stride;
+      for (let j = 0; j < stride; j++) acc += data[start + j];
+      const avg = acc / stride;
+      const v = avg / 255;
+      const barH = Math.max(1, v * (h - 4));
+      const x = i * bw + 1;
+      const y = h - barH;
+      // Yellow → purple gradient by bin index for some life.
+      const t = i / barCount;
+      const r = Math.round(255 * (1 - t) + 180 * t);
+      const g = Math.round(216 * (1 - t) + 140 * t);
+      const b = Math.round(74  * (1 - t) + 255 * t);
+      cctx.fillStyle = `rgba(${r},${g},${b},0.85)`;
+      cctx.fillRect(x, y, bw - 2, barH);
+    }
+    requestAnimationFrame(drawViz);
+  };
+  requestAnimationFrame(drawViz);
 
   const list = el('div', { parent: overlay });
   list.style.cssText = 'display:flex;flex-direction:column;gap:8px;width:100%;max-width:420px;';
