@@ -403,6 +403,10 @@ export function renderPause(state?: GameState): void {
   const row = el('div', { className: 'menu-row', parent: overlay });
   const resume = el('button', { className: 'menu-btn', parent: row, text: 'RESUME' });
   resume.addEventListener('click', () => onResumeCb?.());
+  // Focus RESUME so a single Enter press un-pauses without arrow-key navigation.
+  // setTimeout(0) defers past the keydown that opened the pause menu — otherwise
+  // the focus call races the same event and the button doesn't take focus.
+  setTimeout(() => resume.focus(), 0);
   const settings = el('button', { className: 'menu-btn secondary', parent: row, text: 'SETTINGS' });
   settings.addEventListener('click', () => renderSettings(() => renderPause(state)));
   if (state) {
