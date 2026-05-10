@@ -58,6 +58,33 @@ export function clearOverlay(): void {
   root.innerHTML = '';
 }
 
+/**
+ * Bind a tap handler that fires reliably on touch devices.
+ *
+ * `click` alone is unreliable on iOS/Android when the body cascade is
+ * `touch-action: none` and a tap happens to be reclassified mid-gesture
+ * by the browser. Listening to `pointerup` (filtered to non-mouse) catches
+ * those cases. A `firing` flag dedupes the rare device that fires both
+ * pointerup and click from a single tap. Mouse devices stay on click so
+ * desktop keyboard activation (Enter on focused button) still works.
+ */
+function onTap(btn: HTMLElement, fn: () => void): void {
+  let firing = false;
+  const run = (): void => {
+    if (firing) return;
+    firing = true;
+    try { fn(); } finally {
+      // Reset on the next microtask so a second deliberate tap after
+      // the handler completes still works.
+      Promise.resolve().then(() => { firing = false; });
+    }
+  };
+  btn.addEventListener('click', run);
+  btn.addEventListener('pointerup', e => {
+    if (e.pointerType !== 'mouse') run();
+  });
+}
+
 // ── First-run onboarding ─────────────────────────────────────────────────────
 
 const ONBOARDING_KEY = 'pallasite:onboarded';
@@ -2299,7 +2326,7 @@ async function maybePublishScore(
       if (ageCheckbox.checked) onAttested();
     });
     if (verifyBtn) {
-      verifyBtn.addEventListener('click', () => {
+      onTap(verifyBtn, () => {
         void (async () => {
           if (!window.Signet?.verifyAge) return;
           verifyBtn!.disabled = true;
@@ -2451,7 +2478,7 @@ async function maybePublishScore(
     setStatus('', '');
     showCompact();
   };
-  saveBtn.addEventListener('click', onSave);
+  onTap(saveBtn, onSave);
   input.addEventListener('keydown', (e: Event) => {
     if ((e as KeyboardEvent).key === 'Enter') {
       e.preventDefault();
@@ -2510,9 +2537,7 @@ async function maybePublishScore(
       setIdlePaused?.(false);
     }
   };
-  claimBtn.addEventListener('click', () => {
-    void onClaim();
-  });
+  onTap(claimBtn, () => { void onClaim(); });
 }
 
 // ── Completion screen (wave 25 cleared) ──────────────────────────────────────
@@ -2721,14 +2746,14 @@ function renderRunCredits(
   const row = el('div', { className: 'menu-row', parent: overlay });
   if (!opts.isCompletion) {
     const again = el('button', { className: 'menu-btn', parent: row, text: 'SPAWN AGAIN' });
-    again.addEventListener('click', () => {
+    onTap(again, () => {
       cleanup();
       startGame(state);
       onStartCb?.();
     });
     if (state.deathReplay) {
       const replay = el('button', { className: 'menu-btn secondary', parent: row, text: 'REPLAY KILL' });
-      replay.addEventListener('click', () => {
+      onTap(replay, () => {
         cleanup();
         clearOverlay();
         startDeathReplay(state, 'gameover');
@@ -2736,7 +2761,7 @@ function renderRunCredits(
     }
   } else {
     const again = el('button', { className: 'menu-btn', parent: row, text: 'IGNITE AGAIN' });
-    again.addEventListener('click', () => {
+    onTap(again, () => {
       cleanup();
       startGame(state);
       onStartCb?.();
@@ -2746,7 +2771,7 @@ function renderRunCredits(
   // Available to guests (no auth needed); complements the signed-in
   // SHARE / FOLLOW / ENDORSE row that publishes to Nostr relays.
   const shareBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'SHARE CARD' }) as HTMLButtonElement;
-  shareBtn.addEventListener('click', () => {
+  onTap(shareBtn, () => {
     shareBtn.disabled = true;
     shareBtn.style.opacity = '0.6';
     void shareRunCard(state).finally(() => {
@@ -2755,7 +2780,7 @@ function renderRunCredits(
     });
   });
   const home = el('button', { className: 'menu-btn secondary', parent: row, text: 'SKIP TO TITLE' });
-  home.addEventListener('click', goToTitle);
+  onTap(home, goToTitle);
 
   renderLegalFooter(overlay);
 }
@@ -2878,7 +2903,7 @@ function renderSocialActions(parent: HTMLElement, state: GameState): void {
       `box-shadow:0 0 10px ${colour}33`,
     ].join(';');
     if (!canSign) btn.style.opacity = '0.45';
-    btn.addEventListener('click', async () => {
+    onTap(btn, async () => {
       if (!canSign) {
         setStatus('Sign in with Bark or bunker to use Nostr actions.', '#ff8a3a');
         return;
@@ -2989,7 +3014,7 @@ function renderZapButton(parent: HTMLElement, state: GameState): void {
   for (const p of presets) {
     const btn = el('button', { parent: row, text: `⚡ ${p.label}` });
     btn.style.cssText = zapPresetStyle();
-    btn.addEventListener('click', () => quickZap(state, p.sats, btn));
+    onTap(btn, () => quickZap(state, p.sats, btn));
   }
 
   const custom = el('button', { parent: row, text: 'CUSTOM…' });
@@ -3005,7 +3030,7 @@ function renderZapButton(parent: HTMLElement, state: GameState): void {
     'border-radius:6px',
     'transition:all 0.12s ease',
   ].join(';');
-  custom.addEventListener('click', () => openZapModal(state));
+  onTap(custom, () => openZapModal(state));
 
   // Secondary Ko-fi link for signed-in players who'd rather pay via card —
   // no judgement, sats and ko-fi both fund the faucet float.
