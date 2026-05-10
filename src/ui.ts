@@ -40,6 +40,39 @@ export function clearOverlay(): void {
 }
 
 /**
+ * Wire arrow-key navigation across the focusable buttons in an overlay.
+ * ↑/← cycles to previous, ↓/→ to next, Enter/Space activates (browser default).
+ * No autofocus — user must Tab once or press an arrow to enter the cycle —
+ * which avoids fighting the global Enter-to-start handler in main.ts.
+ */
+function setupOverlayArrowNav(overlay: HTMLElement): void {
+  const handler = (e: KeyboardEvent): void => {
+    // Detach when the overlay leaves the DOM (next render replaces it).
+    if (!document.body.contains(overlay)) {
+      window.removeEventListener('keydown', handler);
+      return;
+    }
+    if (e.code !== 'ArrowUp' && e.code !== 'ArrowDown'
+     && e.code !== 'ArrowLeft' && e.code !== 'ArrowRight') return;
+    const buttons = Array.from(overlay.querySelectorAll<HTMLButtonElement>('button:not([disabled])'))
+      .filter(b => b.offsetParent !== null);  // skip hidden ones (e.g. joystick-mode buttons)
+    if (buttons.length === 0) return;
+    const active = document.activeElement as HTMLElement | null;
+    const idx = active ? buttons.indexOf(active as HTMLButtonElement) : -1;
+    if (idx === -1) {
+      // No button focused yet — first arrow keypress focuses the first button.
+      buttons[0].focus();
+    } else {
+      const dir = e.code === 'ArrowDown' || e.code === 'ArrowRight' ? 1 : -1;
+      const next = (idx + dir + buttons.length) % buttons.length;
+      buttons[next].focus();
+    }
+    e.preventDefault();
+  };
+  window.addEventListener('keydown', handler);
+}
+
+/**
  * Floating banner that appears when the service worker has a new version
  * waiting. Tap RELOAD → posts SKIP_WAITING to the worker → controllerchange
  * triggers a clean reload into the new build.
@@ -98,6 +131,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, opts?: {
 export function renderTitle(state: GameState): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
 
   // Wordmark image rendered with mix-blend-mode: screen so the baked-in
   // black starfield bg drops out and only the green lettering floats over
@@ -364,6 +398,7 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
 export function renderPause(state?: GameState): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
   el('h2', { parent: overlay, text: 'PAUSED' });
   const row = el('div', { className: 'menu-row', parent: overlay });
   const resume = el('button', { className: 'menu-btn', parent: row, text: 'RESUME' });
@@ -400,6 +435,7 @@ export function renderPause(state?: GameState): void {
 export function renderHowToPlay(onBack: () => void): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
   el('h2', { parent: overlay, text: 'HOW TO PLAY' });
 
   const tagline = el('p', { parent: overlay, text: 'Drift the orbit. Shoot rocks. Survive 25 waves.' });
@@ -475,6 +511,7 @@ export function renderHowToPlay(onBack: () => void): void {
 export function renderSettings(onBack: () => void): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
   el('h2', { parent: overlay, text: 'SETTINGS' });
   const sub = el('p', { parent: overlay, text: 'AUDIO' });
   sub.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:0 0 -8px;';
@@ -632,6 +669,7 @@ export function renderSettings(onBack: () => void): void {
 export function renderRelaySettings(onBack: () => void): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
   el('h2', { parent: overlay, text: 'NOSTR RELAYS' });
 
   const intro = el('p', { parent: overlay, text: 'Where this game publishes scores, follows, shares and zap requests. Toggle to disable, add your own, remove the ones you brought.' });
@@ -752,6 +790,7 @@ function shortRelay(url: string): string {
 export function renderGameOver(state: GameState): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
   el('h2', { parent: overlay, text: 'GAME OVER' });
 
   const board = el('div', { className: 'scoreboard', parent: overlay });
@@ -896,6 +935,7 @@ function formatRunTime(ms: number): string {
 export function renderCompletion(state: GameState): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
   overlay.style.background = 'rgba(0, 0, 0, 0.85)';
 
   // Staggered reveal: each section gets the .completion-stage class with an
