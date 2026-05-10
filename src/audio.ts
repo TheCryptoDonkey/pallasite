@@ -130,6 +130,31 @@ export async function unlockAudio(): Promise<void> {
   }
 }
 
+/**
+ * Suspend the AudioContext so nothing reaches the speakers while the page
+ * is hidden. iOS PWAs in particular can keep HTMLAudio elements playing in
+ * the background unless explicitly silenced; pair this with pausing the
+ * music elements (see music.ts:musicSetPaused) on visibilitychange.
+ *
+ * No-op when audio hasn't been unlocked yet (ctx may not exist) or the
+ * context is already suspended.
+ */
+export function suspendPlayback(): void {
+  if (ctx && ctx.state === 'running') {
+    void ctx.suspend().catch(() => undefined);
+  }
+}
+
+/**
+ * Reverse of suspendPlayback. Safe to call on a never-unlocked context;
+ * resumes only when the context is in the suspended state.
+ */
+export function resumePlayback(): void {
+  if (ctx && ctx.state === 'suspended') {
+    void ctx.resume().catch(() => undefined);
+  }
+}
+
 export function setMuted(value: boolean): void {
   settings.muted = value;
   saveSettings();

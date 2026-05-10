@@ -204,3 +204,25 @@ export function musicStop(fadeMs = DEFAULT_FADE_MS): void {
   crossfadeTo(null, fadeMs);
   lastAppliedKey = '';
 }
+
+/**
+ * Pause/resume music playback without changing the active track. Used by
+ * the visibilitychange handler so backgrounded PWAs go silent instead of
+ * decoding music in the background. On unpause only the currently active
+ * track resumes -- previously faded-out tracks stay paused so they don't
+ * suddenly play when the PWA returns.
+ */
+export function musicSetPaused(paused: boolean): void {
+  if (paused) {
+    for (const entry of loaded.values()) {
+      try { entry.el.pause(); } catch { /* ignore */ }
+    }
+    return;
+  }
+  if (currentId) {
+    const entry = loaded.get(currentId);
+    if (entry && !entry.failed) {
+      void entry.el.play().catch(() => undefined);
+    }
+  }
+}
