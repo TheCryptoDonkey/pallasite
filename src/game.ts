@@ -306,10 +306,11 @@ export function beginWave(s: GameState, wave: number): void {
   }
   // Place static mines for this wave (deterministic per wave so player can learn the layout)
   placeWaveMines(s, wave);
-  // Always preceded by a 'warp' phase except for wave 1 from a fresh start.
-  if (s.phase !== 'warp') {
-    s.phase = 'wavestart';
-  }
+  // Switch to wavestart unconditionally — the warp transition is done by the
+  // time beginWave fires (1300ms after startWarp), so leaving phase='warp' just
+  // suppresses the cinematic drawWaveBanner that wave 1 gets. Wave 1 from a
+  // fresh start lands here too because s.phase is 'title'.
+  s.phase = 'wavestart';
   s.phaseStart = performance.now();
   // Heartbeat speeds up with wave
   audio.setHeartbeatPeriod(Math.max(0.35, 1.0 - wave * 0.06));
