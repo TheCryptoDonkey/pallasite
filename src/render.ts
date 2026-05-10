@@ -1438,16 +1438,6 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState, now: number
     ctx.shadowOffsetY = 0;
   }
 
-  // Skip hint — visible only after the skip window opens. Quiet, off to bottom.
-  if (elapsed > 1200) {
-    ctx.globalAlpha = alpha * 0.55;
-    ctx.font = '12px ui-monospace, monospace';
-    ctx.fillStyle = '#9fb6ff';
-    ctx.shadowBlur = 0;
-    ctx.letterSpacing = '0.18em' as unknown as string;
-    ctx.fillText('TAP OR PRESS ANY KEY TO SKIP', WORLD_W / 2, WORLD_H / 2 + 112);
-  }
-
   ctx.restore();
 }
 
