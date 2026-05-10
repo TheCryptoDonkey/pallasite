@@ -369,21 +369,32 @@ window.addEventListener('blur', () => {
 // keep HTMLAudio elements decoding when the page is hidden, so the music
 // keeps playing after "closing" the app from the user's perspective.
 // Suspending the AudioContext silences any scheduled SFX/oscillators, and
-// musicSetPaused stops the underlying audio elements. Both reverse on
-// visibility return so the music picks back up where it was.
+// silenceMusicEls stops + mutes the underlying audio elements. We listen
+// on three events because iOS doesn't fire visibilitychange consistently
+// when a standalone PWA is swiped away — pagehide is the reliable signal,
+// and freeze (Page Lifecycle API) covers Chrome's discard path.
+function silenceAll(): void {
+  audio.thrustOff();
+  audio.ufoSirenStop();
+  audio.stopHeartbeat();
+  audio.stopAmbient();
+  musicSetPaused(true);
+  audio.suspendPlayback();
+}
+function resumeAll(): void {
+  audio.resumePlayback();
+  musicSetPaused(false);
+}
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') {
-    audio.resumePlayback();
-    musicSetPaused(false);
-  } else {
-    audio.thrustOff();
-    audio.ufoSirenStop();
-    audio.stopHeartbeat();
-    audio.stopAmbient();
-    musicSetPaused(true);
-    audio.suspendPlayback();
-  }
+  if (document.visibilityState === 'visible') resumeAll();
+  else silenceAll();
 });
+window.addEventListener('pagehide', silenceAll);
+window.addEventListener('pageshow', resumeAll);
+// Page Lifecycle API — Chromium discards a backgrounded tab. Last chance
+// to silence before the page is frozen and listeners stop firing.
+document.addEventListener('freeze', silenceAll);
+document.addEventListener('resume', resumeAll);
 
 // ── Game loop ─────────────────────────────────────────────────────────────────
 
