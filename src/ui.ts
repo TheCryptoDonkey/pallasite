@@ -374,7 +374,7 @@ export function renderTitle(state: GameState): void {
 function renderPoolChip(parent: HTMLElement): void {
   const wrapper = el('div', { parent });
   wrapper.style.cssText =
-    'display:flex;flex-direction:column;align-items:center;gap:2px;margin:6px 0 4px';
+    'display:flex;flex-direction:column;align-items:center;gap:4px;margin:6px 0 4px';
 
   const lineFloat = el('p', { parent: wrapper });
   const linePaid = el('p', { parent: wrapper });
@@ -384,6 +384,24 @@ function renderPoolChip(parent: HTMLElement): void {
   }
   lineFloat.textContent = 'Float: …';
   linePaid.textContent = 'Paid lifetime: …';
+
+  // Daily-faucet meter: thin horizontal bar + spent/cap text. Hidden until
+  // the first /api/pool response with daily_cap_sats arrives.
+  const meterWrap = el('div', { parent: wrapper });
+  meterWrap.style.cssText =
+    'display:none;flex-direction:column;align-items:center;gap:2px;width:200px;margin-top:4px';
+
+  const meterBar = el('div', { parent: meterWrap });
+  meterBar.style.cssText =
+    'width:100%;height:4px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden';
+
+  const meterFill = el('div', { parent: meterBar });
+  meterFill.style.cssText =
+    'height:100%;width:0%;background:#58ff58;transition:width 600ms ease,background 400ms ease';
+
+  const meterLabel = el('p', { parent: meterWrap });
+  meterLabel.style.cssText =
+    'font-size:0.72rem;color:rgba(180,180,180,0.7);letter-spacing:0.08em;margin:0';
 
   let intervalId: number | null = null;
 
@@ -397,6 +415,7 @@ function renderPoolChip(parent: HTMLElement): void {
       lineFloat.textContent = 'Faucet status unavailable';
       lineFloat.style.color = 'rgba(180,180,180,0.6)';
       linePaid.textContent = '';
+      meterWrap.style.display = 'none';
       return;
     }
     const lowFloat = pool.balance_sats < 1000;
@@ -412,6 +431,24 @@ function renderPoolChip(parent: HTMLElement): void {
       lineFloat.style.color = 'rgba(255,216,74,0.65)';
     }
     linePaid.textContent = `Paid lifetime: ${pool.total_paid_sats.toLocaleString()} sats`;
+
+    // Daily meter — green / amber / red as the cap fills.
+    if (typeof pool.daily_cap_sats === 'number' && pool.daily_cap_sats > 0) {
+      const spent = pool.daily_spent_sats ?? 0;
+      const pct = Math.min(100, Math.round((spent / pool.daily_cap_sats) * 100));
+      meterFill.style.width = `${pct}%`;
+      let colour = '#58ff58'; // green
+      if (pct >= 90) colour = '#ff5050';
+      else if (pct >= 60) colour = '#ffd84a';
+      meterFill.style.background = colour;
+      meterLabel.textContent =
+        pct >= 100
+          ? `Today's faucet drained — back tomorrow`
+          : `Today: ${spent.toLocaleString()} of ${pool.daily_cap_sats.toLocaleString()} sats`;
+      meterWrap.style.display = 'flex';
+    } else {
+      meterWrap.style.display = 'none';
+    }
   };
 
   void update();
@@ -636,30 +673,33 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
     });
   } else {
     el('p', { parent, text: 'Sign in with Nostr. Stake your name.' });
-    const row = el('div', { className: 'menu-row', parent });
-    const inBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'SIGN IN WITH NOSTR' });
     const status = el('p', { parent });
     status.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.85);min-height:1em;margin:0;letter-spacing:0.04em;';
-    inBtn.addEventListener('click', async () => {
+
+    const startSignIn = async (method: auth.SignInMethod, label: string): Promise<void> => {
       void audio.unlockAudio();
       // Live status — slow signers can take 5-15s on a cold start. Updating
       // this every second tells the user it's not frozen.
       let elapsed = 0;
-      status.textContent = 'Connecting…';
+      status.textContent = `${label}…`;
       status.style.color = 'rgba(180,140,255,0.85)';
       const ticker = window.setInterval(() => {
         elapsed += 1;
-        status.textContent = `Connecting to your signer (${elapsed}s)…`;
+        status.textContent = `${label} (${elapsed}s)…`;
       }, 1000);
       try {
-        const session = await auth.signIn();
+        const session = await auth.signIn(method);
         window.clearInterval(ticker);
         if (session) {
           status.textContent = '';
           state.session = session;
           renderSessionPanel(parent, state);
         } else {
-          status.textContent = 'No signer attached. Try a NIP-07 extension or your bunker URI.';
+          status.textContent = method === 'nip07'
+            ? 'No browser extension responded. Try Signet redirect or paste a bunker URI.'
+            : method === 'bunker'
+            ? 'Bunker connect cancelled.'
+            : 'Sign-in cancelled.';
           status.style.color = '#ff8a3a';
         }
       } catch (err) {
@@ -669,7 +709,23 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
           : `Sign-in failed: ${err instanceof Error ? err.message : String(err)}`;
         status.style.color = '#ff5050';
       }
-    });
+    };
+
+    // Three buttons stacked. Signet first (primary path on desktop and mobile);
+    // browser extension and bunker as the secondaries for power users.
+    const row = el('div', { className: 'menu-row', parent });
+    row.style.flexDirection = 'column';
+    row.style.gap = '6px';
+
+    const signetBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'SIGN IN WITH SIGNET' });
+    signetBtn.addEventListener('click', () => { void startSignIn('signet', 'Redirecting to Signet'); });
+
+    const extBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'BROWSER EXTENSION (NIP-07)' });
+    extBtn.addEventListener('click', () => { void startSignIn('nip07', 'Waiting for extension'); });
+
+    const bunkerBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'PASTE BUNKER URI (NIP-46)' });
+    bunkerBtn.addEventListener('click', () => { void startSignIn('bunker', 'Connecting to bunker'); });
+
     // Pressing IGNITE without signing in IS the guest path — no separate
     // GUEST DRIFT button needed. The session-status hint covers it.
     const hint = el('p', { parent, text: 'Or ignite as a guest — score-only, no sats.' });
