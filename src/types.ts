@@ -135,7 +135,25 @@ export interface Ufo extends Entity {
   blink: number;
   /** Hit flash decay (0..1) — flashes white on damage */
   hitFlash: number;
+  /** Boss-only: current phase (1, 2, or 3). Recomputed in damageUfo from HP
+   *  thresholds; a change fires the phase-transition juice. Non-boss UFOs
+   *  carry phase 1 trivially. */
+  bossPhase: 1 | 2 | 3;
 }
+
+/** Compute the boss phase from current HP. Three thresholds across the
+ *  25-HP fight: P1 = full health to 2/3, P2 = 2/3 to 1/3, P3 = final third.
+ *  Kept as a free function so render code can read it consistently. */
+export function bossPhaseForHp(hp: number): 1 | 2 | 3 {
+  if (hp > UFO_HP_BOSS_PHASE2) return 1;
+  if (hp > UFO_HP_BOSS_PHASE3) return 2;
+  return 3;
+}
+
+/** Boss HP at the start of each phase (exclusive lower bound). Tuned against
+ *  UFO_HP.boss = 25 so phases land roughly at 8 hits per phase. */
+export const UFO_HP_BOSS_PHASE2 = 17;
+export const UFO_HP_BOSS_PHASE3 = 9;
 
 /**
  * Pickup kinds. Two-tier economy:

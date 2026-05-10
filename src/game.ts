@@ -31,6 +31,7 @@ import {
   UFO_BULLET_SPEED, UFO_BULLET_TTL_MS, UFO_LIFETIME_MS,
   UFO_ZIG_INTERVAL_MS, UFO_POINTS, UFO_SATS,
   UFO_FIRST_SPAWN_MS, UFO_RESPAWN_BASE_MS, UFO_RESPAWN_PER_WAVE_MS, UFO_RESPAWN_MIN_MS,
+  bossPhaseForHp,
   UFO_TYPE_BY_WAVE,
   MINE_RADIUS, MINE_GRAVITY_RANGE, MINE_GRAVITY_STRENGTH, MINE_POINTS, MINE_SATS_DROP, MINE_HP_BASE,
   MINE_CANDIDATE_POSITIONS, MINE_COUNT_BY_WAVE,
@@ -591,6 +592,7 @@ function makeBossUfo(): Ufo {
     lifetime: Number.POSITIVE_INFINITY,
     blink: 0,
     hitFlash: 0,
+    bossPhase: 1,
   };
 }
 
@@ -621,6 +623,7 @@ function spawnUfo(s: GameState): void {
     lifetime: UFO_LIFETIME_MS,
     blink: 0,
     hitFlash: 0,
+    bossPhase: 1,
   });
   audio.ufoSirenStart();
 }
@@ -693,17 +696,29 @@ function updateUfos(s: GameState, dt: number): void {
     // Shoot
     u.shootTimer -= dt * 1000;
     if (u.shootTimer <= 0 && s.ship.alive) {
-      u.shootTimer = UFO_SHOOT_INTERVAL[u.type];
       if (u.type === 'tank') {
+        u.shootTimer = UFO_SHOOT_INTERVAL[u.type];
         ufoFanShoot(s, u, s.ship.pos);
       } else if (u.type === 'boss') {
-        // Boss alternates between aimed shots and fans, depending on HP
-        if (u.hp < UFO_HP.boss * 0.5 && Math.random() < 0.5) {
-          ufoFanShoot(s, u, s.ship.pos);
-        } else {
+        // Per-phase boss combat. Cadence accelerates and the attack mix
+        // escalates: P1 aimed, P2 alternates aimed+fan, P3 throws in radial
+        // bullet curtains on top so the player has to dance, not snipe.
+        if (u.bossPhase === 1) {
+          u.shootTimer = 900;
           ufoShootAt(s, u, s.ship.pos);
+        } else if (u.bossPhase === 2) {
+          u.shootTimer = 700;
+          if (Math.random() < 0.45) ufoFanShoot(s, u, s.ship.pos);
+          else ufoShootAt(s, u, s.ship.pos);
+        } else {
+          u.shootTimer = 500;
+          const roll = Math.random();
+          if (roll < 0.30) ufoRadialShoot(s, u);
+          else if (roll < 0.65) ufoFanShoot(s, u, s.ship.pos);
+          else ufoShootAt(s, u, s.ship.pos);
         }
       } else {
+        u.shootTimer = UFO_SHOOT_INTERVAL[u.type];
         ufoShootAt(s, u, s.ship.pos);
       }
     }
@@ -743,6 +758,31 @@ function ufoFanShoot(s: GameState, u: Ufo, target: Vec2): void {
   const speed = UFO_BULLET_SPEED * UFO_BULLET_SPEED_MUL.tank * mods.ufoBulletSpeedMul;
   for (const offset of [-0.32, 0, 0.32]) {
     const angle = baseAngle + offset + (gameRng() - 0.5) * 0.06;
+    s.enemyBullets.push({
+      pos: { x: u.pos.x, y: u.pos.y },
+      vel: { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed },
+      radius: BULLET_RADIUS + 1,
+      alive: true,
+      ttl: UFO_BULLET_TTL_MS,
+      pierceLeft: 0,
+      caromHit: false,
+      wrapped: false,
+      hasLanded: false,
+    });
+  }
+  audio.ufoShoot();
+}
+
+/** 8-spoke radial bullet curtain — boss phase-3 signature attack. Fires
+ *  evenly around the boss with a slight random rotation per volley so the
+ *  player can't memorise a single lane. */
+function ufoRadialShoot(s: GameState, u: Ufo): void {
+  const mods = currentMods();
+  const spokes = 8;
+  const baseRot = gameRng() * (Math.PI * 2);
+  const speed = UFO_BULLET_SPEED * UFO_BULLET_SPEED_MUL.boss * mods.ufoBulletSpeedMul * 0.85;
+  for (let i = 0; i < spokes; i++) {
+    const angle = baseRot + (Math.PI * 2 * i) / spokes;
     s.enemyBullets.push({
       pos: { x: u.pos.x, y: u.pos.y },
       vel: { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed },
@@ -889,10 +929,12 @@ function damageUfo(s: GameState, u: Ufo): void {
     bumpTrauma(s, 0.10);
   }
 
-  // Boss drops mines around itself at every 5 HP threshold
+  // Boss drops mines around itself at every 5 HP threshold (P1+P2 drop 3,
+  // P3 drops 5 because the bullet curtain isn't enough on its own).
   if (u.type === 'boss' && u.hp > 0 && u.hp % 5 === 0) {
-    for (let i = 0; i < 3; i++) {
-      const angle = (Math.PI * 2 * i) / 3 + Math.random() * 0.4;
+    const mineCount = u.bossPhase === 3 ? 5 : 3;
+    for (let i = 0; i < mineCount; i++) {
+      const angle = (Math.PI * 2 * i) / mineCount + Math.random() * 0.4;
       const dist = 90 + Math.random() * 40;
       const x = u.pos.x + Math.cos(angle) * dist;
       const y = u.pos.y + Math.sin(angle) * dist;
@@ -900,10 +942,29 @@ function damageUfo(s: GameState, u: Ufo): void {
         s.mines.push(makeMine({ x, y }));
       }
     }
-    // Phase transition — bigger punch + freeze frame so the mine deploy reads.
-    bumpTrauma(s, 0.45);
-    hitStop(s, 220);
+    bumpTrauma(s, 0.30);
+    hitStop(s, 140);
     toastNow(s, `BOSS: ${u.hp} HP · MINES DEPLOYED`);
+  }
+
+  // Boss phase transition — recompute phase from HP, and if it changed,
+  // fire the climactic juice: big freeze, fat trauma, particle burst around
+  // the boss, and a banked-style toast announcing the next phase. The
+  // attack pattern + fire cadence change is read off bossPhase from the
+  // ufo update loop and per-phase code paths below.
+  if (u.type === 'boss' && u.hp > 0) {
+    const next = bossPhaseForHp(u.hp);
+    if (next !== u.bossPhase) {
+      u.bossPhase = next;
+      bumpTrauma(s, 0.7);
+      hitStop(s, 320);
+      audio.pulseDuck(0.45, 280);
+      haptic('rumble');
+      // Phase-entry particle ring around the boss — red on P2, white-hot on P3.
+      const colour = next === 3 ? '#fff5d8' : '#ff5050';
+      spawnParticles(s, u.pos.x, u.pos.y, 40, colour, 280, 700);
+      toastNow(s, next === 3 ? 'EVENT HORIZON · CRITICAL' : 'EVENT HORIZON · ENRAGED');
+    }
   }
 
   if (u.hp <= 0) {
