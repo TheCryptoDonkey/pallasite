@@ -376,7 +376,31 @@ export interface GameState {
   /** Set by killShip on the final death; cleared by startGame. Lives across
    *  the gameover screen so the REPLAY button can re-trigger playback. */
   deathReplay: DeathReplay | null;
+
+  /** Per-run breakdown for the gameover / completion stat grid. Reset in
+   *  startGame, incremented at the relevant kill / pickup / fire sites in
+   *  game.ts. Surfaced on the name-entry stage; not persisted anywhere. */
+  runStats: RunStats;
 }
+
+/** Per-run telemetry surfaced on the gameover / completion stat grid. */
+export interface RunStats {
+  /** UFO kills broken down by type — lets the recap brag about boss/elite kills. */
+  ufoKills: Record<UfoType, number>;
+  /** Gravity mines destroyed by player bullets (shield contact doesn't count). */
+  minesDestroyed: number;
+  /** Largest active combo length reached this run. */
+  largestCombo: number;
+  /** Powerups collected (any type — drilling further is future work). */
+  powerupsCollected: number;
+}
+
+export const EMPTY_RUN_STATS: RunStats = {
+  ufoKills: { cruiser: 0, elite: 0, tank: 0, sniper: 0, boss: 0 },
+  minesDestroyed: 0,
+  largestCombo: 0,
+  powerupsCollected: 0,
+};
 
 /** Lurking easter egg — see GameState.lurking. Detection: ship within
  *  LURK_CENTRE_RADIUS_PX of dead centre AND speed below LURK_VEL_THRESHOLD.

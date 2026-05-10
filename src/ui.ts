@@ -1155,19 +1155,15 @@ export function renderGameOver(state: GameState): void {
 function renderGameOverNameEntry(state: GameState): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
-  // Deliberately *no* setupOverlayArrowNav here — we want arrow keys to
-  // belong exclusively to the arcade widget so the player can't tab away
-  // and lose the entry surface.
+  // Deliberately *no* setupOverlayArrowNav here — arrow keys belong to
+  // the arcade widget exclusively on this stage.
   el('h2', { parent: overlay, text: 'GAME OVER' });
 
   const rank = predictedLocalRank(state.score);
   const banner = el('p', { parent: overlay, text: `RANK ${String(rank).padStart(2, '0')} · NEW HIGH SCORE` });
-  banner.style.cssText = 'font-size:1.15rem;color:#ffd84a;letter-spacing:0.22em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:6px 0 -4px;';
+  banner.style.cssText = 'font-size:1.15rem;color:#ffd84a;letter-spacing:0.22em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:6px 0 4px;';
 
-  const scoreLabel = el('p', { parent: overlay, text: 'SCORE' });
-  scoreLabel.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:8px 0 -8px;';
-  const scoreValue = el('div', { parent: overlay, text: String(state.score) });
-  scoreValue.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:3.6rem;color:#ffd84a;letter-spacing:0.06em;line-height:1;";
+  renderRunStatGrid(overlay, state, { isCompletion: false });
 
   const inputRow = el('div', { className: 'menu-row', parent: overlay });
   renderArcadeInitials(inputRow, {
@@ -1180,9 +1176,7 @@ function renderGameOverNameEntry(state: GameState): void {
         at: new Date().toISOString(),
         pubkey: state.session?.pubkey,
       });
-      // Advance to the recap screen. The faucet/publish flow lives there;
-      // separating it from name entry avoids two competing focus targets.
-      renderGameOverRecap(state);
+      renderRunCredits(state, { headerText: 'GAME OVER' });
     },
   });
 
@@ -1191,56 +1185,9 @@ function renderGameOverNameEntry(state: GameState): void {
 }
 
 function renderGameOverRecap(state: GameState): void {
-  clearOverlay();
-  const overlay = el('div', { className: 'overlay', parent: root });
-  setupOverlayArrowNav(overlay);
-  el('h2', { parent: overlay, text: 'GAME OVER' });
-
-  const board = el('div', { className: 'scoreboard', parent: overlay });
-  // Guests see SCORE + WAVE only; SATS row is Nostr-mode-exclusive.
-  const rows: ReadonlyArray<readonly [string, number]> = state.session
-    ? [['SCORE', state.score], ['SATS', state.sats], ['WAVE', state.wave]]
-    : [['SCORE', state.score], ['WAVE', state.wave]];
-  for (const [k, v] of rows) {
-    el('div', { className: 'label', parent: board, text: k });
-    el('div', { className: 'value', parent: board, text: String(v) });
-  }
-
-  // Faucet/publish flow — only triggered for Nostr-mode runs. Guests see a
-  // sign-in CTA instead. The arcade-input commit (when relevant) already
-  // landed the local entry; this is the Nostr-side claim path.
-  if (state.session) maybePublishScore(state, overlay);
-
-  const list = getLocalHighScores();
-  if (list.length > 0) {
-    renderLeaderboardBlock(overlay, list, '— LOCAL HIGH SCORES —');
-  }
-
-  if (state.session) renderZapButton(overlay, state);
-
-  const row = el('div', { className: 'menu-row', parent: overlay });
-  const again = el('button', { className: 'menu-btn', parent: row, text: 'SPAWN AGAIN' });
-  again.addEventListener('click', () => {
-    state.session = state.session;  // preserve session
-    startGame(state);
-    onStartCb?.();
-  });
-  if (state.deathReplay) {
-    const replay = el('button', { className: 'menu-btn secondary', parent: row, text: 'REPLAY KILL' });
-    replay.addEventListener('click', () => {
-      clearOverlay();
-      startDeathReplay(state, 'gameover');
-      // The post-replay setTimeout will flip phase back to 'gameover'; the
-      // game loop's phase-change watcher then re-renders this overlay.
-    });
-  }
-  const home = el('button', { className: 'menu-btn secondary', parent: row, text: 'TO TITLE' });
-  home.addEventListener('click', () => {
-    state.phase = 'title';
-    renderTitle(state);
-  });
-
-  renderLegalFooter(overlay);
+  // Non-high-score gameovers land directly on the credits stage — no
+  // initials to enter, but the credits + zap flow still applies.
+  renderRunCredits(state, { headerText: 'GAME OVER' });
 }
 
 const LN_ADDRESS_KEY = 'pallasite:lightning_address';
@@ -1408,6 +1355,183 @@ function formatRunTime(ms: number): string {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
 
+/**
+ * Compact stat grid for the gameover / completion name-entry stages.
+ *
+ * Suppresses any zero-valued rows so a quick early death isn't crowded
+ * with " 0" placeholders, but always shows the load-bearing rows
+ * (score, run time, wave or specimens) so the player has the headline
+ * numbers before they enter initials.
+ */
+function renderRunStatGrid(
+  parent: HTMLElement,
+  state: GameState,
+  opts: { isCompletion?: boolean } = {},
+): void {
+  const board = el('div', { className: 'scoreboard', parent });
+  const rows: Array<readonly [string, string]> = [];
+  rows.push(['SCORE', state.score.toLocaleString()]);
+  // Sats only matter when there's a Nostr session — guests don't earn payouts.
+  if (state.session) rows.push(['SATS', `₿ ${state.sats.toLocaleString()}`]);
+  rows.push(['RUN TIME', formatRunTime(state.runTimeMs)]);
+  if (opts.isCompletion) {
+    rows.push(['SPECIMENS', '24 / 24']);
+  } else {
+    rows.push(['WAVE', `${state.wave} / 25`]);
+  }
+  const stats = state.runStats;
+  const ufoTotal = Object.values(stats.ufoKills).reduce((a, b) => a + b, 0);
+  if (ufoTotal > 0) rows.push(['UFOS DOWN', String(ufoTotal)]);
+  if (stats.minesDestroyed > 0) rows.push(['MINES CLEARED', String(stats.minesDestroyed)]);
+  if (stats.largestCombo >= 2) rows.push(['BEST COMBO', `×${stats.largestCombo}`]);
+  if (stats.powerupsCollected > 0) rows.push(['POWERUPS', String(stats.powerupsCollected)]);
+  for (const [k, v] of rows) {
+    el('div', { className: 'label', parent: board, text: k });
+    el('div', { className: 'value', parent: board, text: v });
+  }
+
+  // UFO type breakdown — only when at least one of the named types fell.
+  // Boss listed first so it pops, then descending difficulty order.
+  const types: Array<readonly [string, number]> = [
+    ['BOSS', stats.ufoKills.boss],
+    ['TANK', stats.ufoKills.tank],
+    ['ELITE', stats.ufoKills.elite],
+    ['SNIPER', stats.ufoKills.sniper],
+    ['UFO', stats.ufoKills.cruiser],
+  ];
+  const breakdown = types.filter(([, n]) => n > 0);
+  if (breakdown.length > 0) {
+    const line = el('p', { parent });
+    line.style.cssText = 'font-size:0.78rem;letter-spacing:0.18em;color:rgba(180,140,255,0.75);margin:6px 0 0;text-align:center;';
+    line.textContent = breakdown.map(([k, n]) => `${k} ×${n}`).join('  ·  ');
+  }
+}
+
+/**
+ * Unified post-run credits stage.
+ *
+ * Replaces the old gameover-recap and completion-recap screens with a
+ * single auto-scrolling credits screen that centres the zap CTA, kicks
+ * off the score-publish flow in the background, and either auto-returns
+ * to the title after `idleSeconds` of no input or lets the player skip
+ * sooner via SKIP TO TITLE / Enter.
+ *
+ * - Header sets the tone: GAME OVER vs PALLASITE COMPLETE
+ * - Faucet / publish flow renders inline so a Nostr-mode player sees the
+ *   sats land before the auto-skip fires
+ * - Zap row is the most prominent action — that's the whole point of this
+ *   stage
+ * - Honours strip surfaces only on completion (PERFECT RUN / NO LURK /
+ *   COMPLETIONIST) — gameovers don't earn the COMPLETIONIST badge so
+ *   the strip is mostly empty there anyway
+ */
+function renderRunCredits(
+  state: GameState,
+  opts: { headerText: string; subText?: string; isCompletion?: boolean; idleSeconds?: number },
+): void {
+  const idleSeconds = opts.idleSeconds ?? 45;
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+  if (opts.isCompletion) overlay.style.background = 'rgba(0, 0, 0, 0.85)';
+
+  // Logo on completion only — gameover keeps text-only header so the
+  // wordmark remains a "you finished it" reward.
+  if (opts.isCompletion) {
+    const logo = el('img', { parent: overlay });
+    logo.className = 'title-logo';
+    (logo as HTMLImageElement).src = '/logo.webp';
+    (logo as HTMLImageElement).alt = 'PALLASITE';
+    (logo as HTMLImageElement).decoding = 'async';
+  }
+
+  el('h2', { parent: overlay, text: opts.headerText });
+  if (opts.subText) {
+    const sub = el('p', { parent: overlay, text: opts.subText });
+    sub.style.cssText = 'font-size:1.1rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:-10px 0 4px;';
+  }
+
+  // Honours surface on completion runs only.
+  if (opts.isCompletion) renderHonours(overlay, state, () => { /* no stagger */ });
+
+  // Score-publish / faucet status — only Nostr-mode runs trigger a claim.
+  // Returns immediately for guests / cheated runs / signers without sign
+  // capability with a one-line status of its own.
+  const publishWrap = el('div', { parent: overlay });
+  void maybePublishScore(state, publishWrap);
+
+  // Prominent zap CTA — the entire reason this stage exists per the user
+  // brief: "make zaps easy and frictionless".
+  const zapWrap = el('div', { parent: overlay });
+  renderZapButton(zapWrap, state);
+
+  // Social actions only land for Nostr mode (follow + announce buttons).
+  if (state.session) {
+    const socialWrap = el('div', { parent: overlay });
+    renderSocialActions(socialWrap, state);
+  }
+
+  // Credits scroll — 24 specimens + powered-by + lore. Pinned below the
+  // primary actions so it doesn't push them off screen.
+  renderCreditsRoll(overlay, undefined, state);
+
+  // Auto-skip timer — counts down to TITLE. Resets on any keydown so a
+  // player who's reading the credits doesn't get yanked away. The SKIP
+  // TO TITLE button below also exits immediately.
+  let secondsLeft = idleSeconds;
+  const skipBar = el('p', { parent: overlay });
+  skipBar.style.cssText = 'font-size:0.85rem;letter-spacing:0.18em;color:#ffd84a;margin:6px 0 0;';
+  const renderSkip = (): void => { skipBar.textContent = `RETURNING TO TITLE IN ${secondsLeft}`; };
+  renderSkip();
+
+  const goToTitle = (): void => {
+    cleanup();
+    state.phase = 'title';
+    renderTitle(state);
+  };
+  const idleTick = window.setInterval(() => {
+    secondsLeft -= 1;
+    renderSkip();
+    if (secondsLeft <= 0) goToTitle();
+  }, 1000);
+  const resetIdle = (): void => { secondsLeft = idleSeconds; renderSkip(); };
+  const onAnyKey = (): void => resetIdle();
+  window.addEventListener('keydown', onAnyKey);
+  const cleanup = (): void => {
+    window.clearInterval(idleTick);
+    window.removeEventListener('keydown', onAnyKey);
+  };
+
+  const row = el('div', { className: 'menu-row', parent: overlay });
+  if (!opts.isCompletion) {
+    const again = el('button', { className: 'menu-btn', parent: row, text: 'SPAWN AGAIN' });
+    again.addEventListener('click', () => {
+      cleanup();
+      startGame(state);
+      onStartCb?.();
+    });
+    if (state.deathReplay) {
+      const replay = el('button', { className: 'menu-btn secondary', parent: row, text: 'REPLAY KILL' });
+      replay.addEventListener('click', () => {
+        cleanup();
+        clearOverlay();
+        startDeathReplay(state, 'gameover');
+      });
+    }
+  } else {
+    const again = el('button', { className: 'menu-btn', parent: row, text: 'IGNITE AGAIN' });
+    again.addEventListener('click', () => {
+      cleanup();
+      startGame(state);
+      onStartCb?.();
+    });
+  }
+  const home = el('button', { className: 'menu-btn secondary', parent: row, text: 'SKIP TO TITLE' });
+  home.addEventListener('click', goToTitle);
+
+  renderLegalFooter(overlay);
+}
+
 export function renderCompletion(state: GameState): void {
   // Two-stage completion, mirroring gameover: focus the player on the
   // arcade name entry first, then unfurl the celebration. Non-high-score
@@ -1425,18 +1549,22 @@ function renderCompletionNameEntry(state: GameState): void {
   // No setupOverlayArrowNav — arrow keys belong to the arcade widget on
   // this stage, full stop.
 
-  el('h1', { parent: overlay, text: 'PALLASITE COMPLETE' });
-  const sub = el('p', { parent: overlay, text: 'EVENT HORIZON · BREACHED' });
-  sub.style.cssText = 'font-size:1.2rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin-top:-12px;';
+  // Pallasite logo replaces the bare h1 — the wordmark is the reward for
+  // finishing, surface it where the player will see it most.
+  const logo = el('img', { parent: overlay });
+  logo.className = 'title-logo';
+  (logo as HTMLImageElement).src = '/logo.webp';
+  (logo as HTMLImageElement).alt = 'PALLASITE';
+  (logo as HTMLImageElement).decoding = 'async';
+
+  const sub = el('p', { parent: overlay, text: 'COMPLETE · EVENT HORIZON BREACHED' });
+  sub.style.cssText = 'font-size:1.1rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin-top:-4px;';
 
   const rank = predictedLocalRank(state.score);
   const banner = el('p', { parent: overlay, text: `RANK ${String(rank).padStart(2, '0')} · NEW HIGH SCORE` });
-  banner.style.cssText = 'font-size:1.1rem;color:#ffd84a;letter-spacing:0.22em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:8px 0 -4px;';
+  banner.style.cssText = 'font-size:1.05rem;color:#ffd84a;letter-spacing:0.22em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:6px 0 4px;';
 
-  const scoreLabel = el('p', { parent: overlay, text: 'SCORE' });
-  scoreLabel.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:8px 0 -8px;';
-  const scoreValue = el('div', { parent: overlay, text: state.score.toLocaleString() });
-  scoreValue.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:3.6rem;color:#ffd84a;letter-spacing:0.06em;line-height:1;";
+  renderRunStatGrid(overlay, state, { isCompletion: true });
 
   const inputWrap = el('div', { className: 'menu-row', parent: overlay });
   renderArcadeInitials(inputWrap, {
@@ -1449,7 +1577,11 @@ function renderCompletionNameEntry(state: GameState): void {
         at: new Date().toISOString(),
         pubkey: state.session?.pubkey,
       });
-      renderCompletionRecap(state);
+      renderRunCredits(state, {
+        headerText: 'PALLASITE COMPLETE',
+        subText: 'EVENT HORIZON · BREACHED',
+        isCompletion: true,
+      });
     },
   });
 
@@ -1458,92 +1590,12 @@ function renderCompletionNameEntry(state: GameState): void {
 }
 
 function renderCompletionRecap(state: GameState): void {
-  clearOverlay();
-  const overlay = el('div', { className: 'overlay', parent: root });
-  setupOverlayArrowNav(overlay);
-  overlay.style.background = 'rgba(0, 0, 0, 0.85)';
-
-  // Staggered reveal: each section gets the .completion-stage class with an
-  // increasing animation-delay so the screen paces in instead of flashing.
-  let stageIndex = 0;
-  const stage = (delaySeconds: number) => {
-    stageIndex += 1;
-    return (parent: HTMLElement) => {
-      parent.classList.add('completion-stage');
-      parent.style.animationDelay = `${delaySeconds}s`;
-    };
-  };
-
-  const title = el('h1', { parent: overlay, text: 'PALLASITE COMPLETE' });
-  stage(0.0)(title);
-  const sub = el('p', { parent: overlay, text: 'EVENT HORIZON · BREACHED' });
-  sub.style.cssText = 'font-size:1.2rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin-top:-12px;';
-  stage(0.4)(sub);
-
-  const board = el('div', { className: 'scoreboard', parent: overlay });
-  const completionRows: ReadonlyArray<readonly [string, string]> = state.session
-    ? [
-        ['SCORE', state.score.toLocaleString()],
-        ['SATS', `₿ ${state.sats}`],
-        ['RUN TIME', formatRunTime(state.runTimeMs)],
-        ['SPECIMENS', '24 / 24'],
-      ]
-    : [
-        ['SCORE', state.score.toLocaleString()],
-        ['RUN TIME', formatRunTime(state.runTimeMs)],
-        ['SPECIMENS', '24 / 24'],
-      ];
-  for (const [k, v] of completionRows) {
-    el('div', { className: 'label', parent: board, text: k });
-    el('div', { className: 'value', parent: board, text: v });
-  }
-  stage(0.9)(board);
-
-  // Honours strip — earned conditions surface as small badges.
-  renderHonours(overlay, state, stage(1.4));
-
-  // Credits roll — promoted high in the layout so it actually gets watched.
-  renderCreditsRoll(overlay, stage(1.9), state);
-
-  // Dev card — creator name + clickable profile (npub for Nostr, @handle for guests)
-  const devWrap = el('div', { parent: overlay });
-  renderDevCard(devWrap, state);
-  stage(2.6)(devWrap);
-
-  // Faucet / publish flow — pulled out of the arcade onSubmit callback now
-  // that name entry is its own stage. Stays Nostr-mode-only.
-  if (state.session) {
-    const pubBlock = el('div', { parent: overlay });
-    maybePublishCompletion(state, pubBlock);
-    stage(3.0)(pubBlock);
-  }
-
-  // Social actions + zap — Nostr mode only. Guests already see the X handle on
-  // the dev card; no point showing them auth-gated buttons that just nag.
-  if (state.session) {
-    const socialWrap = el('div', { parent: overlay });
-    renderSocialActions(socialWrap, state);
-    stage(3.4)(socialWrap);
-
-    const zapWrap = el('div', { parent: overlay });
-    renderZapButton(zapWrap, state);
-    stage(3.8)(zapWrap);
-  }
-
-  const row = el('div', { className: 'menu-row', parent: overlay });
-  const again = el('button', { className: 'menu-btn', parent: row, text: 'IGNITE AGAIN' });
-  again.addEventListener('click', () => {
-    startGame(state);
-    onStartCb?.();
+  // Non-high-score wave-25 clears land directly on the credits stage.
+  renderRunCredits(state, {
+    headerText: 'PALLASITE COMPLETE',
+    subText: 'EVENT HORIZON · BREACHED',
+    isCompletion: true,
   });
-  const home = el('button', { className: 'menu-btn secondary', parent: row, text: 'TO TITLE' });
-  home.addEventListener('click', () => {
-    state.phase = 'title';
-    renderTitle(state);
-  });
-  stage(4.2)(row);
-
-  renderLegalFooter(overlay);
 }
 
 /**
@@ -1566,28 +1618,6 @@ function renderHonours(parent: HTMLElement, state: GameState, applyStage: (e: HT
     el('span', { className: `honour-badge ${h.cls}`, parent: row, text: h.label });
   }
   applyStage(row);
-}
-
-function renderDevCard(parent: HTMLElement, state: GameState): void {
-  const wrap = el('div', { parent });
-  wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:6px;margin-top:4px;';
-  const heading = el('p', { parent: wrap, text: 'CREATED BY' });
-  heading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:0;';
-  const name = el('p', { parent: wrap, text: DEV.name.toUpperCase() });
-  name.style.cssText = 'font-size:1.4rem;letter-spacing:0.25em;color:var(--hud-yellow);text-shadow:0 0 8px rgba(255,216,74,0.5);margin:0;';
-  // Guest mode: surface the X handle (something a non-Nostr player can act on).
-  // Nostr mode: surface the npub linking to njump.me — meaningful on the network.
-  const link = el('a', { parent: wrap });
-  if (state.session) {
-    link.textContent = `${DEV.npub.slice(0, 12)}…${DEV.npub.slice(-6)}`;
-    link.setAttribute('href', DEV.profileUrl);
-  } else {
-    link.textContent = `@${DEV.twitter}`;
-    link.setAttribute('href', DEV.twitterUrl);
-  }
-  link.setAttribute('target', '_blank');
-  link.setAttribute('rel', 'noopener noreferrer');
-  link.style.cssText = 'font-size:0.85rem;color:var(--hud-blue);letter-spacing:0.1em;text-decoration:none;border-bottom:1px dotted rgba(91,157,255,0.5);';
 }
 
 function renderSocialActions(parent: HTMLElement, state: GameState): void {
@@ -2356,11 +2386,6 @@ function renderCreditsRoll(parent: HTMLElement, applyStage?: (e: HTMLElement) =>
 
     <p class="credits-spacer"></p>
   `;
-}
-
-function maybePublishCompletion(state: GameState, parent: HTMLElement): Promise<void> {
-  // Wave 25 completion uses the same claim path as a regular game-over.
-  return maybePublishScore(state, parent);
 }
 
 // ── Toast (tiny notification) ─────────────────────────────────────────────────

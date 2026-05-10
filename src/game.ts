@@ -94,6 +94,12 @@ export function makeInitialState(): GameState {
     bonusLivesGranted: 0,
     targetHeading: null,
     thrustOverride: false,
+    runStats: {
+      ufoKills: { cruiser: 0, elite: 0, tank: 0, sniper: 0, boss: 0 },
+      minesDestroyed: 0,
+      largestCombo: 0,
+      powerupsCollected: 0,
+    },
   };
 }
 
@@ -166,6 +172,12 @@ export function startGame(s: GameState): void {
   s.bonusLivesGranted = 0;
   s.targetHeading = null;
   s.thrustOverride = false;
+  s.runStats = {
+    ufoKills: { cruiser: 0, elite: 0, tank: 0, sniper: 0, boss: 0 },
+    minesDestroyed: 0,
+    largestCombo: 0,
+    powerupsCollected: 0,
+  };
   beginWave(s, 1);
   audio.startHeartbeat();
   audio.startAmbient();
@@ -766,6 +778,7 @@ function updateMines(s: GameState, dt: number, _now: number): void {
 function destroyMine(s: GameState, m: Mine): void {
   if (!m.alive) return;
   m.alive = false;
+  s.runStats.minesDestroyed += 1;
   const mul = recordCombo(s, performance.now());
   s.score += MINE_POINTS * mul;
   audio.explosion(0.7);
@@ -818,6 +831,7 @@ function damageUfo(s: GameState, u: Ufo): void {
 
 function destroyUfo(s: GameState, u: Ufo): void {
   u.alive = false;
+  s.runStats.ufoKills[u.type] += 1;
   const mul = recordCombo(s, performance.now());
   s.score += UFO_POINTS[u.type] * mul;
   const explodeScale = u.type === 'tank' ? 1.3 : u.type === 'elite' ? 0.9 : 1.0;
@@ -1673,6 +1687,7 @@ export function updateGame(s: GameState, dt: number, now: number): void {
       wrap(p.pos);
       if (s.ship.alive && circlesHit(s.ship, p)) {
         p.collected = true;
+        s.runStats.powerupsCollected += 1;
         applyPowerUp(s, p, now);
         spawnParticles(s, p.pos.x, p.pos.y, 14, '#ffffff', 200, 600);
       }
@@ -1725,6 +1740,7 @@ function recordCombo(s: GameState, now: number): number {
     s.combo = 1;
   }
   s.comboExpiresAt = now + COMBO_WINDOW_MS;
+  if (s.combo > s.runStats.largestCombo) s.runStats.largestCombo = s.combo;
   if (s.combo >= 2) audio.comboTick(s.combo);
   return s.combo;
 }
