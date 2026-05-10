@@ -322,6 +322,11 @@ export interface GameState {
   combo: number;
   /** ms timestamp the combo window closes. */
   comboExpiresAt: number;
+  /** ms timestamp the simulation should resume after a hit-stop freeze.
+   *  Set on milestone moments (currently: first time the chain lands on
+   *  COMBO_MAX in a string) to give the punch a frame of weight.
+   *  updateGame early-returns while now < hitStopUntil. */
+  hitStopUntil: number;
 
   /** ms timestamp rapid-fire buff expires (0 when inactive). */
   rapidExpiresAt: number;
