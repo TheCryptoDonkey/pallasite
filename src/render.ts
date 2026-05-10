@@ -2176,6 +2176,7 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
       invulnerableUntil: 0, thrustFrame: now / 80,
       hyperspaceReadyAt: 0, hyperspaceCloakMs: 0, hyperspaceMalfunction: false,
       shieldUp: false, shieldExpiresAt: 0, shieldReadyAt: 0, recoilOffset: 0,
+      lastHyperspaceAt: 0,
     };
     drawShip(ctx, fauxShip, now);
   }

@@ -40,6 +40,11 @@ export interface Ship extends Entity {
    *  decayed each frame. Render nudges the ship backward along its facing by
    *  this amount, giving every shot a kick. Does not affect physics or aim. */
   recoilOffset: number;
+  /** Timestamp ms of the most recent successful hyperspace jump (0 = never).
+   *  Drives the consecutive-warp malfunction roll: a warp within
+   *  HYPERSPACE_CONSECUTIVE_WINDOW_MS of this stamp risks glitching, anything
+   *  outside the window is a clean primitive movement tool. */
+  lastHyperspaceAt: number;
 }
 
 export type AsteroidSize = 'large' | 'medium' | 'small';
@@ -519,10 +524,22 @@ export const SHIP_ROT_DAMPING = 6;    // rad/s² counter
 export const SHIP_MAX_ROT = 4;        // rad/s
 export const SHIP_INVULN_MS = 2200;
 export const FIRE_COOLDOWN_MS = 220;
-export const HYPERSPACE_COOLDOWN_MS = 5000;
+export const HYPERSPACE_COOLDOWN_MS = 600;
 export const HYPERSPACE_CLOAK_MS = 350;
-/** Probability of hyperspace malfunction (instant death). Classic Asteroids had ~1/8. */
-export const HYPERSPACE_MALFUNCTION_CHANCE = 0.06;
+/** Probability of hyperspace malfunction (instant death) on a CONSECUTIVE warp
+ *  — i.e. a warp triggered within HYPERSPACE_CONSECUTIVE_WINDOW_MS of the last
+ *  one. Standalone warps are 0% risk. Classic Asteroids rolled this on every
+ *  warp; Pallasite reframes warp as a movement primitive that punishes only
+ *  panic-spam. */
+export const HYPERSPACE_MALFUNCTION_CHANCE = 0.25;
+/** Window after a successful warp during which the next warp counts as
+ *  consecutive and rolls a malfunction. Outside this window, warp is safe. */
+export const HYPERSPACE_CONSECUTIVE_WINDOW_MS = 3000;
+/** A successful warp detonates any mines within this radius of the departure
+ *  position. Slightly less than MINE_GRAVITY_RANGE so the player has to
+ *  actually be inside the mine's pull to clear it — warping anywhere on the
+ *  field shouldn't sweep the arena clean. */
+export const HYPERSPACE_DETONATE_RANGE = 90;
 /** Min distance from any asteroid/UFO when re-emerging. */
 export const HYPERSPACE_SAFE_DIST = 60;
 /** Window in ms within which a second ↓ press counts as a double-tap → hyperspace. */
