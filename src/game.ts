@@ -27,9 +27,11 @@ import {
   ASTEROID_BASE_SPEED, ASTEROID_SPEED_PER_WAVE,
   COIN_RADIUS, COIN_TTL_MS,
   POINTS_PER_SIZE, SATS_PER_SIZE, RADIUS_PER_SIZE,
-  VEIN_HP, VEIN_RADIUS_MUL, VEIN_SATS_PER_HIT, VEIN_SCORE_PER_HIT,
+  VEIN_HP_BASE, VEIN_HP_EASY_MUL, VEIN_HP_HARD_MUL,
+  VEIN_RADIUS_MUL, VEIN_SATS_PER_HIT, VEIN_SCORE_PER_HIT,
   VEIN_JACKPOT_SATS, VEIN_JACKPOT_SCORE, VEIN_SPAWN_CHANCE,
   VEIN_SPAWN_MIN_WAVE, VEIN_SPAWN_MAX_WAVE, VEIN_SWARM_DELAY_MS,
+  VEIN_POWERUP_PER_N_HITS, VEIN_NOVA_DAMAGE,
   UFO_RADIUS, UFO_SPEED, UFO_HP, UFO_SHOT_SPREAD, UFO_SHOOT_INTERVAL, UFO_BULLET_SPEED_MUL,
   UFO_BULLET_SPEED, UFO_BULLET_TTL_MS, UFO_LIFETIME_MS,
   UFO_ZIG_INTERVAL_MS, UFO_POINTS, UFO_SATS,
@@ -315,7 +317,7 @@ export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?
     alive: true,
     size,
     type: t,
-    hp: isVein ? VEIN_HP : (size === 'large' ? cfg.hp : 1),
+    hp: isVein ? veinScaledHp() : (size === 'large' ? cfg.hp : 1),
     hitFlash: 0,
     rot: Math.random() * Math.PI * 2,
     rotVel: (Math.random() - 0.5) * (isVein ? 0.6 : 1.6),
@@ -439,6 +441,16 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
     banner: 'BULLET CURTAIN',
   },
 };
+
+/** Vein HP scaled by current difficulty. Easy gets a shorter engagement
+ *  so the event stays fun on low-pressure runs; hard runs commit to a
+ *  proper marathon with the long fight balanced by power-up drops at
+ *  hit milestones. */
+function veinScaledHp(): number {
+  const d = currentDifficulty();
+  const mul = d === 'easy' ? VEIN_HP_EASY_MUL : d === 'hard' ? VEIN_HP_HARD_MUL : 1;
+  return Math.round(VEIN_HP_BASE * mul);
+}
 
 /**
  * Spawn the pallasite-vein event. Picks the candidate position furthest
@@ -700,10 +712,22 @@ function applyPowerUp(s: GameState, p: PowerUp, now: number): void {
  * NOVA: clears enemy bullets, breaks every asteroid, destroys non-boss UFOs
  * (boss takes 3 damage), wipes mines. SCORE-ONLY — wiped asteroids skip the
  * coin spawn so the player can't farm sats with a powerup. Combo still chains.
+ *
+ * Veins are special — nova chips VEIN_NOVA_DAMAGE off their HP rather than
+ * collapsing them outright. The per-hit sat stream + power-up drops + UFO
+ * swarm pressure are the whole point of the event; an instakill via nova
+ * would trivialise the encounter and jump straight to the jackpot.
  */
 function detonateNova(s: GameState): void {
   for (const a of [...s.asteroids]) {
-    if (a.alive) breakAsteroid(s, a, { suppressCoins: true });
+    if (!a.alive) continue;
+    if (a.isVein) {
+      a.hp = Math.max(1, a.hp - VEIN_NOVA_DAMAGE);
+      a.hitFlash = 1;
+      spawnParticles(s, a.pos.x, a.pos.y, 14, '#ffd84a', 220, 540);
+    } else {
+      breakAsteroid(s, a, { suppressCoins: true });
+    }
   }
   for (const u of [...s.ufos]) {
     if (!u.alive) continue;
@@ -2480,7 +2504,9 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
   }
   // Vein streams sats per hit. Signed-in players get real sats credited
   // live; guests get a score-only payout. Either way, a yellow burst
-  // flies toward the ship so the reward reads instantly.
+  // flies toward the ship so the reward reads instantly. Every Nth
+  // landed hit drops a helpful power-up (rapid / trident / satboost)
+  // near the vein so the player has tools to sustain the long fight.
   if (a.isVein) {
     if (s.session) {
       s.sats += VEIN_SATS_PER_HIT;
@@ -2489,6 +2515,19 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
     }
     audio.coinPickup();
     spawnParticles(s, a.pos.x, a.pos.y, 10, '#ffd84a', 200, 480);
+    // Power-up drop on hit milestones — the long engagement deserves
+    // tools. hp started at veinScaledHp(); after this hit a.hp is one
+    // less, so hits-landed = scaledHp - a.hp.
+    const hitsLanded = veinScaledHp() - a.hp;
+    if (hitsLanded > 0 && hitsLanded % VEIN_POWERUP_PER_N_HITS === 0) {
+      const pool: PowerUpType[] = s.session
+        ? ['rapid', 'trident', 'satboost']
+        : ['rapid', 'trident'];
+      const pick = pool[Math.floor(Math.random() * pool.length)];
+      const dropX = a.pos.x + (Math.random() - 0.5) * 120;
+      const dropY = a.pos.y + (Math.random() - 0.5) * 120;
+      maybeDropPowerUp(s, dropX, dropY, pick);
+    }
     return;
   }
   const cfg = ASTEROID_TYPE_CONFIG[a.type];

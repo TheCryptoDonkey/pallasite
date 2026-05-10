@@ -188,16 +188,26 @@ export interface Coin extends Entity {
  *  rolls drop dust shards. Tunes the perceived rarity of sats. */
 export const SAT_DROP_CHANCE_DENOM = 8;
 
-/** Pallasite VEIN tuning. The event lives ~10 hits, streams sats per hit,
- *  and lands a fat jackpot on collapse. Spawn radius is larger than the
- *  standard large-rock radius so the vein reads instantly as different.
+/** Pallasite VEIN tuning. The event is a long engagement — the prize is
+ *  fat and the fight is real. Streams sats per hit, lands a jackpot on
+ *  collapse, drops helpful power-ups at regular hit milestones, and
+ *  scales HP heavily by difficulty so hard-mode runs commit ~half a
+ *  minute of sustained fire (still tractable with rapid + trident).
  *  Probability is rolled per wave (waves 6-24) at beginWave. */
-export const VEIN_HP = 10;
+export const VEIN_HP_BASE = 100;
+export const VEIN_HP_EASY_MUL = 0.6;
+export const VEIN_HP_HARD_MUL = 3.0;
 export const VEIN_RADIUS_MUL = 1.4;
-export const VEIN_SATS_PER_HIT = 5;
-export const VEIN_SCORE_PER_HIT = 50;  // guest payout (no sats)
-export const VEIN_JACKPOT_SATS = 100;
-export const VEIN_JACKPOT_SCORE = 1500;
+export const VEIN_SATS_PER_HIT = 3;
+export const VEIN_SCORE_PER_HIT = 35;  // guest payout (no sats)
+export const VEIN_JACKPOT_SATS = 150;
+export const VEIN_JACKPOT_SCORE = 2500;
+/** Drop a helpful power-up every N landed hits on the vein. Tuned so a
+ *  normal-mode 100-HP vein gets four drops across the engagement. */
+export const VEIN_POWERUP_PER_N_HITS = 25;
+/** Nova chips this many HP off a vein instead of fully clearing it —
+ *  vein takes a meaningful bite but isn't trivialised. */
+export const VEIN_NOVA_DAMAGE = 25;
 export const VEIN_SPAWN_CHANCE = 0.25;
 export const VEIN_SPAWN_MIN_WAVE = 6;
 export const VEIN_SPAWN_MAX_WAVE = 24;
