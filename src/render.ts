@@ -2127,21 +2127,26 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   drawBackground(ctx, state, now);
   drawStars(ctx, now);
 
-  // Ghost-render offsets so wraps look seamless at visible-band edges:
-  //   - visW < WORLD_W (cropped band, e.g. portrait cover): ghost at ±visW
-  //     so entities crossing the visible edge re-enter from the other side.
-  //   - visW > WORLD_W (zoomed-out, world is smaller than viewport): ghost at
-  //     ±WORLD_W so the gutters around the world fill with its wrapped copy.
-  // Game logic always wraps at WORLD_W/WORLD_H — these are render-only.
+  // Ghost-render offsets so wraps look seamless at visible-band edges.
+  // We're only in "wrap visualisation" mode when at least one axis is
+  // cropped (vis < world). Pure contain (e.g. landscape with side gutters)
+  // shows the whole world centred against the bg — no ghosts there, or the
+  // player sees their ship doubled in the gutter.
+  //   - axis cropped (vis < world): ghost at ±vis so the wrap appears at
+  //     the visible-band edges.
+  //   - other axis oversized while a sibling is cropped: ghost at ±WORLD
+  //     so the gutters fill with the world's wrap rather than empty bg.
   const ghostXs: number[] = [0];
   const ghostYs: number[] = [0];
   if (renderMode.kind === 'modern') {
     const visW = renderMode.vw / renderMode.scale;
     const visH = renderMode.vh / renderMode.scale;
-    if (visW < WORLD_W - 1) ghostXs.push(-visW, visW);
-    else if (visW > WORLD_W + 1) ghostXs.push(-WORLD_W, WORLD_W);
-    if (visH < WORLD_H - 1) ghostYs.push(-visH, visH);
-    else if (visH > WORLD_H + 1) ghostYs.push(-WORLD_H, WORLD_H);
+    const cropX = visW < WORLD_W - 1;
+    const cropY = visH < WORLD_H - 1;
+    if (cropX) ghostXs.push(-visW, visW);
+    else if (cropY && visW > WORLD_W + 1) ghostXs.push(-WORLD_W, WORLD_W);
+    if (cropY) ghostYs.push(-visH, visH);
+    else if (cropX && visH > WORLD_H + 1) ghostYs.push(-WORLD_H, WORLD_H);
   }
 
   for (const dx of ghostXs) {
