@@ -1067,49 +1067,37 @@ export function renderGameOver(state: GameState): void {
     el('div', { className: 'value', parent: board, text: String(v) });
   }
 
-  // High-score recap
+  // High-score recap. Arcade initials show for everyone, signed-in or
+  // guest — the Nostr identity is still attached via `pubkey` on the
+  // local entry, but the displayed leaderboard name is whatever the
+  // player picks. Server-side publish (Nostr) still fires after commit
+  // so the global kind 30762 record is unaffected.
   const isNewHigh = isHighScore(state.score);
   if (isNewHigh && state.score > 0) {
     el('p', { parent: overlay, text: 'NEW PERIHELION · HIGH SCORE LOGGED' }).style.color = '#ffd84a';
-
-    if (state.session) {
-      // Auto-record under the player's resolved name (or pubkey-prefix fallback)
-      const displayName = bestName(state.profile, state.session.pubkey);
-      const entry = {
-        name: displayName.slice(0, 16).toUpperCase(),
-        score: state.score,
-        sats: state.sats,
-        wave: state.wave,
-        at: new Date().toISOString(),
-        pubkey: state.session.pubkey,
-      };
-      addLocalHighScore(entry);
-      maybePublishScore(state, overlay);
-    } else {
-      // Arcade-style 4-slot initials. After commit we re-render the
-      // leaderboard block in place so the freshly-added row shows up.
-      const inputRow = el('div', { className: 'menu-row', parent: overlay });
-      renderArcadeInitials(inputRow, {
-        onSubmit: (name) => {
-          addLocalHighScore({
-            name,
-            score: state.score,
-            sats: state.sats,
-            wave: state.wave,
-            at: new Date().toISOString(),
-          });
-          const lb = overlay.querySelector('.leaderboard-block');
-          if (lb) {
-            const fresh = getLocalHighScores();
-            const replacement = document.createElement('div');
-            overlay.replaceChild(replacement, lb);
-            renderLeaderboardBlock(replacement, fresh, '— LOCAL HIGH SCORES —');
-            const block = replacement.firstElementChild;
-            if (block) overlay.replaceChild(block, replacement);
-          }
-        },
-      });
-    }
+    const inputRow = el('div', { className: 'menu-row', parent: overlay });
+    renderArcadeInitials(inputRow, {
+      onSubmit: (name) => {
+        addLocalHighScore({
+          name,
+          score: state.score,
+          sats: state.sats,
+          wave: state.wave,
+          at: new Date().toISOString(),
+          pubkey: state.session?.pubkey,
+        });
+        const lb = overlay.querySelector('.leaderboard-block');
+        if (lb) {
+          const fresh = getLocalHighScores();
+          const replacement = document.createElement('div');
+          overlay.replaceChild(replacement, lb);
+          renderLeaderboardBlock(replacement, fresh, '— LOCAL HIGH SCORES —');
+          const block = replacement.firstElementChild;
+          if (block) overlay.replaceChild(block, replacement);
+        }
+        if (state.session) maybePublishScore(state, overlay);
+      },
+    });
   }
 
   // Local high scores — renders BEFORE the user has had a chance to enter
@@ -1365,36 +1353,29 @@ export function renderCompletion(state: GameState): void {
   renderDevCard(devWrap, state);
   stage(2.6)(devWrap);
 
-  // Auto-record under the player's resolved name (or pubkey-prefix fallback)
-  if (state.session) {
-    const displayName = bestName(state.profile, state.session.pubkey);
-    addLocalHighScore({
-      name: displayName.slice(0, 16).toUpperCase(),
-      score: state.score,
-      sats: state.sats,
-      wave: 25,
-      at: new Date().toISOString(),
-      pubkey: state.session.pubkey,
-    });
-    const pubBlock = el('div', { parent: overlay });
-    maybePublishCompletion(state, pubBlock);
-    stage(3.0)(pubBlock);
-  } else {
-    // Guest finished the run — same arcade entry as the gameover flow.
-    const inputWrap = el('div', { className: 'menu-row', parent: overlay });
-    renderArcadeInitials(inputWrap, {
-      onSubmit: (name) => {
-        addLocalHighScore({
-          name,
-          score: state.score,
-          sats: state.sats,
-          wave: 25,
-          at: new Date().toISOString(),
-        });
-      },
-    });
-    stage(3.0)(inputWrap);
-  }
+  // Arcade initials for everyone — signed-in players still get their
+  // pubkey attached and the completion publish still fires server-side
+  // after commit, but the local leaderboard name is whatever the player
+  // chooses. Stops the wave-25 banner from silently logging "DA19F1CD"
+  // for someone whose Nostr name they never set.
+  const inputWrap = el('div', { className: 'menu-row', parent: overlay });
+  renderArcadeInitials(inputWrap, {
+    onSubmit: (name) => {
+      addLocalHighScore({
+        name,
+        score: state.score,
+        sats: state.sats,
+        wave: 25,
+        at: new Date().toISOString(),
+        pubkey: state.session?.pubkey,
+      });
+      if (state.session) {
+        const pubBlock = el('div', { parent: overlay });
+        maybePublishCompletion(state, pubBlock);
+      }
+    },
+  });
+  stage(3.0)(inputWrap);
 
   // Social actions + zap — Nostr mode only. Guests already see the X handle on
   // the dev card; no point showing them auth-gated buttons that just nag.
