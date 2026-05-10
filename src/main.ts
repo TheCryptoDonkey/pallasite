@@ -435,7 +435,7 @@ async function boot(): Promise<void> {
       // claustrophobic on phones. Pull the scale back so a bit more of the
       // world is visible — gutters at top/bottom get filled by ±WORLD_H
       // ghost-renders in render.ts.
-      const PORTRAIT_ZOOM = 0.85;
+      const PORTRAIT_ZOOM = 0.75;
       const scale = isPortrait
         ? Math.max(vw / 960, vh / 720) * PORTRAIT_ZOOM
         : Math.min(vw / 960, vh / 720);
