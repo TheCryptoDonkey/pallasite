@@ -1278,6 +1278,28 @@ export function skipDeathReplay(s: GameState): void {
 }
 
 /**
+ * Wipe gameplay entities so the title screen renders clean. Going to title
+ * from gameover/completion previously left asteroids, coins, debris, and
+ * particles in place — the renderer drew them through the title overlay's
+ * 65%-translucent backdrop, and debris kept drifting because particle/debris
+ * physics tick during fade-only phases. On portrait mobile the bottom of
+ * the world band ended up showing visible drifting line-segments that read
+ * as "asteroids" to the player. Cheap to clear; no callsite needs the
+ * entities once we've left the run.
+ */
+export function clearEntitiesForTitle(s: GameState): void {
+  s.asteroids = [];
+  s.bullets = [];
+  s.enemyBullets = [];
+  s.ufos = [];
+  s.mines = [];
+  s.coins = [];
+  s.powerups = [];
+  s.particles = [];
+  s.debris = [];
+}
+
+/**
  * Lurking detector — homage to the 1979 Asteroids saucer-aim exploit. The
  * player can park in dead centre and pick off drifting rocks indefinitely;
  * the strategy still works as a play option, but the moment the flag latches
