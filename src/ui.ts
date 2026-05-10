@@ -12,7 +12,8 @@ import { getTouchMode, setTouchMode, type TouchInputMode } from './touch.js';
 import { getDisplayMode, setDisplayMode, type DisplayMode } from './display.js';
 import * as auth from './auth.js';
 import { addLocalHighScore, getLocalHighScores, isHighScore, fetchGlobalHighScores, type GlobalHighScore } from './score.js';
-import { submitClaim } from './faucet.js';
+import { submitClaim, fetchPool } from './faucet.js';
+import { renderLegalFooter } from './legal.js';
 import { startGame, startDeathReplay, toastNow } from './game.js';
 import * as audio from './audio.js';
 import { fetchProfile, getCachedProfile, bestName } from './profile.js';
@@ -147,6 +148,8 @@ export function renderTitle(state: GameState): void {
   tagline.style.cssText = 'font-size:1.2rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin-top:-12px;';
   el('p', { parent: overlay, text: 'Cosmic arcade · Lightning sats · Nostr leaderboards' });
 
+  renderPoolChip(overlay);
+
   const sessionPanel = el('div', { className: 'session-panel', parent: overlay });
   renderSessionPanel(sessionPanel, state);
 
@@ -182,8 +185,68 @@ export function renderTitle(state: GameState): void {
   // while it loads, swap in the real list when the relays answer.
   renderGlobalLeaderboard(overlay);
 
+  renderLegalFooter(overlay);
+
   // Keyboard cheatsheet removed — HOW TO PLAY button covers the same content
   // and the duplicate strip cramped the desktop layout against the high scores.
+}
+
+/**
+ * Two-line faucet status chip. Float = working balance on the box;
+ * Paid lifetime = sum of payouts. Polled every 60s while the title is
+ * visible. Float drops on each Sunday sweep — Paid does not — so showing
+ * both keeps the sweep from looking like a faucet drain.
+ */
+function renderPoolChip(parent: HTMLElement): void {
+  const wrapper = el('div', { parent });
+  wrapper.style.cssText =
+    'display:flex;flex-direction:column;align-items:center;gap:2px;margin:6px 0 4px';
+
+  const lineFloat = el('p', { parent: wrapper });
+  const linePaid = el('p', { parent: wrapper });
+  for (const line of [lineFloat, linePaid]) {
+    line.style.cssText =
+      'font-size:0.78rem;color:rgba(255,216,74,0.65);letter-spacing:0.08em;margin:0';
+  }
+  lineFloat.textContent = 'Float: …';
+  linePaid.textContent = 'Paid lifetime: …';
+
+  let intervalId: number | null = null;
+
+  const update = async (): Promise<void> => {
+    const pool = await fetchPool();
+    if (!wrapper.isConnected) {
+      if (intervalId !== null) clearInterval(intervalId);
+      return;
+    }
+    if (!pool) {
+      lineFloat.textContent = 'Faucet status unavailable';
+      lineFloat.style.color = 'rgba(180,180,180,0.6)';
+      linePaid.textContent = '';
+      return;
+    }
+    const lowFloat = pool.balance_sats < 1000;
+    if (pool.paused) {
+      lineFloat.textContent = 'Faucet paused';
+      lineFloat.style.color = '#ff8050';
+    } else if (lowFloat) {
+      lineFloat.textContent = 'Float low — zap to refill';
+      lineFloat.style.color = '#ff8050';
+    } else {
+      lineFloat.textContent = `Float: ${pool.balance_sats.toLocaleString()} sats`;
+      lineFloat.style.color = 'rgba(255,216,74,0.65)';
+    }
+    linePaid.textContent = `Paid lifetime: ${pool.total_paid_sats.toLocaleString()} sats`;
+  };
+
+  void update();
+  intervalId = window.setInterval(() => {
+    if (!wrapper.isConnected) {
+      if (intervalId !== null) clearInterval(intervalId);
+      return;
+    }
+    void update();
+  }, 60_000);
 }
 
 function renderGlobalLeaderboard(parent: HTMLElement): void {
@@ -944,6 +1007,8 @@ export function renderGameOver(state: GameState): void {
     state.phase = 'title';
     renderTitle(state);
   });
+
+  renderLegalFooter(overlay);
 }
 
 const LN_ADDRESS_KEY = 'pallasite:lightning_address';
@@ -1225,6 +1290,8 @@ export function renderCompletion(state: GameState): void {
     renderTitle(state);
   });
   stage(4.2)(row);
+
+  renderLegalFooter(overlay);
 }
 
 /**
