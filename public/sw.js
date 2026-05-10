@@ -11,14 +11,18 @@
  * Bump SW_VERSION below to invalidate all caches on the next visit.
  */
 
-const SW_VERSION = 'v6';
+const SW_VERSION = 'v7';
 const CACHE_HTML = `pallasite-html-${SW_VERSION}`;
 const CACHE_ASSET = `pallasite-asset-${SW_VERSION}`;
 
 self.addEventListener('install', () => {
-  // Don't auto-skipWaiting — the page detects the waiting worker and prompts
-  // the user to reload. They confirm, the page posts SKIP_WAITING, then this
-  // worker activates and controllerchange triggers a clean reload.
+  // Auto-skip waiting on this version bump. The previous policy was to wait
+  // for an in-app reload prompt, but the prompt itself was unclickable on
+  // iOS — leaving users stranded on a stale bundle with no way to advance.
+  // Auto-activate is safe here because the page is reload-driven anyway:
+  // the controllerchange handler in main.ts triggers a clean refresh once
+  // the new worker takes over, which is what the prompt would have done.
+  self.skipWaiting();
 });
 
 self.addEventListener('message', event => {
