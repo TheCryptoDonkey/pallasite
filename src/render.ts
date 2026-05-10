@@ -1433,6 +1433,14 @@ function pad(n: number, len: number): string {
 
 function drawHud(ctx: CanvasRenderingContext2D, s: GameState, now: number): void {
   ctx.save();
+  // Render HUD in screen-pixel space so SCORE / SATS / WAVE / LIVES are
+  // always visible regardless of how the world is cropped or zoomed. Using
+  // world coords would push SCORE off the visible band's left edge in
+  // portrait, and LIVES off the right.
+  const w = renderMode.kind === 'modern' ? renderMode.vw : WORLD_W;
+  if (renderMode.kind === 'modern') {
+    ctx.setTransform(renderMode.dpr, 0, 0, renderMode.dpr, 0, 0);
+  }
   ctx.font = '24px ui-monospace, monospace';
   ctx.shadowBlur = 0;
   ctx.fillStyle = '#58ff58';
@@ -1500,19 +1508,19 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState, now: number): void
   if (s.session && !s.cheatedThisRun) {
     ctx.fillStyle = '#ffd84a';
     ctx.textAlign = 'center';
-    ctx.fillText('SATS', WORLD_W * 0.32, 16);
-    ctx.fillText('₿ ' + pad(Math.floor(s.displaySats), 6), WORLD_W * 0.32, 42);
+    ctx.fillText('SATS', w * 0.32, 16);
+    ctx.fillText('₿ ' + pad(Math.floor(s.displaySats), 6), w * 0.32, 42);
   }
 
   ctx.fillStyle = '#5b9dff';
-  ctx.fillText('WAVE', WORLD_W * 0.62, 16);
-  ctx.fillText(pad(s.wave, 2), WORLD_W * 0.62, 42);
+  ctx.fillText('WAVE', w * 0.62, 16);
+  ctx.fillText(pad(s.wave, 2), w * 0.62, 42);
 
   ctx.fillStyle = '#58ff58';
   ctx.textAlign = 'right';
-  ctx.fillText('LIVES', WORLD_W - 24, 16);
+  ctx.fillText('LIVES', w - 24, 16);
   for (let i = 0; i < s.lives; i++) {
-    const x = WORLD_W - 24 - i * 22;
+    const x = w - 24 - i * 22;
     const y = 56;
     ctx.save();
     ctx.translate(x, y);
@@ -1555,7 +1563,11 @@ function drawGhostChip(ctx: CanvasRenderingContext2D, s: GameState): void {
   const leaderScore = ghostScoreAt(ghost, t);
   if (leaderScore <= 0) return;
   const gap = s.score - leaderScore;
-  const x = WORLD_W - 24;
+  // drawGhostChip is invoked inside drawHud, which has already reset the
+  // transform to screen-pixel space in modern mode. Use viewport width
+  // instead of world width so the chip stays glued to the actual top-right.
+  const w = renderMode.kind === 'modern' ? renderMode.vw : WORLD_W;
+  const x = w - 24;
   let y = 86;
 
   ctx.save();
