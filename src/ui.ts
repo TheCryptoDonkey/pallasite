@@ -126,15 +126,55 @@ function renderArcadeInitials(
 
   const slotsRow = el('div', { parent: wrap });
   slotsRow.style.cssText = 'display:flex;gap:8px;';
-
   const slotEls: HTMLDivElement[] = [];
+
+  // Each slot lives in its own column with ▲/▼ tap buttons so mobile users
+  // (no keyboard) can cycle and submit. Keyboard users still drive via the
+  // arrow-key handler below; touch and keyboard share the same internal
+  // cycleAt / moveTo / commit functions.
+  const cycleAt = (idx: number, dir: 1 | -1): void => {
+    cursor = idx;
+    slots[idx] = (slots[idx] + dir + CHARS.length) % CHARS.length;
+    renderSlots();
+    audio.initialCycle();
+    resetIdle();
+  };
+  const moveTo = (idx: number): void => {
+    if (cursor === idx) return;
+    cursor = idx;
+    renderSlots();
+    audio.initialMove();
+    resetIdle();
+  };
+
+  const arrowBtnCss = 'width:42px;height:32px;display:flex;align-items:center;justify-content:center;background:rgba(88,255,88,0.08);border:2px solid rgba(88,255,88,0.3);color:#58ff58;font-family:inherit;font-size:1rem;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;user-select:none;';
   for (let i = 0; i < 4; i++) {
-    const box = el('div', { parent: slotsRow }) as HTMLDivElement;
-    box.style.cssText = 'width:42px;height:54px;display:flex;align-items:center;justify-content:center;font-family:inherit;font-size:1.6rem;background:rgba(0,0,0,0.4);border:2px solid rgba(88,255,88,0.3);color:#58ff58;letter-spacing:0;transition:opacity 120ms;';
+    const col = el('div', { parent: slotsRow }) as HTMLDivElement;
+    col.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:4px;';
+
+    const up = el('button', { parent: col, text: '▲' }) as HTMLButtonElement;
+    up.type = 'button';
+    up.style.cssText = arrowBtnCss;
+    up.addEventListener('click', () => cycleAt(i, 1));
+
+    const box = el('div', { parent: col }) as HTMLDivElement;
+    box.style.cssText = 'width:42px;height:54px;display:flex;align-items:center;justify-content:center;font-family:inherit;font-size:1.6rem;background:rgba(0,0,0,0.4);border:2px solid rgba(88,255,88,0.3);color:#58ff58;letter-spacing:0;transition:opacity 120ms;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;user-select:none;';
+    box.addEventListener('click', () => moveTo(i));
+
+    const down = el('button', { parent: col, text: '▼' }) as HTMLButtonElement;
+    down.type = 'button';
+    down.style.cssText = arrowBtnCss;
+    down.addEventListener('click', () => cycleAt(i, -1));
+
     slotEls.push(box);
   }
 
-  const hint = el('p', { parent: wrap, text: '↑↓ CYCLE   ←→ MOVE   → AT END SAVES' });
+  const saveBtn = el('button', { parent: wrap, text: 'SAVE' }) as HTMLButtonElement;
+  saveBtn.type = 'button';
+  saveBtn.style.cssText = 'margin-top:4px;padding:8px 24px;background:rgba(255,216,74,0.15);border:2px solid #ffd84a;color:#ffd84a;font-family:inherit;font-size:0.9rem;letter-spacing:0.2em;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;';
+  saveBtn.addEventListener('click', () => commit());
+
+  const hint = el('p', { parent: wrap, text: '▲▼ CYCLE · TAP SLOT TO MOVE · SAVE' });
   hint.style.cssText = 'font-size:0.7rem;color:rgba(180,140,255,0.7);letter-spacing:0.18em;margin:0;';
 
   const timerLine = el('p', { parent: wrap });
@@ -1946,6 +1986,20 @@ function renderSocialActions(parent: HTMLElement, state: GameState): void {
 }
 
 function renderZapButton(parent: HTMLElement, state: GameState): void {
+  // Without a Nostr session the LNURL-pay path still works, but the resulting
+  // payment can't be signed as a NIP-57 zap — so the player gets no public
+  // credit linking them to the game. Per UX direction: don't bother offering
+  // the button without a signer; show a sign-in prompt instead.
+  if (!state.session) {
+    const wrap = el('div', { parent });
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:6px;margin-top:6px;';
+    const label = el('p', { parent: wrap, text: '⚡ SIGN IN TO ZAP ⚡' });
+    label.style.cssText = 'font-size:0.9rem;letter-spacing:0.2em;color:rgba(255,216,74,0.7);margin:0;';
+    const sub = el('p', { parent: wrap, text: 'zaps need a Nostr key so the credit links back to you' });
+    sub.style.cssText = 'font-size:0.7rem;letter-spacing:0.12em;color:rgba(180,140,255,0.55);margin:0;text-align:center;';
+    return;
+  }
+
   const wrap = el('div', { parent });
   wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:8px;margin-top:6px;';
 
