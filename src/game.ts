@@ -49,6 +49,7 @@ import type { PowerUp, PowerUpType } from './types.js';
 import * as audio from './audio.js';
 import { preloadBackground, getCollisionWrap, getVisibleBoundsW } from './render.js';
 import { currentMods, lockInDifficulty, getStoredDifficulty, currentDifficulty } from './difficulty.js';
+import { lockInMode, getStoredMode, currentMode } from './mode.js';
 import { gameRng } from './seed.js';
 import { haptic } from './haptics.js';
 import { markSkinUnlocked } from './skins.js';
@@ -170,6 +171,10 @@ export function startGame(s: GameState): void {
   // here. Without this, switching difficulty between runs (via TO TITLE then
   // back) wouldn't take effect on the next press of SPAWN AGAIN.
   lockInDifficulty(getStoredDifficulty());
+  // Lock in the run mode too — campaign vs drift changes the wave-25
+  // completion path. Same re-lock rationale as difficulty: button paths
+  // that bypass title need this to honour the picked mode.
+  lockInMode(getStoredMode());
   const mods = currentMods();
   s.score = 0;
   s.sats = 0;
@@ -564,10 +569,13 @@ export function beginWave(s: GameState, wave: number): void {
   }
   // Place static mines for this wave unless the set piece supplied its own.
   if (!setPiece?.suppressDefaultMines) placeWaveMines(s, wave);
-  // Rare pallasite-vein event — roll on procedural waves only (6..24) so
-  // the heist (5), curtain (12), and boss (25) keep their hand-authored
-  // shapes. Vein streams sats per hit, brings a UFO swarm 2s later.
-  if (!setPiece && wave >= VEIN_SPAWN_MIN_WAVE && wave <= VEIN_SPAWN_MAX_WAVE
+  // Rare pallasite-vein event — roll on procedural waves only (≥6,
+  // excluding set pieces + the boss arena). Drift mode (waves 26+) is
+  // explicitly included so an endless run keeps getting vein rolls;
+  // VEIN_SPAWN_MAX_WAVE only applies in campaign mode where the run
+  // ends at 25 anyway.
+  const wavePastWindow = wave > VEIN_SPAWN_MAX_WAVE && currentMode() !== 'drift';
+  if (!setPiece && wave >= VEIN_SPAWN_MIN_WAVE && !wavePastWindow
       && wave !== FINAL_WAVE) {
     const roll = gameRng();
     if (roll < VEIN_SPAWN_CHANCE) spawnVein(s, wave);
@@ -2365,10 +2373,23 @@ export function updateGame(s: GameState, dt: number, now: number): void {
     if (s.wave === FINAL_WAVE) {
       // Wave 25 completion: boss down AND the arena is fully clean. Mopping
       // up the lingering asteroids and UFO escorts after the kill is the
-      // earned exhale before the credits roll.
+      // earned exhale before the credits roll. In drift mode the boss
+      // kill is a milestone, not a finale — we warp on to wave 26 and
+      // keep going procedurally.
       const ufosClear = s.ufos.length === 0;
       if (s.bossDefeated && asteroidsClear && ufosClear) {
-        triggerCompletion(s);
+        if (currentMode() === 'drift') {
+          awardWaveClearBonuses(s);
+          clearStage(s, { autoCollect: true });
+          audio.ufoSirenStop();
+          bumpTrauma(s, 0.40);
+          hitStop(s, 220);
+          spawnWaveClearStreak(s);
+          toastNow(s, 'DRIFT · BEYOND THE HORIZON');
+          startWarp(s);
+        } else {
+          triggerCompletion(s);
+        }
       }
     } else if (cleared) {
       // Award NO SHIELD / NO MISS / PACIFIST UFO bonuses before clearing the
