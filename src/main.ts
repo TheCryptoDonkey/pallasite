@@ -475,6 +475,11 @@ async function boot(): Promise<void> {
       void fetchProfile(state.session!.pubkey).then(p => { if (p) state.profile = p; });
     });
   }
+  // NIP-07 extensions sometimes inject `window.nostr` after page load —
+  // tryRestore at boot can land before the extension is ready, leaving us
+  // with an auth-only stub session. Watch for the signer to come online and
+  // upgrade transparently.
+  watchForSignerUpgrade();
 
   // Preload first two wave backgrounds so the start of the game is seamless
   preloadBackground(1);
@@ -505,6 +510,69 @@ async function boot(): Promise<void> {
   setupServiceWorker();
 
   requestAnimationFrame(loop);
+}
+
+/**
+ * Watch for a NIP-07 extension to inject `window.nostr` after boot and
+ * silently upgrade an auth-only session into a fully-signing one. Some
+ * extensions (Alby, nos2x) don't always have window.nostr ready by the
+ * time tryRestore runs, so the initial restoreSession lands us with a
+ * stub signer. Polling here is bounded (POLL_DURATION_MS) so we don't
+ * loop forever for users who never had nip07 in the first place.
+ *
+ * Only nip07-method sessions are eligible — bunker/redirect sessions
+ * have their own signing pathways and shouldn't be silently switched.
+ */
+function watchForSignerUpgrade(): void {
+  const POLL_MS = 500;
+  const POLL_DURATION_MS = 30_000;
+  const startedAt = Date.now();
+  let upgrading = false;
+
+  const tick = async (): Promise<void> => {
+    if (Date.now() - startedAt > POLL_DURATION_MS) return;
+    const sess = state.session;
+    if (!sess) {
+      // Nothing to upgrade — but the user may sign in manually later, so
+      // step out cleanly. Manual sign-in is its own path.
+      window.setTimeout(() => void tick(), POLL_MS * 4);
+      return;
+    }
+    if (sess.signer.capabilities.canSignEvents) return;
+    if (sess.method !== 'nip07') return;
+    if (!(window as { nostr?: unknown }).nostr) {
+      window.setTimeout(() => void tick(), POLL_MS);
+      return;
+    }
+    if (upgrading) {
+      window.setTimeout(() => void tick(), POLL_MS);
+      return;
+    }
+    upgrading = true;
+    try {
+      const upgraded = await tryRestore();
+      if (upgraded?.signer.capabilities.canSignEvents
+          && upgraded.pubkey === sess.pubkey) {
+        state.session = upgraded;
+        // Profile was tied to the stub session; refetch under the new
+        // signer just in case kind 0 caching differs (cheap, returns
+        // immediately if already cached).
+        void import('./profile.js').then(({ fetchProfile, getCachedProfile }) => {
+          if (!state.session) return;
+          const cached = getCachedProfile(state.session.pubkey);
+          if (cached) state.profile = cached;
+          void fetchProfile(state.session.pubkey).then(p => {
+            if (p && state.session?.pubkey === p.pubkey) state.profile = p;
+          });
+        });
+        if (state.phase === 'title') renderTitle(state);
+        return;
+      }
+    } catch { /* ignore — try again on the next tick */ }
+    finally { upgrading = false; }
+    window.setTimeout(() => void tick(), POLL_MS);
+  };
+  window.setTimeout(() => void tick(), POLL_MS);
 }
 
 /**

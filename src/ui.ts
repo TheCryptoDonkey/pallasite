@@ -400,14 +400,15 @@ function renderPoolChip(parent: HTMLElement): void {
       return;
     }
     const lowFloat = pool.balance_sats < 1000;
+    const floatStr = `Float: ${pool.balance_sats.toLocaleString()} sats`;
     if (pool.paused) {
-      lineFloat.textContent = 'Faucet paused';
+      lineFloat.textContent = `${floatStr} — paused`;
       lineFloat.style.color = '#ff8050';
     } else if (lowFloat) {
-      lineFloat.textContent = 'Float low — zap to refill';
+      lineFloat.textContent = `${floatStr} — zap to refill`;
       lineFloat.style.color = '#ff8050';
     } else {
-      lineFloat.textContent = `Float: ${pool.balance_sats.toLocaleString()} sats`;
+      lineFloat.textContent = floatStr;
       lineFloat.style.color = 'rgba(255,216,74,0.65)';
     }
     linePaid.textContent = `Paid lifetime: ${pool.total_paid_sats.toLocaleString()} sats`;
