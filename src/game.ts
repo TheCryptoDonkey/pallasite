@@ -119,6 +119,14 @@ export function bumpTrauma(s: GameState, amount: number): void {
   s.cameraTrauma = Math.min(1, s.cameraTrauma + amount);
 }
 
+/** Freeze the simulation for `ms` to let an impact land. Render keeps running.
+ *  Takes the max of any in-flight hit-stop so a brief later event can't shorten
+ *  a longer earlier one (e.g. boss-down should not be cut by a stray combo hit). */
+export function hitStop(s: GameState, ms: number): void {
+  const target = performance.now() + ms;
+  if (target > s.hitStopUntil) s.hitStopUntil = target;
+}
+
 function makeShip(): Ship {
   return {
     pos: { x: WORLD_W / 2, y: WORLD_H / 2 },
@@ -136,6 +144,7 @@ function makeShip(): Ship {
     shieldUp: false,
     shieldExpiresAt: 0,
     shieldReadyAt: 0,
+    recoilOffset: 0,
   };
 }
 
@@ -809,6 +818,7 @@ function destroyMine(s: GameState, m: Mine): void {
   spawnCoins(s, m.pos.x, m.pos.y, MINE_SATS_DROP, 2);
   // Mines are anchored danger — clearing one should feel substantial.
   bumpTrauma(s, 0.32);
+  hitStop(s, 60);
   audio.pulseDuck(0.55, 220);
   haptic('thump');
   toastNow(s, `MINE CLEARED  +${MINE_POINTS * mul}`);
@@ -835,6 +845,16 @@ function damageUfo(s: GameState, u: Ufo): void {
   u.hitFlash = 1;
   spawnParticles(s, u.pos.x, u.pos.y, 4, '#ffffff', 80, 250);
 
+  // Boss hits punch — every shot that lands on the wave-25 boss should feel
+  // earned. Tank hits rumble too because they're rare and the chunky frame
+  // wants weight. Other UFOs are handled at destroy-time only.
+  if (u.type === 'boss') {
+    bumpTrauma(s, 0.16);
+    hitStop(s, 35);
+  } else if (u.type === 'tank' && u.hp > 0) {
+    bumpTrauma(s, 0.10);
+  }
+
   // Boss drops mines around itself at every 5 HP threshold
   if (u.type === 'boss' && u.hp > 0 && u.hp % 5 === 0) {
     for (let i = 0; i < 3; i++) {
@@ -846,6 +866,9 @@ function damageUfo(s: GameState, u: Ufo): void {
         s.mines.push(makeMine({ x, y }));
       }
     }
+    // Phase transition — bigger punch + freeze frame so the mine deploy reads.
+    bumpTrauma(s, 0.45);
+    hitStop(s, 220);
     toastNow(s, `BOSS: ${u.hp} HP · MINES DEPLOYED`);
   }
 
@@ -864,6 +887,17 @@ function destroyUfo(s: GameState, u: Ufo): void {
   const explodeScale = u.type === 'tank' ? 1.3 : u.type === 'elite' ? 0.9 : 1.0;
   audio.explosion(explodeScale);
   spawnParticles(s, u.pos.x, u.pos.y, u.type === 'tank' ? 36 : 26, '#ff5050', 220, 800);
+  // Per-class shake + freeze. Boss is the climax — biggest of any kill bar
+  // ship death. Tanks are hefty. Cruiser/elite/sniper get a small punch.
+  if (u.type === 'boss') {
+    bumpTrauma(s, 0.7);
+    hitStop(s, 280);
+  } else if (u.type === 'tank') {
+    bumpTrauma(s, 0.28);
+    hitStop(s, 60);
+  } else {
+    bumpTrauma(s, 0.16);
+  }
   // Sat coins drop
   const coinCount = u.type === 'tank' ? 6 : u.type === 'elite' ? 5 : 4;
   spawnCoins(s, u.pos.x, u.pos.y, UFO_SATS[u.type], coinCount);
@@ -920,6 +954,9 @@ export function fireBullet(s: GameState): void {
       ttl: BULLET_TTL_MS,
     });
   }
+  // Visual kick — every shot nudges the ship back a couple of px along its
+  // own facing. Decays in a few frames; affects render only.
+  s.ship.recoilOffset = Math.max(s.ship.recoilOffset, 1.8);
   audio.fire();
 }
 
@@ -929,6 +966,35 @@ export function fireBullet(s: GameState): void {
  *  proportionally scaled down so a chain of explosions on a busy wave doesn't
  *  push the renderer into the red. Tuned by-eye against wave 7-8 stress. */
 const MAX_PARTICLES = 240;
+
+/** Inward star-streak burst played on wave clear. Pushes particles from the
+ *  playfield edges flying toward the centre at high speed for a brief moment.
+ *  Reads as a "warp ignition" beat — distinct from the radial outward bursts
+ *  used elsewhere. Bypasses spawnParticles because the velocity is inward, not
+ *  random-radial. */
+function spawnWaveClearStreak(s: GameState): void {
+  const cx = WORLD_W / 2;
+  const cy = WORLD_H / 2;
+  const N = 18;
+  const headroom = MAX_PARTICLES - s.particles.length;
+  if (headroom <= 0) return;
+  const count = Math.min(N, headroom);
+  for (let i = 0; i < count; i++) {
+    const angle = (Math.PI * 2 * i) / count + Math.random() * 0.25;
+    const startR = Math.max(WORLD_W, WORLD_H) * 0.55;
+    const sx = cx + Math.cos(angle) * startR;
+    const sy = cy + Math.sin(angle) * startR;
+    const speed = 360 + Math.random() * 220;
+    s.particles.push({
+      pos: { x: sx, y: sy },
+      vel: { x: -Math.cos(angle) * speed, y: -Math.sin(angle) * speed },
+      ttl: 420,
+      maxTtl: 420,
+      colour: '#ffffff',
+      size: 1.4 + Math.random() * 1.2,
+    });
+  }
+}
 
 function spawnParticles(s: GameState, x: number, y: number, count: number, colour: string, speed = 100, ttl = 600): void {
   // Scale request down when the buffer is filling up — at the cap, requests
@@ -1095,6 +1161,11 @@ export function tryHyperspace(s: GameState, now: number): void {
     toastNow(s, 'WARP UNSTABLE');
   } else {
     audio.warpJump();
+    // Outward white burst signals warp ignition at the departure point. Fast
+    // particles, short ttl — reads as speed-lines for ~250ms before the cloak
+    // takes over and the ship reappears elsewhere.
+    spawnParticles(s, s.ship.pos.x, s.ship.pos.y, 22, '#ffffff', 380, 260);
+    spawnParticles(s, s.ship.pos.x, s.ship.pos.y, 10, '#7fbfff', 220, 320);
     toastNow(s, 'HYPERSPACE LOCK');
   }
   audio.thrustOff();
@@ -1413,6 +1484,7 @@ export function updateGame(s: GameState, dt: number, now: number): void {
           shieldUp: false,
           shieldExpiresAt: 0,
           shieldReadyAt: 0,
+          recoilOffset: 0,
         };
         spawnShipDebris(s, fauxShip);
       }
@@ -1504,6 +1576,11 @@ export function updateGame(s: GameState, dt: number, now: number): void {
     s.ship.pos.x += s.ship.vel.x * dt;
     s.ship.pos.y += s.ship.vel.y * dt;
     wrap(s.ship.pos);
+
+    // Recoil decays linearly — a 1.8px kick fades in ~75ms at 24 px/s.
+    if (s.ship.recoilOffset > 0) {
+      s.ship.recoilOffset = Math.max(0, s.ship.recoilOffset - dt * 24);
+    }
 
     if (fire && now >= fireCooldownUntil) {
       fireBullet(s);
@@ -1844,6 +1921,12 @@ export function updateGame(s: GameState, dt: number, now: number): void {
       // Despawn UFOs/mines/enemy bullets and auto-bank any uncollected coins
       clearStage(s, { autoCollect: true });
       audio.ufoSirenStop();
+      // Wave-clear punctuation: brief freeze + a soft trauma bump + inward
+      // star-streak so the transition into warp lands on a beat instead of
+      // a smooth fade.
+      bumpTrauma(s, 0.30);
+      hitStop(s, 180);
+      spawnWaveClearStreak(s);
       startWarp(s);
     }
   }
@@ -1954,6 +2037,9 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
 
   // Pallasite jackpot signal on the final shard
   if (a.type === 'pallasite' && a.size === 'small') {
+    // Final shard of a pallasite chain is a moment — let it land.
+    bumpTrauma(s, 0.35);
+    hitStop(s, 110);
     toastNow(s, `PALLASITE +${Math.max(1, Math.round(satsValue))} sats`);
   }
 
@@ -2046,6 +2132,7 @@ function killShip(s: GameState): void {
   audio.thrustOff();
   // Maximum trauma + deepest duck + rumble — death is the loudest impact.
   bumpTrauma(s, 1.0);
+  hitStop(s, 140);
   audio.pulseDuck(0.35, 360);
   haptic('rumble');
   // Layered explosion: ship-green burst + yellow flash + white sparks +

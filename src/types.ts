@@ -36,6 +36,10 @@ export interface Ship extends Entity {
   shieldExpiresAt: number;
   /** Timestamp ms when the shield can be re-activated after the last burst ends */
   shieldReadyAt: number;
+  /** Visual-only recoil offset in pixels — set to a small value on fire and
+   *  decayed each frame. Render nudges the ship backward along its facing by
+   *  this amount, giving every shot a kick. Does not affect physics or aim. */
+  recoilOffset: number;
 }
 
 export type AsteroidSize = 'large' | 'medium' | 'small';

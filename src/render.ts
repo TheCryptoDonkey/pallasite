@@ -333,7 +333,7 @@ function drawShield(ctx: CanvasRenderingContext2D, ship: Ship, now: number): voi
   ctx.restore();
 }
 
-function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number): void {
+function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, idleSway = false): void {
   if (!ship.alive) return;
   // Hide ship entirely during hyperspace cloak — except when the warp is
   // malfunctioning, in which case render a red distortion at the departure
@@ -348,8 +348,16 @@ function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number): void 
   const skin = getActiveSkin().palette;
 
   ctx.save();
-  ctx.translate(ship.pos.x, ship.pos.y);
-  ctx.rotate(ship.rot);
+  // Idle sway — gentle bob + tilt applied in screen space (before the rotate)
+  // so it reads as a wobble around the resting frame, not a roll along the
+  // ship's own axis. Title and wavestart only — never during play.
+  const swayDy = idleSway ? Math.sin(now * 0.0008) * 2 : 0;
+  const swayRot = idleSway ? Math.sin(now * 0.0006) * 0.05 : 0;
+  ctx.translate(ship.pos.x, ship.pos.y + swayDy);
+  ctx.rotate(ship.rot + swayRot);
+  // Visual recoil kick on fire — slides the ship back along its facing while
+  // the offset decays. Pure render effect, doesn't affect physics or aim.
+  if (ship.recoilOffset > 0) ctx.translate(-ship.recoilOffset, 0);
   ctx.lineWidth = 1.6;
   ctx.strokeStyle = skin.ship;
   ctx.shadowColor = skin.shipShadow;
@@ -1096,12 +1104,16 @@ function drawUfo(ctx: CanvasRenderingContext2D, u: Ufo, now: number): void {
     }
   }
 
-  // Hit-flash overlay (white pulse on damage)
+  // Hit-flash overlay (white pulse on damage). Boss runs hotter — every shot
+  // that lands on the climactic fight should read as a frame of pure white,
+  // not a tinted overlay. Other UFOs stay at the muted 0.7 cap so a barrage
+  // doesn't strobe the screen.
   if (u.hitFlash > 0) {
-    ctx.globalAlpha = u.hitFlash * 0.7;
+    const flashAlpha = u.type === 'boss' ? u.hitFlash : u.hitFlash * 0.7;
+    ctx.globalAlpha = flashAlpha;
     ctx.fillStyle = '#ffffff';
     ctx.shadowColor = '#ffffff';
-    ctx.shadowBlur = 18;
+    ctx.shadowBlur = u.type === 'boss' ? 26 : 18;
     ctx.beginPath();
     ctx.arc(0, 0, r * 0.9, 0, Math.PI * 2);
     ctx.fill();
@@ -2163,7 +2175,7 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
       rot: snap.ship.rot, rotVel: 0, thrusting: snap.ship.thrusting,
       invulnerableUntil: 0, thrustFrame: now / 80,
       hyperspaceReadyAt: 0, hyperspaceCloakMs: 0, hyperspaceMalfunction: false,
-      shieldUp: false, shieldExpiresAt: 0, shieldReadyAt: 0,
+      shieldUp: false, shieldExpiresAt: 0, shieldReadyAt: 0, recoilOffset: 0,
     };
     drawShip(ctx, fauxShip, now);
   }
@@ -2290,7 +2302,8 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       drawGhostShip(ctx, state);
       drawGhostAttract(ctx, state, now);
       drawShield(ctx, state.ship, now);
-      drawShip(ctx, state.ship, now);
+      const idleSway = state.phase === 'title' || state.phase === 'wavestart';
+      drawShip(ctx, state.ship, now, idleSway);
       if (isGhost) ctx.restore();
     }
   }
