@@ -19,7 +19,7 @@ import * as auth from './auth.js';
 import { addLocalHighScore, getLocalHighScores, isHighScore, subscribeGlobalHighScores, clearLocalHighScores, type GlobalHighScore } from './score.js';
 import { submitClaim, fetchPool, fetchPlayer, type PlayerTier } from './faucet.js';
 import { renderLegalFooter, openTermsModal } from './legal.js';
-import { startGame, startDeathReplay, toastNow } from './game.js';
+import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow } from './game.js';
 import * as audio from './audio.js';
 import { fetchProfile, getCachedProfile, bestName } from './profile.js';
 import { type Difficulty, getStoredDifficulty, setStoredDifficulty, lockInDifficulty } from './difficulty.js';
@@ -422,11 +422,16 @@ export function showUpdateBanner(onReload: () => void): void {
   if (document.getElementById('pal-update-banner')) return;
   const banner = document.createElement('div');
   banner.id = 'pal-update-banner';
+  // z-index 9999 so the banner stacks above any overlay (.overlay has no
+  // explicit z-index and creates a stacking context via inset:0). The body
+  // sets touch-action:none which can prevent click-ready taps on iOS for
+  // descendants without their own touch-action — declare manipulation on
+  // the banner so the button below resolves taps without delay.
   banner.style.cssText = [
     'position:fixed',
     'top:max(12px, env(safe-area-inset-top, 0px))',
     'left:50%', 'transform:translateX(-50%)',
-    'z-index:200',
+    'z-index:9999',
     'background:rgba(10,4,24,0.95)',
     'border:2px solid #ffd84a', 'border-radius:10px',
     'padding:12px 16px',
@@ -437,13 +442,25 @@ export function showUpdateBanner(onReload: () => void): void {
     'box-shadow:0 0 20px rgba(255,216,74,0.35)',
     'display:flex', 'gap:14px', 'align-items:center',
     'pointer-events:auto',
+    'touch-action:manipulation',
+    '-webkit-tap-highlight-color:rgba(255,216,74,0.18)',
   ].join(';');
-  banner.innerHTML = `<span>NEW VERSION READY</span><button type="button" style="font-family:inherit;font-size:0.95rem;letter-spacing:0.18em;padding:6px 14px;background:rgba(255,216,74,0.15);border:1px solid #ffd84a;color:#ffd84a;border-radius:6px;cursor:pointer;">RELOAD</button>`;
-  banner.querySelector('button')!.addEventListener('click', () => {
+  banner.innerHTML = `<span>NEW VERSION READY</span><button type="button" style="font-family:inherit;font-size:0.95rem;letter-spacing:0.18em;padding:10px 16px;min-height:44px;background:rgba(255,216,74,0.15);border:1px solid #ffd84a;color:#ffd84a;border-radius:6px;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:rgba(255,216,74,0.32);">RELOAD</button>`;
+  const reloadBtn = banner.querySelector('button') as HTMLButtonElement;
+  // Bind both click and pointerup — some mobile browsers swallow click on
+  // elements layered above touch-action:none ancestors. Pointerup fires
+  // reliably; click stays as the primary path. Guard against double-fire
+  // with a fired flag.
+  let fired = false;
+  const trigger = (): void => {
+    if (fired) return;
+    fired = true;
     banner.querySelector('span')!.textContent = 'UPDATING...';
-    (banner.querySelector('button') as HTMLButtonElement).disabled = true;
+    reloadBtn.disabled = true;
     onReload();
-  });
+  };
+  reloadBtn.addEventListener('click', trigger);
+  reloadBtn.addEventListener('pointerup', trigger);
   document.body.appendChild(banner);
 }
 
@@ -1305,12 +1322,14 @@ export function renderPause(state?: GameState): void {
     const quit = el('button', { className: 'menu-btn secondary', parent: row, text: 'QUIT TO TITLE' });
     quit.addEventListener('click', () => {
       // Abandon the run — drop straight to title without going through gameover.
-      // The next IGNITE will call startGame which clears all run state.
       audio.thrustOff();
       audio.ufoSirenStop();
       audio.stopHeartbeat();
       audio.stopAmbient();
       audio.setMusicDuck(1);
+      // Wipe entities — leftover asteroids/debris/particles otherwise
+      // bleed through the title overlay's translucent backdrop.
+      clearEntitiesForTitle(state);
       state.phase = 'title';
       state.phaseStart = performance.now();
       renderTitle(state);
@@ -2478,6 +2497,7 @@ function renderRunCredits(
 
   const goToTitle = (): void => {
     cleanup();
+    clearEntitiesForTitle(state);
     state.phase = 'title';
     renderTitle(state);
   };
