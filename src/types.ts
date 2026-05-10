@@ -129,6 +129,11 @@ export interface Coin extends Entity {
   kind: PickupKind;
   /** Per-pickup payload — sats for `kind:'sat'`, score-bonus points for `kind:'dust'` */
   value: number;
+  /** Source asteroid type when the coin came from an asteroid break. Used by
+   *  the renderer to tint dust shards (so iron rocks drop orange shards,
+   *  chondrites blue, etc.) and by spawnCoins to scale score-mul. Undefined
+   *  when the drop came from a mine, UFO, or other non-asteroid source. */
+  sourceType?: AsteroidType;
 }
 
 /** 1-in-N chance a break drops sat coins (Nostr mode only). The remaining
