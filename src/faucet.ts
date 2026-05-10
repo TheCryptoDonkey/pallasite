@@ -52,6 +52,12 @@ export interface PoolStatus {
   balance_sats: number;
   total_paid_sats: number;
   paused: boolean;
+  /** Sats already paid out today (cap counter). */
+  daily_spent_sats?: number;
+  /** Daily payout cap, beyond which the faucet rejects further claims. */
+  daily_cap_sats?: number;
+  /** Unix-ms when today's counter resets (next 00:00 UTC). */
+  daily_reset_at?: number;
 }
 
 export async function fetchPool(): Promise<PoolStatus | null> {
@@ -63,6 +69,9 @@ export async function fetchPool(): Promise<PoolStatus | null> {
       balance_sats?: number;
       total_paid_sats?: number;
       paused?: boolean;
+      daily_spent_sats?: number;
+      daily_cap_sats?: number;
+      daily_reset_at?: number;
     };
     if (
       !data.ok ||
@@ -75,6 +84,15 @@ export async function fetchPool(): Promise<PoolStatus | null> {
       balance_sats: data.balance_sats,
       total_paid_sats: data.total_paid_sats,
       paused: Boolean(data.paused),
+      ...(typeof data.daily_spent_sats === 'number'
+        ? { daily_spent_sats: data.daily_spent_sats }
+        : {}),
+      ...(typeof data.daily_cap_sats === 'number'
+        ? { daily_cap_sats: data.daily_cap_sats }
+        : {}),
+      ...(typeof data.daily_reset_at === 'number'
+        ? { daily_reset_at: data.daily_reset_at }
+        : {}),
     };
   } catch {
     return null;
