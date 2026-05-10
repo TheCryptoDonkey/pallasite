@@ -12,7 +12,7 @@ import { render, preloadBackground, setRenderMode } from './render.js';
 import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding } from './ui.js';
 import { handleAuthCallback, tryRestore } from './auth.js';
 import * as audio from './audio.js';
-import { musicSetTrackForState, preloadAllTracks } from './music.js';
+import { musicSetTrackForState, preloadAllTracks, musicSetPaused } from './music.js';
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, setDisplayMode } from './display.js';
@@ -362,6 +362,26 @@ window.addEventListener('blur', () => {
     pauseGame(state);
     renderPause(state);
     audio.setMusicDuck(PAUSE_DUCK);
+  }
+});
+
+// PWA backgrounded → fully silence playback. iOS Safari and PWA shells
+// keep HTMLAudio elements decoding when the page is hidden, so the music
+// keeps playing after "closing" the app from the user's perspective.
+// Suspending the AudioContext silences any scheduled SFX/oscillators, and
+// musicSetPaused stops the underlying audio elements. Both reverse on
+// visibility return so the music picks back up where it was.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    audio.resumePlayback();
+    musicSetPaused(false);
+  } else {
+    audio.thrustOff();
+    audio.ufoSirenStop();
+    audio.stopHeartbeat();
+    audio.stopAmbient();
+    musicSetPaused(true);
+    audio.suspendPlayback();
   }
 });
 
