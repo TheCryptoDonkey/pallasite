@@ -22,6 +22,10 @@ import { getStoredDailyPref, setStoredDailyPref, todayUTC, getActiveSeed } from 
 import { DEV } from './credits.js';
 import { followUser, shareCompletion, endorseSubject, rankFromWave } from './social.js';
 import { requestZapInvoice, hasWebLN, payViaWebLN } from './zap.js';
+import {
+  asteroidPreview, minePreview, sniperPreview, powerupPreview,
+  dustPreview, satCoinPreview,
+} from './previews.js';
 import QRCode from 'qrcode';
 
 const root = document.getElementById('ui-root')!;
@@ -559,17 +563,23 @@ export function renderHowToPlay(onBack: () => void): void {
   const panel = el('div', { parent: overlay });
   panel.style.cssText = 'display:flex;flex-direction:column;gap:18px;align-items:stretch;max-width:540px;text-align:left;';
 
-  function section(title: string, lines: ReadonlyArray<readonly [string, string]>): void {
+  type Row = readonly [string, string] | readonly [string, string, HTMLCanvasElement];
+  function section(title: string, lines: ReadonlyArray<Row>): void {
     const block = el('div', { parent: panel });
     block.style.cssText = 'display:flex;flex-direction:column;gap:6px;';
     const h = el('p', { parent: block, text: title });
     h.style.cssText = 'font-size:0.78rem;letter-spacing:0.32em;color:rgba(180,140,255,0.95);margin:0;';
     const grid = el('div', { parent: block });
-    grid.style.cssText = 'display:grid;grid-template-columns:max-content 1fr;gap:6px 18px;font-size:0.92rem;color:rgba(220,210,255,0.92);';
-    for (const [k, v] of lines) {
-      const key = el('span', { parent: grid, text: k });
+    // Three columns now: preview slot (44px, kept consistent across all rows
+    // so text aligns even when most rows have no preview) | key | value.
+    grid.style.cssText = 'display:grid;grid-template-columns:44px max-content 1fr;gap:6px 14px;font-size:0.92rem;color:rgba(220,210,255,0.92);align-items:center;';
+    for (const row of lines) {
+      const previewCell = el('div', { parent: grid });
+      previewCell.style.cssText = 'display:flex;align-items:center;justify-content:center;';
+      if (row.length === 3) previewCell.appendChild(row[2]);
+      const key = el('span', { parent: grid, text: row[0] });
       key.style.cssText = 'color:#5b9dff;letter-spacing:0.08em;font-weight:bold;';
-      el('span', { parent: grid, text: v });
+      el('span', { parent: grid, text: row[1] });
     }
   }
 
@@ -586,25 +596,28 @@ export function renderHowToPlay(onBack: () => void): void {
   section('THE GOAL', [
     ['Waves 1-24', 'Each named after a real pallasite meteorite'],
     ['Wave 25', 'Event Horizon — the boss arena'],
-    ['Pickups', 'Dust shards (green) for score · Sat coins (₿) for real sats when signed in'],
+    ['Dust shards', 'Tinted to the source rock · score reward', dustPreview('iron')],
+    ['Sat coins', '₿ — real sats when signed in', satCoinPreview()],
     ['Lives', 'Lose all and the run ends · extra life every 10,000 score'],
   ]);
 
   section('WHAT TO WATCH FOR', [
     ['Combo chain', 'Quick consecutive kills stack a multiplier — watch the chip'],
     ['Hyperspace', 'Re-emerges anywhere, but ~6% chance the warp goes wrong'],
-    ['Mines', 'From wave 8 — gravity wells; bullets destroy them'],
-    ['Snipers', 'From wave 10 — slow, accurate, lethal'],
-    ['Iron rocks', 'Two hits to crack — the orange ones'],
-    ['Pallasite rocks', 'Rare jackpot — the yellow-green ones'],
+    ['Mines', 'From wave 8 — gravity wells; takes a few hits', minePreview()],
+    ['Snipers', 'From wave 10 — slow, accurate, lethal', sniperPreview()],
+    ['Stony rocks', 'The baseline silicate — 1 hit, modest payout', asteroidPreview('stony')],
+    ['Iron rocks', 'Two hits to crack — orange shards, 1.6× score', asteroidPreview('iron')],
+    ['Chondrite rocks', 'Fragile — splits into three on break', asteroidPreview('chondrite')],
+    ['Pallasite rocks', 'Rare jackpot — gold shards, 2× score, sat-guaranteed', asteroidPreview('pallasite')],
   ]);
 
   section('POWERUPS — drop from UFO kills', [
-    ['⚡ RAPID', 'Faster fire cadence for 8 seconds'],
-    ['₿ ×2 SATS', 'Doubles sat value of dropped coins for 12 seconds'],
-    ['⋔ TRIDENT', 'Three-bullet fan instead of single shot · 6 seconds'],
-    ['◎ MAGNET', 'Pulls coins + dust to your ship across the screen · 8 seconds'],
-    ['◉ NOVA', 'One-shot — destroys every asteroid on screen · score-only, no sats'],
+    ['RAPID', 'Faster fire cadence for 8 seconds', powerupPreview('rapid')],
+    ['×2 SATS', 'Doubles sat value of dropped coins for 12 seconds', powerupPreview('satboost')],
+    ['TRIDENT', 'Three-bullet fan instead of single shot · 6 seconds', powerupPreview('trident')],
+    ['MAGNET', 'Pulls coins + dust to your ship across the screen · 8 seconds', powerupPreview('magnet')],
+    ['NOVA', 'One-shot — destroys every asteroid on screen · score-only', powerupPreview('nova')],
   ]);
 
   section('SIGN IN WITH NOSTR', [
