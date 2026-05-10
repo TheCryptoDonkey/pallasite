@@ -611,10 +611,11 @@ body[data-display="modern"] #game {
 }
 body.touch-active[data-phase="playing"]   #touch-controls,
 body.touch-active[data-phase="wavestart"] #touch-controls,
-body.touch-active[data-phase="warp"]      #touch-controls,
-body.touch-active[data-phase="paused"]    #touch-controls {
+body.touch-active[data-phase="warp"]      #touch-controls {
   display: block;
 }
+/* Paused: hide touch controls so they don't sit on top of the pause menu's
+   RESUME / SETTINGS / QUIT buttons and intercept taps. */
 /* Mode gating — only one input set is active at a time. */
 #touch-controls[data-mode="buttons"]  .joystick-mode { display: none; }
 #touch-controls[data-mode="joystick"] .buttons-mode  { display: none; }
