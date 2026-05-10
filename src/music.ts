@@ -225,6 +225,38 @@ export function musicResetElements(): void {
   lastAppliedKey = '';
 }
 
+/**
+ * Prime every music track under the active user gesture so each
+ * underlying HTMLAudioElement gets its mandatory in-gesture .play() and
+ * stays unlocked for the rest of the session. Without this, only the
+ * track played by the initial musicSetTrackForState (pallasite-idle) is
+ * activated — later phase changes load fresh elements outside any
+ * gesture, iOS rejects their .play(), and the wave bands fall silent.
+ *
+ * Each element is muted before play() to keep the priming inaudible,
+ * then paused + unmuted via the play promise so it's left in a clean
+ * ready-to-play state. `skipId` lets the caller exclude the track
+ * that's about to be played normally — otherwise we'd race the
+ * gesture-bound startNew against our own pause.
+ */
+export function musicWarmUpAll(skipId?: string): void {
+  for (const id of Object.keys(TRACKS)) {
+    if (id === skipId) continue;
+    try {
+      const entry = load(TRACKS[id]);
+      entry.el.muted = true;
+      const p = entry.el.play();
+      const cleanup = (): void => {
+        try { entry.el.pause(); } catch { /* ignore */ }
+        try { entry.el.currentTime = 0; } catch { /* ignore */ }
+        try { entry.el.muted = false; } catch { /* ignore */ }
+      };
+      if (p && typeof p.then === 'function') p.then(cleanup, cleanup);
+      else cleanup();
+    } catch { /* ignore */ }
+  }
+}
+
 /** Display metadata for the secret music-player easter egg. Order is the
  *  order tracks appear in the menu — roughly the order they're heard
  *  through a campaign run. */

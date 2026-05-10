@@ -12,7 +12,7 @@ import { render, preloadBackground, setRenderMode } from './render.js';
 import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding } from './ui.js';
 import { handleAuthCallback, tryRestore, sweepSignetArtefacts } from './auth.js';
 import * as audio from './audio.js';
-import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicResetElements } from './music.js';
+import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicResetElements, musicWarmUpAll } from './music.js';
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, setDisplayMode } from './display.js';
@@ -376,9 +376,16 @@ const firstUnlock = (): void => {
   // rejected without a gesture — even after the AudioContext has
   // resumed. Resetting the cache forces the next load() to construct
   // fresh DOM elements + source nodes inside this gesture, which unlock
-  // cleanly. Then re-trigger the state-driven music so the title track
-  // plays from the gesture-bound load.
+  // cleanly.
   musicResetElements();
+  // Prime every non-title track under THIS gesture too — iOS activation
+  // is per-element. Without this, later phase changes (wavestart →
+  // slow-orbit, warp → warp-transition, gameover → hull-breached, etc.)
+  // load fresh elements outside any gesture and their first .play() is
+  // rejected. musicWarmUpAll() does a muted in-gesture play + pause on
+  // each so they're left unlocked-and-ready. Skip pallasite-idle since
+  // musicSetTrackForState is about to play it normally.
+  musicWarmUpAll('pallasite-idle');
   musicSetTrackForState(state);
   window.removeEventListener('pointerup', firstUnlock);
   window.removeEventListener('click', firstUnlock);
