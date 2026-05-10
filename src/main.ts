@@ -380,11 +380,17 @@ const firstUnlock = (): void => {
   // plays from the gesture-bound load.
   musicResetElements();
   musicSetTrackForState(state);
-  window.removeEventListener('pointerdown', firstUnlock);
-  window.removeEventListener('keydown', firstUnlock);
+  window.removeEventListener('pointerup', firstUnlock);
+  window.removeEventListener('click', firstUnlock);
+  window.removeEventListener('keyup', firstUnlock);
 };
-window.addEventListener('pointerdown', firstUnlock);
-window.addEventListener('keydown', firstUnlock);
+// IMPORTANT: bind on RELEASE events (pointerup / click / keyup), not press.
+// iOS Safari only treats a gesture as "activated" for audio purposes on the
+// release. Calls to ctx.resume() / element.play() inside a pointerdown
+// handler are silently rejected and the elements stay locked.
+window.addEventListener('pointerup', firstUnlock);
+window.addEventListener('click', firstUnlock);
+window.addEventListener('keyup', firstUnlock);
 
 // Lose focus → release keys & pause
 window.addEventListener('blur', () => {
