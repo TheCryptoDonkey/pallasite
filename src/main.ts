@@ -431,14 +431,15 @@ async function boot(): Promise<void> {
       canvas.style.imageRendering = 'auto';
       const ctx = canvas.getContext('2d')!;
       const isPortrait = vh > vw;
-      // Portrait zoom-out factor: pure cover-fit makes the visible band feel
-      // claustrophobic on phones. Pull the scale back so a bit more of the
-      // world is visible — gutters at top/bottom get filled by ±WORLD_H
-      // ghost-renders in render.ts.
-      const PORTRAIT_ZOOM = 0.75;
+      // Portrait zooms OUT (cover * 0.65) for breathing room on phones.
+      // Landscape zooms IN (contain * 1.15) for a more immersive frame on
+      // desktops/tablets. Both gutter cases are handled by the conditional
+      // ghost-render in render.ts.
+      const PORTRAIT_ZOOM = 0.65;
+      const LANDSCAPE_ZOOM = 1.15;
       const scale = isPortrait
         ? Math.max(vw / 960, vh / 720) * PORTRAIT_ZOOM
-        : Math.min(vw / 960, vh / 720);
+        : Math.min(vw / 960, vh / 720) * LANDSCAPE_ZOOM;
       const tx = (vw - 960 * scale) / 2;
       const ty = (vh - 720 * scale) / 2;
       ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * tx, dpr * ty);
