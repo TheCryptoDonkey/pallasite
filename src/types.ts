@@ -95,6 +95,21 @@ export const ASTEROID_TYPE_CONFIG: Record<AsteroidType, AsteroidTypeConfig> = {
 
 export interface Bullet extends Entity {
   ttl: number;            // ms remaining
+  /** Pierce budget — how many additional asteroid breaks this bullet can
+   *  survive past the first. Set to 1 in fireBullet so each shot can carom
+   *  once. Decremented when a bullet survives an asteroid break. UFO bullets
+   *  set this to 0 (no carom for enemies). */
+  pierceLeft: number;
+  /** True after this bullet has already broken at least one asteroid. The next
+   *  break it causes is the CAROM hit and gets a 2× score bonus. */
+  caromHit: boolean;
+  /** True once this bullet has wrapped around at least one playfield edge.
+   *  A wrapped bullet that lands a kill is a WRAP KILL — also a 2× bonus. */
+  wrapped: boolean;
+  /** True once the bullet has connected with anything (asteroid, UFO, mine).
+   *  Used by the wave-end NO MISS bonus to count shots that TTL'd without
+   *  ever landing a hit. */
+  hasLanded: boolean;
 }
 
 export type UfoType = 'cruiser' | 'elite' | 'tank' | 'sniper' | 'boss';
@@ -412,6 +427,15 @@ export interface GameState {
    *  gives a quadratic feel: small jolts barely shake, big hits punch. The
    *  reduced-motion preference zeroes out the visual at the render call. */
   cameraTrauma: number;
+
+  /** Per-wave bookkeeping reset on every beginWave, used by the wave-clear
+   *  bonus pass to award NO SHIELD / NO MISS / PACIFIST UFO chips. None of
+   *  these affect mid-wave behaviour. */
+  shieldUsedThisWave: boolean;
+  bulletsFiredThisWave: number;
+  missedShotsThisWave: number;
+  ufoSpawnedThisWave: boolean;
+  ufoKilledThisWave: boolean;
 }
 
 /** A single (t, score) pacing point. t is ms since startGame. */

@@ -107,6 +107,11 @@ export function makeInitialState(): GameState {
     ghostSamples: [],
     ghostPoseSamples: [],
     cameraTrauma: 0,
+    shieldUsedThisWave: false,
+    bulletsFiredThisWave: 0,
+    missedShotsThisWave: 0,
+    ufoSpawnedThisWave: false,
+    ufoKilledThisWave: false,
   };
 }
 
@@ -323,6 +328,12 @@ function randomEdgePosition(): EdgeSpawn {
 
 export function beginWave(s: GameState, wave: number): void {
   s.wave = wave;
+  // Wave-end bonus tracking — reset every wave so each one stands on its own.
+  s.shieldUsedThisWave = false;
+  s.bulletsFiredThisWave = 0;
+  s.missedShotsThisWave = 0;
+  s.ufoSpawnedThisWave = false;
+  s.ufoKilledThisWave = false;
   // 1979 homage: each new wave re-centres the ship and grants brief invuln,
   // matching the original arcade behaviour. Skips on wave 1 (startGame already
   // placed the ship there) but harmless to repeat.
@@ -582,6 +593,7 @@ function makeBossUfo(): Ufo {
 }
 
 function spawnUfo(s: GameState): void {
+  s.ufoSpawnedThisWave = true;
   const type = pickUfoType(s.wave);
   const dir: 1 | -1 = gameRng() < 0.5 ? 1 : -1;
   const y = WORLD_H * (0.15 + gameRng() * 0.7);
@@ -701,6 +713,10 @@ function ufoShootAt(s: GameState, u: Ufo, target: Vec2): void {
     radius: BULLET_RADIUS + 1,
     alive: true,
     ttl: UFO_BULLET_TTL_MS,
+    pierceLeft: 0,
+    caromHit: false,
+    wrapped: false,
+    hasLanded: false,
   });
   audio.ufoShoot();
 }
@@ -719,6 +735,10 @@ function ufoFanShoot(s: GameState, u: Ufo, target: Vec2): void {
       radius: BULLET_RADIUS + 1,
       alive: true,
       ttl: UFO_BULLET_TTL_MS,
+      pierceLeft: 0,
+      caromHit: false,
+      wrapped: false,
+      hasLanded: false,
     });
   }
   audio.ufoShoot();
@@ -881,9 +901,13 @@ function damageUfo(s: GameState, u: Ufo): void {
 
 function destroyUfo(s: GameState, u: Ufo): void {
   u.alive = false;
+  s.ufoKilledThisWave = true;
   s.runStats.ufoKills[u.type] += 1;
   const mul = recordCombo(s, performance.now());
-  s.score += UFO_POINTS[u.type] * mul;
+  // Risk-proximity also pays out on UFO kills — sniping from safety is fine,
+  // but landing the kill while threading the field earns a fatter score.
+  const risk = computeRiskBonus(s);
+  s.score += Math.round(UFO_POINTS[u.type] * mul * risk.mul);
   const explodeScale = u.type === 'tank' ? 1.3 : u.type === 'elite' ? 0.9 : 1.0;
   audio.explosion(explodeScale);
   spawnParticles(s, u.pos.x, u.pos.y, u.type === 'tank' ? 36 : 26, '#ff5050', 220, 800);
@@ -908,7 +932,8 @@ function destroyUfo(s: GameState, u: Ufo): void {
     sniper: `+ SNIPER  +${UFO_POINTS.sniper}`,
     boss: `BOSS DOWN  +${UFO_POINTS.boss}`,
   };
-  toastNow(s, labels[u.type]);
+  const riskPrefix = risk.tier === 'risk' ? 'RISK · ' : '';
+  toastNow(s, `${riskPrefix}${labels[u.type]}`);
   if (u.type === 'boss') {
     s.bossDefeated = true;
     // Halo skin: unlocks the first time the player downs the wave-25 boss.
@@ -952,7 +977,12 @@ export function fireBullet(s: GameState): void {
       radius: BULLET_RADIUS,
       alive: true,
       ttl: BULLET_TTL_MS,
+      pierceLeft: 1,
+      caromHit: false,
+      wrapped: false,
+      hasLanded: false,
     });
+    s.bulletsFiredThisWave += 1;
   }
   // Visual kick — every shot nudges the ship back a couple of px along its
   // own facing. Decays in a few frames; affects render only.
@@ -1115,6 +1145,7 @@ export function tryActivateShield(s: GameState, now: number): boolean {
   bumpTrauma(s, 0.18);
   audio.pulseDuck(0.7, 180);
   haptic('tap');
+  s.shieldUsedThisWave = true;
   toastNow(s, 'SHIELD UP');
   return true;
 }
@@ -1594,8 +1625,21 @@ export function updateGame(s: GameState, dt: number, now: number): void {
     b.pos.x += b.vel.x * dt;
     b.pos.y += b.vel.y * dt;
     b.ttl -= dt * 1000;
-    if (b.ttl <= 0) b.alive = false;
-    else wrap(b.pos);
+    if (b.ttl <= 0) {
+      b.alive = false;
+      // Bullet expired without ever connecting — counts as a miss for the
+      // wave-end NO MISS bonus. A bullet that hit at least once (including a
+      // pierce that hit then TTL'd before the next rock) does not.
+      if (!b.hasLanded) s.missedShotsThisWave += 1;
+    } else {
+      // Detect wrap so a hit landed on the far side counts as a WRAP KILL.
+      // wrap() only mutates pos when the bullet actually crosses an edge, so a
+      // simple before/after compare is reliable.
+      const preX = b.pos.x;
+      const preY = b.pos.y;
+      wrap(b.pos);
+      if (b.pos.x !== preX || b.pos.y !== preY) b.wrapped = true;
+    }
   }
   s.bullets = s.bullets.filter(b => b.alive);
 
@@ -1727,8 +1771,24 @@ export function updateGame(s: GameState, dt: number, now: number): void {
     for (const a of s.asteroids) {
       if (!a.alive) continue;
       if (circlesHit(b, a)) {
-        b.alive = false;
-        damageAsteroid(s, a);
+        // Carom: a bullet that has already broken one asteroid earns the
+        // bonus on its next break. Wrap: a bullet that has crossed a playfield
+        // edge before its kill earns the wrap bonus. Stack independently — a
+        // wrapped carom is a 4× kill.
+        const isCarom = b.caromHit;
+        const isWrap = b.wrapped;
+        b.hasLanded = true;
+        damageAsteroid(s, a, { isCarom, isWrap });
+        // Pierce: if the asteroid actually broke and the bullet has pierce
+        // left, the bullet survives to seek a second target. Iron-large takes
+        // two hits to break, so a pierce shot only travels through fully
+        // shattered rocks. Either way, only one asteroid is hit per frame.
+        if (!a.alive && b.pierceLeft > 0) {
+          b.pierceLeft--;
+          b.caromHit = true;
+        } else {
+          b.alive = false;
+        }
         break;
       }
     }
@@ -1741,6 +1801,7 @@ export function updateGame(s: GameState, dt: number, now: number): void {
       if (!u.alive) continue;
       if (circlesHit(b, u)) {
         b.alive = false;
+        b.hasLanded = true;
         damageUfo(s, u);
         break;
       }
@@ -1754,6 +1815,7 @@ export function updateGame(s: GameState, dt: number, now: number): void {
       if (!m.alive) continue;
       if (circlesHit(b, m)) {
         b.alive = false;
+        b.hasLanded = true;
         damageMine(s, m);
         break;
       }
@@ -1918,6 +1980,10 @@ export function updateGame(s: GameState, dt: number, now: number): void {
         triggerCompletion(s);
       }
     } else if (asteroidsClear) {
+      // Award NO SHIELD / NO MISS / PACIFIST UFO bonuses before clearing the
+      // stage so the per-wave flags still reflect what the player did. The
+      // toast lands a beat before warp so the bonuses register.
+      awardWaveClearBonuses(s);
       // Despawn UFOs/mines/enemy bullets and auto-bank any uncollected coins
       clearStage(s, { autoCollect: true });
       audio.ufoSirenStop();
@@ -1973,14 +2039,76 @@ function resetCombo(s: GameState): void {
 }
 
 /**
+ * Wave-end bonus pass. Three independent chips:
+ *   - NO SHIELD  (+1500): cleared the wave without ever activating the shield.
+ *   - NO MISS    (+2000): every bullet that TTL'd had landed a hit. Requires
+ *     at least 8 bullets fired so a nova-cleared wave doesn't qualify.
+ *   - PACIFIST   (+1000): a UFO spawned this wave but the player never killed
+ *     a UFO — the saucer drifted off on its own. Doesn't fire on wave 25 (the
+ *     boss is mandatory and the asteroidsClear branch never runs there).
+ * All earned chips toast as a single line so multi-bonus waves land as one
+ * impression, not three overlapping toasts.
+ */
+function awardWaveClearBonuses(s: GameState): void {
+  const tags: string[] = [];
+  let total = 0;
+  if (!s.shieldUsedThisWave) {
+    tags.push('NO SHIELD +1500');
+    total += 1500;
+  }
+  if (s.bulletsFiredThisWave >= 8 && s.missedShotsThisWave === 0) {
+    tags.push('NO MISS +2000');
+    total += 2000;
+  }
+  if (s.ufoSpawnedThisWave && !s.ufoKilledThisWave) {
+    tags.push('PACIFIST +1000');
+    total += 1000;
+  }
+  if (total > 0) {
+    s.score += total;
+    toastNow(s, tags.join(' · '));
+  }
+}
+
+/**
+ * Risk-proximity multiplier — the closer the ship was to another live threat
+ * at kill time, the bigger the reward. Two tiers:
+ *   - RISK  (≤55px): ×1.5 score, surfaces as a toast tag.
+ *   - CLOSE (≤110px): ×1.25 score, silent so a dense field doesn't spam toasts.
+ * Considers asteroids and UFOs both — the killed entity has already had `alive`
+ * flipped to false by the caller and is naturally excluded.
+ */
+function computeRiskBonus(s: GameState): { mul: number; tier: 'risk' | 'close' | 'none' } {
+  if (!s.ship.alive) return { mul: 1, tier: 'none' };
+  let minDistSq = Infinity;
+  for (const a of s.asteroids) {
+    if (!a.alive) continue;
+    const dx = a.pos.x - s.ship.pos.x;
+    const dy = a.pos.y - s.ship.pos.y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < minDistSq) minDistSq = d2;
+  }
+  for (const u of s.ufos) {
+    if (!u.alive) continue;
+    const dx = u.pos.x - s.ship.pos.x;
+    const dy = u.pos.y - s.ship.pos.y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < minDistSq) minDistSq = d2;
+  }
+  if (minDistSq <= 55 * 55) return { mul: 1.5,  tier: 'risk' };
+  if (minDistSq <= 110 * 110) return { mul: 1.25, tier: 'close' };
+  return { mul: 1, tier: 'none' };
+}
+
+/**
  * Apply one bullet's worth of damage to an asteroid. Iron at large size has hp=2
  * — first hit flashes and dents, second hit fragments. All other cases are 1hp.
  */
-function damageAsteroid(s: GameState, a: Asteroid): void {
+function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; isWrap?: boolean }): void {
   a.hp -= 1;
   a.hitFlash = 1;
   if (a.hp <= 0) {
-    breakAsteroid(s, a);
+    breakAsteroid(s, a, opts);
   } else {
     const cfg = ASTEROID_TYPE_CONFIG[a.type];
     audio.hit();
@@ -1988,12 +2116,23 @@ function damageAsteroid(s: GameState, a: Asteroid): void {
   }
 }
 
-function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boolean }): void {
+function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boolean; isCarom?: boolean; isWrap?: boolean }): void {
   a.alive = false;
   const cfg = ASTEROID_TYPE_CONFIG[a.type];
   const mul = recordCombo(s, performance.now());
-  s.score += Math.round(POINTS_PER_SIZE[a.size] * cfg.scoreMul * mul);
-  const satsValue = SATS_PER_SIZE[a.size] * cfg.satMul;
+  // Trick-shot bonuses stack multiplicatively on top of combo: a wrapped carom
+  // is a 4× kill on top of any active combo. Risk-proximity adds another tier
+  // on top: ≤55px = ×1.5, ≤110px = ×1.25. Each fires independently and is
+  // toasted unless the pallasite jackpot text would conflict.
+  let bonusMul = 1;
+  const trickLabels: string[] = [];
+  const risk = computeRiskBonus(s);
+  if (risk.tier === 'risk') trickLabels.push('RISK');
+  bonusMul *= risk.mul;
+  if (opts?.isCarom) { bonusMul *= 2; trickLabels.push('CAROM'); }
+  if (opts?.isWrap)  { bonusMul *= 2; trickLabels.push('WRAP'); }
+  s.score += Math.round(POINTS_PER_SIZE[a.size] * cfg.scoreMul * mul * bonusMul);
+  const satsValue = SATS_PER_SIZE[a.size] * cfg.satMul * bonusMul;
 
   // Trauma scales with mass — a large rock's break should feel weightier than
   // a small shard popping. Iron gets a bonus because the armoured crack hits
@@ -2040,7 +2179,15 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
     // Final shard of a pallasite chain is a moment — let it land.
     bumpTrauma(s, 0.35);
     hitStop(s, 110);
-    toastNow(s, `PALLASITE +${Math.max(1, Math.round(satsValue))} sats`);
+    const trickPrefix = trickLabels.length ? `${trickLabels.join('+')} · ` : '';
+    toastNow(s, `${trickPrefix}PALLASITE +${Math.max(1, Math.round(satsValue))} sats`);
+  } else if (trickLabels.length) {
+    // Non-jackpot break: surface the trick-shot label on its own. Carom + wrap
+    // each get a small punch and a comboTick chime so the moment reads
+    // independently of the combo bar.
+    bumpTrauma(s, 0.12);
+    audio.comboTick(Math.min(COMBO_MAX, s.combo + 1));
+    toastNow(s, `+${trickLabels.join(' + ')}`);
   }
 
   maybeExtraLife(s);
