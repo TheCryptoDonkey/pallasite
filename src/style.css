@@ -653,9 +653,9 @@ body.touch-active[data-phase="warp"]      #touch-controls {
   pointer-events: auto;
   width: 80px; height: 80px;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.55);
-  border: 2px solid rgba(220, 210, 255, 0.55);
-  color: rgba(220, 210, 255, 0.92);
+  background: rgba(0, 0, 0, 0.25);
+  border: 2px solid rgba(220, 210, 255, 0.3);
+  color: rgba(220, 210, 255, 0.65);
   font-family: 'VT323', ui-monospace, monospace;
   font-size: 2rem;
   display: flex; align-items: center; justify-content: center;
@@ -690,9 +690,9 @@ body.touch-active[data-phase="warp"]      #touch-controls {
   left:   max(14px, calc(env(safe-area-inset-left,   0px) + 6px));
   width: 168px; height: 168px;
   border-radius: 50%;
-  background: radial-gradient(circle at center, rgba(91, 157, 255, 0.18), rgba(0, 0, 0, 0.4) 70%);
-  border: 2px solid rgba(91, 157, 255, 0.45);
-  box-shadow: 0 0 18px rgba(91, 157, 255, 0.18) inset;
+  background: radial-gradient(circle at center, rgba(91, 157, 255, 0.08), rgba(0, 0, 0, 0.18) 70%);
+  border: 2px solid rgba(91, 157, 255, 0.22);
+  box-shadow: 0 0 18px rgba(91, 157, 255, 0.08) inset;
   display: flex; align-items: center; justify-content: center;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
@@ -700,15 +700,15 @@ body.touch-active[data-phase="warp"]      #touch-controls {
   transition: border-color 0.1s ease, background 0.1s ease;
 }
 .joystick-pad.active {
-  border-color: #5b9dff;
-  background: radial-gradient(circle at center, rgba(91, 157, 255, 0.32), rgba(0, 0, 0, 0.5) 70%);
+  border-color: rgba(91, 157, 255, 0.7);
+  background: radial-gradient(circle at center, rgba(91, 157, 255, 0.18), rgba(0, 0, 0, 0.28) 70%);
 }
 .joystick-knob {
   width: 64px; height: 64px;
   border-radius: 50%;
-  background: rgba(91, 157, 255, 0.55);
-  border: 2px solid rgba(91, 157, 255, 0.95);
-  box-shadow: 0 0 12px rgba(91, 157, 255, 0.4);
+  background: rgba(91, 157, 255, 0.28);
+  border: 2px solid rgba(91, 157, 255, 0.55);
+  box-shadow: 0 0 12px rgba(91, 157, 255, 0.2);
   pointer-events: none;
   transition: transform 0.06s ease;
 }

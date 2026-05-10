@@ -432,14 +432,13 @@ async function boot(): Promise<void> {
       const ctx = canvas.getContext('2d')!;
       const isPortrait = vh > vw;
       // Portrait zooms OUT (cover * 0.65) for breathing room on phones.
-      // Landscape zooms IN (contain * 1.15) for a more immersive frame on
-      // desktops/tablets. Both gutter cases are handled by the conditional
-      // ghost-render in render.ts.
+      // Landscape stays at plain contain — zooming in makes cropY true with
+      // visW > WORLD_W, which triggers the horizontal gutter ghost and the
+      // player sees their ship doubled near the world's left/right edges.
       const PORTRAIT_ZOOM = 0.65;
-      const LANDSCAPE_ZOOM = 1.15;
       const scale = isPortrait
         ? Math.max(vw / 960, vh / 720) * PORTRAIT_ZOOM
-        : Math.min(vw / 960, vh / 720) * LANDSCAPE_ZOOM;
+        : Math.min(vw / 960, vh / 720);
       const tx = (vw - 960 * scale) / 2;
       const ty = (vh - 720 * scale) / 2;
       ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * tx, dpr * ty);
