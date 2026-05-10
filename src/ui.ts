@@ -26,6 +26,7 @@ import { getMusicAnalyser } from './audio.js';
 import { fetchProfile, getCachedProfile, bestName } from './profile.js';
 import { type Difficulty, getStoredDifficulty, setStoredDifficulty, lockInDifficulty } from './difficulty.js';
 import { getStoredDailyPref, setStoredDailyPref, todayUTC, getActiveSeed } from './seed.js';
+import { getStoredMode, setStoredMode, MODE_LIST, type RunMode } from './mode.js';
 import { DEV } from './credits.js';
 import { followUser, shareCompletion, endorseSubject, rankFromWave } from './social.js';
 import { shareRunCard } from './sharecard.js';
@@ -591,6 +592,10 @@ export function renderTitle(state: GameState): void {
   const sessionPanel = el('div', { className: 'session-panel', parent: overlay });
   renderSessionPanel(sessionPanel, state);
 
+  // Mode picker — campaign / drift / bossrush / arena. Sits above difficulty
+  // because it changes the SHAPE of the run; difficulty just tunes within.
+  renderModeRow(overlay, state);
+
   // Difficulty selector
   renderDifficultyRow(overlay);
 
@@ -788,6 +793,66 @@ function globalToLocal(entry: GlobalHighScore & { displayName: string }): Return
     pubkey: entry.pubkey,
     eventId: entry.eventId,
   };
+}
+
+/**
+ * Mode picker — campaign / drift / bossrush / arena. Shape of the run.
+ * Selected mode highlights yellow; unfinished modes (bossrush, arena)
+ * still render so the player knows they're coming, but tapping them
+ * toasts COMING SOON and the selection reverts to the previous valid
+ * mode.
+ */
+function renderModeRow(parent: HTMLElement, state: GameState): void {
+  void state;
+  const wrapper = el('div', { parent });
+  wrapper.style.cssText = 'display:flex;flex-direction:column;gap:8px;align-items:center;';
+  const label = el('p', { parent: wrapper, text: 'MODE' });
+  label.style.cssText = 'font-size:0.8rem;color:rgba(180,140,255,0.85);letter-spacing:0.3em;margin:0;';
+
+  const row = el('div', { parent: wrapper });
+  row.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;justify-content:center;';
+
+  const hint = el('p', { parent: wrapper });
+  hint.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.7);letter-spacing:0.06em;margin:0;height:1em;text-align:center;';
+
+  const buttons = new Map<RunMode, HTMLButtonElement>();
+  const refresh = (): void => {
+    const current = getStoredMode();
+    for (const info of MODE_LIST) {
+      const btn = buttons.get(info.id)!;
+      const selected = info.id === current;
+      btn.style.cssText = [
+        'background:' + (selected ? 'rgba(255,216,74,0.18)' : 'transparent'),
+        'border:2px solid ' + (selected ? '#ffd84a' : info.ready ? 'rgba(180,140,255,0.4)' : 'rgba(180,140,255,0.18)'),
+        'color:' + (selected ? '#ffd84a' : info.ready ? 'rgba(220,210,255,0.85)' : 'rgba(180,140,255,0.45)'),
+        "font-family:'VT323',ui-monospace,monospace",
+        'font-size:0.95rem', 'padding:6px 14px',
+        'letter-spacing:0.16em', 'cursor:pointer', 'border-radius:6px',
+        'transition:all 0.12s ease',
+        selected ? 'box-shadow:0 0 14px rgba(255,216,74,0.4);text-shadow:0 0 6px rgba(255,216,74,0.6)' : '',
+      ].filter(Boolean).join(';');
+    }
+    const hintFor = MODE_LIST.find(m => m.id === current)?.hint ?? '';
+    hint.textContent = hintFor;
+  };
+
+  for (const info of MODE_LIST) {
+    const btn = el('button', { parent: row, text: info.label });
+    buttons.set(info.id, btn);
+    onTap(btn, () => {
+      if (!info.ready) {
+        hint.textContent = 'COMING SOON';
+        return;
+      }
+      setStoredMode(info.id);
+      refresh();
+    });
+    btn.addEventListener('mouseenter', () => { hint.textContent = info.hint; });
+    btn.addEventListener('mouseleave', () => {
+      hint.textContent = MODE_LIST.find(m => m.id === getStoredMode())?.hint ?? '';
+    });
+  }
+  refresh();
 }
 
 function renderDifficultyRow(parent: HTMLElement): void {
