@@ -10,7 +10,7 @@ import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadBackground, setRenderMode } from './render.js';
 import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding } from './ui.js';
-import { handleAuthCallback, tryRestore } from './auth.js';
+import { handleAuthCallback, tryRestore, sweepSignetArtefacts } from './auth.js';
 import * as audio from './audio.js';
 import { musicSetTrackForState, preloadAllTracks, musicSetPaused } from './music.js';
 import { stemsTickForState } from './music-stems.js';
@@ -570,6 +570,19 @@ async function boot(): Promise<void> {
   document.body.dataset.phase = state.phase;
 
   renderTitle(state);
+
+  // bfcache restore: a player who taps SIGN IN, opens the Signet redirect,
+  // then hits browser-back without completing returns to a frozen page that
+  // still has the SDK dialog in the DOM. The dialog is opaque to clicks even
+  // when not visually obvious, so the title screen below is unresponsive.
+  // On pageshow with persisted=true, sweep any stale dialog and re-render
+  // the title so the sign-in panel's `signing` flag is reset to a fresh
+  // closure that can be tapped again.
+  window.addEventListener('pageshow', e => {
+    if (!e.persisted) return;
+    sweepSignetArtefacts();
+    if (state.phase === 'title') renderTitle(state);
+  });
 
   // Once the user makes any audio-unlocking gesture (start, sign-in, settings,
   // even pressing M), the title music will start playing on its own via the
