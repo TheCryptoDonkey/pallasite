@@ -2586,7 +2586,14 @@ function claimErrorMessage(error: string, detail?: string): string {
     case 'signer_unavailable': return 'Game signer unreachable. Try later.';
     case 'service_not_configured': return 'Faucet not configured yet.';
     case 'no_signer': return 'Cannot sign with this session.';
-    case 'sign_failed': return 'Could not sign claim.';
+    case 'sign_failed': {
+      if (!detail) return 'Could not sign claim. Check your signer extension.';
+      if (/timeout|signer-timeout/i.test(detail)) {
+        return 'Signer did not respond. Unlock your extension and try again.';
+      }
+      if (/reject|denied|cancel/i.test(detail)) return 'Signature rejected.';
+      return `Could not sign claim: ${detail.slice(0, 80)}`;
+    }
     case 'network_error': return 'Network error. Check connection.';
     case 'invalid_payload':
       return `Invalid payload${detail ? ': ' + detail.slice(0, 60) : ''}.`;
