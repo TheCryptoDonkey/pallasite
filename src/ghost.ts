@@ -404,11 +404,19 @@ export async function findReplayByAuthor(
   events.sort((a, b) => b.created_at - a.created_at);
   console.log(`[replay] findReplayByAuthor got ${events.length} candidate event(s)`);
   for (const e of events) {
-    if (!hasTagValue(e.tags, 'game', GAME_ID)) continue;
-    if (tagValue(e.tags, 'enc') !== 'replay-gzip-b64') continue;
+    const gameTag = tagValue(e.tags, 'game');
+    const encTag = tagValue(e.tags, 'enc');
+    if (!hasTagValue(e.tags, 'game', GAME_ID)) {
+      console.warn(`[replay]   skip ${e.id.slice(0, 8)}… — game tag is "${gameTag ?? '<none>'}" not "${GAME_ID}"`);
+      continue;
+    }
+    if (encTag !== 'replay-gzip-b64') {
+      console.warn(`[replay]   skip ${e.id.slice(0, 8)}… — enc tag is "${encTag ?? '<none>'}" not "replay-gzip-b64"`);
+      continue;
+    }
     const frames = await decodeReplay(e.content);
     if (!frames) {
-      console.warn(`[replay] decode failed for event ${e.id.slice(0, 8)}…`);
+      console.warn(`[replay]   skip ${e.id.slice(0, 8)}… — gzip+base64 decode failed (content length ${e.content.length})`);
       continue;
     }
     console.log(`[replay] decoded ${frames.length} frames from event ${e.id.slice(0, 8)}…`);
@@ -421,7 +429,17 @@ export async function findReplayByAuthor(
       frames,
     };
   }
-  console.warn(`[replay] no usable kind ${REPLAY_KIND} found for author ${pubkey.slice(0, 8)}…`);
+  if (events.length === 0) {
+    console.warn(
+      `[replay] no kind ${REPLAY_KIND} events on any relay for author ${pubkey.slice(0, 8)}…\n` +
+      `  → publish path never fired, OR all relays in the queried set ` +
+      `rejected/dropped the event. If you just played a run as ${pubkey.slice(0, 8)}…, ` +
+      `look for a '[replay] published kind ${REPLAY_KIND} ... to N/M relays' line in your ` +
+      `PLAYER's console — N/M tells you which relays accepted.`,
+    );
+  } else {
+    console.warn(`[replay] ${events.length} kind ${REPLAY_KIND} events fetched but none usable — see per-event skip warnings above`);
+  }
   return null;
 }
 
@@ -496,11 +514,23 @@ export async function fetchReplayByEventId(
     }
   });
 
+  console.log(`[replay] fetchReplayByEventId got ${events.length} candidate event(s)`);
   for (const e of events) {
-    if (!hasTagValue(e.tags, 'game', GAME_ID)) continue;
-    if (tagValue(e.tags, 'enc') !== 'replay-gzip-b64') continue;
+    const gameTag = tagValue(e.tags, 'game');
+    const encTag = tagValue(e.tags, 'enc');
+    if (!hasTagValue(e.tags, 'game', GAME_ID)) {
+      console.warn(`[replay]   skip ${e.id.slice(0, 8)}… — game tag is "${gameTag ?? '<none>'}" not "${GAME_ID}"`);
+      continue;
+    }
+    if (encTag !== 'replay-gzip-b64') {
+      console.warn(`[replay]   skip ${e.id.slice(0, 8)}… — enc tag is "${encTag ?? '<none>'}" not "replay-gzip-b64"`);
+      continue;
+    }
     const frames = await decodeReplay(e.content);
-    if (!frames) continue;
+    if (!frames) {
+      console.warn(`[replay]   skip ${e.id.slice(0, 8)}… — gzip+base64 decode failed`);
+      continue;
+    }
     return {
       eventId: e.id,
       pubkey: e.pubkey,
@@ -510,6 +540,7 @@ export async function fetchReplayByEventId(
       frames,
     };
   }
+  if (events.length === 0) console.warn(`[replay] no kind ${REPLAY_KIND} on relays for event id ${eventId.slice(0, 8)}…`);
   return null;
 }
 
@@ -570,11 +601,23 @@ export async function fetchReplayByScoreEventId(
     }
   });
 
+  console.log(`[replay] fetchReplayByScoreEventId got ${events.length} candidate event(s)`);
   for (const e of events) {
-    if (!hasTagValue(e.tags, 'game', GAME_ID)) continue;
-    if (tagValue(e.tags, 'enc') !== 'replay-gzip-b64') continue;
+    const gameTag = tagValue(e.tags, 'game');
+    const encTag = tagValue(e.tags, 'enc');
+    if (!hasTagValue(e.tags, 'game', GAME_ID)) {
+      console.warn(`[replay]   skip ${e.id.slice(0, 8)}… — game tag "${gameTag ?? '<none>'}"`);
+      continue;
+    }
+    if (encTag !== 'replay-gzip-b64') {
+      console.warn(`[replay]   skip ${e.id.slice(0, 8)}… — enc "${encTag ?? '<none>'}"`);
+      continue;
+    }
     const frames = await decodeReplay(e.content);
-    if (!frames) continue;
+    if (!frames) {
+      console.warn(`[replay]   skip ${e.id.slice(0, 8)}… — decode failed`);
+      continue;
+    }
     return {
       eventId: e.id,
       pubkey: e.pubkey,
@@ -583,6 +626,9 @@ export async function fetchReplayByScoreEventId(
       durationMs: parseInt(tagValue(e.tags, 'duration') ?? '0', 10) || 0,
       frames,
     };
+  }
+  if (events.length === 0) {
+    console.warn(`[replay] no kind ${REPLAY_KIND} #e-tagged to ${scoreEventId.slice(0, 8)}… on any relay`);
   }
   return null;
 }
