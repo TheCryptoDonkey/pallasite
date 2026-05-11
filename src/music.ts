@@ -263,6 +263,14 @@ export function musicSetTrackForState(state: GameState): void {
   // setter) rather than in trackForState because the latter is called
   // every frame and would re-pick on every tick.
   if (lastPhase !== 'title' && state.phase === 'title') pickTitleTrack();
+  // Warp entry: lazy-prime the upcoming wave's track so its crossfade
+  // at wavestart isn't waiting on a cold fetch. 1.3s warp window vs
+  // ~2s cold-fetch on slow networks would otherwise leave the new
+  // wave's first beat silent.
+  if (lastPhase !== 'warp' && state.phase === 'warp') {
+    const upcoming = WAVE_TRACKS[state.warpTargetWave ?? state.wave + 1];
+    if (upcoming) preloadTrack(upcoming);
+  }
   lastPhase = state.phase;
   // Pause ducks rather than switches; key the memo on phase+wave so we still
   // crossfade correctly when the wave changes during a paused mid-game.
@@ -280,13 +288,32 @@ export function musicSetTrackForState(state: GameState): void {
 }
 
 /** Reset the memo so the next musicSetTrackForState() will re-resolve and play. */
-/** Prime all tracks into the audio graph so the first crossfade doesn't have
- *  to wait for the file to download. Especially matters for warp-transition,
- *  whose 1300ms window is shorter than a cold fetch on slow networks. */
+/** Prime the *critical* tracks — ones whose cue window is too tight
+ *  for a cold fetch on slow networks. Everything else lazy-loads on
+ *  first crossfade. Used to preload all 24 tracks, but the new music
+ *  set runs to ~63MB and most players never reach the late waves, so
+ *  this now primes only the title + wave-1 + the cinematic stings. */
+const CRITICAL_TRACKS: readonly string[] = [
+  'pallasite-idle',   // title — first thing the user hears
+  'slow-orbit',       // wave 1 — first crossfade after IGNITE
+  'warp-transition',  // 1.3s window between waves
+  'hyperspace',       // 1.3s window on ship hyperjump
+  'hull-breached',    // death sting, must land instantly
+  'banked',           // victory sting, must land instantly
+];
 export function preloadAllTracks(): void {
-  for (const id of Object.keys(TRACKS)) {
-    try { load(TRACKS[id]); } catch { /* ignore — will lazy-load on first use */ }
+  for (const id of CRITICAL_TRACKS) {
+    const track = TRACKS[id];
+    if (track) try { load(track); } catch { /* ignore */ }
   }
+}
+
+/** Lazy-prime a single track by id. Useful for wave-change handlers
+ *  that want to fetch the upcoming wave's bed before it crossfades in. */
+export function preloadTrack(id: string): void {
+  const track = TRACKS[id];
+  if (!track) return;
+  try { load(track); } catch { /* ignore */ }
 }
 
 export function musicForceRefresh(): void {
