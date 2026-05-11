@@ -1916,18 +1916,41 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     // the wave changes so a spectator who joins mid-run still gets the
     // matching ambience as the player crosses wave boundaries.
     if (frame.wave > 0) applyWaveAssets(frame.wave);
-    // SFX — schedule once per arriving frame. Each event corresponds to
-    // the same audio.* call the player heard, so the live theatre's
-    // soundscape stays in sync with the in-game action.
+    // SFX + particles — each event triggers an audio.* call matching
+    // what the player heard, and spawns a local particle burst at the
+    // event position so the explosion FX land in the right spot. Wire
+    // pays nothing extra: the events were already there for audio,
+    // particles are pure viewer-side cosmetic response.
     for (const ev of frame.events) {
       try {
         switch (ev.code) {
-          case 'ak': audio.explosion(0.8); break;
-          case 'uk': audio.explosion(1.0); break;
-          case 'md': audio.explosion(0.7); break;
-          case 'sh': audio.explosion(1.4); break;
-          case 'sb': audio.shieldUp(); break;
-          case 'vc': audio.explosion(1.2); break;
+          case 'ak':
+            audio.explosion(0.8);
+            spawnBurst(ev.x, ev.y, 14, '#b48cff', 220, 500);
+            break;
+          case 'uk':
+            audio.explosion(1.0);
+            spawnBurst(ev.x, ev.y, 28, '#ff5050', 240, 700);
+            spawnBurst(ev.x, ev.y, 12, '#ff8a3a', 180, 500);
+            break;
+          case 'md':
+            audio.explosion(0.7);
+            spawnBurst(ev.x, ev.y, 18, '#ff5050', 220, 600);
+            break;
+          case 'sh':
+            audio.explosion(1.4);
+            spawnBurst(ev.x, ev.y, 36, '#ff8a3a', 280, 900);
+            spawnBurst(ev.x, ev.y, 18, '#ffd84a', 200, 700);
+            break;
+          case 'sb':
+            audio.shieldUp();
+            spawnBurst(ev.x, ev.y, 10, '#5b9dff', 140, 380);
+            break;
+          case 'vc':
+            audio.explosion(1.2);
+            spawnBurst(ev.x, ev.y, 36, '#ffd84a', 320, 900);
+            spawnBurst(ev.x, ev.y, 14, '#ff8ad6', 280, 700);
+            break;
           case 'pu': audio.powerupPickup(); break;
           case 'fi': audio.fire(); break;
         }
@@ -1998,6 +2021,55 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     l: 38, m: 22, s: 13,
   };
 
+  // Deterministic per-asteroid lumpy outline, seeded by id so the same
+  // asteroid keeps the same silhouette across frames without us having
+  // to ship the shape on the wire. Matches the game's asteroid look
+  // (7-10 sides, 0.82-1.14 radius wobble) closely enough that a
+  // spectator can't distinguish from the player's canvas.
+  const shapeCache = new Map<number, number[]>();
+  const asteroidShape = (id: number): number[] => {
+    const hit = shapeCache.get(id);
+    if (hit) return hit;
+    let s = (id * 2654435761) >>> 0;
+    const r = (): number => { s = (s * 1664525 + 1013904223) >>> 0; return s / 0x100000000; };
+    const sides = 8 + Math.floor(r() * 3);
+    const shape: number[] = [];
+    for (let i = 0; i < sides; i++) shape.push(0.82 + r() * 0.32);
+    shapeCache.set(id, shape);
+    return shape;
+  };
+
+  // Position interp helper — short-way-around so an asteroid wrapping
+  // off one edge and reappearing on the other doesn't draw a streak
+  // straight across the canvas. If the delta exceeds half the world
+  // dimension on either axis, assume a wrap and snap to next.
+  const interpAxis = (a: number, b: number, k: number, worldSpan: number): number => {
+    const delta = b - a;
+    if (Math.abs(delta) > worldSpan * 0.5) return b;
+    return a + delta * k;
+  };
+
+  // Local particle system — purely viewer-side. Spawned on receipt of
+  // SFX events (asteroid_kill, ufo_kill, mine_detonate, ship_destroyed,
+  // shield_burst, vein_collapse). Wire pays nothing for these — the
+  // events themselves are already on the wire, particles are just the
+  // visual response. Bounded so a frenetic stream can't blow up frame
+  // time on weaker devices.
+  interface LiveParticle { x: number; y: number; vx: number; vy: number; ttl: number; ttlMax: number; colour: string; size: number; }
+  const particles: LiveParticle[] = [];
+  const MAX_PARTICLES = 240;
+  const spawnBurst = (cx: number, cy: number, count: number, colour: string, speed: number, ttl: number, size = 2): void => {
+    for (let i = 0; i < count && particles.length < MAX_PARTICLES; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = speed * (0.6 + Math.random() * 0.8);
+      particles.push({
+        x: cx, y: cy,
+        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        ttl, ttlMax: ttl, colour, size: size * (0.7 + Math.random() * 0.7),
+      });
+    }
+  };
+
   // Render loop — interpolate between adjacent frames for smooth motion
   // at 60fps even when the wire delivers 2 Hz.
   const tick = (): void => {
@@ -2044,8 +2116,9 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     }
     const span = next.capturedAt - prev.capturedAt;
     const t = span > 0 ? Math.max(0, Math.min(1, (renderAt - prev.capturedAt) / span)) : 0;
-    const x = (prev.x + (next.x - prev.x) * t) * sx;
-    const y = (prev.y + (next.y - prev.y) * t) * sy;
+    // Ship wraps too — same short-way-around treatment as entities.
+    const x = interpAxis(prev.x, next.x, t, PALL_WORLD_W) * sx;
+    const y = interpAxis(prev.y, next.y, t, PALL_WORLD_H) * sy;
     // Rotation lerp — pick the short way around the circle.
     let dr = next.r - prev.r;
     while (dr > Math.PI) dr -= Math.PI * 2;
@@ -2077,12 +2150,13 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
 
     for (const aNext of next.asteroids) {
       const aPrev = prevAst.get(aNext.id) ?? aNext;
-      const ax = (aPrev.x + (aNext.x - aPrev.x) * t) * sx;
-      const ay = (aPrev.y + (aNext.y - aPrev.y) * t) * sy;
+      const ax = interpAxis(aPrev.x, aNext.x, t, PALL_WORLD_W) * sx;
+      const ay = interpAxis(aPrev.y, aNext.y, t, PALL_WORLD_H) * sy;
       const aRot = lerpRot(aPrev.rot, aNext.rot, t);
       const rWorld = ASTEROID_RADIUS_WORLD[aNext.size];
       const rCanvas = rWorld * sx;
       const colour = ASTEROID_COLOUR[aNext.type];
+      const wobble = asteroidShape(aNext.id);
       c2d.save();
       c2d.translate(ax, ay);
       c2d.rotate(aRot);
@@ -2091,12 +2165,11 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
       c2d.lineWidth = Math.max(1, 1.2 * dpr);
       c2d.shadowColor = colour;
       c2d.shadowBlur = 6 * dpr;
-      const SIDES = 7;
-      const wobble = [0.95, 1.05, 0.92, 1.06, 0.97, 1.04, 0.93];
+      const SIDES = wobble.length;
       c2d.beginPath();
       for (let i = 0; i < SIDES; i++) {
         const ang = (i / SIDES) * Math.PI * 2;
-        const r = rCanvas * wobble[i % wobble.length];
+        const r = rCanvas * wobble[i];
         const px = Math.cos(ang) * r;
         const py = Math.sin(ang) * r;
         if (i === 0) c2d.moveTo(px, py); else c2d.lineTo(px, py);
@@ -2109,8 +2182,8 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
 
     for (const uNext of next.ufos) {
       const uPrev = prevUfo.get(uNext.id) ?? uNext;
-      const ux = (uPrev.x + (uNext.x - uPrev.x) * t) * sx;
-      const uy = (uPrev.y + (uNext.y - uPrev.y) * t) * sy;
+      const ux = interpAxis(uPrev.x, uNext.x, t, PALL_WORLD_W) * sx;
+      const uy = interpAxis(uPrev.y, uNext.y, t, PALL_WORLD_H) * sy;
       const isBoss = uNext.type === 'b';
       const rxW = isBoss ? 48 : 26;
       const ryW = isBoss ? 28 : 14;
@@ -2133,8 +2206,8 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
 
     for (const mNext of next.mines) {
       const mPrev = prevMine.get(mNext.id) ?? mNext;
-      const mx = (mPrev.x + (mNext.x - mPrev.x) * t) * sx;
-      const my = (mPrev.y + (mNext.y - mPrev.y) * t) * sy;
+      const mx = interpAxis(mPrev.x, mNext.x, t, PALL_WORLD_W) * sx;
+      const my = interpAxis(mPrev.y, mNext.y, t, PALL_WORLD_H) * sy;
       const pulse = 0.85 + 0.15 * Math.sin(performance.now() * 0.008);
       c2d.save();
       c2d.translate(mx, my);
@@ -2161,14 +2234,39 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
 
     for (const bNext of next.bullets) {
       const bPrev = prevBullet.get(bNext.id) ?? bNext;
-      const bx = (bPrev.x + (bNext.x - bPrev.x) * t) * sx;
-      const by = (bPrev.y + (bNext.y - bPrev.y) * t) * sy;
+      const bx = interpAxis(bPrev.x, bNext.x, t, PALL_WORLD_W) * sx;
+      const by = interpAxis(bPrev.y, bNext.y, t, PALL_WORLD_H) * sy;
       c2d.save();
       c2d.fillStyle = bNext.enemy ? '#ff5050' : '#ffd84a';
       c2d.shadowColor = c2d.fillStyle;
       c2d.shadowBlur = 6 * dpr;
       c2d.beginPath();
       c2d.arc(bx, by, 2.4 * dpr, 0, Math.PI * 2);
+      c2d.fill();
+      c2d.restore();
+    }
+
+    // 2c. Particles — local cosmetic burst on SFX events, ticked here
+    // each frame. Older particles fade and shrink; expired ones are
+    // swept out. Bounded to MAX_PARTICLES so a busy stream can't blow
+    // up frame time on weaker devices.
+    const dt = 1 / 60; // approximate; close enough for cosmetic decay
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.ttl -= dt * 1000;
+      if (p.ttl <= 0) { particles.splice(i, 1); continue; }
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vx *= 0.95;
+      p.vy *= 0.95;
+      const k = Math.max(0, p.ttl / p.ttlMax);
+      c2d.save();
+      c2d.globalAlpha = k;
+      c2d.fillStyle = p.colour;
+      c2d.shadowColor = p.colour;
+      c2d.shadowBlur = 6 * dpr;
+      c2d.beginPath();
+      c2d.arc(p.x * sx, p.y * sy, p.size * dpr * (0.6 + k * 0.6), 0, Math.PI * 2);
       c2d.fill();
       c2d.restore();
     }
