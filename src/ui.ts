@@ -4509,6 +4509,13 @@ export function renderControllerPage(): void {
   const sendThrust = (on: boolean): void => {
     if (thrustingNow === on) return;
     thrustingNow = on;
+    // Soft thump when thrust engages — gives the player tactile
+    // confirmation past the deadzone threshold. Skipping the
+    // disengagement vibration keeps the buzz from chattering on
+    // the deadzone boundary.
+    if (on && typeof navigator.vibrate === 'function') {
+      try { navigator.vibrate(10); } catch { /* ignore */ }
+    }
     client?.sendInput('joyL-thrust', on ? '1' : '0');
   };
 
@@ -4560,6 +4567,11 @@ export function renderControllerPage(): void {
     client?.sendInput('joyL-end', '1');
     if (!joyDidEngage && heldMs < JOY_TAP_TIME_MS && joyMaxDrift < JOY_TAP_MOVE_PX) {
       client?.sendInput('joyL-tap', '1');
+      // Tap-fire haptic — mirrors the A/FIRE button's 18ms thump so a
+      // quick joystick tap feels the same as pressing FIRE.
+      if (typeof navigator.vibrate === 'function') {
+        try { navigator.vibrate(18); } catch { /* ignore */ }
+      }
       // Also emit the tapAction slot if the spec wired one — gives the
       // host a slot-keyed press event to feed straight into its slot map.
       if (joyTapSlot) {
@@ -4577,12 +4589,26 @@ export function renderControllerPage(): void {
   // One-shot semantics are the host's job — the slot map can ignore
   // releases for action buttons like SHIELD that should fire once per
   // press.
+  // Vibration intensity per slot type. navigator.vibrate is widely
+  // supported on Android Chrome / Firefox; iOS Safari silently no-ops,
+  // which is fine — the buttons still work, just without haptics.
+  const VIBE_MS: Record<string, number> = {
+    A: 18,  // FIRE — primary, slightly heavier so the player feels each shot
+    B: 28,  // SHIELD — defensive, distinct heavier thump
+    X: 22,  // WARP — escape, mid-thump
+    Y: 8,   // PAUSE — light tick
+    dpadU: 6, dpadD: 6, dpadL: 6, dpadR: 6,  // d-pad — barely-there ticks for menu nav
+  };
   const bindButton = (slot: string): void => {
     const btn = slotEls.get(slot);
     if (!btn || slot === 'joyL') return;
     const press = (e: Event): void => {
       e.preventDefault();
       btn.style.background = 'rgba(255,255,255,0.18)';
+      const ms = VIBE_MS[slot];
+      if (ms && typeof navigator.vibrate === 'function') {
+        try { navigator.vibrate(ms); } catch { /* iOS / unsupported — ignore */ }
+      }
       client?.sendInput(slot, '1');
     };
     const release = (): void => {
@@ -5196,6 +5222,18 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
   el('h2', { parent: header, text: 'PALLASITE · WATCH' });
   const live = el('span', { parent: header, text: 'LIVE · RECENT RUNS' });
   live.style.cssText = 'font-size:0.72rem;color:rgba(255,216,74,0.85);letter-spacing:0.18em;font-family:monospace;';
+  // Live count chip — pulses ship-green when ≥1 player is live so the
+  // tab title bar reads "3 LIVE" at a glance.
+  const liveCount = el('span', { parent: header, text: '' });
+  liveCount.style.cssText = 'display:none;font-size:0.72rem;letter-spacing:0.16em;color:#8cffb4;border:1px solid rgba(140,255,180,0.55);padding:2px 8px;border-radius:3px;font-family:monospace;animation:pallasite-live-pulse 1.6s ease-in-out infinite;';
+  const updateLiveCount = (n: number): void => {
+    if (n > 0) {
+      liveCount.style.display = 'inline-block';
+      liveCount.textContent = `${n} LIVE`;
+    } else {
+      liveCount.style.display = 'none';
+    }
+  };
 
   const intro = el('p', { parent: overlay });
   intro.style.cssText = 'margin:4px auto 18px;font-size:0.85rem;color:rgba(220,210,255,0.75);max-width:680px;line-height:1.5;text-align:center;';
@@ -5274,7 +5312,11 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
       const visible = entries.filter((e) => !dismissed.has(e.eventId));
       if (visible.length === 0) return; // status copy handled in onStatus
       const count = visible.length;
+      const liveN = visible.reduce((acc, e) => acc + (e.isLive ? 1 : 0), 0);
       status.textContent = `${count} ${count === 1 ? 'player' : 'players'} surfaced from the last batch.`;
+      updateLiveCount(liveN);
+      // Drop the empty-state CTA now that we have entries to show.
+      grid.querySelector('[data-watch-empty-cta]')?.remove();
       for (const e of visible) renderEntry(e);
       reorderGrid(visible);
       // Auto-open into the live theatre if exactly one entry is LIVE and
@@ -5309,7 +5351,27 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
         } else if (s.relaysSettled === 0) {
           status.textContent = `Connecting to ${s.relaysAttempted} relays…`;
         } else if (s.emptyConfirmed) {
-          status.textContent = `No runs on relays yet (${s.relaysSettled}/${s.relaysAttempted} settled). Be the first.`;
+          status.textContent = `No runs on relays yet (${s.relaysSettled}/${s.relaysAttempted} settled).`;
+          // First-run empty state — render a one-button CTA into the
+          // grid that sends the visitor over to pallasite.app/play to
+          // be the first published run. Renders inline once; further
+          // status emits don't re-add the CTA.
+          if (!grid.querySelector('[data-watch-empty-cta]')) {
+            const cta = el('div', { parent: grid });
+            cta.setAttribute('data-watch-empty-cta', '1');
+            cta.style.cssText = 'border:1px dashed rgba(255,216,74,0.35);border-radius:8px;padding:18px 14px;background:rgba(255,216,74,0.03);display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center;';
+            const icon = el('div', { parent: cta, text: '🛸' });
+            icon.style.cssText = 'font-size:2rem;opacity:0.85;';
+            const headLine = el('div', { parent: cta, text: 'BE THE FIRST PLAYER ON THE WATCH PAGE' });
+            headLine.style.cssText = 'font-size:0.95rem;color:#ffe0a0;letter-spacing:0.14em;';
+            const sub = el('div', { parent: cta, text: 'No claimed runs on relays yet. Play a game on pallasite.app and your score lands here as a kind 30762 event.' });
+            sub.style.cssText = 'font-size:0.82rem;color:rgba(220,210,255,0.75);max-width:520px;line-height:1.5;';
+            const playBtn = el('button', { className: 'menu-btn', parent: cta, text: 'PLAY NOW · PALLASITE.APP' });
+            playBtn.addEventListener('click', () => {
+              try { window.location.assign('https://pallasite.app/'); }
+              catch { window.location.assign('/'); }
+            });
+          }
         } else {
           status.textContent = `Listening to ${s.relaysSettled}/${s.relaysAttempted} relays…`;
         }
@@ -5378,6 +5440,13 @@ function renderWatchCard(entry: WatchEntry, state: GameState): HTMLElement {
 
   const meta = el('div', { parent: head });
   meta.style.cssText = 'display:flex;gap:8px;align-items:baseline;';
+  // "MINE" badge — surfaces signed-in player's own runs so they can
+  // verify their score landed on relays + open their own replay.
+  // Tinted purple so it sits off the LIVE-green / when-grey scale.
+  if (state.session && state.session.pubkey === entry.pubkey) {
+    const mine = el('span', { parent: meta, text: 'MINE' });
+    mine.style.cssText = 'font-size:0.68rem;letter-spacing:0.16em;color:#cbb6ff;border:1px solid rgba(184,144,255,0.55);padding:1px 6px;border-radius:3px;font-family:monospace;background:rgba(120,90,200,0.10);';
+  }
   const livePill = el('span', { parent: meta, text: 'LIVE' });
   livePill.setAttribute('data-watch-live-pill', '1');
   livePill.style.cssText = 'display:none;font-size:0.68rem;letter-spacing:0.16em;color:#8cffb4;border:1px solid rgba(140,255,180,0.55);padding:1px 6px;border-radius:3px;font-family:monospace;animation:pallasite-live-pulse 1.6s ease-in-out infinite;';
