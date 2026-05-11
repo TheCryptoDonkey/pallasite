@@ -2128,7 +2128,7 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
         replayBtn.style.display = '';
         replayBtn.disabled = false;
         replayBtn.textContent = 'TRY AGAIN';
-        replayHint.textContent = 'Player has not claimed yet — the ghost is published at claim time.';
+        replayHint.textContent = 'No replay event found yet. Player may still be claiming, or their signer rejected the publish — check the player\'s console for [replay] lines.';
         return;
       case 'success':
         replayBtn.style.display = 'none';

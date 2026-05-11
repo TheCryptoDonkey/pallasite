@@ -14,6 +14,7 @@ import { postHeartbeat } from './faucet.js';
 import {
   startStreamSession,
   publishStreamFrame,
+  captureReplayFrame,
   endStreamSession,
   publishStreamEnded,
   drainStreamEvents,
@@ -725,6 +726,11 @@ async function boot(): Promise<void> {
   let activeStream: ActiveStreamSession | null = null;
   let streamingRunId: string | null = null;
   let streamStartInFlight = false;
+  /** Wall-ms of the most recent frame captured via captureReplayFrame
+   *  on the no-activeStream fallback path. Used to throttle the
+   *  fallback at the same cadence as activeStream.lastFramePublishedAt
+   *  does for the WS publish path. */
+  let lastFrameCapturedAt = 0;
   const STREAM_PHASES: ReadonlySet<string> = new Set([
     'playing', 'wavestart', 'warp', 'bonus', 'paused', 'deathreplay',
   ]);
@@ -773,7 +779,12 @@ async function boot(): Promise<void> {
     // non-decorative entities (asteroids / UFOs / mines / bullets)
     // so the watch viewer can render the full game world, not just
     // the ship.
-    if (inRun && activeStream && (state.wave >= 1 || state.score > 0)) {
+    // Capture path runs whenever the player is in-run + signed in,
+    // regardless of activeStream — that way the kind 30764 replay
+    // buffer fills even if NIP-53 signEvent failed (some signers
+    // reject kind 30311). WS publish only fires when activeStream is
+    // actually set up.
+    if (inRun && state.session && (state.wave >= 1 || state.score > 0)) {
       const now = Date.now();
       // Lighter cadence during pause AND wave transitions — nothing
       // gameplay-relevant changes between frames during paused / warp /
@@ -789,7 +800,8 @@ async function boot(): Promise<void> {
       const cadence = slowPhase
         ? STREAM_FRAME_INTERVAL_PAUSED_MS
         : STREAM_FRAME_INTERVAL_MS;
-      if (now - activeStream.lastFramePublishedAt < cadence - 50) return;
+      const lastAt = activeStream ? activeStream.lastFramePublishedAt : lastFrameCapturedAt;
+      if (now - lastAt < cadence - 50) return;
 
       // Asteroid type → single-letter code matching what the stream
       // wire expects. Pallasite-spec asteroid types are stony, iron,
@@ -891,7 +903,15 @@ async function boot(): Promise<void> {
         // so the live viewer can replay them in sync.
         events: drainStreamEvents(),
       };
-      void publishStreamFrame(activeStream, frame);
+      if (activeStream) {
+        void publishStreamFrame(activeStream, frame);
+      } else {
+        // No live-stream session (NIP-53 sign failed or in-flight) —
+        // still capture into the replay buffer so the kind 30764
+        // publish at game-over has frames to ship.
+        captureReplayFrame(frame);
+        lastFrameCapturedAt = now;
+      }
     }
   };
   window.setInterval(tickStream, STREAM_FRAME_INTERVAL_MS);
