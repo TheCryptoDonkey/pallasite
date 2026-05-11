@@ -317,7 +317,16 @@ export async function publishReplay(input: PublishReplayInput): Promise<NostrEve
   ];
   if (scoreEventId) tags.push(['e', scoreEventId]);
 
-  const signed = await session.signer.signEvent({ kind: REPLAY_KIND, content, tags });
+  let signed: NostrEvent;
+  try {
+    console.log(`[replay] signing kind ${REPLAY_KIND} event…`);
+    signed = await session.signer.signEvent({ kind: REPLAY_KIND, content, tags });
+    console.log(`[replay] signed → event id ${signed.id.slice(0, 8)}…`);
+  } catch (err) {
+    console.error(`[replay] signEvent rejected: ${err instanceof Error ? err.message : String(err)}`);
+    console.error('[replay] → your signer refused to sign kind 30764. Common causes: signer whitelist restricts kinds, or the popup was dismissed.');
+    return null;
+  }
   const relays = ghostRelaySet(input.relays);
   const results = await Promise.allSettled(
     relays.map((url) => publishToRelay(url, signed)),
