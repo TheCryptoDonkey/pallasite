@@ -3449,7 +3449,227 @@ export function renderControllerHostPairing(state: GameState, onClose: () => voi
 // angle drives target heading, deflection past THRUST_THRESHOLD turns
 // thrust on. Quick tap-and-release fires one shot. Action buttons
 // (fire-hold, hyperspace, shield, pause) sit on the right thumb side.
+/** Home page shown on mobile.pallasite.app when there's no pairing
+ *  token in the URL. Lets the user scan a QR (BarcodeDetector when
+ *  available, falls back to manual code entry) or type the 8-character
+ *  pairing code from the big screen. On success, navigates to
+ *  /?s=<code> which the route handler bounces back into
+ *  renderControllerPage as the gamepad. */
+function renderControllerHomePage(): void {
+  clearOverlay();
+  // Portrait OR landscape — the home page is just a card; we don't
+  // need the rotate-device lockdown here.
+  document.documentElement.style.height = '';
+  document.documentElement.style.overflow = '';
+  document.body.style.cssText = 'background:#02050d;color:rgba(220,210,255,0.9);font-family:ui-monospace,monospace;margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:24px 16px;';
+  let vp = document.querySelector('meta[name="viewport"]');
+  if (!vp) {
+    vp = document.createElement('meta');
+    vp.setAttribute('name', 'viewport');
+    document.head.appendChild(vp);
+  }
+  vp.setAttribute('content', 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover');
+
+  const gameCanvas = document.getElementById('game');
+  if (gameCanvas) gameCanvas.style.display = 'none';
+  const touchCtl = document.getElementById('touch-controls');
+  if (touchCtl) touchCtl.style.display = 'none';
+
+  const overlay = el('div', { className: 'overlay', parent: root });
+  overlay.style.cssText = 'position:static;padding:0;margin:0;max-width:520px;width:100%;display:flex;flex-direction:column;align-items:stretch;gap:18px;';
+
+  // Header
+  const header = el('div', { parent: overlay });
+  header.style.cssText = 'text-align:center;margin-bottom:6px;';
+  const title = el('h1', { parent: header, text: 'PALLASITE · CONTROLLER' });
+  title.style.cssText = 'margin:0 0 6px;font-size:1.25rem;letter-spacing:0.18em;color:#8cffb4;text-shadow:0 0 12px rgba(140,255,180,0.4);';
+  const subtitle = el('p', { parent: header, text: 'Pair with a game to start playing' });
+  subtitle.style.cssText = 'margin:0;font-size:0.85rem;color:rgba(220,210,255,0.7);letter-spacing:0.08em;';
+
+  // ── Code entry — the primary path, always works ────────────────────
+  const codeCard = el('div', { parent: overlay });
+  codeCard.style.cssText = 'border:1px solid rgba(140,255,180,0.35);border-radius:12px;padding:18px;background:rgba(60,200,140,0.06);display:flex;flex-direction:column;gap:12px;';
+  const codeLabel = el('label', { parent: codeCard, text: 'ENTER 8-CHARACTER CODE' });
+  codeLabel.style.cssText = 'font-size:0.78rem;letter-spacing:0.18em;color:rgba(140,255,180,0.85);';
+  const codeRow = el('div', { parent: codeCard });
+  codeRow.style.cssText = 'display:flex;gap:10px;align-items:center;';
+  const codeInput = el('input', { parent: codeRow, attrs: { type: 'text', inputmode: 'text', autocapitalize: 'characters', autocomplete: 'off', spellcheck: 'false', placeholder: 'XXXX XXXX', maxlength: '12' } }) as HTMLInputElement;
+  codeInput.style.cssText = 'flex:1;background:rgba(2,5,13,0.6);border:1px solid rgba(140,255,180,0.45);border-radius:8px;padding:14px 14px;font-size:1.3rem;letter-spacing:0.32em;color:#ffd84a;text-align:center;font-family:ui-monospace,monospace;outline:none;text-transform:uppercase;';
+  const goBtn = el('button', { parent: codeRow, text: 'PAIR' }) as HTMLButtonElement;
+  goBtn.style.cssText = 'background:rgba(140,255,180,0.18);border:1px solid rgba(140,255,180,0.6);color:#8cffb4;border-radius:8px;padding:14px 18px;font-size:0.95rem;letter-spacing:0.18em;font-weight:bold;cursor:pointer;font-family:ui-monospace,monospace;';
+  const codeHint = el('p', { parent: codeCard });
+  codeHint.style.cssText = 'margin:0;font-size:0.75rem;color:rgba(180,140,255,0.7);line-height:1.5;';
+  codeHint.textContent = 'On the big screen tap 📱 USE PHONE — the 8 character code is under the QR. e.g. "ABCD · 1234".';
+
+  const normalise = (raw: string): string | null => {
+    const stripped = raw.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
+    return /^[a-f0-9]{8}$/.test(stripped) ? stripped : null;
+  };
+  const setError = (msg: string | null): void => {
+    if (msg) {
+      codeHint.textContent = msg;
+      codeHint.style.color = 'rgba(255,120,120,0.9)';
+    } else {
+      codeHint.textContent = 'On the big screen tap 📱 USE PHONE — the 8 character code is under the QR. e.g. "ABCD · 1234".';
+      codeHint.style.color = 'rgba(180,140,255,0.7)';
+    }
+  };
+  const submitCode = (): void => {
+    const code = normalise(codeInput.value);
+    if (!code) {
+      setError('Code must be 8 hex characters (0-9, A-F).');
+      return;
+    }
+    // Drop the search bar focus before nav so the keyboard collapses
+    // and the destination page lays out at the correct size.
+    codeInput.blur();
+    window.location.assign(`/?s=${code}`);
+  };
+  goBtn.addEventListener('click', submitCode);
+  codeInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); submitCode(); }
+  });
+  codeInput.addEventListener('input', () => {
+    setError(null);
+    // Auto-format as "XXXX XXXX" while typing — readable, matches the
+    // big-screen display style.
+    const stripped = codeInput.value.replace(/[^a-fA-F0-9]/g, '').slice(0, 8).toUpperCase();
+    const formatted = stripped.length > 4 ? `${stripped.slice(0, 4)} ${stripped.slice(4)}` : stripped;
+    if (formatted !== codeInput.value) {
+      const cursor = codeInput.selectionStart ?? formatted.length;
+      codeInput.value = formatted;
+      // Reposition the cursor roughly where the user expected it.
+      const pos = Math.min(formatted.length, cursor + (formatted.length - codeInput.value.length));
+      try { codeInput.setSelectionRange(pos, pos); } catch { /* ignore */ }
+    }
+  });
+  // Autofocus on home page open so the code can be typed immediately
+  // (mobile keyboards generally pop on focus). Wrap in a timeout so
+  // the keyboard doesn't show before the layout is settled.
+  setTimeout(() => codeInput.focus(), 50);
+
+  // ── QR scanner — optional, present iff BarcodeDetector is available
+  const hasBarcodeDetector = typeof (window as unknown as { BarcodeDetector?: unknown }).BarcodeDetector === 'function';
+  if (hasBarcodeDetector && navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function') {
+    const scanCard = el('div', { parent: overlay });
+    scanCard.style.cssText = 'border:1px solid rgba(184,144,255,0.35);border-radius:12px;padding:18px;background:rgba(120,90,200,0.06);display:flex;flex-direction:column;gap:12px;align-items:stretch;';
+    const scanLabel = el('div', { parent: scanCard, text: 'OR SCAN QR CODE' });
+    scanLabel.style.cssText = 'font-size:0.78rem;letter-spacing:0.18em;color:rgba(184,144,255,0.85);';
+    const scanBtn = el('button', { parent: scanCard, text: '📷  OPEN SCANNER' }) as HTMLButtonElement;
+    scanBtn.style.cssText = 'background:rgba(184,144,255,0.18);border:1px solid rgba(184,144,255,0.6);color:#cbb6ff;border-radius:8px;padding:18px 18px;font-size:1rem;letter-spacing:0.16em;font-weight:bold;cursor:pointer;font-family:ui-monospace,monospace;';
+    const scanHost = el('div', { parent: scanCard });
+    scanHost.style.cssText = 'display:none;flex-direction:column;gap:10px;align-items:stretch;';
+    const video = el('video', { parent: scanHost }) as HTMLVideoElement;
+    video.style.cssText = 'width:100%;max-height:60vh;border-radius:8px;background:#000;object-fit:cover;';
+    video.playsInline = true;
+    video.muted = true;
+    const scanStatus = el('p', { parent: scanHost });
+    scanStatus.style.cssText = 'margin:0;font-size:0.78rem;color:rgba(220,210,255,0.7);text-align:center;letter-spacing:0.08em;';
+    scanStatus.textContent = 'Point at the QR on the big screen';
+    const stopBtn = el('button', { parent: scanHost, text: 'CANCEL' }) as HTMLButtonElement;
+    stopBtn.style.cssText = 'background:rgba(255,255,255,0.06);border:1px solid rgba(220,210,255,0.3);color:rgba(220,210,255,0.85);border-radius:8px;padding:10px 12px;font-size:0.85rem;letter-spacing:0.12em;cursor:pointer;font-family:ui-monospace,monospace;';
+
+    let stream: MediaStream | null = null;
+    let scanRaf: number | null = null;
+    let detector: { detect: (image: HTMLVideoElement) => Promise<Array<{ rawValue: string }>> } | null = null;
+
+    const stopScan = (): void => {
+      if (scanRaf !== null) { cancelAnimationFrame(scanRaf); scanRaf = null; }
+      if (stream) { for (const t of stream.getTracks()) t.stop(); stream = null; }
+      scanHost.style.display = 'none';
+      scanBtn.style.display = '';
+      scanBtn.disabled = false;
+    };
+
+    const tryParse = (raw: string): string | null => {
+      // Two acceptable formats:
+      //   1. A pairing URL: https://mobile.pallasite.app/?s=XXXXXXXX
+      //   2. Just the 8-char code (manual)
+      try {
+        const u = new URL(raw);
+        const s = u.searchParams.get('s');
+        if (s) return normalise(s);
+      } catch { /* not a URL — try as plain code */ }
+      return normalise(raw);
+    };
+
+    const startScan = async (): Promise<void> => {
+      scanBtn.disabled = true;
+      try {
+        // Prefer the rear-facing camera on phones.
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' } },
+          audio: false,
+        });
+      } catch (err) {
+        scanBtn.disabled = false;
+        codeHint.textContent = err instanceof Error && err.name === 'NotAllowedError'
+          ? 'Camera permission denied — use the code field above instead.'
+          : 'Could not open the camera — use the code field above instead.';
+        codeHint.style.color = 'rgba(255,180,80,0.9)';
+        return;
+      }
+      scanBtn.style.display = 'none';
+      scanHost.style.display = 'flex';
+      video.srcObject = stream;
+      try { await video.play(); } catch { /* ignore — some browsers want user gesture */ }
+      const BD = (window as unknown as { BarcodeDetector: new (opts: { formats: string[] }) => typeof detector }).BarcodeDetector;
+      try { detector = new BD({ formats: ['qr_code'] }) as typeof detector; } catch { detector = null; }
+      if (!detector) {
+        scanStatus.textContent = 'QR scanning unavailable on this browser.';
+        return;
+      }
+      const tick = async (): Promise<void> => {
+        if (!stream || !detector) return;
+        try {
+          const found = await detector.detect(video);
+          if (found && found.length > 0) {
+            const code = tryParse(found[0].rawValue);
+            if (code) {
+              scanStatus.textContent = 'Got it — pairing…';
+              stopScan();
+              window.location.assign(`/?s=${code}`);
+              return;
+            }
+          }
+        } catch { /* keep scanning */ }
+        scanRaf = requestAnimationFrame(() => { void tick(); });
+      };
+      void tick();
+    };
+
+    scanBtn.addEventListener('click', () => { void startScan(); });
+    stopBtn.addEventListener('click', stopScan);
+  } else {
+    // Browser without BarcodeDetector — leave the code field as the
+    // only path. Add a small hint so users know why no scanner.
+    const noScanHint = el('p', { parent: overlay });
+    noScanHint.style.cssText = 'margin:0;font-size:0.75rem;color:rgba(180,140,255,0.55);text-align:center;letter-spacing:0.05em;';
+    noScanHint.textContent = 'QR scanning needs a modern Chromium-based browser. Use the code field above.';
+  }
+
+  // ── Add-to-Home-Screen hint ─────────────────────────────────────────
+  // Only show when not already installed (display-mode standalone is
+  // matchMedia-checkable).
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches
+    || (window.navigator as unknown as { standalone?: boolean }).standalone === true;
+  if (!isStandalone) {
+    const pwaCard = el('div', { parent: overlay });
+    pwaCard.style.cssText = 'margin-top:8px;font-size:0.72rem;color:rgba(180,140,255,0.6);text-align:center;line-height:1.6;';
+    pwaCard.innerHTML = 'Add this page to your home screen for one-tap access.<br>iOS: share → Add to Home Screen. Android: ⋮ → Install app.';
+  }
+}
+
 export function renderControllerPage(): void {
+  // If the URL doesn't carry a pairing token, render the home page
+  // instead (scan QR / enter code). Once the user pairs we navigate
+  // to ?s=<code> and re-enter this function, this time taking the
+  // gamepad branch below.
+  const url = new URL(window.location.href);
+  if (!url.searchParams.get('s')) {
+    renderControllerHomePage();
+    return;
+  }
   clearOverlay();
   // Lock the page chrome — controller is full-screen landscape only.
   document.documentElement.style.height = '100%';
