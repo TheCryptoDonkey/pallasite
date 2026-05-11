@@ -16,7 +16,7 @@ import {
   type PairingToken,
 } from './controller-types.js';
 import type { GameState } from './types.js';
-import { tryHyperspace, tryActivateShield, pauseGame, resumeGame } from './game.js';
+import { tryHyperspace, tryActivateShield } from './game.js';
 
 /** Pallasite slot map — which standard slot maps to which game action.
  *  The host's spec advertises icons/labels for these slots; the PWA
@@ -157,56 +157,91 @@ export function startControllerHost(state: GameState, opts: { ws?: string } = {}
   };
 }
 
-/** Map a slot-keyed input frame to a Pallasite game action.
- *
- *  This is the only Pallasite-specific dispatch in the host module —
- *  re-skinning for a different game means rewriting this function and
- *  the PALLASITE_SPEC constant. The PWA itself stays generic. */
+/** Phases that have an overlay menu the joystick should drive
+ *  (synthetic arrow keys + Enter / Escape). Anything else is gameplay. */
+const MENU_PHASES = new Set(['title', 'paused', 'gameover', 'completed']);
+let lastMenuCardinal: 'up' | 'down' | 'left' | 'right' | null = null;
+
+function angleToCardinal(rad: number): 'up' | 'down' | 'left' | 'right' {
+  const a = ((rad % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+  if (a < Math.PI / 4 || a >= 7 * Math.PI / 4) return 'right';
+  if (a < 3 * Math.PI / 4) return 'down';
+  if (a < 5 * Math.PI / 4) return 'left';
+  return 'up';
+}
+function dispatchKey(code: string): void {
+  window.dispatchEvent(new KeyboardEvent('keydown', { code, key: code, bubbles: true }));
+  window.dispatchEvent(new KeyboardEvent('keyup', { code, key: code, bubbles: true }));
+}
+
+/** Map a slot-keyed input frame to a Pallasite game action. During
+ *  gameplay this drives state.targetHeading / state.keys[Space] /
+ *  tryHyperspace etc. During menu phases (title, paused, gameover,
+ *  completed) the joystick fires synthetic arrow keys so the overlay's
+ *  setupOverlayArrowNav handler walks through the buttons, A fires
+ *  Enter to confirm, Y fires Escape to dismiss. */
 function applySlotInput(state: GameState, slot: string, value: string): void {
   const on = value === '1';
+  const inMenu = MENU_PHASES.has(state.phase);
   switch (slot) {
     // ── Joystick ────────────────────────────────────────────────────
     case 'joyL': {
-      // Heading update — value is angle * 1000 (positive 0..6283).
       const angle = parseInt(value, 10) / 1000;
-      if (Number.isFinite(angle)) state.targetHeading = angle;
+      if (!Number.isFinite(angle)) return;
+      if (inMenu) {
+        // Quantise to cardinal and fire one arrow per direction change.
+        const card = angleToCardinal(angle);
+        if (card !== lastMenuCardinal) {
+          lastMenuCardinal = card;
+          dispatchKey(
+            card === 'up'    ? 'ArrowUp'
+          : card === 'down'  ? 'ArrowDown'
+          : card === 'left'  ? 'ArrowLeft'
+          :                    'ArrowRight'
+          );
+        }
+        return;
+      }
+      state.targetHeading = angle;
       return;
     }
     case 'joyL-thrust':
+      if (inMenu) return;
       state.thrustOverride = on;
       return;
     case 'joyL-end':
       state.targetHeading = null;
       state.thrustOverride = false;
+      lastMenuCardinal = null;
       return;
     case 'joyL-tap':
-      // Tap-fire — quick fire pulse, matches the in-game touch joystick.
       if (!on) return;
+      if (inMenu) { dispatchKey('Enter'); return; }
       state.keys[FIRE_CODE] = true;
       window.setTimeout(() => { state.keys[FIRE_CODE] = false; }, 60);
       return;
     // ── Face buttons ────────────────────────────────────────────────
     case 'A':
-      // FIRE — hold-style.
+      if (inMenu) {
+        if (on) dispatchKey('Enter');
+        return;
+      }
       state.keys[FIRE_CODE] = on;
       return;
     case 'B':
-      // SHIELD — one-shot per press.
       if (!on) return;
       if (state.phase === 'playing') tryActivateShield(state, performance.now());
       return;
     case 'X':
-      // WARP / hyperspace — one-shot per press.
       if (!on) return;
       if (state.phase === 'playing') tryHyperspace(state, performance.now());
       return;
     case 'Y':
-      // PAUSE — toggle on press.
       if (!on) return;
-      if (state.phase === 'playing') pauseGame(state);
-      else if (state.phase === 'paused') resumeGame(state);
+      // Universally Escape — game's keydown handler interprets per
+      // phase (pauses playing, resumes paused, dismisses overlays).
+      dispatchKey('Escape');
       return;
-    // ── Shoulders + system buttons unused for Pallasite today ──────
     case 'L1':
     case 'L2':
     case 'R1':
