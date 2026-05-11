@@ -3194,15 +3194,42 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
         c2d.lineTo(-6, -4);
         c2d.stroke();
       }
-      if (shielded) {
-        c2d.strokeStyle = 'rgba(120,200,255,0.85)';
-        c2d.shadowColor = 'rgba(120,200,255,0.7)';
-        c2d.lineWidth = 1.2;
-        c2d.beginPath();
-        c2d.arc(0, 0, 17, 0, Math.PI * 2);
-        c2d.stroke();
-      }
       c2d.restore();
+      if (shielded) {
+        // Match render.ts drawShield: outer-glow radial gradient + hex
+        // perimeter with 6 rotating dots. Sized off the ship's world
+        // radius (14) × 2.2 like the game so the bubble looks the same
+        // fraction of the canvas the player sees. Previous version was
+        // a single 17px arc — way smaller + flatter than the game's.
+        const shipR = 14 * shipScale;
+        const shieldR = shipR * 2.2 + Math.sin(nowPerf * 0.012) * 1.5 * dpr;
+        c2d.save();
+        c2d.translate(x, y);
+        const sg = c2d.createRadialGradient(0, 0, shipR * 1.2, 0, 0, shieldR);
+        sg.addColorStop(0, 'rgba(91,157,255,0)');
+        sg.addColorStop(0.7, 'rgba(91,157,255,0.18)');
+        sg.addColorStop(1, 'rgba(91,157,255,0.5)');
+        c2d.fillStyle = sg;
+        c2d.beginPath();
+        c2d.arc(0, 0, shieldR, 0, Math.PI * 2);
+        c2d.fill();
+        c2d.strokeStyle = 'rgba(91,157,255,0.85)';
+        c2d.lineWidth = 1.2 * dpr;
+        c2d.shadowColor = '#5b9dff';
+        c2d.shadowBlur = 14 * dpr;
+        c2d.beginPath();
+        c2d.arc(0, 0, shieldR, 0, Math.PI * 2);
+        c2d.stroke();
+        c2d.shadowBlur = 0;
+        for (let i = 0; i < 6; i++) {
+          const a = (Math.PI * 2 * i) / 6 + nowPerf * 0.001;
+          c2d.fillStyle = 'rgba(180,220,255,0.9)';
+          c2d.beginPath();
+          c2d.arc(Math.cos(a) * shieldR, Math.sin(a) * shieldR, 2 * dpr, 0, Math.PI * 2);
+          c2d.fill();
+        }
+        c2d.restore();
+      }
     }
 
     // 3b. Wave-change banner — fires on each frame.wave increment.

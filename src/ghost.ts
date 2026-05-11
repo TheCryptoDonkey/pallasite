@@ -19,6 +19,22 @@ import type { SignetSession, NostrEvent } from 'signet-login';
 import { GAME_ID } from './auth.js';
 import { WORLD_W, WORLD_H, type GhostSample, type GhostPoseSample } from './types.js';
 import { getActiveRelays } from './relays.js';
+import { EXPERIMENTAL_RELAYS } from './credits.js';
+
+/** Publish + fetch share the same relay set so a watcher always queries
+ *  the same URLs the player published to. Without this union, the
+ *  watcher's getActiveRelays() (its localStorage on watch.pallasite.app)
+ *  can diverge from the player's getActiveRelays() (their localStorage
+ *  on pallasite.app) and a published event won't be findable. We always
+ *  include EXPERIMENTAL_RELAYS (our own relay.trotters.cc) so even with
+ *  zero overlap in user-customised relays there's a guaranteed shared
+ *  endpoint. */
+function ghostRelaySet(override?: readonly string[]): readonly string[] {
+  if (override && override.length > 0) return override;
+  const active = getActiveRelays();
+  const merged = new Set<string>([...active, ...EXPERIMENTAL_RELAYS]);
+  return Array.from(merged);
+}
 
 export const GHOST_KIND = 30763;
 /** kind 30764 — full-world compressed replay. The kind 30763 ghost
@@ -237,7 +253,7 @@ export async function publishGhost(input: PublishGhostInput): Promise<NostrEvent
     tags,
   });
 
-  const relays = input.relays ?? getActiveRelays();
+  const relays = ghostRelaySet(input.relays);
   await Promise.all(relays.map(url => publishToRelay(url, signed).catch(() => undefined)));
   return signed;
 }
@@ -302,11 +318,22 @@ export async function publishReplay(input: PublishReplayInput): Promise<NostrEve
   if (scoreEventId) tags.push(['e', scoreEventId]);
 
   const signed = await session.signer.signEvent({ kind: REPLAY_KIND, content, tags });
-  const relays = input.relays ?? getActiveRelays();
+  const relays = ghostRelaySet(input.relays);
   const results = await Promise.allSettled(
     relays.map((url) => publishToRelay(url, signed)),
   );
   const ok = results.filter((r) => r.status === 'fulfilled').length;
+  // Log per-relay outcome so we can see which ones accept kind 30764
+  // and which reject. Particularly useful when a watcher can't find a
+  // replay we know was published.
+  for (let i = 0; i < relays.length; i++) {
+    const r = results[i];
+    if (r.status === 'fulfilled') {
+      console.log(`[replay]   ✓ ${relays[i]}`);
+    } else {
+      console.warn(`[replay]   ✗ ${relays[i]} — ${(r.reason as Error)?.message ?? 'error'}`);
+    }
+  }
   console.log(`[replay] published kind ${REPLAY_KIND} ${signed.id.slice(0, 8)}… to ${ok}/${relays.length} relays`);
   return signed;
 }
@@ -321,9 +348,9 @@ export async function findReplayByAuthor(
   opts: { relays?: readonly string[] } = {},
 ): Promise<FetchedReplay | null> {
   if (!/^[0-9a-f]{64}$/i.test(pubkey)) return null;
-  const relays = opts.relays ?? getActiveRelays();
+  const relays = ghostRelaySet(opts.relays);
   if (relays.length === 0) return null;
-  console.log(`[replay] findReplayByAuthor pubkey=${pubkey.slice(0, 8)}… since=${sinceSec} relays=${relays.length}`);
+  console.log(`[replay] findReplayByAuthor pubkey=${pubkey.slice(0, 8)}… since=${sinceSec} relays=[${relays.join(', ')}]`);
 
   const filter: Record<string, unknown> = {
     kinds: [REPLAY_KIND],
@@ -331,6 +358,7 @@ export async function findReplayByAuthor(
     since: Math.max(0, sinceSec - 30),
     limit: 5,
   };
+  const perRelay = new Map<string, number>();
   const events = await new Promise<NostrEvent[]>((resolve) => {
     const collected: NostrEvent[] = [];
     let done = 0;
@@ -347,7 +375,7 @@ export async function findReplayByAuthor(
     const markDone = (): void => { done += 1; if (done >= relays.length) settle(); };
     for (const url of relays) {
       let ws: WebSocket;
-      try { ws = new WebSocket(url); } catch { markDone(); continue; }
+      try { ws = new WebSocket(url); perRelay.set(url, 0); } catch { console.warn(`[replay]   ✗ ${url} — ws ctor threw`); markDone(); continue; }
       sockets.push(ws);
       const subId = 'rb' + Math.random().toString(36).slice(2, 10);
       ws.onopen = () => ws.send(JSON.stringify(['REQ', subId, filter]));
@@ -359,16 +387,20 @@ export async function findReplayByAuthor(
             const e = msg[2];
             if (e && typeof e === 'object' && (e as { kind?: number }).kind === REPLAY_KIND) {
               collected.push(e as NostrEvent);
+              perRelay.set(url, (perRelay.get(url) ?? 0) + 1);
             }
           } else if (msg[0] === 'EOSE' && msg[1] === subId) {
             markDone();
           }
         } catch { /* ignore */ }
       };
-      ws.onerror = markDone;
+      ws.onerror = () => { console.warn(`[replay]   ✗ ${url} — ws error`); markDone(); };
       ws.onclose = markDone;
     }
   });
+  for (const [url, count] of perRelay) {
+    console.log(`[replay]   ${count > 0 ? '✓' : '·'} ${url} returned ${count} event(s)`);
+  }
   events.sort((a, b) => b.created_at - a.created_at);
   console.log(`[replay] findReplayByAuthor got ${events.length} candidate event(s)`);
   for (const e of events) {
@@ -410,7 +442,7 @@ export async function fetchReplayByScoreEventId(
   opts: { relays?: readonly string[] } = {},
 ): Promise<FetchedReplay | null> {
   if (!/^[0-9a-f]{64}$/i.test(scoreEventId)) return null;
-  const relays = opts.relays ?? getActiveRelays();
+  const relays = ghostRelaySet(opts.relays);
   if (relays.length === 0) return null;
 
   const filter: Record<string, unknown> = {
@@ -574,7 +606,7 @@ export async function fetchTopGhost(
     const hit = topGhostCache.get(cacheKey);
     if (hit && Date.now() - hit.at < TOP_GHOST_CACHE_TTL_MS) return hit.ghost;
   }
-  const relays = opts.relays ?? getActiveRelays();
+  const relays = ghostRelaySet(opts.relays);
   if (relays.length === 0) return null;
 
   const filter: Record<string, unknown> = {
@@ -710,7 +742,7 @@ export async function fetchGhostByScoreEventId(
   opts: { relays?: readonly string[] } = {},
 ): Promise<GhostRun | null> {
   if (!/^[0-9a-f]{64}$/i.test(scoreEventId)) return null;
-  const relays = opts.relays ?? getActiveRelays();
+  const relays = ghostRelaySet(opts.relays);
   if (relays.length === 0) return null;
 
   const filter: Record<string, unknown> = {
@@ -822,7 +854,7 @@ export async function findScoreIdForLatestGhost(
   opts: { relays?: readonly string[] } = {},
 ): Promise<string | null> {
   if (!/^[0-9a-f]{64}$/i.test(pubkey)) return null;
-  const relays = opts.relays ?? getActiveRelays();
+  const relays = ghostRelaySet(opts.relays);
   if (relays.length === 0) return null;
 
   const filter: Record<string, unknown> = {
