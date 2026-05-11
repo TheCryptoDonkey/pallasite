@@ -227,12 +227,23 @@ export function subscribeRecentRuns(
       authors: [info.pubkey],
       limit: opts.limit ?? 200,
     };
-    for (const url of relays) {
+    // Auto-reconnect — relays drop idle WebSockets after ~5 min and the
+    // user's tab can sit open much longer than that. Without retry the
+    // page silently goes deaf and a new IGNITE never surfaces until
+    // manual refresh. Exponential backoff capped at 30s.
+    const connect = (url: string, attempt = 0): void => {
       if (closed) return;
       let ws: WebSocket;
-      try { ws = new WebSocket(url); } catch { continue; }
-      attempted += 1;
-      sockets.push(ws);
+      try { ws = new WebSocket(url); } catch { scheduleReconnect(url, attempt); return; }
+      if (attempt === 0) {
+        attempted += 1;
+        sockets.push(ws);
+      } else {
+        // Replace the prior socket in the array so cleanup still closes
+        // every active connection.
+        const idx = sockets.findIndex((s) => s.readyState !== WebSocket.OPEN);
+        if (idx >= 0) sockets[idx] = ws; else sockets.push(ws);
+      }
       const subId = 'w' + Math.random().toString(36).slice(2, 10);
       const markSettled = (): void => {
         if (settledRelays.has(url)) return;
@@ -256,8 +267,18 @@ export function subscribeRecentRuns(
         } catch { /* ignore parse errors */ }
       };
       ws.onerror = markSettled;
-      ws.onclose = markSettled;
-    }
+      ws.onclose = () => {
+        markSettled();
+        // Reconnect unless this was a deliberate teardown.
+        scheduleReconnect(url, attempt + 1);
+      };
+    };
+    const scheduleReconnect = (url: string, attempt: number): void => {
+      if (closed) return;
+      const delay = Math.min(30_000, 1000 * Math.pow(1.6, attempt));
+      window.setTimeout(() => connect(url, attempt), delay);
+    };
+    for (const url of relays) connect(url);
     emitStatus();
   })();
 

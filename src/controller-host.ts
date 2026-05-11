@@ -205,6 +205,15 @@ export function encodePairingUrl(token: PairingToken): string {
     s: token.sessionId,
     r: token.relay,
   });
+  // Prefer the mobile subdomain when we're on pallasite.app — it's
+  // shorter (good for QR code legibility) and bookmarkable as a PWA.
+  // Fall back to a same-origin /controller path in dev / on non-PWA
+  // origins so local builds and preview deployments still work.
+  const host = window.location.hostname;
+  const onPallasite = host === 'pallasite.app' || host.endsWith('.pallasite.app');
+  if (onPallasite) {
+    return `https://mobile.pallasite.app/?${params.toString()}`;
+  }
   return `${window.location.origin}/controller?${params.toString()}`;
 }
 

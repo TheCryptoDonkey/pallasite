@@ -879,6 +879,12 @@ async function boot(): Promise<void> {
     // Closing the theatre returns to the full watch page (no flag) so
     // the user can browse other entries from there.
     renderWatchPage(state, { autoOpenLive: true });
+  } else if (window.location.hostname.startsWith('mobile.')) {
+    // mobile.pallasite.app — bookmarkable controller. Same render as
+    // /controller but lives on its own subdomain so it can install as
+    // an "Add to Home Screen" PWA without dragging the whole game
+    // bundle's chrome along with it visually.
+    renderControllerPage();
   } else {
     const path = window.location.pathname.replace(/\/+$/, '');
     if (path === '/jury') {
