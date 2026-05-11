@@ -79,6 +79,20 @@ export function getAchievementProgress(): { unlocked: number; total: number } {
   return { unlocked: unlocked().size, total: ACHIEVEMENTS.length };
 }
 
+/** Track which achievements unlocked DURING this run, separate from the
+ *  device-lifetime set in localStorage. The recap claim sends this list
+ *  in `telemetry.achievements_unlocked` so the faucet can issue NIP-58
+ *  kind 8 awards from the game pubkey. Cleared at the start of every run. */
+const thisRun = new Set<AchievementId>();
+
+export function resetRunAchievements(): void {
+  thisRun.clear();
+}
+
+export function getRunAchievements(): AchievementId[] {
+  return Array.from(thisRun);
+}
+
 const KEY = 'pallasite:achievements';
 
 function loadSet(): Set<AchievementId> {
@@ -117,6 +131,10 @@ export function markAchievement(s: GameState, id: AchievementId): void {
   if (set.has(id)) return;
   set.add(id);
   saveSet(set);
+  // Track for the NIP-58 award handshake: the recap claim ships the
+  // achievements unlocked this run so the faucet can issue kind 8
+  // badge awards from the game pubkey.
+  thisRun.add(id);
   const def = ACHIEVEMENTS.find(a => a.id === id);
   const label = def?.label ?? id.toUpperCase();
   // Distinct toast — prefixed so it reads as a milestone rather than

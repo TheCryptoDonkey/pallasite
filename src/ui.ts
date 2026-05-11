@@ -36,7 +36,7 @@ import { savePersonalGhost } from './personal-ghost.js';
 import { canCaptureClip, captureClip, shareClip, shareDailyStats } from './clip.js';
 import { REPLAY_TOTAL_WALL_MS, REPLAY_EXPLOSION_WALL_MS } from './types.js';
 import { getStreak, getBestStreak, markDailyCompleted, buildDailyShareText } from './streak.js';
-import { markAchievement } from './achievements.js';
+import { markAchievement, getRunAchievements } from './achievements.js';
 import { savePendingClaim, clearPendingClaim, getFreshPendingClaim, isTerminalClaimError } from './pending-claim.js';
 import { WORLD_W as PALL_WORLD_W, WORLD_H as PALL_WORLD_H } from './types.js';
 import {
@@ -3085,6 +3085,7 @@ async function maybePublishScore(
         state.runStartedAt > 0 ? state.runStartedAt : finishedAt - duration;
 
       const seed = getActiveSeed();
+      const runAchievements = getRunAchievements();
       const payload = {
         score: state.score,
         wave: state.wave,
@@ -3094,6 +3095,9 @@ async function maybePublishScore(
         sats_claimed: state.sats,
         cheated: state.cheatedThisRun,
         ...(seed ? { daily_seed: seed } : {}),
+        ...(runAchievements.length > 0
+          ? { telemetry: { achievements_unlocked: runAchievements } }
+          : {}),
       };
       // Persist BEFORE submit so a tab close, idle-skip, or signer hang
       // doesn't strand the sats. The server has a 5-min replay window for
