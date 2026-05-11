@@ -41,7 +41,7 @@ import { DEV } from './credits.js';
 import { followUser, shareCompletion, endorseSubject, rankFromWave } from './social.js';
 import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipient } from './zap.js';
-import { subscribeRecentRuns, timeAgo, type WatchEntry } from './watch.js';
+import { subscribeRecentRuns, timeAgo, LIVE_FRESHNESS_MS, type WatchEntry } from './watch.js';
 import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, ghostPoseAt, ghostScoreAt, type GhostRun } from './ghost.js';
 import { savePersonalGhost } from './personal-ghost.js';
 import { canCaptureClip, captureClip, shareClip, shareDailyStats } from './clip.js';
@@ -2120,24 +2120,42 @@ export function renderWatchPage(state: GameState): void {
   // and keeps any open zap popovers anchored to the right element).
   const cardByPubkey = new Map<string, HTMLElement>();
 
+  const setCardLiveState = (card: HTMLElement, isLive: boolean): void => {
+    card.dataset.live = isLive ? '1' : '0';
+    card.style.borderColor = isLive ? 'rgba(140,255,180,0.7)' : 'rgba(255,216,74,0.35)';
+    card.style.background = isLive ? 'rgba(60,200,140,0.10)' : 'rgba(255,216,74,0.04)';
+    card.style.boxShadow = isLive ? '0 0 14px rgba(140,255,180,0.25)' : 'none';
+    const pill = card.querySelector('[data-watch-live-pill]') as HTMLElement | null;
+    if (pill) pill.style.display = isLive ? 'inline-block' : 'none';
+  };
+
   const renderEntry = (entry: WatchEntry): void => {
     const existing = cardByPubkey.get(entry.pubkey);
     if (existing) {
-      // Update timeAgo + score in place
       const scorePill = existing.querySelector('[data-watch-score]');
+      const wavePill = existing.querySelector('[data-watch-wave]');
       const whenPill = existing.querySelector('[data-watch-when]');
-      if (scorePill) scorePill.textContent = `${entry.score.toLocaleString()}`;
-      if (whenPill) whenPill.textContent = timeAgo(entry.createdAt);
+      if (scorePill) scorePill.textContent = entry.score.toLocaleString();
+      if (wavePill) wavePill.textContent = `WAVE ${entry.wave}`;
+      if (whenPill) whenPill.textContent = entry.isLive ? 'LIVE' : timeAgo(entry.createdAt);
+      existing.dataset.createdAt = String(entry.createdAt);
+      setCardLiveState(existing, entry.isLive);
       return;
     }
     const card = renderWatchCard(entry, state);
     cardByPubkey.set(entry.pubkey, card);
+    setCardLiveState(card, entry.isLive);
     grid.appendChild(card);
   };
 
   const reorderGrid = (entries: WatchEntry[]): void => {
-    // Append in newest-first order so the DOM order matches `entries`.
-    for (const e of entries) {
+    // LIVE entries first, then everything else newest-first.
+    const sorted = [...entries].sort(
+      (a, b) =>
+        Number(b.isLive) - Number(a.isLive) ||
+        b.createdAt - a.createdAt,
+    );
+    for (const e of sorted) {
       const card = cardByPubkey.get(e.pubkey);
       if (card) grid.appendChild(card);
     }
@@ -2170,15 +2188,35 @@ export function renderWatchPage(state: GameState): void {
   );
 
   // Lightweight "X minutes ago" updater so cards age visibly without a
-  // full re-subscribe.
+  // full re-subscribe. Also re-evaluates liveness: a LIVE card whose
+  // most recent heartbeat is now older than LIVE_FRESHNESS_MS demotes
+  // to a regular recent-run card.
   const ageTimer = window.setInterval(() => {
+    const now = Date.now();
+    let anyDemoted = false;
     for (const card of cardByPubkey.values()) {
-      const pubkey = card.dataset.pubkey;
       const at = parseInt(card.dataset.createdAt ?? '0', 10);
+      if (!at) continue;
+      const stillLive = card.dataset.live === '1' && now - at * 1000 < LIVE_FRESHNESS_MS;
+      const wasLive = card.dataset.live === '1';
       const whenPill = card.querySelector('[data-watch-when]');
-      if (pubkey && at && whenPill) whenPill.textContent = timeAgo(at);
+      if (whenPill) whenPill.textContent = stillLive ? 'LIVE' : timeAgo(at);
+      if (wasLive && !stillLive) {
+        setCardLiveState(card, false);
+        anyDemoted = true;
+      }
     }
-  }, 30_000);
+    // If we demoted a card, the LIVE-first sort may now be wrong — push
+    // ex-live cards down. Cheap: snapshot order, re-sort by dataset.live then createdAt.
+    if (anyDemoted) {
+      const cards = Array.from(cardByPubkey.values()).sort((a, b) => {
+        const liveDelta = Number(b.dataset.live === '1') - Number(a.dataset.live === '1');
+        if (liveDelta) return liveDelta;
+        return parseInt(b.dataset.createdAt ?? '0', 10) - parseInt(a.dataset.createdAt ?? '0', 10);
+      });
+      for (const c of cards) grid.appendChild(c);
+    }
+  }, 10_000);
   // When user navigates away, stop the timer too. Hook into the unsubscribe.
   const baseUnsub = watchActiveUnsubscribe;
   watchActiveUnsubscribe = (): void => {
@@ -2208,7 +2246,12 @@ function renderWatchCard(entry: WatchEntry, state: GameState): HTMLElement {
     } catch { /* ignore */ }
   })();
 
-  const when = el('div', { parent: head, text: timeAgo(entry.createdAt) });
+  const meta = el('div', { parent: head });
+  meta.style.cssText = 'display:flex;gap:8px;align-items:baseline;';
+  const livePill = el('span', { parent: meta, text: 'LIVE' });
+  livePill.setAttribute('data-watch-live-pill', '1');
+  livePill.style.cssText = 'display:none;font-size:0.68rem;letter-spacing:0.16em;color:#8cffb4;border:1px solid rgba(140,255,180,0.55);padding:1px 6px;border-radius:3px;font-family:monospace;animation:pallasite-live-pulse 1.6s ease-in-out infinite;';
+  const when = el('div', { parent: meta, text: entry.isLive ? 'LIVE' : timeAgo(entry.createdAt) });
   when.setAttribute('data-watch-when', '1');
   when.style.cssText = 'font-size:0.78rem;color:rgba(220,210,255,0.6);letter-spacing:0.06em;';
 
@@ -2217,7 +2260,8 @@ function renderWatchCard(entry: WatchEntry, state: GameState): HTMLElement {
   const score = el('span', { parent: stats, text: entry.score.toLocaleString() });
   score.setAttribute('data-watch-score', '1');
   score.style.cssText = 'color:#ffe0a0;font-size:1.05rem;font-family:monospace;';
-  el('span', { parent: stats, text: `WAVE ${entry.wave}` });
+  const wave = el('span', { parent: stats, text: `WAVE ${entry.wave}` });
+  wave.setAttribute('data-watch-wave', '1');
   if (entry.sats > 0) el('span', { parent: stats, text: `₿ ${entry.sats}` })
     .style.cssText = 'color:#ffd84a;';
   if (entry.seed) el('span', { parent: stats, text: `SEED ${entry.seed}` })

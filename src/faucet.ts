@@ -299,6 +299,59 @@ export async function submitClaim(
 }
 
 /**
+ * POST /api/heartbeat. Lightweight live-presence ping the watch
+ * surface uses to render LIVE cards for in-progress runs. NIP-98
+ * authed so the pubkey can't be impersonated.
+ *
+ * Errors are swallowed — heartbeats are best-effort, a transient
+ * network glitch shouldn't disturb gameplay. Returns true when the
+ * server accepted the heartbeat, false on any failure.
+ */
+export async function postHeartbeat(
+  session: SignetSession,
+  body: { score: number; wave: number; started_at: number; run_id: string },
+): Promise<boolean> {
+  if (!session.signer.capabilities.canSignEvents) return false;
+  const url = `${location.origin}${API_BASE}/heartbeat`;
+  const bodyJson = JSON.stringify(body);
+  const payloadHash = await sha256Hex(bodyJson);
+  const authTemplate = {
+    kind: 27235,
+    created_at: Math.floor(Date.now() / 1000),
+    content: '',
+    tags: [
+      ['u', url],
+      ['method', 'POST'],
+      ['payload', payloadHash],
+    ],
+  };
+  let signedAuth;
+  try {
+    signedAuth = await Promise.race([
+      session.signer.signEvent(authTemplate),
+      new Promise<never>((_, reject) => {
+        window.setTimeout(() => reject(new Error('signer-timeout')), 10_000);
+      }),
+    ]);
+  } catch {
+    return false;
+  }
+  try {
+    const res = await fetch(`${API_BASE}/heartbeat`, {
+      method: 'POST',
+      headers: {
+        authorization: `Nostr ${utf8Base64(JSON.stringify(signedAuth))}`,
+        'content-type': 'application/json',
+      },
+      body: bodyJson,
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * POST /api/withdraw with a NIP-98-signed Authorization header. Debits
  * the player's accumulated balance and pays a Lightning invoice fetched
  * from the supplied LN address. Same NIP-98 signing pattern as submitClaim.

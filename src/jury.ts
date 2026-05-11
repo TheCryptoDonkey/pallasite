@@ -338,6 +338,7 @@ export async function publishDelegation(
       ['purpose', 'pallasite-jury'],
       ['game', 'pallasite'],
       ['t', 'pallasite-jury'],
+      ['t', 'nostr-veil'],
     ],
   };
   let signed: NostrEvent;
@@ -498,6 +499,7 @@ export async function submitVote(
       ['circle_id', reviewCase.circleId],
       ['veil-keyimage', contribution.keyImage],
       ['t', 'pallasite-jury-vote'],
+      ['t', 'nostr-veil'],
     ],
   };
 
