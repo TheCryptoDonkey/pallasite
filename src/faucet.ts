@@ -92,6 +92,10 @@ export type PlayerTier = 'anon' | 'nip05' | 'close' | 'verified';
 export interface PlayerStatus {
   pubkey: string;
   tier: PlayerTier;
+  /** Sats credited but not yet withdrawn — the player's spendable bank. */
+  balance_sats: number;
+  /** Lifetime total ever credited (covers both withdrawn and held in balance).
+   *  Compared against `lifetime_cap_sats` for the tier-progress display. */
   lifetime_paid_sats: number;
   lifetime_cap_sats: number;
   multiplier: number;
@@ -129,6 +133,7 @@ export async function fetchPlayer(pubkey: string): Promise<PlayerStatus | null> 
     return {
       pubkey: data.pubkey,
       tier: data.tier as PlayerTier,
+      balance_sats: data.balance_sats ?? 0,
       lifetime_paid_sats: data.lifetime_paid_sats,
       lifetime_cap_sats: data.lifetime_cap_sats,
       multiplier: data.multiplier ?? 0,
@@ -149,7 +154,10 @@ export interface ClaimInput {
   started_at: number;
   finished_at: number;
   sats_claimed: number;
-  lightning_address: string;
+  /** Optional now — the LN address is used at withdraw time, not claim
+   *  time. Older clients that include it have it stored on the server
+   *  claim row for audit. */
+  lightning_address?: string;
   cheated?: boolean;
   daily_seed?: string;
   telemetry?: Record<string, unknown>;
@@ -158,16 +166,35 @@ export interface ClaimInput {
 export type ClaimResult =
   | {
       ok: true;
+      /** Sats credited to balance on this claim. */
       payout_sats: number;
       score_event_id: string;
-      payment_hash: string;
-      status: 'paid' | 'paid_but_unannounced';
+      /** Player's balance after this credit. */
+      new_balance: number;
+      /** Player's lifetime credit total (for tier-cap display). */
+      lifetime_paid_sats: number;
+      status: 'credited';
+      published?: { ok: number; total: number };
     }
   | {
       ok: false;
       error: string;
       detail?: string;
     };
+
+export interface WithdrawInput {
+  amount_sats: number;
+  lightning_address: string;
+}
+
+export type WithdrawResult =
+  | {
+      ok: true;
+      amount_sats: number;
+      payment_hash: string;
+      new_balance: number;
+    }
+  | { ok: false; error: string; detail?: string };
 
 async function sha256Hex(input: string): Promise<string> {
   const buf = new TextEncoder().encode(input);
@@ -267,4 +294,82 @@ export async function submitClaim(
     return { ok: false, error: 'bad_response' };
   }
   return data as ClaimResult;
+}
+
+/**
+ * POST /api/withdraw with a NIP-98-signed Authorization header. Debits
+ * the player's accumulated balance and pays a Lightning invoice fetched
+ * from the supplied LN address. Same NIP-98 signing pattern as submitClaim.
+ */
+export async function submitWithdraw(
+  session: SignetSession,
+  input: WithdrawInput,
+): Promise<WithdrawResult> {
+  if (!session.signer.capabilities.canSignEvents) {
+    return { ok: false, error: 'no_signer' };
+  }
+  const url = `${location.origin}${API_BASE}/withdraw`;
+  const bodyJson = JSON.stringify(input);
+  const payloadHash = await sha256Hex(bodyJson);
+
+  const authTemplate = {
+    kind: 27235,
+    created_at: Math.floor(Date.now() / 1000),
+    content: '',
+    tags: [
+      ['u', url],
+      ['method', 'POST'],
+      ['payload', payloadHash],
+    ],
+  };
+
+  let signedAuth;
+  try {
+    const SIGN_TIMEOUT_MS = 30_000;
+    signedAuth = await Promise.race([
+      session.signer.signEvent(authTemplate),
+      new Promise<never>((_, reject) => {
+        window.setTimeout(() => reject(new Error('signer-timeout')), SIGN_TIMEOUT_MS);
+      }),
+    ]);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error('[withdraw] signEvent failed', {
+      method: session.method,
+      canSignEvents: session.signer.capabilities.canSignEvents,
+      error: err,
+    });
+    return { ok: false, error: 'sign_failed', detail };
+  }
+
+  const authToken = `Nostr ${utf8Base64(JSON.stringify(signedAuth))}`;
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/withdraw`, {
+      method: 'POST',
+      headers: {
+        authorization: authToken,
+        'content-type': 'application/json',
+      },
+      body: bodyJson,
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      error: 'network_error',
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch {
+    return { ok: false, error: 'bad_response', detail: `HTTP ${res.status}` };
+  }
+  if (typeof data !== 'object' || data === null) {
+    return { ok: false, error: 'bad_response' };
+  }
+  return data as WithdrawResult;
 }
