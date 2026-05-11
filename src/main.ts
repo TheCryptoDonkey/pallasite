@@ -690,41 +690,60 @@ async function boot(): Promise<void> {
 }
 
 /**
- * Watch for a NIP-07 extension to inject `window.nostr` after boot and
- * silently upgrade an auth-only session into a fully-signing one. Some
- * extensions (Alby, nos2x) don't always have window.nostr ready by the
- * time tryRestore runs, so the initial restoreSession lands us with a
- * stub signer. Polling here is bounded (POLL_DURATION_MS) so we don't
- * loop forever for users who never had nip07 in the first place.
+ * Watch for a signer to become available after boot and silently upgrade
+ * an auth-only session into a fully-signing one. Two scenarios:
  *
- * Only nip07-method sessions are eligible — bunker/redirect sessions
- * have their own signing pathways and shouldn't be silently switched.
+ *   - NIP-07: extensions (Alby, nos2x) sometimes inject `window.nostr`
+ *     after the page has loaded — the initial tryRestore() lands us with
+ *     an auth-only stub; we wait for the extension to wake up.
+ *   - Bunker: NIP-46 reconnection over the relay can be slow; the SDK's
+ *     restoreSession may return an auth-only session if the bunker hasn't
+ *     responded yet, and we re-call to give it more chances.
+ *
+ * The watcher polls indefinitely (cheap — one setTimeout every 500ms).
+ * Bounded retry windows previously caused players whose extension was
+ * slow to load to be stuck auth-only after a page refresh.
  */
 function watchForSignerUpgrade(): void {
-  const POLL_MS = 500;
-  const POLL_DURATION_MS = 30_000;
+  const POLL_FAST_MS = 250;        // tight cadence for the first ~10s
+  const POLL_FAST_UNTIL_MS = 10_000;
+  const POLL_SLOW_MS = 2_000;      // back off after the burst — cheap forever
   const startedAt = Date.now();
   let upgrading = false;
 
+  const reschedule = (): void => {
+    const elapsed = Date.now() - startedAt;
+    const next = elapsed < POLL_FAST_UNTIL_MS ? POLL_FAST_MS : POLL_SLOW_MS;
+    window.setTimeout(() => void tick(), next);
+  };
+
   const tick = async (): Promise<void> => {
-    if (Date.now() - startedAt > POLL_DURATION_MS) return;
     const sess = state.session;
     if (!sess) {
-      // Nothing to upgrade — but the user may sign in manually later, so
-      // step out cleanly. Manual sign-in is its own path.
-      window.setTimeout(() => void tick(), POLL_MS * 4);
+      // No session yet — the user may sign in manually. Keep polling so
+      // a delayed restore (rare) doesn't strand us.
+      reschedule();
       return;
     }
-    if (sess.signer.capabilities.canSignEvents) return;
-    if (sess.method !== 'nip07') return;
-    if (!(window as { nostr?: unknown }).nostr) {
-      window.setTimeout(() => void tick(), POLL_MS);
+    if (sess.signer.capabilities.canSignEvents) return;  // already upgraded — stop polling
+    if (upgrading) { reschedule(); return; }
+
+    // NIP-07 needs window.nostr to be present before tryRestore can do
+    // anything useful; skip the call until the extension wakes up.
+    if (sess.method === 'nip07' && !(window as { nostr?: unknown }).nostr) {
+      reschedule();
       return;
     }
-    if (upgrading) {
-      window.setTimeout(() => void tick(), POLL_MS);
+
+    // Method must be one of the upgradeable kinds — redirect sessions are
+    // already at their final shape (they don't carry a live signer beyond
+    // the auth event). NIP-07 + bunker can both be upgraded by re-calling
+    // restoreSession after the underlying signer is reachable.
+    if (sess.method !== 'nip07' && sess.method !== 'bunker') {
+      reschedule();
       return;
     }
+
     upgrading = true;
     try {
       const upgraded = await tryRestore();
@@ -747,9 +766,9 @@ function watchForSignerUpgrade(): void {
       }
     } catch { /* ignore — try again on the next tick */ }
     finally { upgrading = false; }
-    window.setTimeout(() => void tick(), POLL_MS);
+    reschedule();
   };
-  window.setTimeout(() => void tick(), POLL_MS);
+  window.setTimeout(() => void tick(), POLL_FAST_MS);
 }
 
 /**

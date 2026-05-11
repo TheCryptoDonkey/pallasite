@@ -1737,9 +1737,44 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
       });
     }
     if (!state.session.signer.capabilities.canSignEvents) {
-      const note = el('p', { parent, text: 'Auth-only. Add bark or bunker to publish.' });
-      note.style.fontSize = '0.85rem';
-      note.style.color = 'rgba(255,200,100,0.8)';
+      const wrap = el('div', { parent });
+      wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:4px;margin:4px 0';
+      const note = el('p', {
+        parent: wrap,
+        text: 'Auth-only · reconnecting signer…',
+      });
+      note.style.cssText = 'font-size:0.82rem;color:rgba(255,200,100,0.85);margin:0';
+      // Manual nudge — if the silent watcher hasn't picked up the signer
+      // after a few seconds (extension hibernation, browser policy), the
+      // player can force a fresh restore. Quicker than logging out and
+      // back in.
+      const reconnectBtn = el('button', {
+        className: 'menu-btn secondary',
+        parent: wrap,
+        text: 'RECONNECT SIGNER',
+      }) as HTMLButtonElement;
+      reconnectBtn.style.cssText = 'padding:4px 10px;font-size:0.72rem;cursor:pointer';
+      onTap(reconnectBtn, () => {
+        void (async () => {
+          reconnectBtn.disabled = true;
+          note.textContent = 'Reconnecting…';
+          try {
+            const upgraded = await auth.tryRestore();
+            if (upgraded?.signer.capabilities.canSignEvents
+                && state.session
+                && upgraded.pubkey === state.session.pubkey) {
+              state.session = upgraded;
+              renderTitle(state);
+              return;
+            }
+            note.textContent = 'Signer still unreachable. Unlock your extension and tap again.';
+            reconnectBtn.disabled = false;
+          } catch (err) {
+            note.textContent = err instanceof Error ? err.message : 'Reconnect failed.';
+            reconnectBtn.disabled = false;
+          }
+        })();
+      });
     }
     renderTierBadge(parent, pubkey);
     const row = el('div', { className: 'menu-row', parent });
