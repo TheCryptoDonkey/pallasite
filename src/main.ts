@@ -807,7 +807,7 @@ async function boot(): Promise<void> {
       const ufos = (state.ufos ?? [])
         .filter((u) => u.alive)
         .slice(0, 8)
-        .map((u) => [u.id ?? 0, u.pos.x, u.pos.y, UFO_TYPE_CODE[u.type] ?? 's'] as [number, number, number, 's' | 'p' | 't' | 'e' | 'c' | 'b']);
+        .map((u) => [u.id ?? 0, u.pos.x, u.pos.y, UFO_TYPE_CODE[u.type] ?? 's', Math.max(0, Math.min(255, u.hp ?? 1))] as [number, number, number, 's' | 'p' | 't' | 'e' | 'c' | 'b', number]);
 
       const mines = (state.mines ?? [])
         .filter((m) => m.alive)
@@ -858,6 +858,8 @@ async function boot(): Promise<void> {
         alive: state.ship?.alive !== false,
         shielded: state.ship?.shieldUp === true,
         paused: state.phase === 'paused',
+        phase: state.phase,
+        nextWave: state.phase === 'warp' ? (state.warpTargetWave ?? undefined) : undefined,
         asteroids,
         ufos,
         mines,
