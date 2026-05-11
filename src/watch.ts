@@ -1,0 +1,171 @@
+/**
+ * Pallasite watch — public live spectator surface served at
+ * watch.pallasite.app.
+ *
+ * Subscribes to kind 30762 score events from the faucet's game pubkey
+ * and surfaces one card per recently-active player (latest run, newest
+ * first). Visitors can WATCH the ghost replay in the existing theatre
+ * and ZAP the player via NIP-57. The dev's own zap-the-dev path
+ * stays untouched on the title screen — this is recipient-aware
+ * zapping for the players themselves.
+ *
+ * v1 is "recent runs" rather than literally-live in-progress play:
+ * kind 30762 events are signed by the GAME pubkey (the faucet's hot
+ * signer) and only published at claim time (state='final'). True
+ * "in progress" cards would need active-state events emitted during
+ * play — that's a follow-up where the faucet accepts heartbeats from
+ * the client and re-broadcasts state='active' on a timer.
+ */
+
+import type { NostrEvent } from 'signet-login';
+import { getActiveRelays } from './relays.js';
+import { fetchGameInfo } from './faucet.js';
+
+export const SCORE_EVENT_KIND = 30762;
+export const GAME_ID = 'pallasite';
+
+/** A single most-recent score event per player. */
+export interface WatchEntry {
+  pubkey: string;
+  score: number;
+  wave: number;
+  sats: number;
+  /** Unix-sec — event's created_at. */
+  createdAt: number;
+  /** kind 30762 event id — reachable ghost via the e-tag chain in C3/jury. */
+  eventId: string;
+  /** Optional daily seed identifier. */
+  seed: string | null;
+}
+
+interface ScoreEvent extends NostrEvent {
+  kind: typeof SCORE_EVENT_KIND;
+}
+
+function readTag(tags: string[][], name: string): string | null {
+  for (const t of tags) if (t[0] === name && typeof t[1] === 'string') return t[1];
+  return null;
+}
+
+function hasTagValue(tags: string[][], name: string, value: string): boolean {
+  for (const t of tags) if (t[0] === name && t[1] === value) return true;
+  return false;
+}
+
+function parseEntry(event: ScoreEvent): WatchEntry | null {
+  if (event.kind !== SCORE_EVENT_KIND) return null;
+  if (!hasTagValue(event.tags, 'game', GAME_ID)) return null;
+  if (hasTagValue(event.tags, 'cheated', 'true')) return null;
+  const score = parseInt(readTag(event.tags, 'score') ?? '', 10);
+  if (!Number.isFinite(score) || score <= 0) return null;
+  const playerPubkey = readTag(event.tags, 'p');
+  if (!playerPubkey || !/^[0-9a-f]{64}$/i.test(playerPubkey)) return null;
+  return {
+    pubkey: playerPubkey,
+    score,
+    wave: parseInt(readTag(event.tags, 'wave') ?? '0', 10) || 0,
+    sats: parseInt(readTag(event.tags, 'sats') ?? '0', 10) || 0,
+    createdAt: event.created_at,
+    eventId: event.id,
+    seed: readTag(event.tags, 'seed'),
+  };
+}
+
+/**
+ * Open a persistent live subscription to kind 30762 events from the
+ * game pubkey. `onUpdate` is called with the latest deduplicated list
+ * (one entry per pubkey, newest run wins) whenever the set changes.
+ * Updates are debounced ~200ms to coalesce the initial backfill.
+ *
+ * Returns an unsubscribe — call when the surface unmounts.
+ */
+export function subscribeRecentRuns(
+  onUpdate: (entries: WatchEntry[]) => void,
+  opts: { relays?: readonly string[]; limit?: number } = {},
+): () => void {
+  let closed = false;
+  let pendingEmit: number | null = null;
+  const sockets: WebSocket[] = [];
+  const latestByPubkey = new Map<string, WatchEntry>();
+
+  const scheduleEmit = (): void => {
+    if (closed || pendingEmit !== null) return;
+    pendingEmit = window.setTimeout(() => {
+      pendingEmit = null;
+      if (closed) return;
+      const entries = Array.from(latestByPubkey.values()).sort(
+        (a, b) => b.createdAt - a.createdAt,
+      );
+      onUpdate(entries);
+    }, 200);
+  };
+
+  const consider = (entry: WatchEntry): void => {
+    const existing = latestByPubkey.get(entry.pubkey);
+    if (existing && existing.createdAt >= entry.createdAt) return;
+    latestByPubkey.set(entry.pubkey, entry);
+    scheduleEmit();
+  };
+
+  void (async () => {
+    const info = await fetchGameInfo();
+    if (closed) return;
+    if (!info) {
+      onUpdate([]);
+      return;
+    }
+    const relays = opts.relays ?? getActiveRelays();
+    if (relays.length === 0) {
+      onUpdate([]);
+      return;
+    }
+    const filter = {
+      kinds: [SCORE_EVENT_KIND],
+      authors: [info.pubkey],
+      '#t': [GAME_ID],
+      limit: opts.limit ?? 200,
+    };
+    for (const url of relays) {
+      if (closed) return;
+      let ws: WebSocket;
+      try { ws = new WebSocket(url); } catch { continue; }
+      sockets.push(ws);
+      const subId = 'w' + Math.random().toString(36).slice(2, 10);
+      ws.onopen = () => {
+        try { ws.send(JSON.stringify(['REQ', subId, filter])); } catch { /* ignore */ }
+      };
+      ws.onmessage = (ev) => {
+        try {
+          const msg: unknown = JSON.parse(typeof ev.data === 'string' ? ev.data : '');
+          if (!Array.isArray(msg)) return;
+          if (msg[0] === 'EVENT' && msg[1] === subId) {
+            const e = msg[2] as ScoreEvent;
+            const entry = parseEntry(e);
+            if (entry) consider(entry);
+          }
+        } catch { /* ignore parse errors */ }
+      };
+    }
+  })();
+
+  return (): void => {
+    closed = true;
+    if (pendingEmit !== null) {
+      window.clearTimeout(pendingEmit);
+      pendingEmit = null;
+    }
+    for (const ws of sockets) {
+      try { ws.close(); } catch { /* ignore */ }
+    }
+  };
+}
+
+/** Human-readable "X min ago" / "just now" string for a unix-sec timestamp. */
+export function timeAgo(unixSec: number, nowMs: number = Date.now()): string {
+  const ageSec = Math.max(0, (nowMs - unixSec * 1000) / 1000);
+  if (ageSec < 30) return 'just now';
+  if (ageSec < 60) return `${Math.round(ageSec)}s ago`;
+  if (ageSec < 3600) return `${Math.round(ageSec / 60)}m ago`;
+  if (ageSec < 86_400) return `${Math.round(ageSec / 3600)}h ago`;
+  return `${Math.round(ageSec / 86_400)}d ago`;
+}

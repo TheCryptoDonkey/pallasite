@@ -40,7 +40,8 @@ import { getStoredMode, setStoredMode, MODE_LIST, type RunMode } from './mode.js
 import { DEV } from './credits.js';
 import { followUser, shareCompletion, endorseSubject, rankFromWave } from './social.js';
 import { shareRunCard } from './sharecard.js';
-import { requestZapInvoice, hasWebLN, payViaWebLN } from './zap.js';
+import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipient } from './zap.js';
+import { subscribeRecentRuns, timeAgo, type WatchEntry } from './watch.js';
 import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, ghostPoseAt, ghostScoreAt, type GhostRun } from './ghost.js';
 import { savePersonalGhost } from './personal-ghost.js';
 import { canCaptureClip, captureClip, shareClip, shareDailyStats } from './clip.js';
@@ -2061,6 +2062,266 @@ function renderJuryCaseCard(c: ReviewCase, identity: StoredJuryIdentity | null, 
     });
   });
   return row;
+}
+
+// ── Watch page (watch.pallasite.app) ──────────────────────────────────────────
+//
+// Public live spectator surface. Subscribes to kind 30762 score events from
+// the faucet game pubkey and shows one card per recently-active player.
+// Visitors can WATCH the ghost replay or ZAP the player. v1 surfaces final
+// runs (newest first); a later faucet change emitting state='active' on a
+// heartbeat will let this same surface show in-progress runs in real time.
+
+const WATCH_ZAP_PRESETS_SATS = [50, 200, 1000] as const;
+
+let watchActiveUnsubscribe: (() => void) | null = null;
+
+export function renderWatchPage(state: GameState): void {
+  clearOverlay();
+  // Tear down any prior subscription before we open a new one — re-entering
+  // the page (e.g. via BACK from the theatre) would otherwise leak sockets.
+  watchActiveUnsubscribe?.();
+  watchActiveUnsubscribe = null;
+
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+
+  const header = el('div', { parent: overlay });
+  header.style.cssText = 'display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;justify-content:center;margin-bottom:6px;';
+  el('h2', { parent: header, text: 'PALLASITE · WATCH' });
+  const live = el('span', { parent: header, text: 'LIVE · RECENT RUNS' });
+  live.style.cssText = 'font-size:0.72rem;color:rgba(255,216,74,0.85);letter-spacing:0.18em;font-family:monospace;';
+
+  const intro = el('p', { parent: overlay });
+  intro.style.cssText = 'margin:4px auto 18px;font-size:0.85rem;color:rgba(220,210,255,0.75);max-width:680px;line-height:1.5;text-align:center;';
+  intro.innerHTML =
+    'Every claimed run lands here as a kind 30762 score event signed by the faucet. ' +
+    'Click <strong>WATCH</strong> to play back the kind 30763 ghost in the replay theatre. ' +
+    'Click <strong>⚡ ZAP</strong> to send sats straight to the player\'s lightning address.';
+
+  const status = el('p', { parent: overlay });
+  status.style.cssText = 'margin:0 0 12px;font-size:0.88rem;color:rgba(255,216,74,0.75);letter-spacing:0.08em;min-height:1.2em;text-align:center;';
+  status.textContent = 'Connecting to relays…';
+
+  const grid = el('div', { parent: overlay });
+  grid.style.cssText = 'display:flex;flex-direction:column;gap:10px;max-width:760px;width:100%;margin:0 auto;';
+
+  const footer = el('div', { className: 'menu-row', parent: overlay });
+  const backBtn = el('button', { className: 'menu-btn', parent: footer, text: 'BACK TO PALLASITE.APP' });
+  backBtn.addEventListener('click', () => {
+    watchActiveUnsubscribe?.();
+    watchActiveUnsubscribe = null;
+    try { window.location.assign('https://pallasite.app/'); }
+    catch { window.location.assign('/'); }
+  });
+
+  // Card rendering — keyed by pubkey so update emits can patch existing
+  // cards rather than tear down and rebuild the grid (avoids layout jank
+  // and keeps any open zap popovers anchored to the right element).
+  const cardByPubkey = new Map<string, HTMLElement>();
+
+  const renderEntry = (entry: WatchEntry): void => {
+    const existing = cardByPubkey.get(entry.pubkey);
+    if (existing) {
+      // Update timeAgo + score in place
+      const scorePill = existing.querySelector('[data-watch-score]');
+      const whenPill = existing.querySelector('[data-watch-when]');
+      if (scorePill) scorePill.textContent = `${entry.score.toLocaleString()}`;
+      if (whenPill) whenPill.textContent = timeAgo(entry.createdAt);
+      return;
+    }
+    const card = renderWatchCard(entry, state);
+    cardByPubkey.set(entry.pubkey, card);
+    grid.appendChild(card);
+  };
+
+  const reorderGrid = (entries: WatchEntry[]): void => {
+    // Append in newest-first order so the DOM order matches `entries`.
+    for (const e of entries) {
+      const card = cardByPubkey.get(e.pubkey);
+      if (card) grid.appendChild(card);
+    }
+  };
+
+  watchActiveUnsubscribe = subscribeRecentRuns((entries) => {
+    if (entries.length === 0) {
+      status.textContent = 'No runs on relays yet. Be the first.';
+      return;
+    }
+    const count = entries.length;
+    status.textContent = `${count} ${count === 1 ? 'player' : 'players'} surfaced from the last batch.`;
+    for (const e of entries) renderEntry(e);
+    reorderGrid(entries);
+  });
+
+  // Lightweight "X minutes ago" updater so cards age visibly without a
+  // full re-subscribe.
+  const ageTimer = window.setInterval(() => {
+    for (const card of cardByPubkey.values()) {
+      const pubkey = card.dataset.pubkey;
+      const at = parseInt(card.dataset.createdAt ?? '0', 10);
+      const whenPill = card.querySelector('[data-watch-when]');
+      if (pubkey && at && whenPill) whenPill.textContent = timeAgo(at);
+    }
+  }, 30_000);
+  // When user navigates away, stop the timer too. Hook into the unsubscribe.
+  const baseUnsub = watchActiveUnsubscribe;
+  watchActiveUnsubscribe = (): void => {
+    window.clearInterval(ageTimer);
+    baseUnsub?.();
+  };
+}
+
+function renderWatchCard(entry: WatchEntry, state: GameState): HTMLElement {
+  const card = el('div');
+  card.dataset.pubkey = entry.pubkey;
+  card.dataset.createdAt = String(entry.createdAt);
+  card.style.cssText = 'border:1px solid rgba(255,216,74,0.35);border-radius:8px;padding:10px 14px;background:rgba(255,216,74,0.04);display:flex;flex-direction:column;gap:6px;';
+
+  const head = el('div', { parent: card });
+  head.style.cssText = 'display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;';
+
+  const name = el('div', { parent: head, text: shortPubkey(entry.pubkey) });
+  name.style.cssText = 'font-family:monospace;font-size:0.95rem;color:#ffe0a0;letter-spacing:0.06em;';
+  // Resolve display name from kind 0 in the background — replaces the
+  // short pubkey when (and if) we have a profile.
+  void (async () => {
+    try {
+      const profile = await fetchProfile(entry.pubkey);
+      const display = bestName(profile, entry.pubkey);
+      if (display && display !== entry.pubkey) name.textContent = display;
+    } catch { /* ignore */ }
+  })();
+
+  const when = el('div', { parent: head, text: timeAgo(entry.createdAt) });
+  when.setAttribute('data-watch-when', '1');
+  when.style.cssText = 'font-size:0.78rem;color:rgba(220,210,255,0.6);letter-spacing:0.06em;';
+
+  const stats = el('div', { parent: card });
+  stats.style.cssText = 'display:flex;gap:14px;font-size:0.88rem;color:rgba(220,210,255,0.85);letter-spacing:0.06em;flex-wrap:wrap;align-items:baseline;';
+  const score = el('span', { parent: stats, text: entry.score.toLocaleString() });
+  score.setAttribute('data-watch-score', '1');
+  score.style.cssText = 'color:#ffe0a0;font-size:1.05rem;font-family:monospace;';
+  el('span', { parent: stats, text: `WAVE ${entry.wave}` });
+  if (entry.sats > 0) el('span', { parent: stats, text: `₿ ${entry.sats}` })
+    .style.cssText = 'color:#ffd84a;';
+  if (entry.seed) el('span', { parent: stats, text: `SEED ${entry.seed}` })
+    .style.cssText = 'color:rgba(180,140,255,0.7);font-family:monospace;';
+
+  const actions = el('div', { parent: card });
+  actions.style.cssText = 'display:flex;gap:8px;margin-top:4px;flex-wrap:wrap;';
+  const watch = el('button', { className: 'menu-btn', parent: actions, text: 'WATCH' });
+  watch.addEventListener('click', () => {
+    renderReplayTheatre({
+      scoreEventId: entry.eventId,
+      displayName: name.textContent ?? shortPubkey(entry.pubkey),
+      score: entry.score,
+      wave: entry.wave,
+      sats: entry.sats,
+      onClose: () => renderWatchPage(state),
+    });
+  });
+
+  const zap = el('button', { className: 'menu-btn secondary', parent: actions, text: '⚡ ZAP' });
+  zap.style.cssText = 'color:#ffd84a;border-color:rgba(255,216,74,0.45);';
+  zap.addEventListener('click', () => { void onWatchZapClick(entry, name.textContent ?? shortPubkey(entry.pubkey), zap, actions, state); });
+
+  return card;
+}
+
+async function onWatchZapClick(
+  entry: WatchEntry,
+  displayName: string,
+  zapBtn: HTMLButtonElement,
+  actionsRow: HTMLElement,
+  state: GameState,
+): Promise<void> {
+  zapBtn.disabled = true;
+  zapBtn.textContent = '⚡ …';
+  let lud16: string | null;
+  try {
+    const profile = await fetchProfile(entry.pubkey);
+    lud16 = profile?.lud16 ?? null;
+  } catch {
+    lud16 = null;
+  }
+  if (!lud16) {
+    zapBtn.disabled = false;
+    zapBtn.textContent = '⚡ NO LUD16';
+    zapBtn.title = 'This player has no lightning address in their Nostr profile.';
+    setTimeout(() => { zapBtn.textContent = '⚡ ZAP'; zapBtn.title = ''; }, 2400);
+    return;
+  }
+  zapBtn.disabled = false;
+  zapBtn.textContent = '⚡ ZAP';
+
+  // Replace the actions row with an inline amount picker — anchored under
+  // the same card so the user doesn't lose context. CANCEL puts the
+  // original buttons back.
+  const original = Array.from(actionsRow.children);
+  actionsRow.innerHTML = '';
+  const label = el('span', { parent: actionsRow, text: `ZAP ${displayName}:` });
+  label.style.cssText = 'font-size:0.82rem;color:rgba(255,216,74,0.85);letter-spacing:0.06em;align-self:center;';
+  for (const sats of WATCH_ZAP_PRESETS_SATS) {
+    const btn = el('button', { className: 'menu-btn secondary', parent: actionsRow, text: `${sats}` });
+    btn.style.cssText = 'color:#ffd84a;border-color:rgba(255,216,74,0.55);min-width:64px;';
+    btn.addEventListener('click', () => {
+      const recipient: ZapRecipient = { pubkey: entry.pubkey, lightningAddress: lud16! };
+      void quickZapToRecipient(state, recipient, displayName, sats, btn);
+    });
+  }
+  const cancel = el('button', { className: 'menu-btn secondary', parent: actionsRow, text: 'CANCEL' });
+  cancel.addEventListener('click', () => {
+    actionsRow.innerHTML = '';
+    for (const child of original) actionsRow.appendChild(child);
+  });
+}
+
+/** Mirror of quickZap (for the dev) but addressing an arbitrary recipient. */
+async function quickZapToRecipient(
+  state: GameState,
+  recipient: ZapRecipient,
+  displayName: string,
+  amountSats: number,
+  btn: HTMLButtonElement,
+): Promise<void> {
+  const originalHtml = btn.innerHTML;
+  const restore = (): void => { btn.innerHTML = originalHtml; btn.disabled = false; btn.style.opacity = '1'; };
+  btn.disabled = true;
+  btn.style.opacity = '0.6';
+  btn.innerHTML = `⚡ …`;
+  const pop = createZapPopover(amountSats);
+  // Customise the popover heading so the user knows who's being zapped.
+  const headings = pop.querySelectorAll('p');
+  if (headings[0]) headings[0].textContent = `ZAP ${displayName} · ${amountSats} SATS`;
+
+  try {
+    const res = await requestZapTo({
+      recipient,
+      session: state.session,
+      amountSats,
+      comment: `Pallasite watch zap — wave done well`,
+    });
+    populateZapPopover(pop, res.invoice, amountSats, res.isZap);
+    restore();
+    if (hasWebLN()) {
+      try {
+        await payViaWebLN(res.invoice);
+        markPopoverPaid(pop, amountSats);
+        return;
+      } catch { /* WebLN refused — leave the QR up */ }
+    }
+  } catch (err) {
+    failPopover(pop, err instanceof Error ? err.message : String(err));
+    btn.innerHTML = '✗ FAIL';
+    btn.style.borderColor = '#ff5050';
+    btn.style.color = '#ff5050';
+    setTimeout(() => {
+      btn.style.borderColor = 'rgba(255,216,74,0.55)';
+      btn.style.color = '#ffd84a';
+      restore();
+    }, 2500);
+  }
 }
 
 function renderLeaderboardBlock(parent: HTMLElement, list: ReturnType<typeof getLocalHighScores>, title: string, max = 5, onReplayClose?: () => void): void {
