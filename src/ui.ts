@@ -2286,9 +2286,10 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   // 350ms behind the live edge with 250ms frame cadence — enough to
   // bracket prev/next reliably and absorb a single dropped frame, low
   // enough that the perceived delay feels live.
-  // 5Hz wire → 200ms inter-frame. Lead of 250ms = ~1.25 frames behind
-  // so we reliably bracket prev/next. Was 350ms with 333ms wire.
-  const PLAYBACK_LEAD_MS = 250;
+  // 10Hz wire → 100ms inter-frame. Lead of 100ms = 1 frame buffer —
+  // bare minimum to ensure prev/next bracketing. Drops perceived
+  // input→display lag by ~150ms over the previous 250ms setting.
+  const PLAYBACK_LEAD_MS = 100;
   const PLAYBACK_LAG_LIMIT_MS = 2000;
 
   // Render loop — interpolate between adjacent frames for smooth motion
@@ -2808,14 +2809,15 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     }
 
     // Bullets — extrapolate from the most recent frame using velocity
-    // on the wire (vx, vy). Bullets move ~500px/sec, so even at 4Hz
-    // wire cadence the inter-frame gap is 60-125 world units; without
-    // extrapolation they snap visibly between samples. With it they
-    // glide at 60fps just like in the player's canvas.
-    // Direction unit vector comes from velocity directly so the streak
-    // points the right way even on the bullet's very first appearance.
+    // on the wire (vx, vy). For bullets present in BOTH prev and next,
+    // extrapolate freely. For bullets only in next (just spawned
+    // between prev and next), skip drawing until playbackT actually
+    // reaches their spawn moment — otherwise we draw a phantom bullet
+    // flying backwards from the ship for the buffer's worth of time.
     const bulletExtrapMs = playbackT - next.capturedAt;
+    const prevBulletIds = prevBullet;  // already a Map keyed by id
     for (const bNext of next.bullets) {
+      if (!prevBulletIds.has(bNext.id) && bulletExtrapMs < 0) continue;
       const vx = bNext.vx;
       const vy = bNext.vy;
       const speed = Math.hypot(vx, vy);
@@ -3430,7 +3432,11 @@ function renderControllerHomePage(): void {
   // need the rotate-device lockdown here.
   document.documentElement.style.height = '';
   document.documentElement.style.overflow = '';
-  document.body.style.cssText = 'background:#02050d;color:rgba(220,210,255,0.9);font-family:ui-monospace,monospace;margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:24px 16px;';
+  // Pad against the iPhone notch + side-rails. max() guarantees a
+  // minimum padding so the content still has breathing room when there
+  // ARE no safe-area insets (regular browsers). Portrait notch lives
+  // top; landscape notch lives left or right depending on orientation.
+  document.body.style.cssText = 'background:#02050d;color:rgba(220,210,255,0.9);font-family:ui-monospace,monospace;margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding-top:max(24px, env(safe-area-inset-top));padding-bottom:max(24px, env(safe-area-inset-bottom));padding-left:max(16px, env(safe-area-inset-left));padding-right:max(16px, env(safe-area-inset-right));';
   let vp = document.querySelector('meta[name="viewport"]');
   if (!vp) {
     vp = document.createElement('meta');
@@ -3748,7 +3754,12 @@ export function renderControllerPage(): void {
   })();
 
   const overlay = el('div', { className: 'overlay', parent: root });
-  overlay.style.cssText = 'padding:0;margin:0;max-width:none;width:100vw;height:100vh;display:flex;flex-direction:column;overflow:hidden;position:relative;';
+  // Safe-area-inset padding so the joystick + face cluster sit inside
+  // the iPhone notch / home indicator zone in landscape (the notch is
+  // on the LEFT or RIGHT depending on orientation — env(safe-area-
+  // inset-left) tracks whichever is active). box-sizing:border-box
+  // lets the padding eat into the 100vw/100vh box.
+  overlay.style.cssText = 'padding-top:max(8px, env(safe-area-inset-top));padding-bottom:max(8px, env(safe-area-inset-bottom));padding-left:max(8px, env(safe-area-inset-left));padding-right:max(8px, env(safe-area-inset-right));margin:0;max-width:none;width:100vw;height:100vh;display:flex;flex-direction:column;overflow:hidden;position:relative;box-sizing:border-box;';
 
   // ── Rotate-device card (portrait fallback) ─────────────────────────
   const rotateCard = el('div', { parent: overlay });

@@ -97,11 +97,16 @@ export const STREAM_FRAME_KIND = 22769;
  *  Publishers connect as r=publish, watchers as r=subscribe; sessionId
  *  is the player's master pubkey (one stream per player). */
 export const STREAM_WS_ENDPOINT = 'wss://controller.pallasite.app/';
-/** 5 Hz frames (200ms). Was 333ms back when each frame cost a
- *  schnorr.sign on the player main thread. Now that frames go over WS
- *  with no signing, the per-frame cost is JSON.stringify + ws.send —
- *  negligible — so we can run faster for smoother live playback. */
-export const STREAM_FRAME_INTERVAL_MS = 200;
+/** 10 Hz frames (100ms). User feedback: 15-25ms wire latency reads
+ *  fine on the chip but the perceived "phone-input → see it on watch"
+ *  loop felt like 2 seconds because (a) frames published every 200ms
+ *  meant up to 200ms of "the player did something but hasn't published
+ *  it yet" before the wire even fires, and (b) the playback buffer
+ *  added another 250ms of intentional delay. Doubling the wire rate
+ *  to 10Hz halves the publish-gap; shrinking the buffer halves the
+ *  intentional lead. Each frame is still ~1.5KB so wire bandwidth at
+ *  10Hz is 15KB/sec — trivial. */
+export const STREAM_FRAME_INTERVAL_MS = 100;
 /** During paused phases publish at 1Hz — heartbeat only, no
  *  per-frame state change. */
 export const STREAM_FRAME_INTERVAL_PAUSED_MS = 1000;

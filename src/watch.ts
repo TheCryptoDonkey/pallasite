@@ -228,9 +228,10 @@ export function subscribeRecentRuns(
       limit: opts.limit ?? 200,
     };
     // Auto-reconnect — relays drop idle WebSockets after ~5 min and the
-    // user's tab can sit open much longer than that. Without retry the
-    // page silently goes deaf and a new IGNITE never surfaces until
-    // manual refresh. Exponential backoff capped at 30s.
+    // user's tab can sit open much longer than that. Some relays go
+    // silent without sending a close frame, so we ALSO run a liveness
+    // watchdog: if no messages arrive in 90s, force-close + reconnect.
+    // Exponential backoff capped at 30s for the connect retries.
     const connect = (url: string, attempt = 0): void => {
       if (closed) return;
       let ws: WebSocket;
@@ -239,8 +240,6 @@ export function subscribeRecentRuns(
         attempted += 1;
         sockets.push(ws);
       } else {
-        // Replace the prior socket in the array so cleanup still closes
-        // every active connection.
         const idx = sockets.findIndex((s) => s.readyState !== WebSocket.OPEN);
         if (idx >= 0) sockets[idx] = ws; else sockets.push(ws);
       }
@@ -250,10 +249,19 @@ export function subscribeRecentRuns(
         settledRelays.add(url);
         emitStatus();
       };
+      // Liveness watchdog — bounce the socket if it goes silent.
+      let lastActivity = Date.now();
+      const livenessTimer = window.setInterval(() => {
+        if (closed) return;
+        if (Date.now() - lastActivity < 90_000) return;
+        try { ws.close(); } catch { /* ignore */ }
+      }, 30_000);
       ws.onopen = () => {
         try { ws.send(JSON.stringify(['REQ', subId, filter])); } catch { /* ignore */ }
+        lastActivity = Date.now();
       };
       ws.onmessage = (ev) => {
+        lastActivity = Date.now();
         try {
           const msg: unknown = JSON.parse(typeof ev.data === 'string' ? ev.data : '');
           if (!Array.isArray(msg)) return;
@@ -268,8 +276,8 @@ export function subscribeRecentRuns(
       };
       ws.onerror = markSettled;
       ws.onclose = () => {
+        window.clearInterval(livenessTimer);
         markSettled();
-        // Reconnect unless this was a deliberate teardown.
         scheduleReconnect(url, attempt + 1);
       };
     };
