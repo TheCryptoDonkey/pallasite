@@ -16,6 +16,7 @@ import {
   publishStreamFrame,
   endStreamSession,
   publishStreamEnded,
+  drainStreamEvents,
   STREAM_FRAME_INTERVAL_MS,
   type ActiveStreamSession,
 } from './stream-session.js';
@@ -777,29 +778,30 @@ async function boot(): Promise<void> {
         .filter((a) => a.alive)
         .slice(0, 32)
         .map((a) => [
+          a.id ?? 0,
           a.pos.x, a.pos.y,
           ASTEROID_SIZE_CODE[a.size] ?? 's',
           ASTEROID_TYPE_CODE[a.type] ?? 's',
           a.rot,
-        ] as [number, number, 'l' | 'm' | 's', 's' | 'i' | 'c' | 'p', number]);
+        ] as [number, number, number, 'l' | 'm' | 's', 's' | 'i' | 'c' | 'p', number]);
 
       const ufos = (state.ufos ?? [])
         .filter((u) => u.alive)
         .slice(0, 8)
-        .map((u) => [u.pos.x, u.pos.y, UFO_TYPE_CODE[u.type] ?? 's'] as [number, number, 's' | 'p' | 't' | 'e' | 'c' | 'b']);
+        .map((u) => [u.id ?? 0, u.pos.x, u.pos.y, UFO_TYPE_CODE[u.type] ?? 's'] as [number, number, number, 's' | 'p' | 't' | 'e' | 'c' | 'b']);
 
       const mines = (state.mines ?? [])
         .filter((m) => m.alive)
         .slice(0, 8)
-        .map((m) => [m.pos.x, m.pos.y] as [number, number]);
+        .map((m) => [m.id ?? 0, m.pos.x, m.pos.y] as [number, number, number]);
 
       // Bullets — separate player vs enemy via the existing arrays
       // so the viewer can colour them differently.
       const playerBullets = (state.bullets ?? []).filter((b) => b.alive).slice(0, 24);
       const enemyBullets = (state.enemyBullets ?? []).filter((b) => b.alive).slice(0, 24);
-      const bullets: Array<[number, number, 0 | 1]> = [];
-      for (const b of playerBullets) bullets.push([b.pos.x, b.pos.y, 0]);
-      for (const b of enemyBullets) bullets.push([b.pos.x, b.pos.y, 1]);
+      const bullets: Array<[number, number, number, 0 | 1]> = [];
+      for (const b of playerBullets) bullets.push([b.id ?? 0, b.pos.x, b.pos.y, 0]);
+      for (const b of enemyBullets) bullets.push([b.id ?? 0, b.pos.x, b.pos.y, 1]);
 
       const frame = {
         t: now,
@@ -815,6 +817,9 @@ async function boot(): Promise<void> {
         ufos,
         mines,
         bullets,
+        // SFX events accumulated since the last frame — drained here
+        // so the live viewer can replay them in sync.
+        events: drainStreamEvents(),
       };
       void publishStreamFrame(activeStream, frame);
     }

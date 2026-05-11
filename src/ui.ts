@@ -1645,6 +1645,7 @@ interface LiveTheatreInput {
 }
 
 interface LiveAsteroid {
+  id: number;
   x: number;
   y: number;
   size: 'l' | 'm' | 's';
@@ -1652,12 +1653,15 @@ interface LiveAsteroid {
   rot: number;
 }
 interface LiveUfo {
+  id: number;
   x: number;
   y: number;
   type: 's' | 'p' | 't' | 'e' | 'c' | 'b';
 }
-interface LiveMine { x: number; y: number; }
-interface LiveBullet { x: number; y: number; enemy: boolean; }
+interface LiveMine { id: number; x: number; y: number; }
+interface LiveBullet { id: number; x: number; y: number; enemy: boolean; }
+type LiveEventCode = 'ak' | 'uk' | 'md' | 'sh' | 'sb' | 'vc' | 'pu' | 'fi';
+interface LiveSfxEvent { code: LiveEventCode; x: number; y: number; }
 
 interface LiveFrame {
   /** When the player captured this frame (unix ms). */
@@ -1676,6 +1680,7 @@ interface LiveFrame {
   ufos: LiveUfo[];
   mines: LiveMine[];
   bullets: LiveBullet[];
+  events: LiveSfxEvent[];
 }
 
 interface WireWorld {
@@ -1684,8 +1689,25 @@ interface WireWorld {
   u?: unknown;
   m?: unknown;
   b?: unknown;
+  e?: unknown;
   shield?: number;
   dead?: number;
+}
+
+const KNOWN_EVENT_CODES: ReadonlySet<LiveEventCode> = new Set([
+  'ak', 'uk', 'md', 'sh', 'sb', 'vc', 'pu', 'fi',
+]);
+function parseEvents(raw: unknown): LiveSfxEvent[] {
+  if (!Array.isArray(raw)) return [];
+  const out: LiveSfxEvent[] = [];
+  for (const item of raw) {
+    if (!Array.isArray(item) || item.length < 3) continue;
+    const [code, x, y] = item;
+    if (typeof code !== 'string' || typeof x !== 'number' || typeof y !== 'number') continue;
+    if (!KNOWN_EVENT_CODES.has(code as LiveEventCode)) continue;
+    out.push({ code: code as LiveEventCode, x, y });
+  }
+  return out;
 }
 
 function parseWireWorld(content: string): WireWorld {
@@ -1703,12 +1725,12 @@ function parseAsteroids(raw: unknown): LiveAsteroid[] {
   if (!Array.isArray(raw)) return [];
   const out: LiveAsteroid[] = [];
   for (const item of raw) {
-    if (!Array.isArray(item) || item.length < 5) continue;
-    const [x, y, size, type, rot] = item;
-    if (typeof x !== 'number' || typeof y !== 'number' || typeof rot !== 'number') continue;
+    if (!Array.isArray(item) || item.length < 6) continue;
+    const [id, x, y, size, type, rot] = item;
+    if (typeof id !== 'number' || typeof x !== 'number' || typeof y !== 'number' || typeof rot !== 'number') continue;
     if (size !== 'l' && size !== 'm' && size !== 's') continue;
     if (type !== 's' && type !== 'i' && type !== 'c' && type !== 'p') continue;
-    out.push({ x, y, size, type, rot });
+    out.push({ id, x, y, size, type, rot });
   }
   return out;
 }
@@ -1716,11 +1738,11 @@ function parseUfos(raw: unknown): LiveUfo[] {
   if (!Array.isArray(raw)) return [];
   const out: LiveUfo[] = [];
   for (const item of raw) {
-    if (!Array.isArray(item) || item.length < 3) continue;
-    const [x, y, type] = item;
-    if (typeof x !== 'number' || typeof y !== 'number') continue;
+    if (!Array.isArray(item) || item.length < 4) continue;
+    const [id, x, y, type] = item;
+    if (typeof id !== 'number' || typeof x !== 'number' || typeof y !== 'number') continue;
     if (type !== 's' && type !== 'p' && type !== 't' && type !== 'e' && type !== 'c' && type !== 'b') continue;
-    out.push({ x, y, type });
+    out.push({ id, x, y, type });
   }
   return out;
 }
@@ -1728,10 +1750,10 @@ function parseMines(raw: unknown): LiveMine[] {
   if (!Array.isArray(raw)) return [];
   const out: LiveMine[] = [];
   for (const item of raw) {
-    if (!Array.isArray(item) || item.length < 2) continue;
-    const [x, y] = item;
-    if (typeof x !== 'number' || typeof y !== 'number') continue;
-    out.push({ x, y });
+    if (!Array.isArray(item) || item.length < 3) continue;
+    const [id, x, y] = item;
+    if (typeof id !== 'number' || typeof x !== 'number' || typeof y !== 'number') continue;
+    out.push({ id, x, y });
   }
   return out;
 }
@@ -1739,10 +1761,10 @@ function parseBullets(raw: unknown): LiveBullet[] {
   if (!Array.isArray(raw)) return [];
   const out: LiveBullet[] = [];
   for (const item of raw) {
-    if (!Array.isArray(item) || item.length < 3) continue;
-    const [x, y, enemy] = item;
-    if (typeof x !== 'number' || typeof y !== 'number') continue;
-    out.push({ x, y, enemy: enemy === 1 });
+    if (!Array.isArray(item) || item.length < 4) continue;
+    const [id, x, y, enemy] = item;
+    if (typeof id !== 'number' || typeof x !== 'number' || typeof y !== 'number') continue;
+    out.push({ id, x, y, enemy: enemy === 1 });
   }
   return out;
 }
@@ -1780,6 +1802,7 @@ function readLiveFrame(event: { tags: string[][]; content?: string }): LiveFrame
     ufos: parseUfos(world.u),
     mines: parseMines(world.m),
     bullets: parseBullets(world.b),
+    events: parseEvents(world.e),
   };
 }
 
@@ -1893,6 +1916,23 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     // the wave changes so a spectator who joins mid-run still gets the
     // matching ambience as the player crosses wave boundaries.
     if (frame.wave > 0) applyWaveAssets(frame.wave);
+    // SFX — schedule once per arriving frame. Each event corresponds to
+    // the same audio.* call the player heard, so the live theatre's
+    // soundscape stays in sync with the in-game action.
+    for (const ev of frame.events) {
+      try {
+        switch (ev.code) {
+          case 'ak': audio.explosion(0.8); break;
+          case 'uk': audio.explosion(1.0); break;
+          case 'md': audio.explosion(0.7); break;
+          case 'sh': audio.explosion(1.4); break;
+          case 'sb': audio.shieldUp(); break;
+          case 'vc': audio.explosion(1.2); break;
+          case 'pu': audio.powerupPickup(); break;
+          case 'fi': audio.fire(); break;
+        }
+      } catch { /* ignore audio errors */ }
+    }
   };
 
   // Subscribe directly to kind 22769 events #p=<master>. v1 trusts
@@ -2013,28 +2053,44 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     const rot = prev.r + dr * t;
     const thrusting = (t < 0.5 ? prev.thrust : next.thrust);
 
-    // 2b. Entities — asteroids, UFOs, mines, bullets — taken from the
-    // most recent frame's world snapshot. No per-entity interpolation
-    // yet (would need stable ids on the wire, deferred to a later
-    // pass); positions snap every 500ms but the ship's smooth pose
-    // anchors visual continuity.
-    const worldFrame = next;
-    for (const a of worldFrame.asteroids) {
-      const ax = a.x * sx;
-      const ay = a.y * sy;
-      const rWorld = ASTEROID_RADIUS_WORLD[a.size];
+    // 2b. Entities — asteroids, UFOs, mines, bullets — interpolated by
+    // id across the prev/next frame pair the same way the ship pose
+    // is. New entities (present in `next` but not `prev`) appear at
+    // their `next` position; destroyed entities (in `prev` not `next`)
+    // disappear cleanly. Rotation lerp uses short-way-around so
+    // asteroids don't flip direction at the seam.
+    const prevAst = new Map<number, LiveAsteroid>();
+    for (const a of prev.asteroids) prevAst.set(a.id, a);
+    const prevUfo = new Map<number, LiveUfo>();
+    for (const u of prev.ufos) prevUfo.set(u.id, u);
+    const prevMine = new Map<number, LiveMine>();
+    for (const m of prev.mines) prevMine.set(m.id, m);
+    const prevBullet = new Map<number, LiveBullet>();
+    for (const b of prev.bullets) prevBullet.set(b.id, b);
+
+    const lerpRot = (a: number, b: number, k: number): number => {
+      let d = b - a;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      return a + d * k;
+    };
+
+    for (const aNext of next.asteroids) {
+      const aPrev = prevAst.get(aNext.id) ?? aNext;
+      const ax = (aPrev.x + (aNext.x - aPrev.x) * t) * sx;
+      const ay = (aPrev.y + (aNext.y - aPrev.y) * t) * sy;
+      const aRot = lerpRot(aPrev.rot, aNext.rot, t);
+      const rWorld = ASTEROID_RADIUS_WORLD[aNext.size];
       const rCanvas = rWorld * sx;
-      const colour = ASTEROID_COLOUR[a.type];
+      const colour = ASTEROID_COLOUR[aNext.type];
       c2d.save();
       c2d.translate(ax, ay);
-      c2d.rotate(a.rot);
+      c2d.rotate(aRot);
       c2d.strokeStyle = colour;
       c2d.fillStyle = colour + '22';
       c2d.lineWidth = Math.max(1, 1.2 * dpr);
       c2d.shadowColor = colour;
       c2d.shadowBlur = 6 * dpr;
-      // Lumpy heptagon — visually distinct from a circle without
-      // shipping the player's actual asteroid shape data on the wire.
       const SIDES = 7;
       const wobble = [0.95, 1.05, 0.92, 1.06, 0.97, 1.04, 0.93];
       c2d.beginPath();
@@ -2050,10 +2106,12 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
       c2d.stroke();
       c2d.restore();
     }
-    for (const u of worldFrame.ufos) {
-      const ux = u.x * sx;
-      const uy = u.y * sy;
-      const isBoss = u.type === 'b';
+
+    for (const uNext of next.ufos) {
+      const uPrev = prevUfo.get(uNext.id) ?? uNext;
+      const ux = (uPrev.x + (uNext.x - uPrev.x) * t) * sx;
+      const uy = (uPrev.y + (uNext.y - uPrev.y) * t) * sy;
+      const isBoss = uNext.type === 'b';
       const rxW = isBoss ? 48 : 26;
       const ryW = isBoss ? 28 : 14;
       c2d.save();
@@ -2067,15 +2125,16 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
       c2d.ellipse(0, 0, rxW * sx, ryW * sy, 0, 0, Math.PI * 2);
       c2d.fill();
       c2d.stroke();
-      // Dome
       c2d.beginPath();
       c2d.ellipse(0, -ryW * sy * 0.4, rxW * sx * 0.4, ryW * sy * 0.55, 0, Math.PI, 0);
       c2d.stroke();
       c2d.restore();
     }
-    for (const m of worldFrame.mines) {
-      const mx = m.x * sx;
-      const my = m.y * sy;
+
+    for (const mNext of next.mines) {
+      const mPrev = prevMine.get(mNext.id) ?? mNext;
+      const mx = (mPrev.x + (mNext.x - mPrev.x) * t) * sx;
+      const my = (mPrev.y + (mNext.y - mPrev.y) * t) * sy;
       const pulse = 0.85 + 0.15 * Math.sin(performance.now() * 0.008);
       c2d.save();
       c2d.translate(mx, my);
@@ -2088,7 +2147,6 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
       c2d.arc(0, 0, 18 * sx, 0, Math.PI * 2);
       c2d.fill();
       c2d.stroke();
-      // Spikes
       for (let i = 0; i < 6; i++) {
         const a = (i / 6) * Math.PI * 2;
         const r1 = 14 * sx;
@@ -2100,13 +2158,17 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
       }
       c2d.restore();
     }
-    for (const b of worldFrame.bullets) {
+
+    for (const bNext of next.bullets) {
+      const bPrev = prevBullet.get(bNext.id) ?? bNext;
+      const bx = (bPrev.x + (bNext.x - bPrev.x) * t) * sx;
+      const by = (bPrev.y + (bNext.y - bPrev.y) * t) * sy;
       c2d.save();
-      c2d.fillStyle = b.enemy ? '#ff5050' : '#ffd84a';
+      c2d.fillStyle = bNext.enemy ? '#ff5050' : '#ffd84a';
       c2d.shadowColor = c2d.fillStyle;
       c2d.shadowBlur = 6 * dpr;
       c2d.beginPath();
-      c2d.arc(b.x * sx, b.y * sy, 2.4 * dpr, 0, Math.PI * 2);
+      c2d.arc(bx, by, 2.4 * dpr, 0, Math.PI * 2);
       c2d.fill();
       c2d.restore();
     }

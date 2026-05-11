@@ -50,6 +50,38 @@ import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import type { SignetSession, NostrEvent } from 'signet-login';
 import { EXPERIMENTAL_RELAYS } from './credits.js';
 
+// ── SFX event buffer (drained per frame) ─────────────────────────────────────
+//
+// game.ts calls recordStreamEvent at key audio moments (asteroid break,
+// UFO destroyed, mine detonate, ship hit, shield burst). The frame
+// publisher drains the buffer into each kind 22769 event so the live
+// theatre on watch.pallasite.app can play matching sounds in lockstep
+// with what the player heard. Short codes keep the wire compact:
+//   ak = asteroid break
+//   uk = ufo destroyed
+//   md = mine detonate
+//   sh = ship hit / destroyed
+//   sb = shield burst
+//   vc = vein collapse (jackpot)
+//   pu = powerup picked up
+//   fi = bullet fired (high frequency — opt-in)
+export type StreamEventCode = 'ak' | 'uk' | 'md' | 'sh' | 'sb' | 'vc' | 'pu' | 'fi';
+export type WireEvent = readonly [StreamEventCode, number, number];
+
+let eventBuffer: Array<[StreamEventCode, number, number]> = [];
+const MAX_BUFFERED_EVENTS = 24;
+
+export function recordStreamEvent(code: StreamEventCode, x: number = -1, y: number = -1): void {
+  if (eventBuffer.length >= MAX_BUFFERED_EVENTS) return;
+  eventBuffer.push([code, Math.round(x), Math.round(y)]);
+}
+
+export function drainStreamEvents(): Array<[StreamEventCode, number, number]> {
+  const out = eventBuffer;
+  eventBuffer = [];
+  return out;
+}
+
 /** NIP-53 Live Activities — used as our run-scoped session key
  *  authorisation AND as the public "I'm live, watch me here"
  *  announcement that zap.stream / Nostrudel / any NIP-53 client
@@ -83,24 +115,35 @@ export interface StreamFrame {
   alive?: boolean;
   shielded?: boolean;
   /** World-state snapshot of non-ship entities at frame time. Each
-   *  entity is a fixed-shape tuple to keep JSON small enough for
-   *  2 Hz wire delivery without compression: see encode helpers
-   *  below for the exact layouts. Particles + coins + powerups
-   *  are omitted (decorative / numerous / cheap to re-spawn). */
-  asteroids?: ReadonlyArray<readonly [number, number, 'l' | 'm' | 's', 's' | 'i' | 'c' | 'p', number]>;
-  ufos?: ReadonlyArray<readonly [number, number, 's' | 'p' | 't' | 'e' | 'c' | 'b']>;
-  mines?: ReadonlyArray<readonly [number, number]>;
-  bullets?: ReadonlyArray<readonly [number, number, 0 | 1]>;
+   *  entity is a fixed-shape tuple keyed by `id` (the first field)
+   *  so the viewer can match the same entity across frames and
+   *  interpolate positions smoothly at 60fps despite the 2 Hz wire
+   *  cadence. Particles + coins + powerups are omitted (decorative,
+   *  numerous, cheap to re-spawn). */
+  asteroids?: ReadonlyArray<readonly [number, number, number, 'l' | 'm' | 's', 's' | 'i' | 'c' | 'p', number]>;
+  ufos?: ReadonlyArray<readonly [number, number, number, 's' | 'p' | 't' | 'e' | 'c' | 'b']>;
+  mines?: ReadonlyArray<readonly [number, number, number]>;
+  bullets?: ReadonlyArray<readonly [number, number, number, 0 | 1]>;
+  /** Audio events that fired since the prior frame — drained at publish
+   *  time so the live theatre can replay them in sync with what the
+   *  player heard. Capped at 24 per frame. */
+  events?: ReadonlyArray<WireEvent>;
 }
 
-/** Compact JSON wire format for the entity snapshot. v1 keys are
- *  single letters to minimise bandwidth at 2 Hz × N players. */
+/** Compact JSON wire format. Tuple shapes (id first):
+ *    asteroids:  [id, x, y, size, type, rot]
+ *    ufos:       [id, x, y, type]
+ *    mines:      [id, x, y]
+ *    bullets:    [id, x, y, isEnemy]
+ *  Single-letter keys + omit empty arrays to keep the wire small at
+ *  2 Hz × N players. */
 interface WireWorld {
-  v: 1;
-  a?: Array<[number, number, string, string, number]>;
-  u?: Array<[number, number, string]>;
-  m?: Array<[number, number]>;
-  b?: Array<[number, number, 0 | 1]>;
+  v: 2;
+  a?: Array<[number, number, number, string, string, number]>;
+  u?: Array<[number, number, number, string]>;
+  m?: Array<[number, number, number]>;
+  b?: Array<[number, number, number, 0 | 1]>;
+  e?: Array<[string, number, number]>;
   shield?: 1;
   dead?: 1;
 }
@@ -313,20 +356,23 @@ export async function publishStreamFrame(
   // extend without breaking older viewers. Older viewers (live
   // theatre v2a and earlier) simply ignore content and still get
   // ship pose + score from the tags.
-  const world: WireWorld = { v: 1 };
+  const world: WireWorld = { v: 2 };
   if (frame.asteroids?.length) {
     world.a = frame.asteroids.map(
-      (a) => [round1(a[0]), round1(a[1]), a[2], a[3], round2(a[4])],
+      (a) => [a[0], round1(a[1]), round1(a[2]), a[3], a[4], round2(a[5])],
     );
   }
   if (frame.ufos?.length) {
-    world.u = frame.ufos.map((u) => [round1(u[0]), round1(u[1]), u[2]]);
+    world.u = frame.ufos.map((u) => [u[0], round1(u[1]), round1(u[2]), u[3]]);
   }
   if (frame.mines?.length) {
-    world.m = frame.mines.map((m) => [round1(m[0]), round1(m[1])]);
+    world.m = frame.mines.map((m) => [m[0], round1(m[1]), round1(m[2])]);
   }
   if (frame.bullets?.length) {
-    world.b = frame.bullets.map((b) => [round1(b[0]), round1(b[1]), b[2]]);
+    world.b = frame.bullets.map((b) => [b[0], round1(b[1]), round1(b[2]), b[3]]);
+  }
+  if (frame.events?.length) {
+    world.e = frame.events.map((e) => [e[0], e[1], e[2]]);
   }
   if (frame.shielded) world.shield = 1;
   if (frame.alive === false) world.dead = 1;

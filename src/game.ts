@@ -8,6 +8,7 @@
 import type {
   GameState, Ship, Asteroid, AsteroidSize, AsteroidType, Ufo, UfoType, Mine, Vec2,
 } from './types.js';
+import { recordStreamEvent } from './stream-session.js';
 import {
   waveName, FINAL_WAVE, ASTEROID_TYPE_CONFIG,
   REPLAY_RECORD_INTERVAL_MS, REPLAY_BUFFER_FRAMES, REPLAY_TOTAL_WALL_MS, REPLAY_EXPLOSION_WALL_MS,
@@ -150,12 +151,29 @@ export function hitStop(s: GameState, ms: number): void {
   if (target > s.hitStopUntil) s.hitStopUntil = target;
 }
 
+// ── Wire-stream entity ids ───────────────────────────────────────────────────
+//
+// Monotonic counter assigned in every spawn function for wire-bound
+// entities (ship, asteroids, UFOs, mines, bullets). The live-stream
+// viewer matches entities across consecutive kind 22769 frames by
+// this id so it can interpolate positions smoothly — without it, the
+// viewer would snap entities to new positions at the 2 Hz wire rate.
+//
+// Module-local, never reset. Modulo bounds the value so JSON tuples
+// don't bloat across very long sessions.
+let nextEntityId = 0;
+export function nextStreamEntityId(): number {
+  nextEntityId = (nextEntityId + 1) % 1_000_000;
+  return nextEntityId;
+}
+
 function makeShip(): Ship {
   return {
     pos: { x: WORLD_W / 2, y: WORLD_H / 2 },
     vel: { x: 0, y: 0 },
     radius: SHIP_RADIUS,
     alive: true,
+    id: nextStreamEntityId(),
     rot: -Math.PI / 2,
     rotVel: 0,
     thrusting: false,
@@ -337,6 +355,7 @@ export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?
     vel: velocity,
     radius,
     alive: true,
+    id: nextStreamEntityId(),
     size,
     type: t,
     hp,
@@ -534,6 +553,7 @@ function makeEdgeUfo(type: UfoType, dir: 1 | -1): Ufo {
     vel: { x: dir * UFO_SPEED[type], y: 0 },
     radius: UFO_RADIUS[type],
     alive: true,
+    id: nextStreamEntityId(),
     type,
     hp: UFO_HP[type],
     dir,
@@ -842,6 +862,7 @@ function makeBossUfo(): Ufo {
     vel: { x: 30, y: 0 },
     radius: UFO_RADIUS.boss,
     alive: true,
+    id: nextStreamEntityId(),
     type: 'boss',
     hp: UFO_HP.boss,
     dir: 1,
@@ -873,6 +894,7 @@ function spawnUfo(s: GameState): void {
     vel: { x: dir * speed, y: 0 },
     radius: UFO_RADIUS[type],
     alive: true,
+    id: nextStreamEntityId(),
     type,
     hp: UFO_HP[type],
     dir,
@@ -1011,6 +1033,7 @@ function ufoShootAt(s: GameState, u: Ufo, target: Vec2): void {
     vel: { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed },
     radius: BULLET_RADIUS + 1,
     alive: true,
+    id: nextStreamEntityId(),
     ttl: UFO_BULLET_TTL_MS,
     pierceLeft: 0,
     caromHit: false,
@@ -1033,6 +1056,7 @@ function ufoFanShoot(s: GameState, u: Ufo, target: Vec2): void {
       vel: { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed },
       radius: BULLET_RADIUS + 1,
       alive: true,
+      id: nextStreamEntityId(),
       ttl: UFO_BULLET_TTL_MS,
       pierceLeft: 0,
       caromHit: false,
@@ -1059,6 +1083,7 @@ function ufoRadialShoot(s: GameState, u: Ufo): void {
       vel: { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed },
       radius: BULLET_RADIUS + 1,
       alive: true,
+      id: nextStreamEntityId(),
       ttl: UFO_BULLET_TTL_MS,
       pierceLeft: 0,
       caromHit: false,
@@ -1077,6 +1102,7 @@ function makeMine(pos: Vec2, hp: number = MINE_HP_BASE): Mine {
     vel: { x: 0, y: 0 },     // static — never drifts
     radius: MINE_RADIUS,
     alive: true,
+    id: nextStreamEntityId(),
     age: 0,
     gravityRange: MINE_GRAVITY_RANGE,
     hp,
@@ -1160,6 +1186,7 @@ function destroyMine(s: GameState, m: Mine): void {
   const mul = recordCombo(s, performance.now());
   s.score += MINE_POINTS * mul;
   audio.explosion(0.7);
+  recordStreamEvent('md', m.pos.x, m.pos.y);
   spawnParticles(s, m.pos.x, m.pos.y, 14, '#ff5050', 200, 600);
   spawnCoins(s, m.pos.x, m.pos.y, MINE_SATS_DROP, 2);
   // Mines are anchored danger — clearing one should feel substantial.
@@ -1278,6 +1305,7 @@ function destroyUfo(s: GameState, u: Ufo): void {
   s.score += Math.round(UFO_POINTS[u.type] * mul * risk.mul);
   const explodeScale = u.type === 'tank' ? 1.3 : u.type === 'elite' ? 0.9 : 1.0;
   audio.explosion(explodeScale);
+  recordStreamEvent('uk', u.pos.x, u.pos.y);
   spawnParticles(s, u.pos.x, u.pos.y, u.type === 'tank' ? 36 : 26, '#ff5050', 220, 800);
   // Per-class shake + freeze. Boss is the climax — biggest of any kill bar
   // ship death. Tanks are hefty. Cruiser/elite/sniper get a small punch.
@@ -1344,6 +1372,7 @@ export function fireBullet(s: GameState): void {
       vel: { x: dx * speed + s.ship.vel.x * 0.4, y: dy * speed + s.ship.vel.y * 0.4 },
       radius: BULLET_RADIUS,
       alive: true,
+      id: nextStreamEntityId(),
       ttl: BULLET_TTL_MS,
       pierceLeft: 1,
       caromHit: false,
@@ -1531,6 +1560,7 @@ export function tryActivateShield(s: GameState, now: number): boolean {
   s.ship.shieldExpiresAt = now + SHIELD_DURATION_MS;
   s.ship.shieldReadyAt = now + SHIELD_DURATION_MS + SHIELD_COOLDOWN_MS * mods.shieldCooldownMul;
   audio.shieldUp();
+  recordStreamEvent('sb', s.ship.pos.x, s.ship.pos.y);
   // Small punch on activation — the shield ignite reads as a meaningful
   // event, not a button click.
   bumpTrauma(s, 0.18);
@@ -2642,6 +2672,7 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
     spawnParticles(s, a.pos.x, a.pos.y, 18, '#fff5d8', 220, 700);
     spawnParticles(s, a.pos.x, a.pos.y, 14, '#ff8ad6', 280, 600);
     audio.explosion(1.2);
+    recordStreamEvent('vc', a.pos.x, a.pos.y);
     if (s.session) toastNow(s, `VEIN COLLAPSED · +${VEIN_JACKPOT_SATS} sats`);
     else           toastNow(s, `VEIN COLLAPSED · +${VEIN_JACKPOT_SCORE}`);
     maybeExtraLife(s);
@@ -2690,6 +2721,7 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
   }
 
   audio.explosion(a.size === 'large' ? 1.0 : a.size === 'medium' ? 0.8 : 0.6);
+  recordStreamEvent('ak', a.pos.x, a.pos.y);
 
   // Spawn smaller children — same type carries over so a chondrite swarm stays a swarm
   if (a.size === 'large' || a.size === 'medium') {
@@ -2808,6 +2840,7 @@ function killShip(s: GameState): void {
   s.ship.alive = false;
   resetCombo(s);
   audio.explosion(1.4);
+  recordStreamEvent('sh', deathPos.x, deathPos.y);
   audio.thrustOff();
   // Maximum trauma + deepest duck + rumble — death is the loudest impact.
   bumpTrauma(s, 1.0);
