@@ -166,13 +166,15 @@ export interface ClaimInput {
 export type ClaimResult =
   | {
       ok: true;
-      /** Sats credited to balance on this claim. */
+      /** Sats credited to balance on this claim, inclusive of pity. */
       payout_sats: number;
       score_event_id: string;
       /** Player's balance after this credit. */
       new_balance: number;
       /** Player's lifetime credit total (for tier-cap display). */
       lifetime_paid_sats: number;
+      /** Pity bonus included in payout_sats (0 / missing when no pity). */
+      pity_bonus?: number;
       status: 'credited';
       published?: { ok: number; total: number };
     }
@@ -372,4 +374,87 @@ export async function submitWithdraw(
     return { ok: false, error: 'bad_response' };
   }
   return data as WithdrawResult;
+}
+
+export type CheckinResult =
+  | {
+      ok: true;
+      credited: number;
+      already_checked_in_today: boolean;
+      new_balance: number;
+    }
+  | { ok: false; error: string; detail?: string };
+
+/**
+ * POST /api/checkin — daily check-in stipend. NIP-98 authed, idempotent
+ * per UTC day. Credits 1 sat to balance for signed-in title visits.
+ * Failures are silent (network blip, signer hiccup) — the chip just
+ * doesn't update; the next day's call retries naturally.
+ */
+export async function submitCheckin(
+  session: SignetSession,
+): Promise<CheckinResult> {
+  if (!session.signer.capabilities.canSignEvents) {
+    return { ok: false, error: 'no_signer' };
+  }
+  const url = `${location.origin}${API_BASE}/checkin`;
+  const bodyJson = '{}';
+  const payloadHash = await sha256Hex(bodyJson);
+
+  const authTemplate = {
+    kind: 27235,
+    created_at: Math.floor(Date.now() / 1000),
+    content: '',
+    tags: [
+      ['u', url],
+      ['method', 'POST'],
+      ['payload', payloadHash],
+    ],
+  };
+
+  let signedAuth;
+  try {
+    const SIGN_TIMEOUT_MS = 30_000;
+    signedAuth = await Promise.race([
+      session.signer.signEvent(authTemplate),
+      new Promise<never>((_, reject) => {
+        window.setTimeout(() => reject(new Error('signer-timeout')), SIGN_TIMEOUT_MS);
+      }),
+    ]);
+  } catch (err) {
+    return {
+      ok: false,
+      error: 'sign_failed',
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  const authToken = `Nostr ${utf8Base64(JSON.stringify(signedAuth))}`;
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/checkin`, {
+      method: 'POST',
+      headers: {
+        authorization: authToken,
+        'content-type': 'application/json',
+      },
+      body: bodyJson,
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      error: 'network_error',
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch {
+    return { ok: false, error: 'bad_response', detail: `HTTP ${res.status}` };
+  }
+  if (typeof data !== 'object' || data === null) {
+    return { ok: false, error: 'bad_response' };
+  }
+  return data as CheckinResult;
 }
