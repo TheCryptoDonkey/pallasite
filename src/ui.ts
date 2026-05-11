@@ -674,6 +674,13 @@ export function renderTitle(state: GameState): void {
     void audio.unlockAudio();
     renderControllerHostPairing(state, () => renderTitle(state));
   });
+  // Music player — was behind a hidden logo long-press, surfaced as a
+  // real button so players can find it without discovering the gesture.
+  const musicBtn = el('button', { className: 'menu-btn secondary', parent: row, text: '🎵 MUSIC' });
+  musicBtn.addEventListener('click', () => {
+    void audio.unlockAudio();
+    renderMusicPlayer(state, () => renderTitle(state));
+  });
 
   // Show local high scores under the start button if any exist. Local entries
   // sometimes carry an eventId (set when the player published this run via the
