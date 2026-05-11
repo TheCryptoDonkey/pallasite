@@ -44,8 +44,8 @@ import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipient } from './zap.js';
 import { subscribeRecentRuns, timeAgo, dismissWatchEntry, getDismissedWatchEntries, LIVE_FRESHNESS_MS, type WatchEntry } from './watch.js';
 import { EXPERIMENTAL_RELAYS } from './credits.js';
-import { STREAM_FRAME_KIND } from './stream-session.js';
-import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, type GhostRun } from './ghost.js';
+import { STREAM_FRAME_KIND, getReplayBuffer } from './stream-session.js';
+import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, type GhostRun } from './ghost.js';
 import { preloadBackground } from './render.js';
 import { musicSetTrackForState } from './music.js';
 import { savePersonalGhost } from './personal-ghost.js';
@@ -6624,6 +6624,23 @@ function renderRunCredits(
       seed: getActiveSeed(),
       cheated: state.cheatedThisRun,
     });
+    // Full-world replay (kind 30764) — built from the buffered kind
+    // 22769 frames we shipped at 3 Hz during the run. Cheated runs and
+    // sub-2-frame runs are skipped (publishReplay validates internally).
+    // Decoupled from the score claim — sign-capable sessions leave a
+    // replay even when they don't claim, same policy as the ghost.
+    if (!state.cheatedThisRun) {
+      const replayFrames = getReplayBuffer();
+      if (replayFrames.length >= 2) {
+        void publishReplay({
+          session: state.session,
+          finalScore: state.score,
+          finalWave: state.wave,
+          durationMs: Math.max(0, Math.floor(state.runTimeMs)),
+          frames: replayFrames,
+        });
+      }
+    }
   }
 
   // Prominent zap CTA — the entire reason this stage exists per the user

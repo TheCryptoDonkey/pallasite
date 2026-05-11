@@ -21,6 +21,16 @@ import { WORLD_W, WORLD_H, type GhostSample, type GhostPoseSample } from './type
 import { getActiveRelays } from './relays.js';
 
 export const GHOST_KIND = 30763;
+/** kind 30764 — full-world compressed replay. The kind 30763 ghost
+ *  carries pose-only samples; 30764 carries the entire wire-format
+ *  frame buffer (asteroids, UFOs, mines, bullets, coins, powerups,
+ *  SFX events) so the replay theatre can render the full world the
+ *  player saw, not just their ship trajectory.
+ *
+ *  Content is base64(gzip(JSON [ReplayFrameRaw, ...])). Player buffers
+ *  every 3 Hz frame in-memory during the run; on claim, the buffer is
+ *  flushed into this event alongside the kind 30763 ghost. */
+export const REPLAY_KIND = 30764;
 export const GHOST_FPS_V1 = 1;
 export const GHOST_FPS_V2 = 4;
 const MAGIC_G = 0x47;
@@ -230,6 +240,271 @@ export async function publishGhost(input: PublishGhostInput): Promise<NostrEvent
   const relays = input.relays ?? getActiveRelays();
   await Promise.all(relays.map(url => publishToRelay(url, signed).catch(() => undefined)));
   return signed;
+}
+
+// ── Full-world replay (kind 30764) ──────────────────────────────────────────
+
+import type { ReplayFrameRaw } from './stream-session.js';
+
+export interface PublishReplayInput {
+  session: SignetSession;
+  /** Optional kind 30762 score event id. When supplied, the kind 30764
+   *  carries an `e` tag pointing at it so watchers can fetch the
+   *  replay by score id (same pattern as kind 30763 ghosts). When not
+   *  supplied (player hasn't claimed yet, or claim raced this call),
+   *  the replay still publishes with a timestamp-based d-tag and is
+   *  findable via author + since. */
+  scoreEventId?: string;
+  finalScore: number;
+  finalWave: number;
+  durationMs: number;
+  frames: ReadonlyArray<ReplayFrameRaw>;
+  relays?: readonly string[];
+}
+
+/** Compress + base64-encode the frame buffer and publish a kind 30764
+ *  replay event. Called alongside publishGhost on claim — kind 30763
+ *  carries pose-only samples, kind 30764 carries the full world. The
+ *  watcher's "WATCH FROM START" prefers 30764 (rich) and falls back
+ *  to 30763 (pose-only) if 30764 isn't present. */
+export async function publishReplay(input: PublishReplayInput): Promise<NostrEvent | null> {
+  const { session, scoreEventId, finalScore, finalWave, durationMs, frames } = input;
+  if (!session.signer.capabilities.canSignEvents) return null;
+  if (frames.length < 2) return null;
+
+  const content = await encodeReplay(frames);
+  if (!content) return null;
+
+  const dTag = scoreEventId
+    ? `${GAME_ID}:replay:${scoreEventId}`
+    : `${GAME_ID}:replay:${session.pubkey.slice(0, 16)}:${Date.now()}`;
+  const tags: string[][] = [
+    ['d', dTag],
+    ['t', 'pallasite'],
+    ['game', GAME_ID],
+    ['score', finalScore.toString()],
+    ['wave', finalWave.toString()],
+    ['duration', durationMs.toString()],
+    ['frames', String(frames.length)],
+    ['enc', 'replay-gzip-b64'],
+  ];
+  if (scoreEventId) tags.push(['e', scoreEventId]);
+
+  const signed = await session.signer.signEvent({ kind: REPLAY_KIND, content, tags });
+  const relays = input.relays ?? getActiveRelays();
+  await Promise.all(relays.map((url) => publishToRelay(url, signed).catch(() => undefined)));
+  return signed;
+}
+
+/** Find the most recent kind 30764 replay from `pubkey`. Used by the
+ *  live theatre's "WATCH FROM START" button when the spectator doesn't
+ *  know the score event id yet (e.g. player has just claimed and the
+ *  faucet's kind 30762 hasn't propagated to relays). */
+export async function findReplayByAuthor(
+  pubkey: string,
+  sinceSec: number,
+  opts: { relays?: readonly string[] } = {},
+): Promise<FetchedReplay | null> {
+  if (!/^[0-9a-f]{64}$/i.test(pubkey)) return null;
+  const relays = opts.relays ?? getActiveRelays();
+  if (relays.length === 0) return null;
+
+  const filter: Record<string, unknown> = {
+    kinds: [REPLAY_KIND],
+    authors: [pubkey],
+    since: Math.max(0, sinceSec - 30),
+    limit: 5,
+  };
+  const events = await new Promise<NostrEvent[]>((resolve) => {
+    const collected: NostrEvent[] = [];
+    let done = 0;
+    const sockets: WebSocket[] = [];
+    let settled = false;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      sockets.forEach((s) => { try { s.close(); } catch { /* ignore */ } });
+      resolve(collected);
+    };
+    const timer = setTimeout(settle, FETCH_TIMEOUT_MS);
+    const markDone = (): void => { done += 1; if (done >= relays.length) settle(); };
+    for (const url of relays) {
+      let ws: WebSocket;
+      try { ws = new WebSocket(url); } catch { markDone(); continue; }
+      sockets.push(ws);
+      const subId = 'rb' + Math.random().toString(36).slice(2, 10);
+      ws.onopen = () => ws.send(JSON.stringify(['REQ', subId, filter]));
+      ws.onmessage = (ev) => {
+        try {
+          const msg: unknown = JSON.parse(typeof ev.data === 'string' ? ev.data : '');
+          if (!Array.isArray(msg)) return;
+          if (msg[0] === 'EVENT' && msg[1] === subId) {
+            const e = msg[2];
+            if (e && typeof e === 'object' && (e as { kind?: number }).kind === REPLAY_KIND) {
+              collected.push(e as NostrEvent);
+            }
+          } else if (msg[0] === 'EOSE' && msg[1] === subId) {
+            markDone();
+          }
+        } catch { /* ignore */ }
+      };
+      ws.onerror = markDone;
+      ws.onclose = markDone;
+    }
+  });
+  events.sort((a, b) => b.created_at - a.created_at);
+  for (const e of events) {
+    if (!hasTagValue(e.tags, 'game', GAME_ID)) continue;
+    if (tagValue(e.tags, 'enc') !== 'replay-gzip-b64') continue;
+    const frames = await decodeReplay(e.content);
+    if (!frames) continue;
+    return {
+      eventId: e.id,
+      pubkey: e.pubkey,
+      score: parseInt(tagValue(e.tags, 'score') ?? '0', 10) || 0,
+      wave: parseInt(tagValue(e.tags, 'wave') ?? '0', 10) || 0,
+      durationMs: parseInt(tagValue(e.tags, 'duration') ?? '0', 10) || 0,
+      frames,
+    };
+  }
+  return null;
+}
+
+export interface FetchedReplay {
+  eventId: string;
+  pubkey: string;
+  score: number;
+  wave: number;
+  durationMs: number;
+  frames: ReplayFrameRaw[];
+}
+
+/** Fetch + decode the kind 30764 replay for the supplied score event
+ *  id. Returns null if the relay set doesn't have one yet (player has
+ *  not claimed) or decompression fails. */
+export async function fetchReplayByScoreEventId(
+  scoreEventId: string,
+  opts: { relays?: readonly string[] } = {},
+): Promise<FetchedReplay | null> {
+  if (!/^[0-9a-f]{64}$/i.test(scoreEventId)) return null;
+  const relays = opts.relays ?? getActiveRelays();
+  if (relays.length === 0) return null;
+
+  const filter: Record<string, unknown> = {
+    kinds: [REPLAY_KIND],
+    '#e': [scoreEventId],
+    '#t': ['pallasite'],
+    limit: 3,
+  };
+
+  const events = await new Promise<NostrEvent[]>((resolve) => {
+    const collected: NostrEvent[] = [];
+    let done = 0;
+    const sockets: WebSocket[] = [];
+    let settled = false;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      sockets.forEach((s) => { try { s.close(); } catch { /* ignore */ } });
+      resolve(collected);
+    };
+    const timer = setTimeout(settle, FETCH_TIMEOUT_MS);
+    const markDone = (): void => {
+      done += 1;
+      if (done >= relays.length) settle();
+    };
+    for (const url of relays) {
+      let ws: WebSocket;
+      try { ws = new WebSocket(url); } catch { markDone(); continue; }
+      sockets.push(ws);
+      const subId = 'rp' + Math.random().toString(36).slice(2, 10);
+      ws.onopen = () => ws.send(JSON.stringify(['REQ', subId, filter]));
+      ws.onmessage = (ev) => {
+        try {
+          const msg: unknown = JSON.parse(typeof ev.data === 'string' ? ev.data : '');
+          if (!Array.isArray(msg)) return;
+          if (msg[0] === 'EVENT' && msg[1] === subId) {
+            const e = msg[2];
+            if (e && typeof e === 'object' && (e as { kind?: number }).kind === REPLAY_KIND) {
+              collected.push(e as NostrEvent);
+            }
+          } else if (msg[0] === 'EOSE' && msg[1] === subId) {
+            markDone();
+          }
+        } catch { /* ignore */ }
+      };
+      ws.onerror = markDone;
+      ws.onclose = markDone;
+    }
+  });
+
+  for (const e of events) {
+    if (!hasTagValue(e.tags, 'game', GAME_ID)) continue;
+    if (tagValue(e.tags, 'enc') !== 'replay-gzip-b64') continue;
+    const frames = await decodeReplay(e.content);
+    if (!frames) continue;
+    return {
+      eventId: e.id,
+      pubkey: e.pubkey,
+      score: parseInt(tagValue(e.tags, 'score') ?? '0', 10) || 0,
+      wave: parseInt(tagValue(e.tags, 'wave') ?? '0', 10) || 0,
+      durationMs: parseInt(tagValue(e.tags, 'duration') ?? '0', 10) || 0,
+      frames,
+    };
+  }
+  return null;
+}
+
+async function encodeReplay(frames: ReadonlyArray<ReplayFrameRaw>): Promise<string | null> {
+  try {
+    const json = JSON.stringify(frames);
+    const blob = new Blob([json]);
+    const cs = new (window as unknown as { CompressionStream: new (fmt: string) => GenericTransformStream }).CompressionStream('gzip');
+    const compressed = await new Response(blob.stream().pipeThrough(cs)).blob();
+    const buf = await compressed.arrayBuffer();
+    return arrayBufferToBase64(buf);
+  } catch {
+    return null;
+  }
+}
+
+async function decodeReplay(b64: string): Promise<ReplayFrameRaw[] | null> {
+  try {
+    const bytes = base64ToBytes(b64);
+    // Slice into a fresh ArrayBuffer to dodge SharedArrayBuffer typing
+    // friction in strict TS configs (Uint8Array.buffer may report a
+    // SharedArrayBuffer in some lib configurations).
+    const ab = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(ab).set(bytes);
+    const blob = new Blob([ab]);
+    const ds = new (window as unknown as { DecompressionStream: new (fmt: string) => GenericTransformStream }).DecompressionStream('gzip');
+    const text = await new Response(blob.stream().pipeThrough(ds)).text();
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) return null;
+    return parsed as ReplayFrameRaw[];
+  } catch {
+    return null;
+  }
+}
+
+function arrayBufferToBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  // chunked because String.fromCharCode.apply blows the stack at large sizes
+  const chunk = 0x4000;
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
 
 function publishToRelay(url: string, event: NostrEvent, timeoutMs = 5000): Promise<void> {
