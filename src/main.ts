@@ -760,11 +760,18 @@ async function boot(): Promise<void> {
     // the ship.
     if (inRun && activeStream && (state.wave >= 1 || state.score > 0)) {
       const now = Date.now();
-      // Lighter cadence during pause — nothing changes between frames
-      // and the watcher's PAUSED overlay only needs a heartbeat. Saves
-      // ~70% of the per-second sign+publish cost on a player sat in
-      // the pause menu (a noticeable mobile main-thread win).
-      const cadence = state.phase === 'paused'
+      // Lighter cadence during pause AND wave transitions — nothing
+      // gameplay-relevant changes between frames during paused / warp /
+      // wavestart (the warp animation is local to the player's canvas,
+      // entities are despawning or spawning off-screen). Drops the wire
+      // from 60Hz to 1Hz for ~1.3s of warp + 200ms of wavestart per
+      // wave change — saves ~75 frames per inter-wave gap. The watcher
+      // freezes on the last gameplay frame and pops its wave banner
+      // when the new wave's first frame lands.
+      const slowPhase = state.phase === 'paused'
+        || state.phase === 'warp'
+        || state.phase === 'wavestart';
+      const cadence = slowPhase
         ? STREAM_FRAME_INTERVAL_PAUSED_MS
         : STREAM_FRAME_INTERVAL_MS;
       if (now - activeStream.lastFramePublishedAt < cadence - 50) return;
