@@ -16,6 +16,7 @@
     "gen-logo": "tsx tools/generate-logo.ts"
   },
   "dependencies": {
+    "@noble/curves": "^2.2.0",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
