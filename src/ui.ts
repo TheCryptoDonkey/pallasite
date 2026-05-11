@@ -36,6 +36,7 @@ import { savePersonalGhost } from './personal-ghost.js';
 import { canCaptureClip, captureClip, shareClip, shareDailyStats } from './clip.js';
 import { REPLAY_TOTAL_WALL_MS, REPLAY_EXPLOSION_WALL_MS } from './types.js';
 import { getStreak, getBestStreak, markDailyCompleted, buildDailyShareText } from './streak.js';
+import { markAchievement } from './achievements.js';
 import { WORLD_W as PALL_WORLD_W, WORLD_H as PALL_WORLD_H } from './types.js';
 import {
   SKINS, getActiveSkinId, setActiveSkinId, isSkinUnlocked,
@@ -3081,9 +3082,12 @@ function renderRunCredits(
   // Mark today's daily run as completed for the streak counter. Cheated
   // runs don't count — streak should reflect honest play. Free-mode
   // runs (no seed) don't count either; only daily seeds drive the
-  // streak.
+  // streak. After the mark, check streak milestones and fire badges.
   if (seed && !state.cheatedThisRun) {
     markDailyCompleted(seed);
+    const s = getStreak();
+    if (s >= 30) markAchievement(state, 'streak-30');
+    if (s >= 5)  markAchievement(state, 'streak-5');
   }
   if (state.session) {
     void publishGhost({

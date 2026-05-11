@@ -1701,20 +1701,9 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState, now: number): void
   if (now < s.magnetExpiresAt) {
     drawChip('◎ MAGNET', s.magnetExpiresAt - now, 8000, '#5b9dff');
   }
-  if (s.lurking) {
-    // Persistent indicator — no countdown, so render a steady chip without
-    // the time-bar (passing big remaining/total pair keeps the bar full).
-    // Guest mode wording: there are no sats to forfeit, so the homage angle
-    // alone stands. Nostr mode keeps the sat-loss reminder explicit.
-    const label = s.session ? 'LURK · NO SATS' : 'LURK · 1979 RESPECT';
-    drawChip(label, 1, 1, '#ff5050');
-  }
-  if (s.cheatedThisRun) {
-    // Loud and persistent — once cheated, the run is tainted for sats and
-    // any score publish carries the flag.
-    drawChip('CHEATED · SATS VOID', 1, 1, '#ff5050');
-  }
-
+  // Lurking + cheated indicators removed — both states already fire
+  // toasts when they're entered (toastNow in updateLurkState and
+  // cheatJumpToWave), so the persistent red chips were duplicate noise.
   drawGhostChip(ctx, s);
 
   ctx.restore();
