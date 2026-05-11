@@ -37,6 +37,7 @@ import { canCaptureClip, captureClip, shareClip, shareDailyStats } from './clip.
 import { REPLAY_TOTAL_WALL_MS, REPLAY_EXPLOSION_WALL_MS } from './types.js';
 import { getStreak, getBestStreak, markDailyCompleted, buildDailyShareText } from './streak.js';
 import { markAchievement } from './achievements.js';
+import { savePendingClaim, clearPendingClaim, getFreshPendingClaim, isTerminalClaimError } from './pending-claim.js';
 import { WORLD_W as PALL_WORLD_W, WORLD_H as PALL_WORLD_H } from './types.js';
 import {
   SKINS, getActiveSkinId, setActiveSkinId, isSkinUnlocked,
@@ -617,6 +618,12 @@ export function renderTitle(state: GameState): void {
   // the day" hook. Empty state ("be the first") is itself motivating.
   renderDailyLeaderChip(overlay);
 
+  // Pending-claim recovery — if a previous run's claim failed (signer
+  // hiccup, network blip, idle-skip dumped to title before retry), the
+  // payload is still on localStorage within the server's 5-min replay
+  // window. Surface a one-tap retry banner so the sats aren't orphaned.
+  renderPendingClaimBanner(overlay, state);
+
   const row = el('div', { className: 'menu-row', parent: overlay });
   const startBtn = el('button', { className: 'menu-btn', parent: row, text: 'IGNITE · PRESS ENTER' });
   startBtn.addEventListener('click', () => {
@@ -994,6 +1001,84 @@ function renderDailyRow(parent: HTMLElement): void {
  * nothing to show. Streak number gets a yellow accent so the player
  * sees it as a thing they're protecting.
  */
+function renderPendingClaimBanner(parent: HTMLElement, state: GameState): void {
+  const session = state.session;
+  if (!session) return;
+  if (!session.signer.capabilities.canSignEvents) return;
+  const pending = getFreshPendingClaim(session.pubkey);
+  if (!pending) return;
+
+  const wrap = el('div', { parent });
+  wrap.style.cssText = [
+    'display:flex', 'flex-direction:column', 'gap:8px', 'align-items:stretch',
+    'margin:12px auto 4px', 'padding:10px 14px', 'max-width:340px',
+    'border-radius:8px', 'background:rgba(255,128,80,0.08)',
+    'border:1px solid rgba(255,128,80,0.45)',
+    'text-align:center',
+  ].join(';');
+
+  const head = el('p', { parent: wrap });
+  head.style.cssText = 'margin:0;font-size:0.82rem;color:#ffd84a;letter-spacing:0.08em';
+  head.textContent = `UNCLAIMED · ${pending.payload.sats_claimed} SATS`;
+
+  const sub = el('p', { parent: wrap });
+  sub.style.cssText = 'margin:0;font-size:0.74rem;color:#cccccc;line-height:1.4';
+  sub.textContent = `Wave ${pending.payload.wave} · ${pending.payload.score.toLocaleString()} score`;
+
+  const btn = el('button', { className: 'menu-btn', parent: wrap, text: 'RETRY CLAIM' }) as HTMLButtonElement;
+  btn.style.cssText = 'padding:6px 12px;font-size:0.85rem;cursor:pointer';
+
+  const status = el('p', { parent: wrap });
+  status.style.cssText = 'margin:0;min-height:1.1em;font-size:0.74rem;color:#888';
+
+  const dismissBtn = el('button', { className: 'menu-btn secondary', parent: wrap, text: 'DISMISS' }) as HTMLButtonElement;
+  dismissBtn.style.cssText = 'padding:4px 10px;font-size:0.72rem;cursor:pointer;opacity:0.7';
+  onTap(dismissBtn, () => {
+    clearPendingClaim();
+    wrap.remove();
+  });
+
+  onTap(btn, () => {
+    void (async () => {
+      btn.disabled = true;
+      dismissBtn.disabled = true;
+      status.style.color = '#5b9dff';
+      status.textContent = 'Validating…';
+      try {
+        const result = await submitClaim(session, pending.payload);
+        if (result.ok) {
+          clearPendingClaim();
+          const tail = result.status === 'paid_but_unannounced' ? ' (announce pending)' : '';
+          status.style.color = '#58ff58';
+          status.textContent = `✓ Paid ${result.payout_sats} sats${tail}`;
+          btn.remove();
+          dismissBtn.textContent = 'CLOSE';
+          dismissBtn.disabled = false;
+        } else {
+          if (isTerminalClaimError(result.error)) {
+            clearPendingClaim();
+            status.style.color = '#ff8050';
+            status.textContent = claimErrorMessage(result.error, result.detail);
+            btn.remove();
+            dismissBtn.textContent = 'CLOSE';
+            dismissBtn.disabled = false;
+          } else {
+            status.style.color = '#ff8050';
+            status.textContent = claimErrorMessage(result.error, result.detail);
+            btn.disabled = false;
+            dismissBtn.disabled = false;
+          }
+        }
+      } catch (err) {
+        status.style.color = '#ff8050';
+        status.textContent = err instanceof Error ? err.message : 'Retry failed.';
+        btn.disabled = false;
+        dismissBtn.disabled = false;
+      }
+    })();
+  });
+}
+
 function renderStreakChip(parent: HTMLElement): void {
   const current = getStreak();
   if (current < 1) return;
@@ -2920,7 +3005,7 @@ async function maybePublishScore(
         state.runStartedAt > 0 ? state.runStartedAt : finishedAt - duration;
 
       const seed = getActiveSeed();
-      const result = await submitClaim(session, {
+      const payload = {
         score: state.score,
         wave: state.wave,
         duration_ms: duration,
@@ -2930,12 +3015,21 @@ async function maybePublishScore(
         lightning_address: currentAddress,
         cheated: state.cheatedThisRun,
         ...(seed ? { daily_seed: seed } : {}),
-      });
+      };
+      // Persist BEFORE submit so a tab close, idle-skip, or signer hang
+      // doesn't strand the sats. The server has a 5-min replay window;
+      // we'll surface a RETRY banner on title if this one doesn't land.
+      if (state.sats > 0 && !state.cheatedThisRun) {
+        savePendingClaim(session.pubkey, payload);
+      }
+      const result = await submitClaim(session, payload);
 
       if (result.ok) {
+        clearPendingClaim();
         const tail = result.status === 'paid_but_unannounced' ? ' (announce pending)' : '';
         setStatus(`✓ Paid ${result.payout_sats} sats${tail}`, '#58ff58');
       } else {
+        if (isTerminalClaimError(result.error)) clearPendingClaim();
         setStatus(claimErrorMessage(result.error, result.detail), '#ff8050');
         claimBtn.disabled = false;
       }
