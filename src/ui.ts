@@ -1943,6 +1943,53 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   liveStats.style.cssText = 'margin:2px 0 0;font-size:0.95rem;letter-spacing:0.16em;color:rgba(220,210,255,0.78);min-height:1.2em;';
   liveStats.textContent = '';
 
+  // Replay controls — scrub bar + play/pause + speed. Only visible in
+  // replay mode; live mode hides this row entirely. State (speed,
+  // paused) is captured by closure and read by the playback tick.
+  let replaySpeed = 1;
+  let replayPaused = false;
+  const replayCtl = el('div', { parent: overlay });
+  replayCtl.style.cssText = 'display:none;margin:10px auto 0;max-width:760px;width:100%;flex-direction:column;gap:6px;';
+  if (replayMode) replayCtl.style.display = 'flex';
+
+  const timeRow = el('div', { parent: replayCtl });
+  timeRow.style.cssText = 'display:flex;align-items:center;gap:8px;font-family:monospace;font-size:0.78rem;color:rgba(220,210,255,0.78);';
+  const playToggle = el('button', { className: 'menu-btn secondary', parent: timeRow, text: '⏸' }) as HTMLButtonElement;
+  playToggle.style.cssText += 'flex:0 0 44px;padding:4px 0;';
+  const restartBtn = el('button', { className: 'menu-btn secondary', parent: timeRow, text: '⏮' }) as HTMLButtonElement;
+  restartBtn.style.cssText += 'flex:0 0 44px;padding:4px 0;';
+  const timeLabel = el('span', { parent: timeRow, text: '0:00 / 0:00' });
+  timeLabel.style.cssText = 'min-width:90px;text-align:center;color:#a8eecf;letter-spacing:0.06em;';
+  const scrub = el('input', { parent: timeRow }) as HTMLInputElement;
+  scrub.type = 'range';
+  scrub.min = '0';
+  scrub.max = '1000';
+  scrub.step = '1';
+  scrub.value = '0';
+  scrub.style.cssText = 'flex:1;accent-color:#8cffb4;';
+
+  const speedRow = el('div', { parent: replayCtl });
+  speedRow.style.cssText = 'display:flex;justify-content:center;gap:4px;font-family:monospace;font-size:0.78rem;';
+  const SPEEDS = [0.5, 1, 2, 4];
+  const speedBtns: HTMLButtonElement[] = [];
+  for (const sp of SPEEDS) {
+    const b = el('button', { className: 'menu-btn secondary', parent: speedRow, text: `${sp}×` }) as HTMLButtonElement;
+    b.style.cssText += 'flex:0 0 60px;padding:4px 0;font-size:0.78rem;';
+    if (sp === 1) {
+      b.style.background = 'rgba(140,255,180,0.20)';
+      b.style.color = '#8cffb4';
+    }
+    b.addEventListener('click', () => {
+      replaySpeed = sp;
+      for (let i = 0; i < SPEEDS.length; i++) {
+        const active = SPEEDS[i] === sp;
+        speedBtns[i].style.background = active ? 'rgba(140,255,180,0.20)' : '';
+        speedBtns[i].style.color = active ? '#8cffb4' : '';
+      }
+    });
+    speedBtns.push(b);
+  }
+
   const closeRow = el('div', { className: 'menu-row', parent: overlay });
   // "WATCH FROM START" — only shown once STREAM ENDED fires. Polls
   // for the player's kind 30763 ghost (published at claim time) and
@@ -1952,6 +1999,43 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   const replayBtn = el('button', { className: 'menu-btn', parent: closeRow, text: 'WATCH FROM START' }) as HTMLButtonElement;
   replayBtn.style.display = 'none';
   const closeBtn = el('button', { className: 'menu-btn secondary', parent: closeRow, text: 'CLOSE · ESC' });
+
+  playToggle.addEventListener('click', () => {
+    replayPaused = !replayPaused;
+    playToggle.textContent = replayPaused ? '▶' : '⏸';
+  });
+  restartBtn.addEventListener('click', () => {
+    if (frames.length === 0) return;
+    playbackT = frames[0].capturedAt;
+    // Re-queue all SFX events so the run replays end-to-end with sound.
+    pendingEvents.length = 0;
+    for (const f of frames) {
+      for (const ev of f.events) pendingEvents.push({ code: ev.code, x: ev.x, y: ev.y, dueAt: f.capturedAt });
+    }
+    particles.length = 0;
+    debris.length = 0;
+  });
+  // Scrub bar — slider value 0..1000 maps to playbackT across the run.
+  // While dragging we update playbackT directly and freeze the scrub
+  // updates the tick loop would otherwise do.
+  let scrubbing = false;
+  const seekTo = (frac: number): void => {
+    if (frames.length === 0) return;
+    const span = frames[frames.length - 1].capturedAt - frames[0].capturedAt;
+    playbackT = frames[0].capturedAt + span * frac;
+    // Drop SFX events past the playhead to avoid a burst if the user
+    // skipped forward; collect future events again so audio resumes.
+    pendingEvents.length = 0;
+    for (const f of frames) {
+      if (f.capturedAt < playbackT) continue;
+      for (const ev of f.events) pendingEvents.push({ code: ev.code, x: ev.x, y: ev.y, dueAt: f.capturedAt });
+    }
+    particles.length = 0;
+    debris.length = 0;
+  };
+  scrub.addEventListener('pointerdown', () => { scrubbing = true; });
+  scrub.addEventListener('pointerup', () => { scrubbing = false; });
+  scrub.addEventListener('input', () => { seekTo(parseInt(scrub.value, 10) / 1000); });
   const replayHint = el('p', { parent: overlay });
   replayHint.style.cssText = 'margin:6px 0 0;font-size:0.78rem;color:rgba(180,140,255,0.65);letter-spacing:0.08em;min-height:1em;text-align:center;';
 
@@ -2419,14 +2503,24 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     const latestCap = frames[frames.length - 1].capturedAt;
     const oldestCap = frames[0].capturedAt;
     if (replayMode) {
-      // Linear playback through the full timeline at 1x speed. Start at
-      // the oldest frame, advance every tick, freeze at the last frame
-      // when the replay ends.
+      // Linear playback through the full timeline. Speed is governed
+      // by replaySpeed (set by the 0.5/1/2/4× buttons); playback can
+      // be paused via replayPaused.
       if (playbackT === 0) playbackT = oldestCap;
-      playbackT += dtMs;
+      if (!replayPaused) playbackT += dtMs * replaySpeed;
       if (playbackT >= latestCap) {
         playbackT = latestCap;
         status.textContent = 'REPLAY ENDED · CLOSE · ESC';
+      }
+      if (!scrubbing) {
+        const span = latestCap - oldestCap;
+        const frac = span > 0 ? (playbackT - oldestCap) / span : 0;
+        scrub.value = String(Math.round(frac * 1000));
+        const fmt = (ms: number): string => {
+          const s = Math.max(0, Math.floor(ms / 1000));
+          return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
+        };
+        timeLabel.textContent = `${fmt(playbackT - oldestCap)} / ${fmt(span)}`;
       }
     } else {
       if (playbackT === 0) playbackT = latestCap - PLAYBACK_LEAD_MS;
