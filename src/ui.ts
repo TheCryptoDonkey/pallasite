@@ -1676,6 +1676,7 @@ interface LiveFrame {
   thrust: boolean;
   alive: boolean;
   shielded: boolean;
+  paused: boolean;
   asteroids: LiveAsteroid[];
   ufos: LiveUfo[];
   mines: LiveMine[];
@@ -1692,6 +1693,7 @@ interface WireWorld {
   e?: unknown;
   shield?: number;
   dead?: number;
+  paused?: number;
 }
 
 const KNOWN_EVENT_CODES: ReadonlySet<LiveEventCode> = new Set([
@@ -1798,6 +1800,7 @@ function readLiveFrame(event: { tags: string[][]; content?: string }): LiveFrame
     x, y, r, score, wave, thrust,
     alive: world.dead !== 1,
     shielded: world.shield === 1,
+    paused: world.paused === 1,
     asteroids: parseAsteroids(world.a),
     ufos: parseUfos(world.u),
     mines: parseMines(world.m),
@@ -2315,17 +2318,75 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
       c2d.restore();
     }
 
-    // 4. Live indicator + age label
+    // 4. Live indicator + age label + paused / ended overlays
     c2d.shadowBlur = 0;
-    const ageMs = frames.length > 0 ? Date.now() - frames[frames.length - 1].capturedAt : 0;
+    const latest = frames[frames.length - 1];
+    const ageMs = latest ? Date.now() - latest.capturedAt : 0;
     const stale = ageMs > 3_000;
-    c2d.fillStyle = stale ? 'rgba(255,150,150,0.85)' : 'rgba(140,255,180,0.85)';
+    const veryStale = ageMs > 10_000;
+    const paused = next.paused === true && !veryStale;
+    const ended = next.alive === false || veryStale;
+
+    // Live / paused / ended pill in the top-left
+    let pillColour = 'rgba(140,255,180,0.85)';
+    let pillLabel = 'LIVE';
+    if (ended) {
+      pillColour = 'rgba(255,120,120,0.9)';
+      pillLabel = veryStale && next.alive !== false ? 'STREAM ENDED' : 'RUN ENDED';
+    } else if (paused) {
+      pillColour = 'rgba(255,216,74,0.9)';
+      pillLabel = 'PAUSED';
+    } else if (stale) {
+      pillColour = 'rgba(255,150,150,0.85)';
+      pillLabel = `STALE · ${(ageMs / 1000).toFixed(0)}s`;
+    }
+    c2d.fillStyle = pillColour;
     c2d.beginPath();
     c2d.arc(14 * dpr, 14 * dpr, 4 * dpr, 0, Math.PI * 2);
     c2d.fill();
     c2d.font = `${Math.round(11 * dpr)}px ui-monospace, monospace`;
-    c2d.fillStyle = stale ? 'rgba(255,150,150,0.8)' : 'rgba(220,210,255,0.85)';
-    c2d.fillText(stale ? `STALE · ${(ageMs / 1000).toFixed(0)}s` : 'LIVE', 24 * dpr, 18 * dpr);
+    c2d.fillStyle = pillColour;
+    c2d.fillText(pillLabel, 24 * dpr, 18 * dpr);
+
+    // Centre overlay for PAUSED / RUN ENDED. Keeps the canvas drawn
+    // underneath so spectators see the frozen game world, with a
+    // clear status banner on top.
+    if (paused || ended) {
+      c2d.save();
+      c2d.fillStyle = 'rgba(2,5,13,0.55)';
+      c2d.fillRect(0, 0, CANVAS_W, CANVAS_H);
+      c2d.textAlign = 'center';
+      c2d.textBaseline = 'middle';
+      const cx = CANVAS_W / 2;
+      const cy = CANVAS_H / 2;
+      if (paused) {
+        c2d.shadowColor = 'rgba(255,216,74,0.7)';
+        c2d.shadowBlur = 16 * dpr;
+        c2d.fillStyle = '#ffd84a';
+        c2d.font = `bold ${Math.round(38 * dpr)}px ui-monospace, monospace`;
+        c2d.fillText('⏸  PAUSED', cx, cy);
+        c2d.shadowBlur = 0;
+        c2d.fillStyle = 'rgba(255,216,74,0.85)';
+        c2d.font = `${Math.round(13 * dpr)}px ui-monospace, monospace`;
+        c2d.fillText(`Wave ${latest.wave} · ${latest.score.toLocaleString()}`, cx, cy + 30 * dpr);
+      } else {
+        c2d.shadowColor = 'rgba(255,120,120,0.7)';
+        c2d.shadowBlur = 16 * dpr;
+        c2d.fillStyle = '#ff8a8a';
+        c2d.font = `bold ${Math.round(36 * dpr)}px ui-monospace, monospace`;
+        c2d.fillText('RUN ENDED', cx, cy - 14 * dpr);
+        c2d.shadowBlur = 0;
+        c2d.fillStyle = 'rgba(255,200,200,0.85)';
+        c2d.font = `${Math.round(15 * dpr)}px ui-monospace, monospace`;
+        c2d.fillText(`Final wave ${latest.wave} · ${latest.score.toLocaleString()}`, cx, cy + 14 * dpr);
+        c2d.font = `${Math.round(11 * dpr)}px ui-monospace, monospace`;
+        c2d.fillStyle = 'rgba(220,210,255,0.7)';
+        c2d.fillText('Replay via the kind 30763 ghost once the player claims', cx, cy + 36 * dpr);
+      }
+      c2d.textAlign = 'start';
+      c2d.textBaseline = 'alphabetic';
+      c2d.restore();
+    }
   };
   rafId = requestAnimationFrame(tick);
 }

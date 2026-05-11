@@ -813,6 +813,7 @@ async function boot(): Promise<void> {
         thrust: state.ship?.thrusting === true,
         alive: state.ship?.alive !== false,
         shielded: state.ship?.shieldUp === true,
+        paused: state.phase === 'paused',
         asteroids,
         ufos,
         mines,
