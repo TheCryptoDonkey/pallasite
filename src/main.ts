@@ -800,12 +800,14 @@ async function boot(): Promise<void> {
         .map((m) => [m.id ?? 0, m.pos.x, m.pos.y] as [number, number, number]);
 
       // Bullets — separate player vs enemy via the existing arrays
-      // so the viewer can colour them differently.
+      // so the viewer can colour them differently. Velocity included so
+      // the viewer can extrapolate between frames — bullets move ~500
+      // px/sec and snap visibly between 4Hz frame samples without it.
       const playerBullets = (state.bullets ?? []).filter((b) => b.alive).slice(0, 24);
       const enemyBullets = (state.enemyBullets ?? []).filter((b) => b.alive).slice(0, 24);
-      const bullets: Array<[number, number, number, 0 | 1]> = [];
-      for (const b of playerBullets) bullets.push([b.id ?? 0, b.pos.x, b.pos.y, 0]);
-      for (const b of enemyBullets) bullets.push([b.id ?? 0, b.pos.x, b.pos.y, 1]);
+      const bullets: Array<[number, number, number, number, number, 0 | 1]> = [];
+      for (const b of playerBullets) bullets.push([b.id ?? 0, b.pos.x, b.pos.y, b.vel.x, b.vel.y, 0]);
+      for (const b of enemyBullets) bullets.push([b.id ?? 0, b.pos.x, b.pos.y, b.vel.x, b.vel.y, 1]);
 
       // Coins — both sat (₿) and dust shards. sourceType '' for non-asteroid
       // origins (mine/UFO drops). Capped at 32 — vein engagements can spawn
