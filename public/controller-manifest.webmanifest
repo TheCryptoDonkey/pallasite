@@ -1,0 +1,26 @@
+{
+  "name": "Pallasite Controller",
+  "short_name": "Controller",
+  "description": "Phone-as-controller for Pallasite. Pair via QR or code, drive the ship from your phone while the game runs on a bigger screen.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#02050d",
+  "theme_color": "#0a0418",
+  "categories": ["games", "entertainment", "utilities"],
+  "icons": [
+    {
+      "src": "/kempston.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/kempston.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

@@ -883,7 +883,14 @@ async function boot(): Promise<void> {
     // mobile.pallasite.app — bookmarkable controller. Same render as
     // /controller but lives on its own subdomain so it can install as
     // an "Add to Home Screen" PWA without dragging the whole game
-    // bundle's chrome along with it visually.
+    // bundle's chrome along with it visually. Swap to the
+    // controller-specific manifest so the installed app gets the
+    // Kempston joystick icon + "Pallasite Controller" name + locked
+    // landscape orientation.
+    const mfst = document.querySelector('link[rel=manifest]');
+    if (mfst) mfst.setAttribute('href', '/controller-manifest.webmanifest');
+    const themeMeta = document.querySelector('meta[name=apple-mobile-web-app-title]');
+    if (themeMeta) themeMeta.setAttribute('content', 'Controller');
     renderControllerPage();
   } else {
     const path = window.location.pathname.replace(/\/+$/, '');

@@ -1,0 +1,32 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="ballGrad" cx="38%" cy="32%">
+      <stop offset="0%" stop-color="#ff9c9c"/>
+      <stop offset="60%" stop-color="#e84444"/>
+      <stop offset="100%" stop-color="#7c1818"/>
+    </radialGradient>
+    <linearGradient id="baseGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#262626"/>
+      <stop offset="100%" stop-color="#0d0d0d"/>
+    </linearGradient>
+  </defs>
+  <!-- background, rounded square — matches PWA mask -->
+  <rect width="512" height="512" rx="96" fill="#02050d"/>
+  <!-- glow plate behind joystick -->
+  <ellipse cx="256" cy="380" rx="170" ry="20" fill="#000" opacity="0.55"/>
+  <!-- base -->
+  <rect x="92" y="328" width="328" height="104" rx="22" fill="url(#baseGrad)" stroke="#444" stroke-width="3"/>
+  <!-- base highlight strip -->
+  <rect x="100" y="334" width="312" height="10" rx="5" fill="#3a3a3a"/>
+  <!-- fire button on base, right side, Kempston signature -->
+  <circle cx="356" cy="380" r="26" fill="#cc2828" stroke="#2a0808" stroke-width="3"/>
+  <circle cx="349" cy="372" r="9" fill="#ff8080" opacity="0.85"/>
+  <!-- text on the base -->
+  <text x="156" y="396" font-family="ui-monospace, Menlo, monospace" font-size="22" fill="#888" letter-spacing="3" font-weight="bold">KEMPSTON</text>
+  <!-- shaft -->
+  <rect x="244" y="170" width="24" height="180" rx="6" fill="#222" stroke="#000" stroke-width="2"/>
+  <rect x="248" y="172" width="6" height="174" rx="3" fill="#3a3a3a" opacity="0.7"/>
+  <!-- ball -->
+  <circle cx="256" cy="158" r="56" fill="url(#ballGrad)"/>
+  <circle cx="240" cy="142" r="14" fill="#ffd0d0" opacity="0.7"/>
+</svg>
