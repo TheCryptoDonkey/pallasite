@@ -1644,6 +1644,21 @@ interface LiveTheatreInput {
   onClose: () => void;
 }
 
+interface LiveAsteroid {
+  x: number;
+  y: number;
+  size: 'l' | 'm' | 's';
+  type: 's' | 'i' | 'c' | 'p';
+  rot: number;
+}
+interface LiveUfo {
+  x: number;
+  y: number;
+  type: 's' | 'p' | 't' | 'e' | 'c' | 'b';
+}
+interface LiveMine { x: number; y: number; }
+interface LiveBullet { x: number; y: number; enemy: boolean; }
+
 interface LiveFrame {
   /** When the player captured this frame (unix ms). */
   capturedAt: number;
@@ -1655,9 +1670,84 @@ interface LiveFrame {
   score: number;
   wave: number;
   thrust: boolean;
+  alive: boolean;
+  shielded: boolean;
+  asteroids: LiveAsteroid[];
+  ufos: LiveUfo[];
+  mines: LiveMine[];
+  bullets: LiveBullet[];
 }
 
-function readLiveFrame(event: { tags: string[][] }): LiveFrame | null {
+interface WireWorld {
+  v?: number;
+  a?: unknown;
+  u?: unknown;
+  m?: unknown;
+  b?: unknown;
+  shield?: number;
+  dead?: number;
+}
+
+function parseWireWorld(content: string): WireWorld {
+  if (!content) return {};
+  try {
+    const obj = JSON.parse(content);
+    if (!obj || typeof obj !== 'object') return {};
+    return obj as WireWorld;
+  } catch {
+    return {};
+  }
+}
+
+function parseAsteroids(raw: unknown): LiveAsteroid[] {
+  if (!Array.isArray(raw)) return [];
+  const out: LiveAsteroid[] = [];
+  for (const item of raw) {
+    if (!Array.isArray(item) || item.length < 5) continue;
+    const [x, y, size, type, rot] = item;
+    if (typeof x !== 'number' || typeof y !== 'number' || typeof rot !== 'number') continue;
+    if (size !== 'l' && size !== 'm' && size !== 's') continue;
+    if (type !== 's' && type !== 'i' && type !== 'c' && type !== 'p') continue;
+    out.push({ x, y, size, type, rot });
+  }
+  return out;
+}
+function parseUfos(raw: unknown): LiveUfo[] {
+  if (!Array.isArray(raw)) return [];
+  const out: LiveUfo[] = [];
+  for (const item of raw) {
+    if (!Array.isArray(item) || item.length < 3) continue;
+    const [x, y, type] = item;
+    if (typeof x !== 'number' || typeof y !== 'number') continue;
+    if (type !== 's' && type !== 'p' && type !== 't' && type !== 'e' && type !== 'c' && type !== 'b') continue;
+    out.push({ x, y, type });
+  }
+  return out;
+}
+function parseMines(raw: unknown): LiveMine[] {
+  if (!Array.isArray(raw)) return [];
+  const out: LiveMine[] = [];
+  for (const item of raw) {
+    if (!Array.isArray(item) || item.length < 2) continue;
+    const [x, y] = item;
+    if (typeof x !== 'number' || typeof y !== 'number') continue;
+    out.push({ x, y });
+  }
+  return out;
+}
+function parseBullets(raw: unknown): LiveBullet[] {
+  if (!Array.isArray(raw)) return [];
+  const out: LiveBullet[] = [];
+  for (const item of raw) {
+    if (!Array.isArray(item) || item.length < 3) continue;
+    const [x, y, enemy] = item;
+    if (typeof x !== 'number' || typeof y !== 'number') continue;
+    out.push({ x, y, enemy: enemy === 1 });
+  }
+  return out;
+}
+
+function readLiveFrame(event: { tags: string[][]; content?: string }): LiveFrame | null {
   let frameT: number | null = null;
   let x: number | null = null;
   let y: number | null = null;
@@ -1679,7 +1769,18 @@ function readLiveFrame(event: { tags: string[][] }): LiveFrame | null {
   if (frameT === null || !Number.isFinite(frameT)) return null;
   if (x === null || y === null || r === null) return null;
   if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(r)) return null;
-  return { capturedAt: frameT, receivedAt: performance.now(), x, y, r, score, wave, thrust };
+  const world = parseWireWorld(event.content ?? '');
+  return {
+    capturedAt: frameT,
+    receivedAt: performance.now(),
+    x, y, r, score, wave, thrust,
+    alive: world.dead !== 1,
+    shielded: world.shield === 1,
+    asteroids: parseAsteroids(world.a),
+    ufos: parseUfos(world.u),
+    mines: parseMines(world.m),
+    bullets: parseBullets(world.b),
+  };
 }
 
 function renderLiveTheatre(input: LiveTheatreInput): void {
@@ -1845,6 +1946,18 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   const sy = CANVAS_H / PALL_WORLD_H;
   const shipScale = Math.max(1.0, dpr * 1.6);
 
+  // Asteroid colour palette mirrors types.ts ASTEROID_TYPE_CONFIG so
+  // the live theatre matches what the player is seeing in their canvas.
+  const ASTEROID_COLOUR: Record<'s' | 'i' | 'c' | 'p', string> = {
+    s: '#b48cff',  // stony
+    i: '#ff7a3a',  // iron
+    c: '#7fbfff',  // chondrite
+    p: '#ffd84a',  // pallasite
+  };
+  const ASTEROID_RADIUS_WORLD: Record<'l' | 'm' | 's', number> = {
+    l: 38, m: 22, s: 13,
+  };
+
   // Render loop — interpolate between adjacent frames for smooth motion
   // at 60fps even when the wire delivers 2 Hz.
   const tick = (): void => {
@@ -1900,36 +2013,147 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     const rot = prev.r + dr * t;
     const thrusting = (t < 0.5 ? prev.thrust : next.thrust);
 
-    // 3. Ship — triangle outline, oriented by rot, scaled for DPR so
-    // it stays sharp on retina.
-    c2d.save();
-    c2d.translate(x, y);
-    c2d.rotate(rot);
-    c2d.scale(shipScale, shipScale);
-    c2d.strokeStyle = '#8cffb4';
-    c2d.fillStyle = 'rgba(140,255,180,0.18)';
-    c2d.lineWidth = 1.4;
-    c2d.shadowColor = 'rgba(140,255,180,0.7)';
-    c2d.shadowBlur = 10;
-    c2d.beginPath();
-    c2d.moveTo(10, 0);
-    c2d.lineTo(-7, 6);
-    c2d.lineTo(-4, 0);
-    c2d.lineTo(-7, -6);
-    c2d.closePath();
-    c2d.fill();
-    c2d.stroke();
-    if (thrusting) {
-      c2d.fillStyle = 'rgba(255,216,74,0.9)';
-      c2d.shadowColor = 'rgba(255,216,74,0.8)';
+    // 2b. Entities — asteroids, UFOs, mines, bullets — taken from the
+    // most recent frame's world snapshot. No per-entity interpolation
+    // yet (would need stable ids on the wire, deferred to a later
+    // pass); positions snap every 500ms but the ship's smooth pose
+    // anchors visual continuity.
+    const worldFrame = next;
+    for (const a of worldFrame.asteroids) {
+      const ax = a.x * sx;
+      const ay = a.y * sy;
+      const rWorld = ASTEROID_RADIUS_WORLD[a.size];
+      const rCanvas = rWorld * sx;
+      const colour = ASTEROID_COLOUR[a.type];
+      c2d.save();
+      c2d.translate(ax, ay);
+      c2d.rotate(a.rot);
+      c2d.strokeStyle = colour;
+      c2d.fillStyle = colour + '22';
+      c2d.lineWidth = Math.max(1, 1.2 * dpr);
+      c2d.shadowColor = colour;
+      c2d.shadowBlur = 6 * dpr;
+      // Lumpy heptagon — visually distinct from a circle without
+      // shipping the player's actual asteroid shape data on the wire.
+      const SIDES = 7;
+      const wobble = [0.95, 1.05, 0.92, 1.06, 0.97, 1.04, 0.93];
       c2d.beginPath();
-      c2d.moveTo(-4, -2);
-      c2d.lineTo(-9, 0);
-      c2d.lineTo(-4, 2);
+      for (let i = 0; i < SIDES; i++) {
+        const ang = (i / SIDES) * Math.PI * 2;
+        const r = rCanvas * wobble[i % wobble.length];
+        const px = Math.cos(ang) * r;
+        const py = Math.sin(ang) * r;
+        if (i === 0) c2d.moveTo(px, py); else c2d.lineTo(px, py);
+      }
       c2d.closePath();
       c2d.fill();
+      c2d.stroke();
+      c2d.restore();
     }
-    c2d.restore();
+    for (const u of worldFrame.ufos) {
+      const ux = u.x * sx;
+      const uy = u.y * sy;
+      const isBoss = u.type === 'b';
+      const rxW = isBoss ? 48 : 26;
+      const ryW = isBoss ? 28 : 14;
+      c2d.save();
+      c2d.translate(ux, uy);
+      c2d.strokeStyle = isBoss ? '#ff5050' : '#ff8a3a';
+      c2d.fillStyle = isBoss ? 'rgba(255,80,80,0.18)' : 'rgba(255,138,58,0.16)';
+      c2d.lineWidth = Math.max(1, 1.4 * dpr);
+      c2d.shadowColor = c2d.strokeStyle;
+      c2d.shadowBlur = (isBoss ? 14 : 9) * dpr;
+      c2d.beginPath();
+      c2d.ellipse(0, 0, rxW * sx, ryW * sy, 0, 0, Math.PI * 2);
+      c2d.fill();
+      c2d.stroke();
+      // Dome
+      c2d.beginPath();
+      c2d.ellipse(0, -ryW * sy * 0.4, rxW * sx * 0.4, ryW * sy * 0.55, 0, Math.PI, 0);
+      c2d.stroke();
+      c2d.restore();
+    }
+    for (const m of worldFrame.mines) {
+      const mx = m.x * sx;
+      const my = m.y * sy;
+      const pulse = 0.85 + 0.15 * Math.sin(performance.now() * 0.008);
+      c2d.save();
+      c2d.translate(mx, my);
+      c2d.strokeStyle = `rgba(255,90,90,${pulse})`;
+      c2d.fillStyle = 'rgba(255,90,90,0.15)';
+      c2d.lineWidth = Math.max(1, 1.2 * dpr);
+      c2d.shadowColor = '#ff5050';
+      c2d.shadowBlur = 12 * dpr;
+      c2d.beginPath();
+      c2d.arc(0, 0, 18 * sx, 0, Math.PI * 2);
+      c2d.fill();
+      c2d.stroke();
+      // Spikes
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        const r1 = 14 * sx;
+        const r2 = 22 * sx;
+        c2d.beginPath();
+        c2d.moveTo(Math.cos(a) * r1, Math.sin(a) * r1);
+        c2d.lineTo(Math.cos(a) * r2, Math.sin(a) * r2);
+        c2d.stroke();
+      }
+      c2d.restore();
+    }
+    for (const b of worldFrame.bullets) {
+      c2d.save();
+      c2d.fillStyle = b.enemy ? '#ff5050' : '#ffd84a';
+      c2d.shadowColor = c2d.fillStyle;
+      c2d.shadowBlur = 6 * dpr;
+      c2d.beginPath();
+      c2d.arc(b.x * sx, b.y * sy, 2.4 * dpr, 0, Math.PI * 2);
+      c2d.fill();
+      c2d.restore();
+    }
+    c2d.shadowBlur = 0;
+
+    // 3. Ship — triangle outline, oriented by rot, scaled for DPR so
+    // it stays sharp on retina.
+    const shipAlive = (t < 0.5 ? prev.alive : next.alive);
+    const shielded = (t < 0.5 ? prev.shielded : next.shielded);
+    if (shipAlive) {
+      c2d.save();
+      c2d.translate(x, y);
+      c2d.rotate(rot);
+      c2d.scale(shipScale, shipScale);
+      c2d.strokeStyle = '#8cffb4';
+      c2d.fillStyle = 'rgba(140,255,180,0.18)';
+      c2d.lineWidth = 1.4;
+      c2d.shadowColor = 'rgba(140,255,180,0.7)';
+      c2d.shadowBlur = 10;
+      c2d.beginPath();
+      c2d.moveTo(10, 0);
+      c2d.lineTo(-7, 6);
+      c2d.lineTo(-4, 0);
+      c2d.lineTo(-7, -6);
+      c2d.closePath();
+      c2d.fill();
+      c2d.stroke();
+      if (thrusting) {
+        c2d.fillStyle = 'rgba(255,216,74,0.9)';
+        c2d.shadowColor = 'rgba(255,216,74,0.8)';
+        c2d.beginPath();
+        c2d.moveTo(-4, -2);
+        c2d.lineTo(-9, 0);
+        c2d.lineTo(-4, 2);
+        c2d.closePath();
+        c2d.fill();
+      }
+      if (shielded) {
+        c2d.strokeStyle = 'rgba(120,200,255,0.85)';
+        c2d.shadowColor = 'rgba(120,200,255,0.7)';
+        c2d.lineWidth = 1.2;
+        c2d.beginPath();
+        c2d.arc(0, 0, 13, 0, Math.PI * 2);
+        c2d.stroke();
+      }
+      c2d.restore();
+    }
 
     // 4. Live indicator + age label
     c2d.shadowBlur = 0;

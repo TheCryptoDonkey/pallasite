@@ -752,10 +752,55 @@ async function boot(): Promise<void> {
 
     // Mid-run frame — sign locally with the session key, push to the
     // experimental relay. Skip until we have a wave to broadcast (no
-    // 0/0 pre-wave frames).
+    // 0/0 pre-wave frames). The frame snapshots ship pose AND all
+    // non-decorative entities (asteroids / UFOs / mines / bullets)
+    // so the watch viewer can render the full game world, not just
+    // the ship.
     if (inRun && activeStream && (state.wave >= 1 || state.score > 0)) {
       const now = Date.now();
       if (now - activeStream.lastFramePublishedAt < STREAM_FRAME_INTERVAL_MS - 50) return;
+
+      // Asteroid type → single-letter code matching what the stream
+      // wire expects. Pallasite-spec asteroid types are stony, iron,
+      // chondrite, pallasite.
+      const ASTEROID_TYPE_CODE: Record<string, 's' | 'i' | 'c' | 'p'> = {
+        stony: 's', iron: 'i', chondrite: 'c', pallasite: 'p',
+      };
+      const ASTEROID_SIZE_CODE: Record<string, 'l' | 'm' | 's'> = {
+        large: 'l', medium: 'm', small: 's',
+      };
+      const UFO_TYPE_CODE: Record<string, 's' | 'p' | 't' | 'e' | 'c' | 'b'> = {
+        saucer: 's', sniper: 'p', tank: 't', elite: 'e', cruiser: 'c', boss: 'b',
+      };
+
+      const asteroids = (state.asteroids ?? [])
+        .filter((a) => a.alive)
+        .slice(0, 32)
+        .map((a) => [
+          a.pos.x, a.pos.y,
+          ASTEROID_SIZE_CODE[a.size] ?? 's',
+          ASTEROID_TYPE_CODE[a.type] ?? 's',
+          a.rot,
+        ] as [number, number, 'l' | 'm' | 's', 's' | 'i' | 'c' | 'p', number]);
+
+      const ufos = (state.ufos ?? [])
+        .filter((u) => u.alive)
+        .slice(0, 8)
+        .map((u) => [u.pos.x, u.pos.y, UFO_TYPE_CODE[u.type] ?? 's'] as [number, number, 's' | 'p' | 't' | 'e' | 'c' | 'b']);
+
+      const mines = (state.mines ?? [])
+        .filter((m) => m.alive)
+        .slice(0, 8)
+        .map((m) => [m.pos.x, m.pos.y] as [number, number]);
+
+      // Bullets — separate player vs enemy via the existing arrays
+      // so the viewer can colour them differently.
+      const playerBullets = (state.bullets ?? []).filter((b) => b.alive).slice(0, 24);
+      const enemyBullets = (state.enemyBullets ?? []).filter((b) => b.alive).slice(0, 24);
+      const bullets: Array<[number, number, 0 | 1]> = [];
+      for (const b of playerBullets) bullets.push([b.pos.x, b.pos.y, 0]);
+      for (const b of enemyBullets) bullets.push([b.pos.x, b.pos.y, 1]);
+
       const frame = {
         t: now,
         x: state.ship?.pos?.x ?? 0,
@@ -764,6 +809,12 @@ async function boot(): Promise<void> {
         score: state.score,
         wave: state.wave,
         thrust: state.ship?.thrusting === true,
+        alive: state.ship?.alive !== false,
+        shielded: state.ship?.shieldUp === true,
+        asteroids,
+        ufos,
+        mines,
+        bullets,
       };
       void publishStreamFrame(activeStream, frame);
     }
