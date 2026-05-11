@@ -11,6 +11,14 @@ import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './see
 import { render, preloadBackground, setRenderMode } from './render.js';
 import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderJuryPage, renderWatchPage } from './ui.js';
 import { postHeartbeat } from './faucet.js';
+import {
+  startStreamSession,
+  publishStreamFrame,
+  endStreamSession,
+  publishStreamEnded,
+  STREAM_FRAME_INTERVAL_MS,
+  type ActiveStreamSession,
+} from './stream-session.js';
 import { handleAuthCallback, tryRestore, sweepSignetArtefacts } from './auth.js';
 import * as audio from './audio.js';
 import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicResetElements, musicWarmUpAll } from './music.js';
@@ -690,6 +698,77 @@ async function boot(): Promise<void> {
     });
   };
   window.setInterval(fireHeartbeat, 4_000);
+
+  // Live-stream session (NIP-53 + kind 22769 frames) — the "Twitch
+  // stream key" pattern. Master signs a kind 30311 Live Activities
+  // event ONCE at run start authorising a fresh ephemeral session
+  // pubkey. The session key signs every frame locally (no signer
+  // round-trip during play). 2 Hz pose telemetry; watch.pallasite.app
+  // viewers render the ship in lockstep.
+  let activeStream: ActiveStreamSession | null = null;
+  let streamingRunId: string | null = null;
+  let streamStartInFlight = false;
+  const STREAM_PHASES: ReadonlySet<string> = new Set([
+    'playing', 'wavestart', 'warp', 'paused', 'deathreplay',
+  ]);
+
+  const tickStream = (): void => {
+    if (!state.session) return;
+    if (state.runStartedAt <= 0) return;
+    const inRun = STREAM_PHASES.has(state.phase);
+    const runId = String(state.runStartedAt);
+
+    // Game over for the prior run — tear down the stream key + flag
+    // the NIP-53 event as ended. The session privkey is wiped from
+    // memory before the master signs the status=ended update.
+    if (!inRun && activeStream && streamingRunId === runId) {
+      const ended = activeStream;
+      const master = state.session;
+      activeStream = null;
+      streamingRunId = null;
+      endStreamSession(ended);
+      if (master) void publishStreamEnded(master, ended);
+      return;
+    }
+
+    // New run — generate the session key, get the master to sign the
+    // NIP-53 event. Guarded by streamStartInFlight so a slow signer
+    // doesn't fire-multiple times across consecutive ticks.
+    if (inRun && !activeStream && streamingRunId !== runId && !streamStartInFlight) {
+      streamStartInFlight = true;
+      void (async () => {
+        if (!state.session) { streamStartInFlight = false; return; }
+        const started = await startStreamSession(state.session, runId, {
+          startedAtMs: state.runStartedAt,
+        });
+        if (started) {
+          activeStream = started;
+          streamingRunId = runId;
+        }
+        streamStartInFlight = false;
+      })();
+      return;
+    }
+
+    // Mid-run frame — sign locally with the session key, push to the
+    // experimental relay. Skip until we have a wave to broadcast (no
+    // 0/0 pre-wave frames).
+    if (inRun && activeStream && (state.wave >= 1 || state.score > 0)) {
+      const now = Date.now();
+      if (now - activeStream.lastFramePublishedAt < STREAM_FRAME_INTERVAL_MS - 50) return;
+      const frame = {
+        t: now,
+        x: state.ship?.pos?.x ?? 0,
+        y: state.ship?.pos?.y ?? 0,
+        r: state.ship?.rot ?? 0,
+        score: state.score,
+        wave: state.wave,
+        thrust: state.ship?.thrusting === true,
+      };
+      void publishStreamFrame(activeStream, frame);
+    }
+  };
+  window.setInterval(tickStream, STREAM_FRAME_INTERVAL_MS);
 
   // Route dispatch — query-param, path-based, and hostname-based surfaces.
   // Title renders first so the shared boot wiring (music, scoreboard subs,
