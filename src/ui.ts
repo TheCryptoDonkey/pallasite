@@ -1121,13 +1121,9 @@ function renderBalanceChip(parent: HTMLElement, state: GameState): void {
     if (balance >= WITHDRAW_THRESHOLD_SATS) {
       withdrawBtn.style.display = 'inline-block';
       sub.textContent = `Ready to withdraw.`;
-    } else if (balance > 0) {
-      withdrawBtn.style.display = 'none';
-      const need = WITHDRAW_THRESHOLD_SATS - balance;
-      sub.textContent = `${need} sats to unlock WITHDRAW.`;
     } else {
       withdrawBtn.style.display = 'none';
-      sub.textContent = `Play a run to start banking sats.`;
+      sub.textContent = `Withdraw unlocks at ${WITHDRAW_THRESHOLD_SATS} sats.`;
     }
     onTap(withdrawBtn, () => openWithdrawDialog(state, balance));
   };
