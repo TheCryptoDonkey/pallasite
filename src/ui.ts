@@ -17,7 +17,7 @@ import {
 import { getHapticsEnabled, setHapticsEnabled, hapticsSupported } from './haptics.js';
 import * as auth from './auth.js';
 import { addLocalHighScore, getLocalHighScores, isHighScore, subscribeGlobalHighScores, clearLocalHighScores, type GlobalHighScore } from './score.js';
-import { submitClaim, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, type PlayerTier } from './faucet.js';
+import { submitClaim, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, fetchFlagged, type PlayerTier, type FlaggedEntry } from './faucet.js';
 import { renderLegalFooter, openTermsModal } from './legal.js';
 import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow } from './game.js';
 import * as audio from './audio.js';
@@ -1601,6 +1601,192 @@ function renderReplayTheatre(input: ReplayTheatreInput): void {
     }
     rafId = requestAnimationFrame(tick);
   })();
+}
+
+// ── Admin panel ───────────────────────────────────────────────────────────────
+//
+// Layer 1 visual review surface. Reached via ?admin=1 in the URL; the operator
+// supplies the bearer token configured as ADMIN_TOKEN on the faucet. Lists
+// currently-flagged players together with the run whose telemetry tripped
+// the heuristic, with WATCH buttons that open the existing replay theatre.
+// Pairs with the Layer 0 fingerprinter in pallasite-faucet/src/heuristics.ts.
+
+const ADMIN_TOKEN_KEY = 'pallasite-admin-token';
+
+function shortPubkey(hex: string): string {
+  if (hex.length < 12) return hex;
+  return `${hex.slice(0, 8)}…${hex.slice(-4)}`;
+}
+
+function formatFlaggedAt(ms: number | null): string {
+  if (!ms) return '—';
+  const d = new Date(ms);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}Z`;
+}
+
+export function renderAdminPanel(): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+
+  el('h2', { parent: overlay, text: 'ADMIN · LAYER 1 REVIEW' });
+  const intro = el('p', { parent: overlay });
+  intro.style.cssText = 'margin:4px 0 18px;font-size:0.85rem;color:rgba(220,210,255,0.7);letter-spacing:0.08em;max-width:640px;';
+  intro.textContent = 'Heuristic-flagged runs awaiting visual review. WATCH opens the kind 30763 ghost in the theatre.';
+
+  const cached = (() => {
+    try { return sessionStorage.getItem(ADMIN_TOKEN_KEY); } catch { return null; }
+  })();
+
+  if (!cached) {
+    renderAdminTokenPrompt(overlay);
+    return;
+  }
+
+  renderAdminFlaggedList(overlay, cached);
+}
+
+function renderAdminTokenPrompt(overlay: HTMLElement): void {
+  const form = el('div', { parent: overlay });
+  form.style.cssText = 'display:flex;flex-direction:column;gap:10px;align-items:center;margin:18px auto;max-width:420px;';
+
+  el('p', { parent: form, text: 'Paste your faucet ADMIN_TOKEN to view flagged runs.' })
+    .style.cssText = 'margin:0;font-size:0.88rem;color:rgba(220,210,255,0.85);';
+
+  const input = el('input', { parent: form });
+  input.setAttribute('type', 'password');
+  input.setAttribute('autocomplete', 'off');
+  input.setAttribute('placeholder', 'bearer token');
+  input.style.cssText = 'width:100%;padding:10px 12px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.18);border-radius:6px;color:#fff;font-family:monospace;letter-spacing:0.05em;';
+
+  const row = el('div', { className: 'menu-row', parent: form });
+  const enterBtn = el('button', { className: 'menu-btn', parent: row, text: 'ENTER' });
+  const closeBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'BACK' });
+
+  const submit = (): void => {
+    const token = (input as HTMLInputElement).value.trim();
+    if (!token) return;
+    try { sessionStorage.setItem(ADMIN_TOKEN_KEY, token); } catch { /* sessionStorage blocked — keep in-memory only */ }
+    renderAdminPanel();
+  };
+
+  input.addEventListener('keydown', (e) => {
+    if ((e as KeyboardEvent).key === 'Enter') submit();
+  });
+  enterBtn.addEventListener('click', submit);
+  closeBtn.addEventListener('click', exitAdmin);
+
+  setTimeout(() => (input as HTMLInputElement).focus(), 0);
+}
+
+function renderAdminFlaggedList(overlay: HTMLElement, token: string): void {
+  const status = el('p', { parent: overlay, text: 'Loading flagged runs…' });
+  status.style.cssText = 'margin:0 0 12px;font-size:0.88rem;color:rgba(180,140,255,0.7);letter-spacing:0.08em;min-height:1.2em;';
+
+  const list = el('div', { parent: overlay });
+  list.style.cssText = 'display:flex;flex-direction:column;gap:10px;max-width:760px;width:100%;margin:0 auto;';
+
+  const footer = el('div', { className: 'menu-row', parent: overlay });
+  const refreshBtn = el('button', { className: 'menu-btn secondary', parent: footer, text: 'REFRESH' });
+  const logoutBtn = el('button', { className: 'menu-btn secondary', parent: footer, text: 'CLEAR TOKEN' });
+  const closeBtn = el('button', { className: 'menu-btn', parent: footer, text: 'BACK' });
+
+  refreshBtn.addEventListener('click', () => renderAdminPanel());
+  logoutBtn.addEventListener('click', () => {
+    try { sessionStorage.removeItem(ADMIN_TOKEN_KEY); } catch { /* ignore */ }
+    renderAdminPanel();
+  });
+  closeBtn.addEventListener('click', exitAdmin);
+
+  void (async () => {
+    const result = await fetchFlagged(token);
+    if (!result.ok) {
+      if (result.error === 'unauthorized') {
+        try { sessionStorage.removeItem(ADMIN_TOKEN_KEY); } catch { /* ignore */ }
+        status.textContent = 'Token rejected. Re-enter to retry.';
+        setTimeout(() => renderAdminPanel(), 1200);
+        return;
+      }
+      status.textContent = `Failed: ${result.error}${result.status ? ` (HTTP ${result.status})` : ''}`;
+      return;
+    }
+    if (result.flagged.length === 0) {
+      status.textContent = 'No flagged runs. Either the heuristics haven\'t tripped, or you\'ve cleared everything.';
+      return;
+    }
+    status.textContent = `${result.flagged.length} flagged ${result.flagged.length === 1 ? 'player' : 'players'}.`;
+    for (const entry of result.flagged) {
+      list.appendChild(renderFlaggedRow(entry));
+    }
+  })();
+}
+
+function renderFlaggedRow(entry: FlaggedEntry): HTMLElement {
+  const row = el('div');
+  row.style.cssText = 'border:1px solid rgba(255,80,80,0.35);border-radius:8px;padding:10px 14px;background:rgba(255,80,80,0.06);display:flex;flex-direction:column;gap:6px;';
+
+  const head = el('div', { parent: row });
+  head.style.cssText = 'display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;';
+
+  const pk = el('div', { parent: head, text: shortPubkey(entry.pubkey) });
+  pk.style.cssText = 'font-family:monospace;font-size:0.95rem;color:#ffb0b0;letter-spacing:0.06em;';
+
+  const when = el('div', { parent: head, text: formatFlaggedAt(entry.flagged_at) });
+  when.style.cssText = 'font-size:0.78rem;color:rgba(220,210,255,0.6);letter-spacing:0.06em;';
+
+  const reasonText = entry.flag_reason ?? '(no reason recorded)';
+  const reason = el('div', { parent: row, text: reasonText });
+  reason.style.cssText = 'font-size:0.82rem;color:rgba(255,200,200,0.85);font-family:monospace;word-break:break-word;';
+
+  const meta = el('div', { parent: row });
+  meta.style.cssText = 'display:flex;gap:14px;font-size:0.82rem;color:rgba(220,210,255,0.75);letter-spacing:0.06em;flex-wrap:wrap;';
+  if (entry.claim) {
+    el('span', { parent: meta, text: `WAVE ${entry.claim.wave}` });
+    el('span', { parent: meta, text: `SCORE ${entry.claim.score?.toLocaleString() ?? '—'}` });
+    if (entry.claim.seed) el('span', { parent: meta, text: `SEED ${entry.claim.seed}` });
+  } else {
+    el('span', { parent: meta, text: 'No credited claim recorded.' });
+  }
+
+  const actions = el('div', { parent: row });
+  actions.style.cssText = 'display:flex;gap:8px;margin-top:4px;';
+  const watch = el('button', { className: 'menu-btn', parent: actions, text: 'WATCH' });
+  if (!entry.claim?.score_event_id) {
+    watch.setAttribute('disabled', 'true');
+    watch.style.opacity = '0.4';
+    watch.title = 'No kind 30762 score event id stored — cannot fetch ghost.';
+  } else {
+    const claim = entry.claim;
+    watch.addEventListener('click', () => {
+      renderReplayTheatre({
+        scoreEventId: claim.score_event_id!,
+        displayName: shortPubkey(entry.pubkey),
+        score: claim.score ?? 0,
+        wave: claim.wave ?? 0,
+        sats: 0,
+        onClose: () => renderAdminPanel(),
+      });
+    });
+  }
+  const copyPk = el('button', { className: 'menu-btn secondary', parent: actions, text: 'COPY PUBKEY' });
+  copyPk.addEventListener('click', () => {
+    void navigator.clipboard?.writeText(entry.pubkey).then(() => {
+      copyPk.textContent = 'COPIED';
+      setTimeout(() => (copyPk.textContent = 'COPY PUBKEY'), 1200);
+    });
+  });
+  return row;
+}
+
+function exitAdmin(): void {
+  // Drop ?admin from the URL so a refresh goes back to the normal title.
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('admin');
+    window.history.replaceState({}, '', url.toString());
+  } catch { /* ignore */ }
+  window.location.reload();
 }
 
 function renderLeaderboardBlock(parent: HTMLElement, list: ReturnType<typeof getLocalHighScores>, title: string, max = 5, onReplayClose?: () => void): void {

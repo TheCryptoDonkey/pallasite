@@ -458,3 +458,51 @@ export async function submitCheckin(
   }
   return data as CheckinResult;
 }
+
+export interface FlaggedEntry {
+  pubkey: string;
+  flag_reason: string | null;
+  flagged_at: number | null;
+  claim: {
+    id: number;
+    score: number;
+    wave: number;
+    seed: string | null;
+    submitted_at: number | null;
+    score_event_id: string | null;
+    reject_reason: string | null;
+  } | null;
+}
+
+export type FlaggedResult =
+  | { ok: true; flagged: FlaggedEntry[] }
+  | { ok: false; error: 'unauthorized' | 'network_error' | 'bad_response'; status?: number };
+
+/**
+ * GET /api/admin/flagged — operator-only list of currently flagged players
+ * + their flagging claim (most recent credited row, which is the run whose
+ * telemetry tripped the heuristic). Used by the admin panel to surface
+ * runs for visual review in the existing replay theatre.
+ */
+export async function fetchFlagged(adminToken: string): Promise<FlaggedResult> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/admin/flagged`, {
+      headers: { authorization: `Bearer ${adminToken}` },
+      cache: 'no-cache',
+    });
+  } catch (err) {
+    return { ok: false, error: 'network_error', ...(err ? {} : {}) };
+  }
+  if (res.status === 401) return { ok: false, error: 'unauthorized', status: 401 };
+  if (!res.ok) return { ok: false, error: 'bad_response', status: res.status };
+  try {
+    const data = await res.json() as { ok?: boolean; flagged?: FlaggedEntry[] };
+    if (!data.ok || !Array.isArray(data.flagged)) {
+      return { ok: false, error: 'bad_response', status: res.status };
+    }
+    return { ok: true, flagged: data.flagged };
+  } catch {
+    return { ok: false, error: 'bad_response', status: res.status };
+  }
+}
