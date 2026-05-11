@@ -23,6 +23,7 @@ interface Track {
 }
 
 const TRACKS: Record<string, Track> = {
+  // ── Originals (waves 1-25, title, warp, death, victory) ──────────
   'pallasite-idle':  { src: '/music/pallasite-idle.opus',  id: 'pallasite-idle' },
   'slow-orbit':      { src: '/music/slow-orbit.opus',      id: 'slow-orbit' },
   'tighter-orbits':  { src: '/music/tighter-orbits.opus',  id: 'tighter-orbits' },
@@ -31,6 +32,23 @@ const TRACKS: Record<string, Track> = {
   'event-horizon':   { src: '/music/event-horizon.opus',   id: 'event-horizon' },
   'hull-breached':   { src: '/music/hull-breached.opus',   id: 'hull-breached', loop: false },
   'banked':          { src: '/music/banked.opus',          id: 'banked' },
+  // ── Additions (per-wave detail tracks + cinematic stings) ────────
+  '303-belt':        { src: '/music/303-belt.opus',        id: '303-belt' },
+  'apophis':         { src: '/music/apophis.opus',         id: 'apophis' },
+  'banked-coin':     { src: '/music/banked-coin.opus',     id: 'banked-coin', loop: false },
+  'belt-drill':      { src: '/music/belt-drill.opus',      id: 'belt-drill' },
+  'hull-plating':    { src: '/music/hull-plating.opus',    id: 'hull-plating' },
+  'hyperspace':      { src: '/music/hyperspace.opus',      id: 'hyperspace', loop: false },
+  'ion-stream':      { src: '/music/ion-stream.opus',      id: 'ion-stream' },
+  'mine-field':      { src: '/music/mine-field.opus',      id: 'mine-field' },
+  'olivine':         { src: '/music/olivine.opus',         id: 'olivine' },
+  'perihelion':      { src: '/music/perihelion.opus',      id: 'perihelion' },
+  'slipstream':      { src: '/music/slipstream.opus',      id: 'slipstream' },
+  'slow-gravity':    { src: '/music/slow-gravity.opus',    id: 'slow-gravity' },
+  'tangent':         { src: '/music/tangent.opus',         id: 'tangent' },
+  'tank-dive':       { src: '/music/tank-dive.opus',       id: 'tank-dive' },
+  'tidal-locked':    { src: '/music/tidal-locked.opus',    id: 'tidal-locked' },
+  'vacuum':          { src: '/music/vacuum.opus',          id: 'vacuum' },
 };
 
 interface FadeProfile {
@@ -141,6 +159,37 @@ export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequent
   }
 }
 
+/** Per-wave track map. Each entry picks a bespoke piece keyed off the
+ *  wave's lore + threat mix (see types.ts WAVE_LORE). Falls back to the
+ *  legacy 4-band fallbacks if a wave is somehow out of range. */
+const WAVE_TRACKS: Record<number, string> = {
+   1: 'slow-orbit',      //  1 Krasnojarsk — opener, calm
+   2: 'slow-gravity',    //  2 Brenham — calm but heavy
+   3: '303-belt',        //  3 Esquel — gem-grade, rhythmic
+   4: 'ion-stream',      //  4 Fukang — elites incoming, energy ramping
+   5: 'olivine',         //  5 Imilac — bank sats, mineral theme
+   6: 'belt-drill',      //  6 Mineo — iron, industrial
+   7: 'tank-dive',       //  7 Zaisho — tanks roll
+   8: 'mine-field',      //  8 Marjalahti — mines arm
+   9: 'tighter-orbits',  //  9 Omolon — breather, mid-game keystone
+  10: 'slipstream',      // 10 Springwater — snipers calibrate
+  11: 'tidal-locked',    // 11 Glorieta Mtn — two wells
+  12: 'tangent',         // 12 Seymchan — reclassified, twisty
+  13: 'vacuum',          // 13 Albin — edges open
+  14: 'tank-dive',       // 14 Brahin — tanks anchor
+  15: 'hull-plating',    // 15 Ahumada — defensive, conserve chain
+  16: 'cascade',         // 16 Itzawisis — pallasite seam, cascade peak
+  17: 'cascade',         // 17 Eagle Station — past halfway
+  18: 'perihelion',      // 18 Newport — lanes tighten, close to the sun
+  19: 'slipstream',      // 19 Otinapa — snipers brake
+  20: 'hull-plating',    // 20 Conception Jct — chain hard
+  21: 'tangent',         // 21 Quijingue — anomalous
+  22: 'vacuum',          // 22 Phillips County — trust no orbit
+  23: 'apophis',         // 23 Admire — six wells, existential
+  24: 'perihelion',      // 24 Hambleton — last orbit before horizon
+  25: 'event-horizon',   // 25 boss
+};
+
 /** Map (phase, wave) to a track id. */
 function trackForState(state: GameState): string | null {
   switch (state.phase) {
@@ -159,11 +208,13 @@ function trackForState(state: GameState): string | null {
     case 'wavestart':
     case 'playing': {
       const w = state.wave;
+      const picked = WAVE_TRACKS[w];
+      if (picked) return picked;
+      // Legacy band fallbacks — used if a future wave > 25 ever lands.
       if (w >= 1 && w <= 8)   return 'slow-orbit';
       if (w >= 9 && w <= 16)  return 'tighter-orbits';
       if (w >= 17 && w <= 24) return 'cascade';
-      if (w === 25)           return 'event-horizon';
-      return 'cascade';  // unreachable under FINAL_WAVE=25, but cascade is the right fallback
+      return 'cascade';
     }
     case 'deathreplay':
       return null;  // silence during replay so the hull-breached sting lands clean at gameover
@@ -267,14 +318,32 @@ export interface TrackInfo {
 }
 
 const TRACK_INFO: TrackInfo[] = [
+  // Title + system stings.
   { id: 'pallasite-idle',  label: 'PALLASITE IDLE',  hint: 'Title theme' },
-  { id: 'slow-orbit',      label: 'SLOW ORBIT',      hint: 'Waves 1-8' },
-  { id: 'tighter-orbits',  label: 'TIGHTER ORBITS',  hint: 'Waves 9-16' },
-  { id: 'cascade',         label: 'CASCADE',         hint: 'Waves 17-24' },
-  { id: 'event-horizon',   label: 'EVENT HORIZON',   hint: 'Wave 25 boss' },
-  { id: 'warp-transition', label: 'WARP TRANSITION', hint: 'Inter-wave' },
+  { id: 'warp-transition', label: 'WARP TRANSITION', hint: 'Inter-wave riser' },
+  { id: 'hyperspace',      label: 'HYPERSPACE',      hint: 'Jump sting' },
   { id: 'hull-breached',   label: 'HULL BREACHED',   hint: 'Death sting' },
   { id: 'banked',          label: 'BANKED',          hint: 'Victory sting' },
+  { id: 'banked-coin',     label: 'BANKED COIN',     hint: 'Sat pickup sting' },
+  // Wave 1 → 25, in narrative order.
+  { id: 'slow-orbit',      label: 'SLOW ORBIT',      hint: 'Wave 1 · Krasnojarsk' },
+  { id: 'slow-gravity',    label: 'SLOW GRAVITY',    hint: 'Wave 2 · Brenham' },
+  { id: '303-belt',        label: '303 BELT',        hint: 'Wave 3 · Esquel' },
+  { id: 'ion-stream',      label: 'ION STREAM',      hint: 'Wave 4 · Fukang · elites' },
+  { id: 'olivine',         label: 'OLIVINE',         hint: 'Wave 5 · Imilac · bank' },
+  { id: 'belt-drill',      label: 'BELT DRILL',      hint: 'Wave 6 · Mineo · iron' },
+  { id: 'tank-dive',       label: 'TANK DIVE',       hint: 'Wave 7 · Zaisho · tanks' },
+  { id: 'mine-field',      label: 'MINE FIELD',      hint: 'Wave 8 · Marjalahti · mines' },
+  { id: 'tighter-orbits',  label: 'TIGHTER ORBITS',  hint: 'Wave 9 · Omolon · mid' },
+  { id: 'slipstream',      label: 'SLIPSTREAM',      hint: 'Wave 10 · Springwater · snipers' },
+  { id: 'tidal-locked',    label: 'TIDAL LOCKED',    hint: 'Wave 11 · Glorieta Mtn · wells' },
+  { id: 'tangent',         label: 'TANGENT',         hint: 'Wave 12 · Seymchan · reclassified' },
+  { id: 'vacuum',          label: 'VACUUM',          hint: 'Wave 13 · Albin · edges open' },
+  { id: 'hull-plating',    label: 'HULL PLATING',    hint: 'Wave 15 · Ahumada · defensive' },
+  { id: 'cascade',         label: 'CASCADE',         hint: 'Wave 16-17 · Itzawisis · seam' },
+  { id: 'perihelion',      label: 'PERIHELION',      hint: 'Wave 18 · Newport · close to sun' },
+  { id: 'apophis',         label: 'APOPHIS',         hint: 'Wave 23 · Admire · existential' },
+  { id: 'event-horizon',   label: 'EVENT HORIZON',   hint: 'Wave 25 · final arena' },
 ];
 
 export function listTracks(): readonly TrackInfo[] { return TRACK_INFO; }
