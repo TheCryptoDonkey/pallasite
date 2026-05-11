@@ -9,7 +9,7 @@ import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHype
 import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadBackground, setRenderMode } from './render.js';
-import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderJuryPage, renderWatchPage } from './ui.js';
+import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderJuryPage, renderWatchPage, renderControllerPage } from './ui.js';
 import { postHeartbeat } from './faucet.js';
 import {
   startStreamSession,
@@ -18,6 +18,7 @@ import {
   publishStreamEnded,
   drainStreamEvents,
   STREAM_FRAME_INTERVAL_MS,
+  STREAM_FRAME_INTERVAL_PAUSED_MS,
   type ActiveStreamSession,
 } from './stream-session.js';
 import { handleAuthCallback, tryRestore, sweepSignetArtefacts } from './auth.js';
@@ -759,7 +760,14 @@ async function boot(): Promise<void> {
     // the ship.
     if (inRun && activeStream && (state.wave >= 1 || state.score > 0)) {
       const now = Date.now();
-      if (now - activeStream.lastFramePublishedAt < STREAM_FRAME_INTERVAL_MS - 50) return;
+      // Lighter cadence during pause — nothing changes between frames
+      // and the watcher's PAUSED overlay only needs a heartbeat. Saves
+      // ~70% of the per-second sign+publish cost on a player sat in
+      // the pause menu (a noticeable mobile main-thread win).
+      const cadence = state.phase === 'paused'
+        ? STREAM_FRAME_INTERVAL_PAUSED_MS
+        : STREAM_FRAME_INTERVAL_MS;
+      if (now - activeStream.lastFramePublishedAt < cadence - 50) return;
 
       // Asteroid type → single-letter code matching what the stream
       // wire expects. Pallasite-spec asteroid types are stony, iron,
@@ -866,11 +874,17 @@ async function boot(): Promise<void> {
   if (isAdmin) {
     renderAdminPanel();
   } else if (window.location.hostname.startsWith('watch.')) {
-    renderWatchPage(state);
+    // Auto-open into the live theatre on initial nav when only one
+    // game is live — feels right for solo testing and small audiences.
+    // Closing the theatre returns to the full watch page (no flag) so
+    // the user can browse other entries from there.
+    renderWatchPage(state, { autoOpenLive: true });
   } else {
     const path = window.location.pathname.replace(/\/+$/, '');
     if (path === '/jury') {
       renderJuryPage(state);
+    } else if (path === '/controller') {
+      renderControllerPage();
     }
   }
 

@@ -94,12 +94,16 @@ export const NIP53_LIVE_EVENT_KIND = 30311;
  *  and the gamestr-spec kind 30763 ghost captures the canonical
  *  recording at end-of-run). */
 export const STREAM_FRAME_KIND = 22769;
-/** 4 Hz frames. Was 500ms in v2 — 250ms cuts the visible delay
- *  in half and makes fast entities (bullets, debris) feel real-time.
- *  At ~1.5 KB per frame the wire still sits well under 8 KB/sec per
- *  player, trivial for relay.trotters.cc and not enough to dent a
- *  mobile data budget. */
-export const STREAM_FRAME_INTERVAL_MS = 250;
+/** 3 Hz frames (333ms). Was 500ms (2Hz) then 250ms (4Hz), settled on
+ *  333ms — 4Hz cost noticeably more on mobile main-thread (sha256 +
+ *  schnorr.sign per frame), and bullet extrapolation on the viewer
+ *  already smooths fast entities visually. 3Hz is the sweet spot for
+ *  perceived smoothness vs publish cost. */
+export const STREAM_FRAME_INTERVAL_MS = 333;
+/** During paused phases publish at 1Hz instead of full rate — nothing
+ *  changes between samples and the viewer's PAUSED overlay only needs
+ *  a heartbeat to know the player hasn't quit. */
+export const STREAM_FRAME_INTERVAL_PAUSED_MS = 1000;
 const PUBLISH_TIMEOUT_MS = 4000;
 
 export interface StreamFrame {
