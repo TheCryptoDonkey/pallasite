@@ -18,7 +18,7 @@
  */
 
 import type { NostrEvent } from 'signet-login';
-import { getActiveRelays } from './relays.js';
+import { EXPERIMENTAL_RELAYS } from './credits.js';
 import { fetchGameInfo } from './faucet.js';
 
 export const SCORE_EVENT_KIND = 30762;
@@ -32,18 +32,55 @@ export interface WatchEntry {
   sats: number;
   /** Unix-sec — event's created_at. */
   createdAt: number;
-  /** kind 30762 event id — reachable ghost via the e-tag chain in C3/jury. */
+  /** kind 30762 event id — reachable ghost via the e-tag chain in C3/jury.
+   *  Only resolves to a ghost when state === 'final'; active runs have no
+   *  ghost yet because the kind 30763 is published at end-of-run. */
   eventId: string;
   /** Optional daily seed identifier (also doubles as run_id for live events). */
   seed: string | null;
-  /** True when this event was tagged state='active' AND is fresh enough that
-   *  the player is plausibly still in the run. False for finals. */
+  /** State tag from the score event. 'active' = in-progress (no ghost yet),
+   *  'final' = run claimed (ghost should exist on relays), null = unknown. */
+  state: 'active' | 'final' | null;
+  /** True when state==='active' AND the event is fresh enough that the
+   *  player is plausibly still in the run. */
   isLive: boolean;
 }
 
 /** Live entries older than this with no fresh heartbeat are considered
  *  stale and rendered as recently-active rather than LIVE. */
 export const LIVE_FRESHNESS_MS = 45_000;
+
+/** Active events older than this are treated as orphans — the player
+ *  almost certainly finished the run without claiming (no kind 30762
+ *  final landed, no kind 30763 ghost was published), so the card has
+ *  nothing to show. Drops them from the watch surface. */
+export const ORPHANED_ACTIVE_MAX_AGE_MS = 5 * 60_000;
+
+const DISMISSED_STORAGE_KEY = 'pallasite:watch-dismissed:v1';
+
+/** Hide an event from the watch surface for this browser. Per-event-id
+ *  blocklist in localStorage — purely a UI convenience, not a NIP-09
+ *  deletion. (For a proper cross-client deletion we'd publish a kind 5
+ *  NIP-09 event from the game pubkey via a faucet admin endpoint.) */
+export function dismissWatchEntry(eventId: string): void {
+  try {
+    const raw = localStorage.getItem(DISMISSED_STORAGE_KEY);
+    const list: string[] = raw ? JSON.parse(raw) : [];
+    if (!list.includes(eventId)) list.push(eventId);
+    localStorage.setItem(DISMISSED_STORAGE_KEY, JSON.stringify(list));
+  } catch { /* ignore */ }
+}
+
+export function getDismissedWatchEntries(): ReadonlySet<string> {
+  try {
+    const raw = localStorage.getItem(DISMISSED_STORAGE_KEY);
+    if (!raw) return new Set();
+    const list = JSON.parse(raw);
+    return Array.isArray(list) ? new Set(list.filter((v): v is string => typeof v === 'string')) : new Set();
+  } catch {
+    return new Set();
+  }
+}
 
 interface ScoreEvent extends NostrEvent {
   kind: typeof SCORE_EVENT_KIND;
@@ -73,7 +110,15 @@ function parseEntry(event: ScoreEvent, nowMs: number = Date.now()): WatchEntry |
   if (!isActive && score <= 0) return null;
   const playerPubkey = readTag(event.tags, 'p');
   if (!playerPubkey || !/^[0-9a-f]{64}$/i.test(playerPubkey)) return null;
-  const isLive = isActive && (nowMs - event.created_at * 1000) < LIVE_FRESHNESS_MS;
+  const ageMs = nowMs - event.created_at * 1000;
+  // Drop orphaned actives — old state='active' events from runs the
+  // player never finished/claimed. They have no companion kind 30763
+  // ghost (gamestr-spec replay) so the card would forever show
+  // 'IN PROGRESS' with no replay to open.
+  if (isActive && ageMs > ORPHANED_ACTIVE_MAX_AGE_MS) return null;
+  const isLive = isActive && ageMs < LIVE_FRESHNESS_MS;
+  const stateOut: 'active' | 'final' | null =
+    isActive ? 'active' : stateTag === 'final' ? 'final' : null;
   return {
     pubkey: playerPubkey,
     score,
@@ -82,6 +127,7 @@ function parseEntry(event: ScoreEvent, nowMs: number = Date.now()): WatchEntry |
     createdAt: event.created_at,
     eventId: event.id,
     seed: readTag(event.tags, 'seed'),
+    state: stateOut,
     isLive,
   };
 }
@@ -163,7 +209,10 @@ export function subscribeRecentRuns(
       emitStatus();
       return;
     }
-    const relays = opts.relays ?? getActiveRelays();
+    // Read live-presence + recent finals from the experimental relay
+    // during the roll-out. getActiveRelays is still consulted at the
+    // call site if the caller wants to broaden later.
+    const relays = opts.relays ?? EXPERIMENTAL_RELAYS;
     if (relays.length === 0) {
       onUpdate([]);
       emitStatus();

@@ -19,6 +19,15 @@ export const DEV = {
   twitterUrl: 'https://x.com/TheCryptoDonkey',
 } as const;
 
+/** Experimental-track relay set — during the C4 / watch roll-out we route
+ *  the new event kinds (live-presence kind 30762 active, kind 31764 cases,
+ *  kind 30765 delegations, kind 31766 ballots) through a single relay we
+ *  control so we can iterate without polluting public relays. Established
+ *  traffic (finals, ghosts, badges) still fans out across DEFAULT_RELAYS
+ *  so leaderboards and replays remain public. Drop this back to
+ *  DEFAULT_RELAYS once the surfaces stabilise. */
+export const EXPERIMENTAL_RELAYS: readonly string[] = ['wss://relay.trotters.cc'];
+
 /** Bootstrap relay set — the defaults a fresh install ships with. The active
  *  list at runtime comes from `getActiveRelays()` which honours any user
  *  override saved in localStorage. */

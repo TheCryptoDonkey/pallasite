@@ -36,6 +36,7 @@ import { createTrustCircle, contributeAssertion, type Contribution } from 'nostr
 import { signEvent } from 'nostr-veil';
 import type { SignetSession, NostrEvent } from 'signet-login';
 import { getActiveRelays } from './relays.js';
+import { EXPERIMENTAL_RELAYS } from './credits.js';
 import { fetchGameInfo } from './faucet.js';
 
 export const REVIEW_CASE_KIND = 31764;
@@ -134,7 +135,7 @@ export async function fetchReviewCases(
 ): Promise<ReviewCase[]> {
   const info = await fetchGameInfo();
   if (!info) return [];
-  const relays = opts.relays ?? getActiveRelays();
+  const relays = opts.relays ?? EXPERIMENTAL_RELAYS;
   if (relays.length === 0) return [];
   const limit = opts.limit ?? 50;
   const filter = {
@@ -320,7 +321,7 @@ export async function publishDelegation(
   juryPubkey: string,
   opts: { relays?: readonly string[] } = {},
 ): Promise<DelegationPublishResult> {
-  const relays = opts.relays ?? getActiveRelays();
+  const relays = opts.relays ?? EXPERIMENTAL_RELAYS;
   if (relays.length === 0) {
     return { ok: false, publishedTo: [], failed: [], error: 'no_relays' };
   }
