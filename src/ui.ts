@@ -45,7 +45,7 @@ import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipie
 import { subscribeRecentRuns, timeAgo, dismissWatchEntry, getDismissedWatchEntries, LIVE_FRESHNESS_MS, type WatchEntry } from './watch.js';
 import { EXPERIMENTAL_RELAYS } from './credits.js';
 import { STREAM_FRAME_KIND } from './stream-session.js';
-import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, ghostPoseAt, ghostScoreAt, type GhostRun } from './ghost.js';
+import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, type GhostRun } from './ghost.js';
 import { preloadBackground } from './render.js';
 import { musicSetTrackForState } from './music.js';
 import { savePersonalGhost } from './personal-ghost.js';
@@ -1642,6 +1642,10 @@ interface LiveTheatreInput {
   displayName: string;
   initialScore: number;
   initialWave: number;
+  /** Approximate run-start time (unix ms). Used as the `since` filter
+   *  when polling for the player's kind 30763 ghost after STREAM ENDED
+   *  so the re-watch button can find the right replay. */
+  runStartedAtMs: number;
   onClose: () => void;
 }
 
@@ -1889,7 +1893,84 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   liveScore.textContent = `WAVE ${input.initialWave} · ${input.initialScore.toLocaleString()}`;
 
   const closeRow = el('div', { className: 'menu-row', parent: overlay });
-  const closeBtn = el('button', { className: 'menu-btn', parent: closeRow, text: 'CLOSE · ESC' });
+  // "WATCH FROM START" — only shown once STREAM ENDED fires. Polls
+  // for the player's kind 30763 ghost (published at claim time) and
+  // hands off to renderReplayTheatre when found. The button sits in
+  // the same row as CLOSE so spectators see a single clean choice
+  // row after the stream ends.
+  const replayBtn = el('button', { className: 'menu-btn', parent: closeRow, text: 'WATCH FROM START' }) as HTMLButtonElement;
+  replayBtn.style.display = 'none';
+  const closeBtn = el('button', { className: 'menu-btn secondary', parent: closeRow, text: 'CLOSE · ESC' });
+  const replayHint = el('p', { parent: overlay });
+  replayHint.style.cssText = 'margin:6px 0 0;font-size:0.78rem;color:rgba(180,140,255,0.65);letter-spacing:0.08em;min-height:1em;text-align:center;';
+
+  // Replay button state machine: idle → loading → (success | not_yet).
+  // Auto-tries once on STREAM ENDED so a recently-claimed run replays
+  // with no extra click. If first attempt fails, leaves a retry button.
+  let replayState: 'hidden' | 'idle' | 'loading' | 'not_yet' | 'success' = 'hidden';
+  let replayAutoTried = false;
+  const setReplayState = (next: typeof replayState, hint = ''): void => {
+    replayState = next;
+    switch (next) {
+      case 'hidden':
+        replayBtn.style.display = 'none';
+        replayHint.textContent = '';
+        return;
+      case 'idle':
+        replayBtn.style.display = '';
+        replayBtn.disabled = false;
+        replayBtn.textContent = 'WATCH FROM START';
+        replayHint.textContent = hint;
+        return;
+      case 'loading':
+        replayBtn.style.display = '';
+        replayBtn.disabled = true;
+        replayBtn.textContent = 'LOADING…';
+        replayHint.textContent = 'Fetching the ghost recording from relays…';
+        return;
+      case 'not_yet':
+        replayBtn.style.display = '';
+        replayBtn.disabled = false;
+        replayBtn.textContent = 'TRY AGAIN';
+        replayHint.textContent = 'Player has not claimed yet — the ghost is published at claim time.';
+        return;
+      case 'success':
+        replayBtn.style.display = 'none';
+        replayHint.textContent = '';
+        return;
+    }
+  };
+  const tryFetchReplay = async (): Promise<void> => {
+    if (replayState === 'loading') return;
+    setReplayState('loading');
+    const sinceSec = Math.max(0, Math.floor(input.runStartedAtMs / 1000));
+    let scoreEventId: string | null = null;
+    try {
+      scoreEventId = await findScoreIdForLatestGhost(input.masterPubkey, sinceSec);
+    } catch { /* fall through to not_yet */ }
+    if (cancelled) return;
+    if (!scoreEventId) {
+      setReplayState('not_yet');
+      return;
+    }
+    // Hand off to the replay theatre — closes the live theatre and
+    // opens the ghost playback in its place. onClose chains back to
+    // whatever the live theatre was returning to (the watch page).
+    setReplayState('success');
+    const latest = frames[frames.length - 1];
+    const finalScore = latest?.score ?? input.initialScore;
+    const finalWave = latest?.wave ?? input.initialWave;
+    cleanup();
+    renderReplayTheatre({
+      scoreEventId,
+      displayName: input.displayName,
+      score: finalScore,
+      wave: finalWave,
+      sats: 0,
+      onClose: input.onClose,
+    });
+  };
+  replayBtn.addEventListener('click', () => { void tryFetchReplay(); });
 
   // Wave assets — preload the most recent wave's background image so
   // the canvas can paint it once it's decoded. Music comes from the
@@ -2936,6 +3017,20 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     // human "they've gone" rather than a network hiccup.
     const ended = veryStale;
 
+    // First STREAM ENDED transition — auto-try fetching the ghost so a
+    // recently-claimed run replays without an extra click. If first
+    // attempt fails (player hasn't claimed yet), leaves the button in
+    // 'not_yet' state for manual retry.
+    if (ended && !replayAutoTried) {
+      replayAutoTried = true;
+      void tryFetchReplay();
+    } else if (!ended && replayState !== 'hidden' && replayState !== 'loading') {
+      // Stream came back to life (rare — relay reconnect) — hide the
+      // button so we don't strand a stale "TRY AGAIN" alongside live
+      // frames.
+      setReplayState('hidden');
+    }
+
     // Live / paused / ended pill in the top-left
     let pillColour = 'rgba(140,255,180,0.85)';
     let pillLabel = 'LIVE';
@@ -3693,6 +3788,11 @@ function renderWatchCard(entry: WatchEntry, state: GameState): HTMLElement {
         displayName: name.textContent ?? shortPubkey(entry.pubkey),
         initialScore: entry.score,
         initialWave: entry.wave,
+        // WatchEntry.createdAt is the most-recent heartbeat (within a
+        // few seconds of run start in practice) — good enough as the
+        // ghost-fetch `since` filter when the spectator clicks
+        // "WATCH FROM START" after the run ends.
+        runStartedAtMs: entry.createdAt * 1000,
         onClose: () => renderWatchPage(state),
       });
       return;
