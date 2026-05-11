@@ -47,7 +47,7 @@ import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipient } from './zap.js';
 import { subscribeRecentRuns, timeAgo, dismissWatchEntry, getDismissedWatchEntries, LIVE_FRESHNESS_MS, type WatchEntry } from './watch.js';
 import { getReplayBuffer, type ReplayFrameRaw } from './stream-session.js';
-import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, findReplayByAuthor, fetchReplayByScoreEventId, type GhostRun } from './ghost.js';
+import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, findReplayByAuthor, fetchReplayByScoreEventId, fetchReplayByEventId, type GhostRun } from './ghost.js';
 import { preloadBackground } from './render.js';
 import { musicSetTrackForState } from './music.js';
 import { savePersonalGhost } from './personal-ghost.js';
@@ -1680,6 +1680,9 @@ interface LiveTheatreInput {
     durationMs: number;
     /** Header label shown above the canvas, e.g. "REPLAY · WATCHING". */
     headerLabel?: string;
+    /** kind 30764 event id — used to build a `watch.pallasite.app/
+     *  #replay=<id>` deep-link from the SHARE button. */
+    eventId?: string;
   };
 }
 
@@ -1969,7 +1972,7 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   scrub.style.cssText = 'flex:1;accent-color:#8cffb4;';
 
   const speedRow = el('div', { parent: replayCtl });
-  speedRow.style.cssText = 'display:flex;justify-content:center;gap:4px;font-family:monospace;font-size:0.78rem;';
+  speedRow.style.cssText = 'display:flex;justify-content:center;align-items:center;gap:4px;font-family:monospace;font-size:0.78rem;flex-wrap:wrap;';
   const SPEEDS = [0.5, 1, 2, 4];
   const speedBtns: HTMLButtonElement[] = [];
   for (const sp of SPEEDS) {
@@ -1988,6 +1991,35 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
       }
     });
     speedBtns.push(b);
+  }
+  // SHARE — only meaningful in replay mode with a known event id.
+  // Copies a `watch.pallasite.app/#replay=<id>` URL so the recipient
+  // opens the same rich replay in one click (Nostr resolution happens
+  // client-side; no server lookup).
+  const shareEventId = input.replaySource?.eventId;
+  if (replayMode && shareEventId) {
+    const shareBtn = el('button', { className: 'menu-btn secondary', parent: speedRow, text: 'COPY LINK' }) as HTMLButtonElement;
+    shareBtn.style.cssText += 'flex:0 0 110px;padding:4px 0;font-size:0.78rem;color:#cbb6ff;border-color:rgba(184,144,255,0.55);margin-left:14px;';
+    shareBtn.addEventListener('click', () => {
+      const url = `https://watch.pallasite.app/#replay=${shareEventId}`;
+      const restore = (): void => { setTimeout(() => { shareBtn.textContent = 'COPY LINK'; }, 1400); };
+      void (async () => {
+        try {
+          if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(url);
+            shareBtn.textContent = 'COPIED';
+            restore();
+            return;
+          }
+        } catch { /* fall through to manual copy */ }
+        // Fallback: select a hidden textarea so iOS Safari without
+        // Clipboard permissions still surfaces the URL for the user
+        // to long-press-copy. Cheap to ship; rarely hit on modern UAs.
+        window.prompt('Copy the replay link:', url);
+        shareBtn.textContent = 'COPIED';
+        restore();
+      })();
+    });
   }
 
   const closeRow = el('div', { className: 'menu-row', parent: overlay });
@@ -2104,6 +2136,7 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
           frames: richReplay.frames,
           durationMs: richReplay.durationMs,
           headerLabel: 'REPLAY · WATCHING',
+          eventId: richReplay.eventId,
         },
       });
       return;
@@ -5207,6 +5240,47 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
   // the page (e.g. via BACK from the theatre) would otherwise leak sockets.
   watchActiveUnsubscribe?.();
   watchActiveUnsubscribe = null;
+
+  // Deep-link router: `watch.pallasite.app/#replay=<event-id>` opens
+  // the rich replay theatre directly without first showing the watch
+  // grid. Hash is cleared after the theatre opens so a BACK from the
+  // theatre lands on the normal grid instead of re-firing the deep-link.
+  const hashMatch = /^#replay=([0-9a-f]{64})$/i.exec(window.location.hash);
+  if (hashMatch) {
+    const replayEventId = hashMatch[1].toLowerCase();
+    try { history.replaceState(null, '', window.location.pathname + window.location.search); } catch { /* ignore */ }
+    const overlay = el('div', { className: 'overlay', parent: root });
+    setupOverlayArrowNav(overlay);
+    el('h2', { parent: overlay, text: 'OPENING REPLAY…' });
+    const stat = el('p', { parent: overlay, text: `Fetching kind 30764 ${replayEventId.slice(0, 8)}… from relays.` });
+    stat.style.cssText = 'margin:12px auto;font-size:0.85rem;color:rgba(220,210,255,0.7);max-width:560px;text-align:center;';
+    void (async () => {
+      const rich = await fetchReplayByEventId(replayEventId).catch(() => null);
+      if (rich && rich.frames.length >= 2) {
+        renderLiveTheatre({
+          masterPubkey: rich.pubkey,
+          displayName: shortPubkey(rich.pubkey),
+          initialScore: rich.score,
+          initialWave: rich.wave,
+          runStartedAtMs: Date.now() - rich.durationMs,
+          onClose: () => renderWatchPage(state),
+          replaySource: {
+            frames: rich.frames,
+            durationMs: rich.durationMs,
+            headerLabel: 'REPLAY · SHARED LINK',
+            eventId: rich.eventId,
+          },
+        });
+        return;
+      }
+      stat.textContent = 'Could not find this replay on the relay set. The author may not have published, or it has been deleted via NIP-09.';
+      stat.style.color = 'rgba(255,120,120,0.85)';
+      const back = el('button', { className: 'menu-btn', parent: overlay, text: 'CONTINUE TO WATCH PAGE' });
+      back.style.cssText += 'margin:14px auto;display:block;';
+      back.addEventListener('click', () => renderWatchPage(state));
+    })();
+    return;
+  }
   // When the user lands fresh on the watch page (initial navigation, not
   // a BACK from the theatre), auto-jump into the live theatre if there's
   // exactly one player live. Saves a click during testing and feels right
@@ -5544,6 +5618,7 @@ function renderWatchCard(entry: WatchEntry, state: GameState): HTMLElement {
             frames: rich.frames,
             durationMs: rich.durationMs,
             headerLabel: 'REPLAY · WATCHING',
+            eventId: rich.eventId,
           },
         });
         return;
