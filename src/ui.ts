@@ -6039,14 +6039,22 @@ function renderWatchCard(entry: WatchEntry, state: GameState): HTMLElement {
     watch.textContent = 'LOADING…';
     void (async () => {
       const sinceSec = Math.max(0, entry.createdAt - 30);
-      // Final entries know their score event id; prefer the score-id
-      // lookup since it's a direct match by #e tag. Active entries
-      // fall back to author+since.
+      // Final entries: try score-id lookup first (#e match — only works
+      // if the player passed scoreEventId at publishReplay time; at
+      // game-over they don't have it yet because the score event is
+      // signed by the faucet AFTER the claim). Then fall back to
+      // author+since which finds any kind 30764 from that pubkey.
       let rich: Awaited<ReturnType<typeof findReplayByAuthor>> = null;
       try {
-        rich = entry.state === 'final'
-          ? await fetchReplayByScoreEventId(entry.eventId)
-          : await findReplayByAuthor(entry.pubkey, sinceSec);
+        if (entry.state === 'final') {
+          rich = await fetchReplayByScoreEventId(entry.eventId);
+          if (!rich) {
+            console.log(`[replay] #e lookup empty for ${entry.eventId.slice(0, 8)}…, falling back to findReplayByAuthor`);
+            rich = await findReplayByAuthor(entry.pubkey, sinceSec);
+          }
+        } else {
+          rich = await findReplayByAuthor(entry.pubkey, sinceSec);
+        }
       } catch { /* fall through to ghost */ }
       if (rich && rich.frames.length >= 2) {
         renderLiveTheatre({
