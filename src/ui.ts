@@ -1680,6 +1680,8 @@ interface LiveFrame {
   r: number;
   score: number;
   wave: number;
+  lives: number;
+  sats: number;
   thrust: boolean;
   alive: boolean;
   shielded: boolean;
@@ -1826,6 +1828,8 @@ function readLiveFrame(event: { tags: string[][]; content?: string }): LiveFrame
   let r: number | null = null;
   let score = 0;
   let wave = 0;
+  let lives = 0;
+  let sats = 0;
   let thrust = false;
   for (const tag of event.tags) {
     switch (tag[0]) {
@@ -1835,6 +1839,8 @@ function readLiveFrame(event: { tags: string[][]; content?: string }): LiveFrame
       case 'r': r = parseFloat(tag[1] ?? ''); break;
       case 'score': score = parseInt(tag[1] ?? '0', 10) || 0; break;
       case 'wave': wave = parseInt(tag[1] ?? '0', 10) || 0; break;
+      case 'lives': lives = parseInt(tag[1] ?? '0', 10) || 0; break;
+      case 'sats': sats = parseInt(tag[1] ?? '0', 10) || 0; break;
       case 'thrust': thrust = tag[1] === '1'; break;
     }
   }
@@ -1845,7 +1851,7 @@ function readLiveFrame(event: { tags: string[][]; content?: string }): LiveFrame
   return {
     capturedAt: frameT,
     receivedAt: performance.now(),
-    x, y, r, score, wave, thrust,
+    x, y, r, score, wave, lives, sats, thrust,
     alive: world.dead !== 1,
     shielded: world.shield === 1,
     paused: world.paused === 1,
@@ -1871,7 +1877,15 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
 
   const stat = el('p', { parent: overlay });
   stat.style.cssText = 'margin:0 0 14px;font-size:0.92rem;color:rgba(220,210,255,0.8);letter-spacing:0.1em;';
-  stat.textContent = `WAVE ${input.initialWave} · ${input.initialScore.toLocaleString()} SCORE`;
+  // Show "Connecting…" until the first real frame lands — initialScore
+  // and initialWave can be 0 for a player who has just clicked IGNITE
+  // (their first heartbeat is wave=0, score=0), which used to surface
+  // a misleading "WAVE 0 · 0 SCORE" line.
+  if (input.initialWave > 0 || input.initialScore > 0) {
+    stat.textContent = `WAVE ${input.initialWave} · ${input.initialScore.toLocaleString()} SCORE`;
+  } else {
+    stat.textContent = 'Tuning in…';
+  }
 
   // Sized to viewport. We pick the larger of "stay within the viewport
   // padding" and a min width so the canvas feels like a real watch
@@ -1902,7 +1916,18 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
 
   const liveScore = el('p', { parent: overlay });
   liveScore.style.cssText = 'margin:6px 0 0;font-size:1.4rem;letter-spacing:0.18em;color:var(--hud-yellow);text-shadow:0 0 12px rgba(255,216,74,0.5);min-height:1.4em;';
-  liveScore.textContent = `WAVE ${input.initialWave} · ${input.initialScore.toLocaleString()}`;
+  // Same "waiting on first frame" guard as the stat line so the HUD
+  // doesn't shout "WAVE 0 · 0" before any data arrives.
+  if (input.initialWave > 0 || input.initialScore > 0) {
+    liveScore.textContent = `WAVE ${input.initialWave} · ${input.initialScore.toLocaleString()}`;
+  } else {
+    liveScore.textContent = '';
+  }
+  // Lives + sats sub-line — separate row so it can be styled smaller
+  // and update independently of the big score readout.
+  const liveStats = el('p', { parent: overlay });
+  liveStats.style.cssText = 'margin:2px 0 0;font-size:0.95rem;letter-spacing:0.16em;color:rgba(220,210,255,0.78);min-height:1.2em;';
+  liveStats.textContent = '';
 
   const closeRow = el('div', { className: 'menu-row', parent: overlay });
   // "WATCH FROM START" — only shown once STREAM ENDED fires. Polls
@@ -2056,52 +2081,26 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     frames.push(frame);
     if (frames.length > FRAME_BUFFER_MAX) frames.shift();
     liveScore.textContent = `WAVE ${frame.wave} · ${frame.score.toLocaleString()}`;
+    // Lives as ♥ glyphs; sats as ₿. Game caps lives at 3 typically so
+    // the row stays compact. 0 lives shows an empty ♥♥♥ frame in red
+    // so a watcher reads the "last life" tension.
+    const heartsTotal = Math.max(0, frame.lives);
+    const hearts = heartsTotal > 0
+      ? '♥'.repeat(Math.min(5, heartsTotal))
+      : 'NO LIVES';
+    liveStats.textContent = `${hearts}  ·  ₿ ${frame.sats}`;
+    liveStats.style.color = heartsTotal > 0 ? 'rgba(220,210,255,0.78)' : 'rgba(255,120,120,0.9)';
     // Music + bg follow the live wave the player is on — re-apply when
     // the wave changes so a spectator who joins mid-run still gets the
     // matching ambience as the player crosses wave boundaries.
     if (frame.wave > 0) applyWaveAssets(frame.wave);
-    // SFX + particles — each event triggers an audio.* call matching
-    // what the player heard, and spawns a local particle burst at the
-    // event position so the explosion FX land in the right spot. Wire
-    // pays nothing extra: the events were already there for audio,
-    // particles are pure viewer-side cosmetic response.
+    // Defer SFX bursts until playbackT reaches the event's captured
+    // time. Earlier we fired them immediately on frame arrival, which
+    // put explosions on screen ~350ms BEFORE the interpolated ship/
+    // entity reached the death position. Buffering keeps the explosion
+    // in lockstep with the ship the spectator is watching.
     for (const ev of frame.events) {
-      try {
-        switch (ev.code) {
-          case 'ak':
-            audio.explosion(0.8);
-            spawnBurst(ev.x, ev.y, 14, '#b48cff', 220, 500);
-            break;
-          case 'uk':
-            audio.explosion(1.0);
-            spawnBurst(ev.x, ev.y, 28, '#ff5050', 240, 700);
-            spawnBurst(ev.x, ev.y, 12, '#ff8a3a', 180, 500);
-            break;
-          case 'md':
-            audio.explosion(0.7);
-            spawnBurst(ev.x, ev.y, 18, '#ff5050', 220, 600);
-            break;
-          case 'sh':
-            audio.explosion(1.4);
-            spawnBurst(ev.x, ev.y, 36, '#ff8a3a', 280, 900);
-            spawnBurst(ev.x, ev.y, 18, '#ffd84a', 200, 700);
-            // Ship-destroyed = hull shards flying out, matches the
-            // game's drawDebris look. Local cosmetic — wire pays nothing.
-            spawnDebris(ev.x, ev.y, 14);
-            break;
-          case 'sb':
-            audio.shieldUp();
-            spawnBurst(ev.x, ev.y, 10, '#5b9dff', 140, 380);
-            break;
-          case 'vc':
-            audio.explosion(1.2);
-            spawnBurst(ev.x, ev.y, 36, '#ffd84a', 320, 900);
-            spawnBurst(ev.x, ev.y, 14, '#ff8ad6', 280, 700);
-            break;
-          case 'pu': audio.powerupPickup(); break;
-          case 'fi': audio.fire(); break;
-        }
-      } catch { /* ignore audio errors */ }
+      pendingEvents.push({ code: ev.code, x: ev.x, y: ev.y, dueAt: frame.capturedAt });
     }
   };
 
@@ -2226,25 +2225,33 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   // Debris — line-segment shards from ship-destroyed bursts. Matches
   // render.ts drawDebris look: tumbling angled segments fading to zero.
   interface LiveDebris { x: number; y: number; vx: number; vy: number; rot: number; rotV: number; ttl: number; ttlMax: number; length: number; colour: string; }
+  // Pending SFX events — buffered with the frame's player-time capture
+  // moment, drained in the tick when playbackT reaches them so the
+  // explosion lines up with the interpolated ship/entity.
+  interface PendingEvent { code: LiveEventCode; x: number; y: number; dueAt: number; }
   const particles: LiveParticle[] = [];
   const debris: LiveDebris[] = [];
+  const pendingEvents: PendingEvent[] = [];
   const MAX_PARTICLES = 240;
   const MAX_DEBRIS = 48;
   const spawnDebris = (cx: number, cy: number, count: number): void => {
-    // Greens + golds — matches the ship hull palette. 700-1200ms life.
-    const colours = ['#8cffb4', '#ffd84a', '#ff8a3a', '#cfeaff'];
+    // Pure ship-green (#58ff58) — matches game.ts spawnShipDebris.
+    // Game emits exactly 4 segments (the hull triangle's four edges)
+    // with ttl 1500ms; we approximate with `count` randomly-oriented
+    // segments since the SFX event carries no rotation. Sizes match
+    // the hull edge lengths (8-24 world units).
     for (let i = 0; i < count && debris.length < MAX_DEBRIS; i++) {
       const a = Math.random() * Math.PI * 2;
-      const sp = 90 + Math.random() * 140;
+      const sp = 70 + Math.random() * 80;
       debris.push({
         x: cx, y: cy,
         vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
         rot: Math.random() * Math.PI * 2,
-        rotV: (Math.random() - 0.5) * 8,
-        ttl: 700 + Math.random() * 500,
-        ttlMax: 1200,
-        length: 6 + Math.random() * 10,
-        colour: colours[Math.floor(Math.random() * colours.length)],
+        rotV: (Math.random() - 0.5) * 6,
+        ttl: 1500,
+        ttlMax: 1500,
+        length: 8 + Math.random() * 16,
+        colour: '#58ff58',
       });
     }
   };
@@ -2324,6 +2331,63 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     // for a while and frames piled up).
     if (playbackT < oldestCap || latestCap - playbackT > PLAYBACK_LAG_LIMIT_MS) {
       playbackT = latestCap - PLAYBACK_LEAD_MS;
+    }
+
+    // Drain SFX events whose captured time playbackT has now passed.
+    // Particle palette + counts mirror game.ts so the spectator sees
+    // exactly the explosion the player saw:
+    //   killShip:    42 green + 22 yellow + 18 white + line-segment debris
+    //   destroyUfo:  26-36 red (averaging 30 since type isn't on the wire)
+    //   asteroid break (small only):  ~14 of the asteroid's hue, derived
+    //   from the source style. We don't know the type letter at SFX time
+    //   either, so fall back to a chondrite-like cyan-violet mix that
+    //   reads as a generic asteroid break.
+    while (pendingEvents.length > 0 && pendingEvents[0].dueAt <= playbackT) {
+      const ev = pendingEvents.shift()!;
+      try {
+        switch (ev.code) {
+          case 'ak':
+            audio.explosion(0.8);
+            spawnBurst(ev.x, ev.y, 14, '#b48cff', 220, 500);
+            break;
+          case 'uk':
+            // Same red as game.ts destroyUfo (#ff5050). Count 30 sits
+            // between cruiser/elite/sniper (26) and tank (36).
+            audio.explosion(1.0);
+            spawnBurst(ev.x, ev.y, 30, '#ff5050', 220, 800);
+            break;
+          case 'md':
+            audio.explosion(0.7);
+            spawnBurst(ev.x, ev.y, 18, '#ff5050', 220, 600);
+            break;
+          case 'sh':
+            // Match killShip layered explosion exactly: ship-green burst
+            // + yellow flash + white sparks + line-segment debris.
+            audio.explosion(1.4);
+            spawnBurst(ev.x, ev.y, 42, '#58ff58', 280, 1100);
+            spawnBurst(ev.x, ev.y, 22, '#ffd84a', 200,  700);
+            spawnBurst(ev.x, ev.y, 18, '#ffffff', 380,  450);
+            // Game emits 4 hull-edge segments — match the count, not 14.
+            spawnDebris(ev.x, ev.y, 4);
+            break;
+          case 'sb':
+            audio.shieldUp();
+            spawnBurst(ev.x, ev.y, 10, '#5b9dff', 140, 380);
+            break;
+          case 'vc':
+            audio.explosion(1.2);
+            spawnBurst(ev.x, ev.y, 36, '#ffd84a', 320, 900);
+            spawnBurst(ev.x, ev.y, 14, '#ff8ad6', 280, 700);
+            break;
+          case 'pu': audio.powerupPickup(); break;
+          case 'fi': audio.fire(); break;
+        }
+      } catch { /* ignore audio errors */ }
+    }
+    // Guardrail: drop any pending events that are way behind us (a
+    // playback resync just happened) so they don't fire all at once.
+    while (pendingEvents.length > 0 && playbackT - pendingEvents[0].dueAt > 2_000) {
+      pendingEvents.shift();
     }
     let prev = frames[0];
     let next = frames[0];

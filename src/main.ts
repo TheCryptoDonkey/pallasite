@@ -834,6 +834,11 @@ async function boot(): Promise<void> {
         r: state.ship?.rot ?? 0,
         score: state.score,
         wave: state.wave,
+        // Lives + sats so the watch HUD reflects the same numbers the
+        // player sees. state.lives drops with each ship-destroyed; sats
+        // climbs with each ₿ pickup.
+        lives: state.lives ?? 0,
+        sats: state.sats ?? 0,
         thrust: state.ship?.thrusting === true,
         alive: state.ship?.alive !== false,
         shielded: state.ship?.shieldUp === true,
