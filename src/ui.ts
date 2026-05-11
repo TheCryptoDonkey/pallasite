@@ -3801,56 +3801,66 @@ export function renderControllerPage(): void {
   //     things)
   // Sizes use clamp() so a tiny phone and a large tablet both work.
 
-  // Sizes are clamped between phone-floor and tablet-ceiling. Bumped
-  // floors substantially after a screenshot showed FIRE looking like
-  // a postage stamp in a sea of empty bottom-right. Using vh because
-  // in landscape phone, height IS the smaller dimension on every
-  // device, so vh tracks the limiting axis directly.
-  const SHOULDER_W = 'clamp(84px, 24vh, 120px)';
-  const SHOULDER_H = 'clamp(54px, 16vh, 78px)';
-  const FACE_SIZE  = 'clamp(104px, 32vh, 144px)';
-  const FACE_GAP   = 'clamp(132px, 38vh, 192px)';   // centre-to-centre
-  const SYS_W      = 'clamp(68px, 18vh, 88px)';
-  const SYS_H      = 'clamp(38px, 11vh, 52px)';
+  // Mirrors the in-game touch.ts cluster the user said feels right:
+  // FIRE is a big horizontal rounded-rect across the bottom-right,
+  // WARP + SHIELD sit as smaller pills above it side-by-side, PAUSE
+  // tucks into the top-right corner. Joystick anchors bottom-left
+  // (smaller than the face cluster — player preference: dominant
+  // FIRE button, lean joystick).
+  const SHOULDER_W = 'clamp(74px, 22vh, 110px)';
+  const SHOULDER_H = 'clamp(48px, 14vh, 70px)';
+  // FIRE (A) — the big wide one. Bottom-right edge.
+  const FIRE_W = 'clamp(220px, 28vw, 320px)';
+  const FIRE_H = 'clamp(88px, 24vh, 116px)';
+  // SHIELD / WARP — the smaller pills above FIRE.
+  const SEC_W  = 'clamp(110px, 16vw, 168px)';
+  const SEC_H  = 'clamp(64px, 18vh, 92px)';
+  // PAUSE (Y) — tucks in the top-right; small and easy to tap.
+  const SYS_W = 'clamp(76px, 14vh, 96px)';
+  const SYS_H = 'clamp(40px, 10vh, 54px)';
 
-  // Top strip — shoulders + start/select. 8px margin from the edges.
+  // Shoulders + start/select stay in the spec for non-Pallasite games
+  // but Pallasite hides them. Positions kept tight to the corners so
+  // they don't clash with the face cluster when a game does use them.
   makeButton('L1', `top:8px;left:8px;width:${SHOULDER_W};height:${SHOULDER_H};border-radius:14px;font-size:1rem;`);
   makeButton('L2', `top:8px;left:calc(16px + ${SHOULDER_W});width:${SHOULDER_W};height:${SHOULDER_H};border-radius:14px;font-size:1rem;`);
-  makeButton('R2', `top:8px;right:calc(16px + ${SHOULDER_W});width:${SHOULDER_W};height:${SHOULDER_H};border-radius:14px;font-size:1rem;`);
-  makeButton('R1', `top:8px;right:8px;width:${SHOULDER_W};height:${SHOULDER_H};border-radius:14px;font-size:1rem;`);
+  makeButton('R2', `top:calc(16px + ${SYS_H});right:8px;width:${SHOULDER_W};height:${SHOULDER_H};border-radius:14px;font-size:1rem;`);
+  makeButton('R1', `top:calc(16px + ${SYS_H} + 12px + ${SHOULDER_H});right:8px;width:${SHOULDER_W};height:${SHOULDER_H};border-radius:14px;font-size:1rem;`);
   makeButton('select', `top:14px;left:calc(50% - ${SYS_W} - 4px);width:${SYS_W};height:${SYS_H};border-radius:14px;font-size:0.78rem;`);
-  makeButton('start',  `top:14px;left:calc(50% + 4px);width:${SYS_W};height:${SYS_H};border-radius:14px;font-size:0.78rem;`);
 
-  // Face-button diamond — wrapped in a relative-positioned container
-  // so the four buttons stay correctly diamond-arranged regardless of
-  // viewport width. Container sits in the bottom-right thumb zone.
-  const faceCluster = el('div', { parent: surface });
-  faceCluster.style.cssText = `position:absolute;right:24px;bottom:24px;width:calc(${FACE_GAP} + ${FACE_SIZE});height:calc(${FACE_GAP} + ${FACE_SIZE});pointer-events:none;`;
-
-  const faceBtn = (slot: string, css: string): void => {
-    const btn = makeButton(slot, `width:${FACE_SIZE};height:${FACE_SIZE};border-radius:50%;font-size:1.5rem;pointer-events:auto;${css}`);
-    btn.parentElement?.removeChild(btn);
-    faceCluster.appendChild(btn);
-  };
-  // Position each face button at one of the diamond points. Container
-  // is (FACE_GAP + FACE_SIZE) square; centres are at gap-spacing from
-  // the corners.
-  faceBtn('Y', `top:0;left:calc(50% - ${FACE_SIZE} / 2);`);
-  faceBtn('X', `top:calc(50% - ${FACE_SIZE} / 2);left:0;`);
-  faceBtn('B', `top:calc(50% - ${FACE_SIZE} / 2);right:0;`);
-  faceBtn('A', `bottom:0;left:calc(50% - ${FACE_SIZE} / 2);`);
+  // Face cluster — matches the in-game touch.ts pattern:
+  //   PAUSE (Y) tucked top-right
+  //   WARP (X) + SHIELD (B) side-by-side pills above FIRE
+  //   FIRE (A) big rounded rect across the bottom-right
+  //
+  // No more diamond. Buttons are positioned absolutely against the
+  // surface so they snap to the bottom-right thumb rest zone.
+  makeButton('start', `top:8px;right:calc(50% - ${SYS_W} / 2);width:${SYS_W};height:${SYS_H};border-radius:14px;font-size:0.78rem;`); // start = pause in some specs, but Y is the Pallasite pause slot
+  makeButton('Y', `top:8px;right:8px;width:${SYS_W};height:${SYS_H};border-radius:14px;font-size:0.85rem;`);
+  makeButton('A', `bottom:14px;right:14px;width:${FIRE_W};height:${FIRE_H};border-radius:calc(${FIRE_H} / 2);font-size:1.1rem;`);
+  makeButton('B', `bottom:calc(14px + ${FIRE_H} + 10px);right:14px;width:${SEC_W};height:${SEC_H};border-radius:calc(${SEC_H} / 2);font-size:1rem;`);
+  makeButton('X', `bottom:calc(14px + ${FIRE_H} + 10px);right:calc(14px + ${SEC_W} + 10px);width:${SEC_W};height:${SEC_H};border-radius:calc(${SEC_H} / 2);font-size:1rem;`);
 
   // ── Joystick (left thumb) — anchored bottom-left, sized to match
   //    the face cluster so left and right thumb work in symmetry.
-  const JOY_HEADING_DEADZONE = 0.18;
+  // Joystick responsiveness — lower deadzone (was 0.18, now 0.10) so a
+  // small thumb deflection already starts steering. Heading sample
+  // rate up from 20Hz to 33Hz for less perceived lag. Pad radius
+  // reaches max at 60% of pad-pixels (was 70%), so smaller drags hit
+  // full deflection.
+  const JOY_HEADING_DEADZONE = 0.10;
   const JOY_THRUST_THRESHOLD = 0.45;
   const JOY_TAP_TIME_MS = 220;
   const JOY_TAP_MOVE_PX = 8;
-  const HEADING_SAMPLE_MS = 50;
-  const JOY_SIZE = `calc(${FACE_GAP} + ${FACE_SIZE})`;
+  const HEADING_SAMPLE_MS = 30;
+  const JOY_RADIUS_SCALE = 0.6;
+  // Joystick is smaller than face cluster — feedback was that the
+  // joystick dominated the screen. Capped tighter and hugged closer
+  // to the left edge.
+  const JOY_SIZE = 'clamp(170px, 48vh, 240px)';
 
   const pad = el('div', { parent: surface });
-  pad.style.cssText = `position:absolute;left:24px;bottom:24px;width:${JOY_SIZE};height:${JOY_SIZE};border-radius:50%;background:radial-gradient(circle, rgba(140,255,180,0.10) 0%, rgba(140,255,180,0.04) 60%, rgba(140,255,180,0) 100%);border:2px solid rgba(140,255,180,0.35);touch-action:none;-webkit-tap-highlight-color:transparent;display:none;`;
+  pad.style.cssText = `position:absolute;left:14px;bottom:14px;width:${JOY_SIZE};height:${JOY_SIZE};border-radius:50%;background:radial-gradient(circle, rgba(140,255,180,0.10) 0%, rgba(140,255,180,0.04) 60%, rgba(140,255,180,0) 100%);border:2px solid rgba(140,255,180,0.35);touch-action:none;-webkit-tap-highlight-color:transparent;display:none;`;
   const knob = el('div', { parent: pad });
   knob.style.cssText = 'position:absolute;left:50%;top:50%;width:38%;height:38%;margin:-19% 0 0 -19%;border-radius:50%;background:radial-gradient(circle, rgba(140,255,180,0.45) 0%, rgba(91,255,140,0.18) 70%);border:2px solid rgba(140,255,180,0.75);box-shadow:0 0 18px rgba(140,255,180,0.4);transform:translate(0,0);transition:transform 60ms ease-out;';
   slotEls.set('joyL', pad);
@@ -3882,20 +3892,28 @@ export function renderControllerPage(): void {
       const inner = slotLabels.get(slot);
       if (inner) {
         inner.innerHTML = '';
-        // Bigger glyph + label so the buttons read clearly. The font
-        // sizes track the slot family — face buttons are the focus,
-        // shoulders + system buttons sit smaller.
-        const isFace = slot === 'A' || slot === 'B' || slot === 'X' || slot === 'Y';
-        const isSys  = slot === 'start' || slot === 'select';
-        const iconSize = isFace ? '2.2rem' : isSys ? '1rem' : '1.4rem';
-        const labelSize = isFace ? '0.72rem' : isSys ? '0.6rem' : '0.65rem';
+        // Per-slot sizing — FIRE (A) is the dominant horizontal pill,
+        // SHIELD/WARP (B/X) are smaller pills above it, PAUSE (Y) is
+        // a top-corner pill. Shoulders + system buttons stay neutral.
+        let iconSize: string;
+        let labelSize: string;
+        let layout: 'col' | 'row' = 'col';
+        switch (slot) {
+          case 'A':                iconSize = '1.9rem'; labelSize = '0.9rem'; layout = 'row'; break;
+          case 'B': case 'X':      iconSize = '1.5rem'; labelSize = '0.72rem'; layout = 'row'; break;
+          case 'Y':                iconSize = '1.05rem'; labelSize = '0.62rem'; layout = 'row'; break;
+          case 'start': case 'select': iconSize = '1rem'; labelSize = '0.6rem'; break;
+          default:                 iconSize = '1.3rem'; labelSize = '0.65rem'; break;
+        }
+        inner.style.flexDirection = layout === 'row' ? 'row' : 'column';
+        inner.style.gap = layout === 'row' ? '10px' : '2px';
         if (cfg.icon) {
           const ic = el('span', { parent: inner, text: cfg.icon });
           ic.style.cssText = `font-size:${iconSize};line-height:1;`;
         }
         if (cfg.label) {
           const lb = el('span', { parent: inner, text: cfg.label });
-          lb.style.cssText = `font-size:${labelSize};letter-spacing:0.14em;color:${colour};`;
+          lb.style.cssText = `font-size:${labelSize};letter-spacing:0.14em;color:${colour};font-weight:bold;`;
         }
       }
     }
@@ -3958,7 +3976,7 @@ export function renderControllerPage(): void {
     const rect = pad.getBoundingClientRect();
     joyOriginX = rect.left + rect.width / 2;
     joyOriginY = rect.top + rect.height / 2;
-    joyMaxRadius = (rect.width / 2) * 0.7;
+    joyMaxRadius = (rect.width / 2) * JOY_RADIUS_SCALE;
     joyPressedAt = performance.now();
     joyMaxDrift = 0;
     joyDidEngage = false;
