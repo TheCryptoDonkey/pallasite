@@ -137,6 +137,11 @@ export interface StreamFrame {
    *  motion and renders a PAUSED overlay so spectators know the run
    *  hasn't crashed. */
   paused?: boolean;
+  /** Current game phase — drives the watcher's overlay (paused banner,
+   *  warp incoming-wave banner, etc). */
+  phase?: string;
+  /** When in 'warp' phase, the wave the player is jumping to. */
+  nextWave?: number;
   /** World-state snapshot of non-ship entities at frame time. Each
    *  entity is a fixed-shape tuple keyed by `id` (the first field)
    *  so the viewer can match the same entity across frames and
@@ -144,7 +149,10 @@ export interface StreamFrame {
    *  cadence. Particles + coins + powerups are omitted (decorative,
    *  numerous, cheap to re-spawn). */
   asteroids?: ReadonlyArray<readonly [number, number, number, 'l' | 'm' | 's', 's' | 'i' | 'c' | 'p', number]>;
-  ufos?: ReadonlyArray<readonly [number, number, number, 's' | 'p' | 't' | 'e' | 'c' | 'b']>;
+  /** UFO tuple: [id, x, y, typeCode, hp]. hp drives HP bars + dots on
+   *  the watcher (tanks show HP dots underneath, boss shows segmented
+   *  HP bar above). hp defaults to 1 for old clients that don't ship it. */
+  ufos?: ReadonlyArray<readonly [number, number, number, 's' | 'p' | 't' | 'e' | 'c' | 'b', number]>;
   mines?: ReadonlyArray<readonly [number, number, number]>;
   /** Bullets carry velocity (vx, vy) so the viewer can extrapolate
    *  between frames at 60fps. Without this the bullet snaps each 250ms
@@ -174,7 +182,7 @@ export interface StreamFrame {
 interface WireWorld {
   v: 2;
   a?: Array<[number, number, number, string, string, number]>;
-  u?: Array<[number, number, number, string]>;
+  u?: Array<[number, number, number, string, number]>;
   m?: Array<[number, number, number]>;
   b?: Array<[number, number, number, number, number, 0 | 1]>;
   /** Coins — sat ₿ or dust shard. sourceType '' when not from an asteroid. */
@@ -185,6 +193,14 @@ interface WireWorld {
   shield?: 1;
   dead?: 1;
   paused?: 1;
+  /** Game phase — 'playing', 'paused', 'warp', 'wavestart', 'gameover',
+   *  'title', 'completed'. Watcher renders different overlays per phase
+   *  (e.g. "WAVE N INCOMING" banner during warp). */
+  ph?: string;
+  /** When in 'warp' phase, the wave the player is jumping TO (state.
+   *  warpTargetWave). Lets the watcher show an incoming-wave banner
+   *  before the actual wave-change frame arrives. */
+  nw?: number;
 }
 
 export interface ActiveStreamSession {
@@ -423,7 +439,7 @@ export async function publishStreamFrame(
     );
   }
   if (frame.ufos?.length) {
-    world.u = frame.ufos.map((u) => [u[0], round1(u[1]), round1(u[2]), u[3]]);
+    world.u = frame.ufos.map((u) => [u[0], round1(u[1]), round1(u[2]), u[3], u[4]]);
   }
   if (frame.mines?.length) {
     world.m = frame.mines.map((m) => [m[0], round1(m[1]), round1(m[2])]);
@@ -443,6 +459,8 @@ export async function publishStreamFrame(
   if (frame.shielded) world.shield = 1;
   if (frame.alive === false) world.dead = 1;
   if (frame.paused) world.paused = 1;
+  if (frame.phase) world.ph = frame.phase;
+  if (typeof frame.nextWave === 'number') world.nw = frame.nextWave;
 
   // Buffer this frame for the end-of-run replay bundle, but subsampled
   // to ~30Hz regardless of wire rate. Wire is 60Hz for input latency;

@@ -1693,6 +1693,9 @@ interface LiveUfo {
   x: number;
   y: number;
   type: 's' | 'p' | 't' | 'e' | 'c' | 'b';
+  /** Current HP. Drives tank's bottom HP dots and boss's segmented HP
+   *  bar. Defaults to 1 for old clients that don't ship the field. */
+  hp: number;
 }
 interface LiveMine { id: number; x: number; y: number; }
 interface LiveBullet { id: number; x: number; y: number; vx: number; vy: number; enemy: boolean; }
@@ -1717,6 +1720,12 @@ interface LiveFrame {
   alive: boolean;
   shielded: boolean;
   paused: boolean;
+  /** Game phase — drives the watcher's incoming-wave banner during
+   *  warp and similar overlays. Empty string for old wire payloads
+   *  without the field. */
+  phase: string;
+  /** Wave the player is jumping to during 'warp' (0 when not warping). */
+  nextWave: number;
   asteroids: LiveAsteroid[];
   ufos: LiveUfo[];
   mines: LiveMine[];
@@ -1760,10 +1769,10 @@ function parseUfos(raw: unknown): LiveUfo[] {
   const out: LiveUfo[] = [];
   for (const item of raw) {
     if (!Array.isArray(item) || item.length < 4) continue;
-    const [id, x, y, type] = item;
+    const [id, x, y, type, hp] = item;
     if (typeof id !== 'number' || typeof x !== 'number' || typeof y !== 'number') continue;
     if (type !== 's' && type !== 'p' && type !== 't' && type !== 'e' && type !== 'c' && type !== 'b') continue;
-    out.push({ id, x, y, type });
+    out.push({ id, x, y, type, hp: typeof hp === 'number' ? hp : 1 });
   }
   return out;
 }
@@ -1850,6 +1859,8 @@ function readWsFrame(obj: Record<string, unknown>): LiveFrame | null {
     alive: obj.alive !== false,
     shielded: obj.shielded === true,
     paused: obj.paused === true,
+    phase: typeof world.ph === 'string' ? world.ph : '',
+    nextWave: typeof world.nw === 'number' ? world.nw : 0,
     asteroids: parseAsteroids(world.a),
     ufos: parseUfos(world.u),
     mines: parseMines(world.m),
@@ -2658,8 +2669,9 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
       c2d.shadowBlur = 12 * dpr;
 
       if (uNext.type === 't') {
-        // Tank — squat hex with armour seams + gun barrels along
-        // the bottom + viewport scanner band.
+        // Tank — squat hex with armour seams, rivets, gun barrels,
+        // top turret + antenna, viewport scanner, white running light,
+        // and bottom HP dots. Ported from render.ts drawUfo.tank.
         const w = r * 2.6;
         const h = r * 1.2;
         const bodyGrad = c2d.createRadialGradient(0, -h * 0.2, h * 0.2, 0, 0, w * 0.55);
@@ -2676,6 +2688,21 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
         c2d.fillStyle = bodyGrad;
         c2d.fill();
         c2d.stroke();
+        // Armour plate seams
+        c2d.lineWidth = 1 * dpr;
+        c2d.beginPath();
+        c2d.moveTo(-w * 0.4, -h * 0.18); c2d.lineTo(w * 0.4, -h * 0.18);
+        c2d.moveTo(-w * 0.4, h * 0.18); c2d.lineTo(w * 0.4, h * 0.18);
+        c2d.stroke();
+        // Bolt rivets at hex vertices
+        c2d.fillStyle = col.shadow;
+        c2d.shadowBlur = 0;
+        for (const [hx, hy] of hexPts) {
+          c2d.beginPath();
+          c2d.arc(hx * 0.92, hy * 0.92, 1.2 * dpr, 0, Math.PI * 2);
+          c2d.fill();
+        }
+        c2d.shadowBlur = 12 * dpr;
         // Three gun barrels
         c2d.fillStyle = col.shadow;
         c2d.lineWidth = 2 * dpr;
@@ -2687,6 +2714,16 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
         }
         c2d.lineWidth = 1.5 * dpr;
         c2d.strokeStyle = col.primary;
+        // Top turret with antenna
+        c2d.beginPath();
+        c2d.rect(-w * 0.1, -h * 0.5 - 5 * dpr, w * 0.2, 5 * dpr);
+        c2d.fillStyle = col.primary;
+        c2d.fill();
+        c2d.stroke();
+        c2d.beginPath();
+        c2d.moveTo(0, -h * 0.5 - 5 * dpr);
+        c2d.lineTo(0, -h * 0.5 - 11 * dpr);
+        c2d.stroke();
         // Viewport scanner band
         const tankPulse = 0.7 + 0.3 * Math.sin(ufoBlink * 3);
         const vGrad = c2d.createLinearGradient(-w * 0.18, 0, w * 0.18, 0);
@@ -2694,16 +2731,60 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
         vGrad.addColorStop(0.5, col.cockpit);
         vGrad.addColorStop(1, col.shadow);
         c2d.fillStyle = vGrad;
+        c2d.shadowColor = col.cockpit;
+        c2d.shadowBlur = (10 + tankPulse * 4) * dpr;
         c2d.globalAlpha = 0.7 + tankPulse * 0.3;
         c2d.beginPath();
         c2d.rect(-w * 0.18, -h * 0.34, w * 0.36, 4 * dpr);
         c2d.fill();
         c2d.globalAlpha = 1;
+        c2d.shadowBlur = 12 * dpr;
+        // Single bright white running light dead-centre
+        c2d.fillStyle = '#ffffff';
+        c2d.shadowColor = col.cockpit;
+        c2d.shadowBlur = 8 * dpr;
+        c2d.beginPath();
+        c2d.arc(0, -h * 0.32 + 2 * dpr, (1.4 + tankPulse * 0.6) * dpr, 0, Math.PI * 2);
+        c2d.fill();
+        // HP dots under the body
+        c2d.shadowBlur = 0;
+        const hpShown = Math.min(8, Math.max(0, uNext.hp));
+        for (let i = 0; i < hpShown; i++) {
+          const hpx = -7 * dpr + i * 7 * dpr;
+          c2d.fillStyle = col.primary;
+          c2d.beginPath();
+          c2d.arc(hpx, h * 0.5 + 13 * dpr, 2 * dpr, 0, Math.PI * 2);
+          c2d.fill();
+        }
+        c2d.shadowBlur = 12 * dpr;
       } else if (uNext.type === 'p') {
-        // Sniper — sleek elongated lozenge with single cyclops eye.
+        // Sniper — sleek elongated lozenge with twin engine ribbons,
+        // single cyclops eye, swept fins. Ported from render.ts.
         const len = r * 2.8;
         const halfW = r * 0.85;
         c2d.scale(facing, 1);
+        // Twin engine ribbons trailing behind — gradient triangles
+        // fading from primary → transparent.
+        for (const sign of [-1, 1]) {
+          const ey = sign * halfW * 0.35;
+          const ribbonLen = len * 0.45;
+          const grad = c2d.createLinearGradient(-len * 0.46, ey, -len * 0.46 - ribbonLen, ey);
+          grad.addColorStop(0, `${col.primary}cc`);
+          grad.addColorStop(0.5, `${col.primary}55`);
+          grad.addColorStop(1, `${col.primary}00`);
+          c2d.save();
+          c2d.fillStyle = grad;
+          c2d.shadowColor = col.primary;
+          c2d.shadowBlur = 12 * dpr;
+          c2d.globalAlpha = 0.8;
+          c2d.beginPath();
+          c2d.moveTo(-len * 0.46, ey - 3 * dpr);
+          c2d.lineTo(-len * 0.46 - ribbonLen, ey);
+          c2d.lineTo(-len * 0.46, ey + 3 * dpr);
+          c2d.closePath();
+          c2d.fill();
+          c2d.restore();
+        }
         const bodyGrad = c2d.createLinearGradient(-len * 0.5, 0, len * 0.5, 0);
         bodyGrad.addColorStop(0, col.shadow);
         bodyGrad.addColorStop(0.5, col.primary);
@@ -2805,14 +2886,63 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
         c2d.ellipse(0, 0, r * 0.9, r * 0.5, 0, 0, Math.PI * 2);
         c2d.fill();
         c2d.stroke();
+        // Inner ring 6 tick marks (counter-rotation)
+        c2d.save();
+        c2d.rotate(-ufoBlink * 0.7);
+        c2d.lineWidth = 1.5 * dpr;
+        c2d.strokeStyle = col.primary;
+        for (let i = 0; i < 6; i++) {
+          const a = (Math.PI * 2 * i) / 6;
+          const x1 = Math.cos(a) * r * 0.85;
+          const y1 = Math.sin(a) * r * 0.85;
+          c2d.beginPath();
+          c2d.moveTo(x1 * 0.95, y1 * 0.95);
+          c2d.lineTo(x1 * 1.05, y1 * 1.05);
+          c2d.stroke();
+        }
+        c2d.restore();
         // Pulsing core
         const pulse = 0.7 + 0.3 * Math.sin(ufoBlink * 3);
         c2d.fillStyle = `rgba(255,216,74,${pulse * 0.7})`;
         c2d.shadowColor = col.cockpit;
-        c2d.shadowBlur = 18 * dpr;
+        c2d.shadowBlur = 30 * dpr;
         c2d.beginPath();
-        c2d.arc(0, 0, r * 0.22, 0, Math.PI * 2);
+        c2d.arc(0, 0, r * 0.28 * pulse, 0, Math.PI * 2);
         c2d.fill();
+        // Bright white eye dot
+        c2d.fillStyle = '#fff';
+        c2d.shadowBlur = 16 * dpr;
+        c2d.beginPath();
+        c2d.arc(0, 0, r * 0.07, 0, Math.PI * 2);
+        c2d.fill();
+        // Top dome
+        c2d.shadowColor = col.primary;
+        c2d.shadowBlur = 12 * dpr;
+        c2d.fillStyle = col.shadow;
+        c2d.beginPath();
+        c2d.arc(0, -r * 0.2, r * 0.35, Math.PI, 0);
+        c2d.fill();
+        c2d.stroke();
+        // HP bar above with segment markers (every 5 HP across max 25)
+        c2d.shadowBlur = 0;
+        const hpMax = 25;
+        const hpFrac = Math.max(0, Math.min(1, uNext.hp / hpMax));
+        c2d.fillStyle = 'rgba(0,0,0,0.55)';
+        c2d.fillRect(-r * 0.95, -r - 16 * dpr, r * 1.9, 7 * dpr);
+        c2d.fillStyle = '#ff5050';
+        c2d.fillRect(-r * 0.95, -r - 16 * dpr, r * 1.9 * hpFrac, 7 * dpr);
+        c2d.strokeStyle = 'rgba(255,255,255,0.35)';
+        c2d.lineWidth = 1 * dpr;
+        for (let s = 1; s < 5; s++) {
+          const segX = -r * 0.95 + (r * 1.9) * (s / 5);
+          c2d.beginPath();
+          c2d.moveTo(segX, -r - 16 * dpr);
+          c2d.lineTo(segX, -r - 9 * dpr);
+          c2d.stroke();
+        }
+        c2d.strokeStyle = col.primary;
+        c2d.lineWidth = 1.5 * dpr;
+        c2d.strokeRect(-r * 0.95, -r - 16 * dpr, r * 1.9, 7 * dpr);
       } else if (uNext.type === 'e') {
         // Elite — fast stealth saucer with twin engine pods. Distinct
         // silhouette from cruiser: lower, sleeker, twin nacelles.
@@ -3315,6 +3445,48 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
           c2d.arc(Math.cos(a) * shieldR, Math.sin(a) * shieldR, 2 * dpr, 0, Math.PI * 2);
           c2d.fill();
         }
+        c2d.restore();
+      }
+    }
+
+    // 3a. Warp-incoming banner — fires while the player is in 'warp'
+    // phase (1.3s between waves). The host sends nextWave so we know
+    // which wave is about to land; we render "WAVE N+1 INCOMING" as a
+    // big centred banner over the frozen last-gameplay-frame canvas.
+    // This replaces the 60Hz frame stream during warp (host throttles
+    // to 1Hz heartbeats; banner gives the spectator something to look
+    // at instead of a static last-frame).
+    if (prev.phase === 'warp' && prev.nextWave > 0) {
+      const incomingLore = WAVE_LORE[prev.nextWave - 1];
+      if (incomingLore) {
+        const bannerY = CANVAS_H * 0.5;
+        c2d.save();
+        c2d.globalAlpha = 0.78;
+        c2d.fillStyle = '#02050d';
+        c2d.fillRect(0, bannerY - 70 * dpr, CANVAS_W, 160 * dpr);
+        c2d.globalAlpha = 1;
+        c2d.textAlign = 'center';
+        c2d.textBaseline = 'middle';
+        c2d.fillStyle = 'rgba(140,255,180,0.9)';
+        c2d.font = `${Math.round(16 * dpr)}px ui-monospace, monospace`;
+        const blinkOn = Math.sin(nowPerf * 0.005) > 0;
+        c2d.globalAlpha = blinkOn ? 1 : 0.35;
+        c2d.fillText('INCOMING', CANVAS_W / 2, bannerY - 38 * dpr);
+        c2d.globalAlpha = 1;
+        c2d.fillStyle = '#ffd84a';
+        c2d.shadowColor = 'rgba(255,216,74,0.7)';
+        c2d.shadowBlur = 18 * dpr;
+        c2d.font = `bold ${Math.round(34 * dpr)}px ui-monospace, monospace`;
+        c2d.fillText(`WAVE ${prev.nextWave} · ${incomingLore.name}`, CANVAS_W / 2, bannerY - 4 * dpr);
+        c2d.shadowBlur = 0;
+        c2d.fillStyle = 'rgba(220,210,255,0.8)';
+        c2d.font = `${Math.round(12 * dpr)}px ui-monospace, monospace`;
+        c2d.fillText(incomingLore.subtitle, CANVAS_W / 2, bannerY + 26 * dpr);
+        c2d.fillStyle = 'rgba(140,255,180,0.7)';
+        c2d.font = `${Math.round(11 * dpr)}px ui-monospace, monospace`;
+        c2d.fillText(incomingLore.tagline, CANVAS_W / 2, bannerY + 48 * dpr);
+        c2d.textAlign = 'start';
+        c2d.textBaseline = 'alphabetic';
         c2d.restore();
       }
     }
