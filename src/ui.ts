@@ -17,7 +17,7 @@ import {
 import { getHapticsEnabled, setHapticsEnabled, hapticsSupported } from './haptics.js';
 import * as auth from './auth.js';
 import { addLocalHighScore, getLocalHighScores, isHighScore, subscribeGlobalHighScores, clearLocalHighScores, type GlobalHighScore } from './score.js';
-import { submitClaim, submitWithdraw, fetchPool, fetchPlayer, type PlayerTier } from './faucet.js';
+import { submitClaim, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, type PlayerTier } from './faucet.js';
 import { renderLegalFooter, openTermsModal } from './legal.js';
 import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow } from './game.js';
 import * as audio from './audio.js';
@@ -1107,28 +1107,57 @@ function renderBalanceChip(parent: HTMLElement, state: GameState): void {
   const sub = el('p', { parent: wrap });
   sub.style.cssText = 'margin:0;font-size:0.72rem;color:#888;line-height:1.4';
 
+  const stipendLine = el('p', { parent: wrap });
+  stipendLine.style.cssText = 'margin:0;font-size:0.72rem;color:#ffd84a;line-height:1.4;min-height:0';
+  stipendLine.style.display = 'none';
+
   const withdrawBtn = el('button', { className: 'menu-btn', parent: wrap, text: 'WITHDRAW' }) as HTMLButtonElement;
   withdrawBtn.style.cssText = 'padding:6px 12px;font-size:0.85rem;cursor:pointer;display:none';
 
   const session = state.session;
-  void fetchPlayer(session.pubkey).then((p) => {
-    if (!wrap.isConnected) return;
-    if (!p) {
-      head.textContent = 'BALANCE · unavailable';
-      sub.textContent = '';
-      return;
-    }
-    head.innerHTML = `BALANCE <span style="color:#5b9dff;font-weight:bold;">${p.balance_sats}</span>`;
-    if (p.balance_sats >= WITHDRAW_THRESHOLD_SATS) {
+
+  const renderBalance = (balance: number): void => {
+    head.innerHTML = `BALANCE <span style="color:#5b9dff;font-weight:bold;">${balance}</span>`;
+    if (balance >= WITHDRAW_THRESHOLD_SATS) {
       withdrawBtn.style.display = 'inline-block';
       sub.textContent = `Ready to withdraw.`;
-    } else if (p.balance_sats > 0) {
-      const need = WITHDRAW_THRESHOLD_SATS - p.balance_sats;
+    } else if (balance > 0) {
+      withdrawBtn.style.display = 'none';
+      const need = WITHDRAW_THRESHOLD_SATS - balance;
       sub.textContent = `${need} sats to unlock WITHDRAW.`;
     } else {
+      withdrawBtn.style.display = 'none';
       sub.textContent = `Play a run to start banking sats.`;
     }
-    onTap(withdrawBtn, () => openWithdrawDialog(state, p.balance_sats));
+    onTap(withdrawBtn, () => openWithdrawDialog(state, balance));
+  };
+
+  // Daily check-in stipend: fire-and-forget on title mount. Idempotent
+  // per UTC day, so re-renders within the same day are no-ops. Lands a
+  // +1 sat credit and shows a brief yellow stipend line.
+  void submitCheckin(session).then((c) => {
+    if (!wrap.isConnected) return;
+    if (c.ok && c.credited > 0) {
+      stipendLine.style.display = 'block';
+      stipendLine.textContent = `+${c.credited} daily check-in`;
+      renderBalance(c.new_balance);
+      return c.new_balance;
+    } else if (c.ok && !c.already_checked_in_today) {
+      // ok with credited=0 means hit the lifetime tier cap silently
+    }
+    return null;
+  }).then((preBalance) => {
+    if (!wrap.isConnected) return;
+    if (preBalance !== null) return; // already rendered from checkin
+    void fetchPlayer(session.pubkey).then((p) => {
+      if (!wrap.isConnected) return;
+      if (!p) {
+        head.textContent = 'BALANCE · unavailable';
+        sub.textContent = '';
+        return;
+      }
+      renderBalance(p.balance_sats);
+    });
   });
 }
 
@@ -3110,8 +3139,11 @@ async function maybePublishScore(
 
       if (result.ok) {
         clearPendingClaim();
+        const pityTail = result.pity_bonus && result.pity_bonus > 0
+          ? ` (★ +${result.pity_bonus} pity bonus)`
+          : '';
         setStatus(
-          `✓ Banked ${result.payout_sats} sats · balance: ${result.new_balance}`,
+          `✓ Banked ${result.payout_sats} sats · balance: ${result.new_balance}${pityTail}`,
           '#58ff58',
         );
       } else {
