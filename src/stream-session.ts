@@ -97,17 +97,13 @@ export const STREAM_FRAME_KIND = 22769;
  *  Publishers connect as r=publish, watchers as r=subscribe; sessionId
  *  is the player's master pubkey (one stream per player). */
 export const STREAM_WS_ENDPOINT = 'wss://controller.pallasite.app/';
-/** 30 Hz frames (33ms). The wire transport (WS via
- *  controller.pallasite.app) was never the bottleneck — phone→game-tab
- *  is direct and feels instant. The watch-page lag is the snapshot
- *  model layered on top: a 10Hz publish window means up to 100ms of
- *  "the player did something but the host hasn't captured it yet"
- *  before the wire even fires, then the watcher buffers another 100ms
- *  for interpolation. 30Hz collapses the capture wait to ~16ms avg
- *  and the watcher's playback lead drops to 0 (slam-cut to latest
- *  frame). Each frame is ~1.5KB so wire bandwidth at 30Hz is ~45KB/sec
- *  per spectator — trivial for our scale. */
-export const STREAM_FRAME_INTERVAL_MS = 33;
+/** 60 Hz frames (16ms). User feedback after the 30Hz bump: "almost
+ *  playable, want another ~25ms shaved". Halving the capture window
+ *  again saves another ~8ms on the wait + 8ms on the perception of
+ *  reaction freshness. Bandwidth doubles to ~90KB/sec per spectator —
+ *  still trivial. The watcher renders at 60fps anyway, so the slam-cut
+ *  now lines up 1:1 with paint frames. */
+export const STREAM_FRAME_INTERVAL_MS = 16;
 /** During paused phases publish at 1Hz — heartbeat only, no
  *  per-frame state change. */
 export const STREAM_FRAME_INTERVAL_PAUSED_MS = 1000;
@@ -336,14 +332,20 @@ export async function startStreamSession(
       ),
     ),
   );
+  // NIP-53 is a discoverability publish (zap.stream / Nostrudel etc).
+  // Failure to broadcast means we won't show up in those clients but
+  // the actual gameplay stream still works: WS publish and the kind
+  // 30764 replay capture don't need the NIP-53 event to exist. So we
+  // log a warning and proceed instead of returning null — that way a
+  // relay outage doesn't tank the run's replay.
   if (!publishedAny) {
-    console.warn('[stream] no relays accepted the NIP-53 event');
-    return null;
+    console.warn('[stream] no relays accepted the NIP-53 event — continuing without discoverability');
+  } else {
+    console.log(
+      `[stream] live (NIP-53) — session ${sessionPubkey.slice(0, 8)}… for run ${runId}, ` +
+        `master ${signed.pubkey.slice(0, 8)}…`,
+    );
   }
-  console.log(
-    `[stream] live (NIP-53) — session ${sessionPubkey.slice(0, 8)}… for run ${runId}, ` +
-      `master ${signed.pubkey.slice(0, 8)}…`,
-  );
 
   return {
     runId,
@@ -442,24 +444,31 @@ export async function publishStreamFrame(
   if (frame.alive === false) world.dead = 1;
   if (frame.paused) world.paused = 1;
 
-  // Buffer this frame for the end-of-run replay bundle. Cap the buffer
-  // so a stuck/long-paused run can't blow memory — 4096 frames at 3 Hz
-  // ≈ 22 minutes, well beyond any single Pallasite run. Older frames
-  // are dropped from the front if we overflow.
-  const MAX_BUFFER = 4096;
-  replayBuffer.push({
-    t: frame.t,
-    x: frame.x, y: frame.y, r: frame.r,
-    score: frame.score, wave: frame.wave,
-    lives: frame.lives ?? 0, sats: frame.sats ?? 0,
-    thrust: frame.thrust,
-    alive: frame.alive,
-    shielded: frame.shielded,
-    paused: frame.paused,
-    world,
-  });
-  if (replayBuffer.length > MAX_BUFFER) {
-    replayBuffer.splice(0, replayBuffer.length - MAX_BUFFER);
+  // Buffer this frame for the end-of-run replay bundle, but subsampled
+  // to ~30Hz regardless of wire rate. Wire is 60Hz for input latency;
+  // the replay buffer only needs spectator-smooth playback, so we save
+  // every ~33ms. Keeps the kind 30764 payload small (~30KB compressed
+  // for a 2min run) and the in-memory buffer manageable for long runs.
+  // 6000 frames at 30Hz ≈ 3.3 minutes of run, generous for an arcade
+  // session. Older frames drop from the front if we overflow.
+  const MAX_BUFFER = 6000;
+  const REPLAY_SAMPLE_MS = 33;
+  const last = replayBuffer[replayBuffer.length - 1];
+  if (!last || frame.t - last.t >= REPLAY_SAMPLE_MS) {
+    replayBuffer.push({
+      t: frame.t,
+      x: frame.x, y: frame.y, r: frame.r,
+      score: frame.score, wave: frame.wave,
+      lives: frame.lives ?? 0, sats: frame.sats ?? 0,
+      thrust: frame.thrust,
+      alive: frame.alive,
+      shielded: frame.shielded,
+      paused: frame.paused,
+      world,
+    });
+    if (replayBuffer.length > MAX_BUFFER) {
+      replayBuffer.splice(0, replayBuffer.length - MAX_BUFFER);
+    }
   }
 
   // Publish to the WebSocket relay — no signing, no Nostr envelope,

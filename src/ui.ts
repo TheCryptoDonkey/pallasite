@@ -1981,13 +1981,16 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     if (replayState === 'loading') return;
     setReplayState('loading');
     const sinceSec = Math.max(0, Math.floor(input.runStartedAtMs / 1000));
+    console.log(`[replay] tryFetchReplay pubkey=${input.masterPubkey.slice(0, 8)}… since=${sinceSec}`);
     // 1) Rich kind 30764 replay — preferred. Carries the full world the
     // player saw (asteroids, UFOs, bullets, coins, SFX events). Played
     // back through this same theatre with replaySource set.
     let richReplay: Awaited<ReturnType<typeof findReplayByAuthor>> = null;
     try {
       richReplay = await findReplayByAuthor(input.masterPubkey, sinceSec);
-    } catch { /* fall through to kind 30763 */ }
+    } catch (err) {
+      console.warn('[replay] findReplayByAuthor threw:', err);
+    }
     if (cancelled) return;
     if (richReplay && richReplay.frames.length >= 2) {
       setReplayState('success');
@@ -4006,6 +4009,21 @@ export function renderControllerPage(): void {
   knob.style.cssText = 'position:absolute;left:50%;top:50%;width:38%;height:38%;margin:-19% 0 0 -19%;border-radius:50%;background:radial-gradient(circle, rgba(140,255,180,0.45) 0%, rgba(91,255,140,0.18) 70%);border:2px solid rgba(140,255,180,0.75);box-shadow:0 0 18px rgba(140,255,180,0.4);transform:translate(0,0);transition:transform 60ms ease-out;';
   slotEls.set('joyL', pad);
 
+  // ── D-pad (left thumb, menu mode) — replaces the joystick when the
+  //    host signals a menu/initials phase. Cross-shaped, sized to fit
+  //    inside the joystick's footprint so swapping in/out doesn't
+  //    reflow the left thumb area.
+  const DPAD_BTN = 'clamp(58px, 13vh, 84px)';
+  // Offset from the joystick centre — buttons sit 1.05× their own
+  // width away so the cross gap is ~5% of a button.
+  const DPAD_OFFSET = 'clamp(64px, 14vh, 90px)';
+  const DPAD_CENTRE_X = `calc(14px + ${JOY_SIZE} / 2)`;
+  // dpad arrows are big — keep label hidden, lean on the icon.
+  makeButton('dpadU', `left:calc(${DPAD_CENTRE_X} - ${DPAD_BTN} / 2);top:calc(50% - ${DPAD_OFFSET} - ${DPAD_BTN} / 2);width:${DPAD_BTN};height:${DPAD_BTN};border-radius:18px;font-size:1.8rem;`);
+  makeButton('dpadD', `left:calc(${DPAD_CENTRE_X} - ${DPAD_BTN} / 2);top:calc(50% + ${DPAD_OFFSET} - ${DPAD_BTN} / 2);width:${DPAD_BTN};height:${DPAD_BTN};border-radius:18px;font-size:1.8rem;`);
+  makeButton('dpadL', `left:calc(${DPAD_CENTRE_X} - ${DPAD_OFFSET} - ${DPAD_BTN} / 2);top:calc(50% - ${DPAD_BTN} / 2);width:${DPAD_BTN};height:${DPAD_BTN};border-radius:18px;font-size:1.8rem;`);
+  makeButton('dpadR', `left:calc(${DPAD_CENTRE_X} + ${DPAD_OFFSET} - ${DPAD_BTN} / 2);top:calc(50% - ${DPAD_BTN} / 2);width:${DPAD_BTN};height:${DPAD_BTN};border-radius:18px;font-size:1.8rem;`);
+
   // ── Waiting-for-game card (centre overlay, hidden once spec lands)
   const waitCard = el('div', { parent: surface });
   waitCard.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;color:rgba(220,210,255,0.7);text-align:center;padding:20px;pointer-events:none;';
@@ -4193,7 +4211,7 @@ export function renderControllerPage(): void {
     btn.addEventListener('pointercancel', release);
     btn.addEventListener('pointerleave', release);
   };
-  for (const slot of ['A', 'B', 'X', 'Y', 'L1', 'L2', 'R1', 'R2', 'start', 'select']) bindButton(slot);
+  for (const slot of ['A', 'B', 'X', 'Y', 'L1', 'L2', 'R1', 'R2', 'start', 'select', 'dpadU', 'dpadD', 'dpadL', 'dpadR']) bindButton(slot);
 }
 
 export function renderAdminPanel(): void {

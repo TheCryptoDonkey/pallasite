@@ -269,11 +269,22 @@ export interface PublishReplayInput {
  *  to 30763 (pose-only) if 30764 isn't present. */
 export async function publishReplay(input: PublishReplayInput): Promise<NostrEvent | null> {
   const { session, scoreEventId, finalScore, finalWave, durationMs, frames } = input;
-  if (!session.signer.capabilities.canSignEvents) return null;
-  if (frames.length < 2) return null;
+  if (!session.signer.capabilities.canSignEvents) {
+    console.warn('[replay] skip publish — signer cannot sign events');
+    return null;
+  }
+  if (frames.length < 2) {
+    console.warn(`[replay] skip publish — only ${frames.length} frame(s) buffered (need >=2)`);
+    return null;
+  }
 
+  console.log(`[replay] encoding ${frames.length} frames…`);
   const content = await encodeReplay(frames);
-  if (!content) return null;
+  if (!content) {
+    console.error('[replay] encodeReplay returned null — CompressionStream unsupported?');
+    return null;
+  }
+  console.log(`[replay] encoded ${content.length} bytes of base64 (kind ${REPLAY_KIND})`);
 
   const dTag = scoreEventId
     ? `${GAME_ID}:replay:${scoreEventId}`
@@ -292,7 +303,11 @@ export async function publishReplay(input: PublishReplayInput): Promise<NostrEve
 
   const signed = await session.signer.signEvent({ kind: REPLAY_KIND, content, tags });
   const relays = input.relays ?? getActiveRelays();
-  await Promise.all(relays.map((url) => publishToRelay(url, signed).catch(() => undefined)));
+  const results = await Promise.allSettled(
+    relays.map((url) => publishToRelay(url, signed)),
+  );
+  const ok = results.filter((r) => r.status === 'fulfilled').length;
+  console.log(`[replay] published kind ${REPLAY_KIND} ${signed.id.slice(0, 8)}… to ${ok}/${relays.length} relays`);
   return signed;
 }
 
@@ -308,6 +323,7 @@ export async function findReplayByAuthor(
   if (!/^[0-9a-f]{64}$/i.test(pubkey)) return null;
   const relays = opts.relays ?? getActiveRelays();
   if (relays.length === 0) return null;
+  console.log(`[replay] findReplayByAuthor pubkey=${pubkey.slice(0, 8)}… since=${sinceSec} relays=${relays.length}`);
 
   const filter: Record<string, unknown> = {
     kinds: [REPLAY_KIND],
@@ -354,11 +370,16 @@ export async function findReplayByAuthor(
     }
   });
   events.sort((a, b) => b.created_at - a.created_at);
+  console.log(`[replay] findReplayByAuthor got ${events.length} candidate event(s)`);
   for (const e of events) {
     if (!hasTagValue(e.tags, 'game', GAME_ID)) continue;
     if (tagValue(e.tags, 'enc') !== 'replay-gzip-b64') continue;
     const frames = await decodeReplay(e.content);
-    if (!frames) continue;
+    if (!frames) {
+      console.warn(`[replay] decode failed for event ${e.id.slice(0, 8)}…`);
+      continue;
+    }
+    console.log(`[replay] decoded ${frames.length} frames from event ${e.id.slice(0, 8)}…`);
     return {
       eventId: e.id,
       pubkey: e.pubkey,
@@ -368,6 +389,7 @@ export async function findReplayByAuthor(
       frames,
     };
   }
+  console.warn(`[replay] no usable kind ${REPLAY_KIND} found for author ${pubkey.slice(0, 8)}…`);
   return null;
 }
 
