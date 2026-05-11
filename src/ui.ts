@@ -43,8 +43,8 @@ import { followUser, shareCompletion, endorseSubject, rankFromWave } from './soc
 import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipient } from './zap.js';
 import { subscribeRecentRuns, timeAgo, dismissWatchEntry, getDismissedWatchEntries, LIVE_FRESHNESS_MS, type WatchEntry } from './watch.js';
-import { getReplayBuffer } from './stream-session.js';
-import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, type GhostRun } from './ghost.js';
+import { getReplayBuffer, type ReplayFrameRaw } from './stream-session.js';
+import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, findReplayByAuthor, fetchReplayByScoreEventId, type GhostRun } from './ghost.js';
 import { preloadBackground } from './render.js';
 import { musicSetTrackForState } from './music.js';
 import { savePersonalGhost } from './personal-ghost.js';
@@ -1667,6 +1667,17 @@ interface LiveTheatreInput {
    *  so the re-watch button can find the right replay. */
   runStartedAtMs: number;
   onClose: () => void;
+  /** Rich replay mode — when provided, skips the WS subscription, pre-
+   *  seeds the frame buffer with these frames, and drives playback
+   *  linearly through the whole timeline at 1x. Used by the kind 30764
+   *  "WATCH FROM START" path so spectators see the full world (not just
+   *  the pose-only kind 30763 ghost). */
+  replaySource?: {
+    frames: ReadonlyArray<ReplayFrameRaw>;
+    durationMs: number;
+    /** Header label shown above the canvas, e.g. "REPLAY · WATCHING". */
+    headerLabel?: string;
+  };
 }
 
 interface LiveAsteroid {
@@ -1854,7 +1865,12 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
 
-  el('h2', { parent: overlay, text: 'LIVE · WATCHING' });
+  // Replay mode (kind 30764 full-world bundle) reuses this theatre but
+  // skips the WS subscription, pre-seeds the frame buffer with the whole
+  // run, and advances playbackT linearly across the whole timeline.
+  const replayMode = !!input.replaySource;
+  const headerLabel = input.replaySource?.headerLabel ?? (replayMode ? 'REPLAY · WATCHING' : 'LIVE · WATCHING');
+  el('h2', { parent: overlay, text: headerLabel });
 
   const nameEl = el('p', { parent: overlay, text: input.displayName.toUpperCase() });
   nameEl.style.cssText = 'margin:6px 0 4px;font-size:1.2rem;letter-spacing:0.18em;color:#8cffb4;text-shadow:0 0 10px rgba(140,255,180,0.5);';
@@ -1965,6 +1981,34 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     if (replayState === 'loading') return;
     setReplayState('loading');
     const sinceSec = Math.max(0, Math.floor(input.runStartedAtMs / 1000));
+    // 1) Rich kind 30764 replay — preferred. Carries the full world the
+    // player saw (asteroids, UFOs, bullets, coins, SFX events). Played
+    // back through this same theatre with replaySource set.
+    let richReplay: Awaited<ReturnType<typeof findReplayByAuthor>> = null;
+    try {
+      richReplay = await findReplayByAuthor(input.masterPubkey, sinceSec);
+    } catch { /* fall through to kind 30763 */ }
+    if (cancelled) return;
+    if (richReplay && richReplay.frames.length >= 2) {
+      setReplayState('success');
+      cleanup();
+      renderLiveTheatre({
+        masterPubkey: input.masterPubkey,
+        displayName: input.displayName,
+        initialScore: richReplay.score,
+        initialWave: richReplay.wave,
+        runStartedAtMs: input.runStartedAtMs,
+        onClose: input.onClose,
+        replaySource: {
+          frames: richReplay.frames,
+          durationMs: richReplay.durationMs,
+          headerLabel: 'REPLAY · WATCHING',
+        },
+      });
+      return;
+    }
+    // 2) Fallback: pose-only kind 30763 ghost. The legacy renderReplayTheatre
+    // handles this — score chip + ship trajectory only, no world.
     let scoreEventId: string | null = null;
     try {
       scoreEventId = await findScoreIdForLatestGhost(input.masterPubkey, sinceSec);
@@ -1974,9 +2018,6 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
       setReplayState('not_yet');
       return;
     }
-    // Hand off to the replay theatre — closes the live theatre and
-    // opens the ghost playback in its place. onClose chains back to
-    // whatever the live theatre was returning to (the watch page).
     setReplayState('success');
     const latest = frames[frames.length - 1];
     const finalScore = latest?.score ?? input.initialScore;
@@ -2152,7 +2193,7 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     ws.onclose = () => { armWatchdog(openSubscriptions); };
     armWatchdog(openSubscriptions);
   };
-  openSubscriptions();
+  if (!replayMode) openSubscriptions();
 
   const c2d = canvas.getContext('2d')!;
   // World-space (PALL_WORLD_W × PALL_WORLD_H) → canvas-space (with DPR
@@ -2239,6 +2280,33 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   const particles: LiveParticle[] = [];
   const debris: LiveDebris[] = [];
   const pendingEvents: PendingEvent[] = [];
+
+  // Replay mode: pre-seed the frame buffer with the entire replay, in
+  // capture order. readWsFrame works directly on ReplayFrameRaw — same
+  // shape as a WS payload (publishStreamFrameWs ships ReplayFrameRaw).
+  // We push each frame manually rather than via pushFrame() so HUD
+  // updates stay playback-driven (in the tick loop) instead of seeding
+  // the HUD with the final-frame values up front.
+  if (replayMode) {
+    const replay = input.replaySource!;
+    for (const raw of replay.frames) {
+      const lf = readWsFrame(raw as unknown as Record<string, unknown>);
+      if (!lf) continue;
+      frames.push(lf);
+      for (const ev of lf.events) {
+        pendingEvents.push({ code: ev.code, x: ev.x, y: ev.y, dueAt: lf.capturedAt });
+      }
+    }
+    status.textContent = `REPLAY · ${(replay.durationMs / 1000).toFixed(0)}s · ${replay.frames.length} frames`;
+    // Replay starts at frame 0's wave so the spectator sees the run
+    // unfold from the start. The tick-loop HUD update takes over after.
+    const first = frames[0];
+    if (first) {
+      liveScore.textContent = `WAVE ${first.wave} · ${first.score.toLocaleString()}`;
+      if (first.wave > 0) applyWaveAssets(first.wave, true);
+    }
+  }
+
   const MAX_PARTICLES = 240;
   const MAX_DEBRIS = 48;
   const spawnDebris = (cx: number, cy: number, count: number): void => {
@@ -2283,13 +2351,14 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   // dragged the interpolation window off the frame data.
   let playbackT = 0;
   let lastPerfMs = performance.now();
-  // 350ms behind the live edge with 250ms frame cadence — enough to
-  // bracket prev/next reliably and absorb a single dropped frame, low
-  // enough that the perceived delay feels live.
-  // 10Hz wire → 100ms inter-frame. Lead of 100ms = 1 frame buffer —
-  // bare minimum to ensure prev/next bracketing. Drops perceived
-  // input→display lag by ~150ms over the previous 250ms setting.
-  const PLAYBACK_LEAD_MS = 100;
+  // 30Hz wire → 33ms inter-frame. Lead of 0ms slams playback to the
+  // latest received frame: prev = next = latest, render at its pose.
+  // No interpolation between frames, just a 30fps slam-cut. Costs
+  // some smoothness on slow networks (visible step instead of glide)
+  // but eliminates the intentional 100ms lag the user was feeling as
+  // "2 second delay" when playing phone→watch. With 30Hz wire,
+  // 30fps slam-cut motion is plenty smooth for spectating.
+  const PLAYBACK_LEAD_MS = 0;
   const PLAYBACK_LAG_LIMIT_MS = 2000;
 
   // Render loop — interpolate between adjacent frames for smooth motion
@@ -2332,15 +2401,28 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     // Advance the playback clock and clamp it to the frame buffer.
     const latestCap = frames[frames.length - 1].capturedAt;
     const oldestCap = frames[0].capturedAt;
-    if (playbackT === 0) playbackT = latestCap - PLAYBACK_LEAD_MS;
-    playbackT += dtMs;
-    // Don't outrun the live edge — pin at "latest - small lead" so we
-    // always have a `next` frame ahead of us to interpolate toward.
-    if (playbackT > latestCap - 100) playbackT = latestCap - 100;
-    // Hard resync if we've fallen way behind (e.g. tab was backgrounded
-    // for a while and frames piled up).
-    if (playbackT < oldestCap || latestCap - playbackT > PLAYBACK_LAG_LIMIT_MS) {
-      playbackT = latestCap - PLAYBACK_LEAD_MS;
+    if (replayMode) {
+      // Linear playback through the full timeline at 1x speed. Start at
+      // the oldest frame, advance every tick, freeze at the last frame
+      // when the replay ends.
+      if (playbackT === 0) playbackT = oldestCap;
+      playbackT += dtMs;
+      if (playbackT >= latestCap) {
+        playbackT = latestCap;
+        status.textContent = 'REPLAY ENDED · CLOSE · ESC';
+      }
+    } else {
+      if (playbackT === 0) playbackT = latestCap - PLAYBACK_LEAD_MS;
+      playbackT += dtMs;
+      // Pin to the live edge so the prev/next lookup always lands on
+      // (last-frame, last-frame) and renders the freshest pose. With
+      // PLAYBACK_LEAD_MS=0 this collapses to playbackT === latestCap.
+      if (playbackT > latestCap - PLAYBACK_LEAD_MS) playbackT = latestCap - PLAYBACK_LEAD_MS;
+      // Hard resync if we've fallen way behind (e.g. tab was backgrounded
+      // for a while and frames piled up).
+      if (playbackT < oldestCap || latestCap - playbackT > PLAYBACK_LAG_LIMIT_MS) {
+        playbackT = latestCap - PLAYBACK_LEAD_MS;
+      }
     }
 
     // Drain SFX events whose captured time playbackT has now passed.
@@ -2407,6 +2489,17 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     }
     const span = next.capturedAt - prev.capturedAt;
     const t = span > 0 ? Math.max(0, Math.min(1, (playbackT - prev.capturedAt) / span)) : 0;
+    // Replay mode: drive the HUD off the playhead so score/wave/hearts
+    // tick up as playback advances. Live mode updates HUD in pushFrame
+    // when each new frame lands.
+    if (replayMode) {
+      liveScore.textContent = `WAVE ${prev.wave} · ${prev.score.toLocaleString()}`;
+      const heartsTotal = Math.max(0, prev.lives);
+      const hearts = heartsTotal > 0 ? '♥'.repeat(Math.min(5, heartsTotal)) : 'NO LIVES';
+      liveStats.textContent = `${hearts}  ·  ₿ ${prev.sats}`;
+      liveStats.style.color = heartsTotal > 0 ? 'rgba(220,210,255,0.78)' : 'rgba(255,120,120,0.9)';
+      if (prev.wave > 0) applyWaveAssets(prev.wave);
+    }
     // Ship wraps too — same short-way-around treatment as entities.
     const x = interpAxis(prev.x, next.x, t, PALL_WORLD_W) * sx;
     const y = interpAxis(prev.y, next.y, t, PALL_WORLD_H) * sy;
@@ -3164,15 +3257,18 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     // Age measured against viewer-local arrival time — capturedAt is
     // the player's Date.now() which can drift and gave false STALE
     // labels when the viewer's clock ran slightly behind the player's.
-    const ageMs = latest ? performance.now() - latest.receivedAt : 0;
-    const stale = ageMs > 3_000;
-    const veryStale = ageMs > 6_000;
+    // In replay mode the frame buffer is pre-seeded so `latest.receivedAt`
+    // would always show massively stale — short-circuit the freshness
+    // checks instead.
+    const ageMs = !replayMode && latest ? performance.now() - latest.receivedAt : 0;
+    const stale = !replayMode && ageMs > 3_000;
+    const veryStale = !replayMode && ageMs > 6_000;
     // PAUSED only sticks while frames keep arriving (the player is
     // genuinely paused, frames keep flowing every 500ms with paused=1).
     // If frames go stale during a paused frame, the player has quit
     // or backgrounded — drop the PAUSED overlay so the watcher doesn't
     // sit on PAUSED forever waiting for the very-stale threshold.
-    const paused = next.paused === true && !stale;
+    const paused = !replayMode && next.paused === true && !stale;
     // RUN ENDED only fires when frames stop arriving. Ship being dead
     // during deathreplay (alive=false in a fresh frame) is just a brief
     // gap between lives — the run is still in progress and frames keep
@@ -3184,15 +3280,18 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     // First STREAM ENDED transition — auto-try fetching the ghost so a
     // recently-claimed run replays without an extra click. If first
     // attempt fails (player hasn't claimed yet), leaves the button in
-    // 'not_yet' state for manual retry.
-    if (ended && !replayAutoTried) {
-      replayAutoTried = true;
-      void tryFetchReplay();
-    } else if (!ended && replayState !== 'hidden' && replayState !== 'loading') {
-      // Stream came back to life (rare — relay reconnect) — hide the
-      // button so we don't strand a stale "TRY AGAIN" alongside live
-      // frames.
-      setReplayState('hidden');
+    // 'not_yet' state for manual retry. Skipped in replay mode (we're
+    // already in the replay).
+    if (!replayMode) {
+      if (ended && !replayAutoTried) {
+        replayAutoTried = true;
+        void tryFetchReplay();
+      } else if (!ended && replayState !== 'hidden' && replayState !== 'loading') {
+        // Stream came back to life (rare — relay reconnect) — hide the
+        // button so we don't strand a stale "TRY AGAIN" alongside live
+        // frames.
+        setReplayState('hidden');
+      }
     }
 
     // Live / paused / ended pill in the top-left
@@ -4806,43 +4905,60 @@ function renderWatchCard(entry: WatchEntry, state: GameState): HTMLElement {
       });
       return;
     }
-    if (entry.state !== 'final') {
-      // Speculative ghost fetch — the entry's state event was
-      // 'active' (or null) so renderReplayTheatre would 404 on the
-      // entry.eventId. Look the player's most-recent ghost up by
-      // author + since-time and hand off if it lands. Mirrors the
-      // STREAM ENDED auto-try in the live theatre.
-      watch.disabled = true;
-      const original = watch.textContent;
-      watch.textContent = 'LOADING…';
-      void (async () => {
-        const sinceSec = Math.max(0, entry.createdAt - 30);
-        const scoreEventId = await findScoreIdForLatestGhost(entry.pubkey, sinceSec).catch(() => null);
-        if (!scoreEventId) {
-          watch.textContent = 'NO REPLAY YET';
-          watch.title = 'Player has not claimed yet — the kind 30763 ghost is published at claim. Try again later.';
-          setTimeout(() => { watch.disabled = false; watch.textContent = original ?? 'TRY REPLAY'; }, 2_500);
-          return;
-        }
-        renderReplayTheatre({
-          scoreEventId,
+    // Try rich kind 30764 first (full-world replay) — falls back to the
+    // pose-only kind 30763 path if no 30764 is found. Works for both
+    // 'active' (player hasn't claimed) and 'final' entries because
+    // findReplayByAuthor / fetchReplayByScoreEventId both publish
+    // alongside the ghost on claim.
+    watch.disabled = true;
+    const original = watch.textContent;
+    watch.textContent = 'LOADING…';
+    void (async () => {
+      const sinceSec = Math.max(0, entry.createdAt - 30);
+      // Final entries know their score event id; prefer the score-id
+      // lookup since it's a direct match by #e tag. Active entries
+      // fall back to author+since.
+      let rich: Awaited<ReturnType<typeof findReplayByAuthor>> = null;
+      try {
+        rich = entry.state === 'final'
+          ? await fetchReplayByScoreEventId(entry.eventId)
+          : await findReplayByAuthor(entry.pubkey, sinceSec);
+      } catch { /* fall through to ghost */ }
+      if (rich && rich.frames.length >= 2) {
+        renderLiveTheatre({
+          masterPubkey: entry.pubkey,
           displayName: name.textContent ?? shortPubkey(entry.pubkey),
-          score: entry.score,
-          wave: entry.wave,
-          sats: entry.sats,
+          initialScore: rich.score,
+          initialWave: rich.wave,
+          runStartedAtMs: entry.createdAt * 1000,
           onClose: () => renderWatchPage(state),
+          replaySource: {
+            frames: rich.frames,
+            durationMs: rich.durationMs,
+            headerLabel: 'REPLAY · WATCHING',
+          },
         });
-      })();
-      return;
-    }
-    renderReplayTheatre({
-      scoreEventId: entry.eventId,
-      displayName: name.textContent ?? shortPubkey(entry.pubkey),
-      score: entry.score,
-      wave: entry.wave,
-      sats: entry.sats,
-      onClose: () => renderWatchPage(state),
-    });
+        return;
+      }
+      // Fallback: pose-only kind 30763 ghost.
+      const scoreEventId = entry.state === 'final'
+        ? entry.eventId
+        : await findScoreIdForLatestGhost(entry.pubkey, sinceSec).catch(() => null);
+      if (!scoreEventId) {
+        watch.textContent = 'NO REPLAY YET';
+        watch.title = 'Player has not claimed yet — the kind 30763 / 30764 events publish at claim. Try again later.';
+        setTimeout(() => { watch.disabled = false; watch.textContent = original ?? 'TRY REPLAY'; }, 2_500);
+        return;
+      }
+      renderReplayTheatre({
+        scoreEventId,
+        displayName: name.textContent ?? shortPubkey(entry.pubkey),
+        score: entry.score,
+        wave: entry.wave,
+        sats: entry.sats,
+        onClose: () => renderWatchPage(state),
+      });
+    })();
   });
 
   const zap = el('button', { className: 'menu-btn secondary', parent: actions, text: '⚡ ZAP' });
