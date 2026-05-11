@@ -319,7 +319,7 @@ export interface Debris {
   colour: string;
 }
 
-export type GamePhase = 'title' | 'playing' | 'paused' | 'gameover' | 'wavestart' | 'warp' | 'completed' | 'deathreplay';
+export type GamePhase = 'title' | 'playing' | 'paused' | 'gameover' | 'wavestart' | 'warp' | 'bonus' | 'completed' | 'deathreplay';
 
 /** Snapshot of motion-relevant state, captured at ~30Hz during play and used
  *  to drive the death replay. Reuses the live entity types so the existing
@@ -400,6 +400,16 @@ export interface GameState {
 
   /** During warp, the wave number we're heading to (so the banner reads correctly under cheat-jumps too). */
   warpTargetWave: number;
+
+  /** BONUS phase (W9 → W10 detour) — wall-clock ms when the bonus
+   *  began so the renderer can show a countdown + tickBonus knows
+   *  when to flip from HYPER BLITZ into EVENT HORIZON PRELUDE. */
+  bonusStartedAt: number;
+  /** Wall-clock ms of the next scheduled in-bonus spawn refill. */
+  bonusNextSpawnAt: number;
+  /** Count of pallasite mini-bosses already spawned in the bonus
+   *  prelude window. Caps at 5. */
+  bonusPreludeSpawned: number;
 
   /** Total run time in ms (excluding pauses) — for completion screen */
   runTimeMs: number;

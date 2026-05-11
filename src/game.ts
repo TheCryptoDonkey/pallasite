@@ -82,6 +82,9 @@ export function makeInitialState(): GameState {
     nextUfoSpawn: UFO_FIRST_SPAWN_MS,
     nextMineSpawn: 0,
     warpTargetWave: 1,
+    bonusStartedAt: 0,
+    bonusNextSpawnAt: 0,
+    bonusPreludeSpawned: 0,
     runTimeMs: 0,
     runStartedAt: 0,
     bossDefeated: false,
@@ -692,6 +695,72 @@ function startWarp(s: GameState, targetWave?: number): void {
       beginWave(s, next);
     }
   }, WARP_MS);
+}
+
+/** BONUS phase length + sub-phase split. 60s total: 45s HYPER BLITZ
+ *  (dense asteroid storm, removed hyperspace cooldown, ship invuln)
+ *  then 15s EVENT HORIZON PRELUDE (5 pallasite mini-bosses). */
+export const BONUS_TOTAL_MS = 60_000;
+export const BONUS_BLITZ_MS = 45_000;
+export const BONUS_BLITZ_SPAWN_INTERVAL_MS = 1800;
+export const BONUS_PRELUDE_SPAWN_INTERVAL_MS = 3000;
+
+function startBonus(s: GameState): void {
+  s.phase = 'bonus';
+  s.phaseStart = performance.now();
+  s.bonusStartedAt = performance.now();
+  s.bonusNextSpawnAt = performance.now() + 800;  // first refill 800ms in
+  s.bonusPreludeSpawned = 0;
+  // Re-centre ship + grant invuln for the FULL bonus duration. Hyperspace
+  // cooldown wiped so the player can spam X.
+  if (s.ship.alive) {
+    s.ship.pos.x = WORLD_W / 2;
+    s.ship.pos.y = WORLD_H / 2;
+    s.ship.vel.x = 0;
+    s.ship.vel.y = 0;
+    s.ship.invulnerableUntil = performance.now() + BONUS_TOTAL_MS + 200;
+    s.ship.hyperspaceReadyAt = 0;
+  }
+  // Dense initial spawn — 12 large mixed-type asteroids so the screen is
+  // immediately busy.
+  for (let i = 0; i < 12; i++) {
+    s.asteroids.push(spawnAsteroid('large', s.wave));
+  }
+  audio.warpJump();
+  haptic('celebrate');
+  toastNow(s, 'B · O · N · U · S');
+  // Auto-exit after the full 60s window — startWarp lands the player
+  // in wave 10 the same way a normal wave-clear would.
+  setTimeout(() => {
+    if (s.phase === 'bonus') {
+      clearStage(s, { autoCollect: true });
+      s.ship.invulnerableUntil = performance.now() + SHIP_INVULN_MS;
+      startWarp(s, 10);
+    }
+  }, BONUS_TOTAL_MS);
+}
+
+/** Tick called every frame from updateGame while in bonus phase.
+ *  Maintains spawn density during HYPER BLITZ + flips into the PRELUDE
+ *  spawn pattern in the last 15s. */
+export function tickBonus(s: GameState): void {
+  if (s.phase !== 'bonus') return;
+  const now = performance.now();
+  const elapsed = now - s.bonusStartedAt;
+  if (now < s.bonusNextSpawnAt) return;
+  if (elapsed < BONUS_BLITZ_MS) {
+    // HYPER BLITZ — spawn 2 random asteroids on each tick
+    s.asteroids.push(spawnAsteroid('large', s.wave));
+    s.asteroids.push(spawnAsteroid('medium', s.wave));
+    s.bonusNextSpawnAt = now + BONUS_BLITZ_SPAWN_INTERVAL_MS;
+  } else if (s.bonusPreludeSpawned < 5) {
+    // EVENT HORIZON PRELUDE — spawn one large pallasite at a time, up
+    // to 5 total across the remaining 15s. Each kill mimics the boss
+    // shape via the pallasite vein silhouette + jackpot payout.
+    s.asteroids.push(spawnAsteroid('large', s.wave, undefined, undefined, 'pallasite', { vein: true }));
+    s.bonusPreludeSpawned += 1;
+    s.bonusNextSpawnAt = now + BONUS_PRELUDE_SPAWN_INTERVAL_MS;
+  }
 }
 
 /** Cut a long warp short on user input. No-op outside warp or before the
@@ -1942,6 +2011,10 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   // 1Hz score-pacing sample for the kind 30763 ghost replay.
   recordGhostSample(s);
 
+  // BONUS phase tick — keeps spawn density up during HYPER BLITZ and
+  // flips into the EVENT HORIZON PRELUDE spawn pattern in the last 15s.
+  tickBonus(s);
+
   // Detect the 1979 lurking exploit so coin credit can be withheld for it.
   updateLurkState(s, now);
 
@@ -2508,7 +2581,15 @@ export function updateGame(s: GameState, dt: number, now: number): void {
       bumpTrauma(s, 0.30);
       hitStop(s, 180);
       spawnWaveClearStreak(s);
-      startWarp(s);
+      // BONUS round divert — between W9 → W10 the player gets 60s of
+      // HYPER BLITZ (dense asteroid storm, removed hyperspace cooldown,
+      // invuln) into EVENT HORIZON PRELUDE (5 pallasite mini-bosses).
+      // Music swaps to hyperspace; ends warping into W10 normally.
+      if (s.wave === 9) {
+        startBonus(s);
+      } else {
+        startWarp(s);
+      }
     }
   }
 

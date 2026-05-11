@@ -2433,6 +2433,74 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
 
   drawHud(ctx, state, now);
   drawWaveBanner(ctx, state, now);
+  drawBonusBanner(ctx, state, now);
+}
+
+/** BONUS banner — large 'B · O · N · U · S' intro for the first ~3s,
+ *  then a persistent countdown timer + sub-phase label (HYPER BLITZ
+ *  vs EVENT HORIZON PRELUDE) at the top of the canvas for the rest
+ *  of the 60s window. */
+function drawBonusBanner(ctx: CanvasRenderingContext2D, s: GameState, now: number): void {
+  if (s.phase !== 'bonus') return;
+  const elapsed = now - s.bonusStartedAt;
+  const remaining = Math.max(0, 60_000 - elapsed);
+  const subPhase = elapsed < 45_000 ? 'HYPER BLITZ' : 'EVENT HORIZON PRELUDE';
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  // Intro banner — first 2.6s, fade out over 600ms.
+  if (elapsed < 2600) {
+    let alpha = 1;
+    if (elapsed < 250) alpha = elapsed / 250;
+    else if (elapsed > 2000) alpha = 1 - (elapsed - 2000) / 600;
+    alpha = Math.max(0, Math.min(1, alpha));
+    ctx.globalAlpha = alpha * 0.55;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, WORLD_H / 2 - 90, WORLD_W, 180);
+    ctx.globalAlpha = alpha;
+    ctx.font = 'bold 88px ui-monospace, monospace';
+    ctx.fillStyle = '#ffd84a';
+    ctx.shadowColor = '#ffd84a';
+    ctx.shadowBlur = 28;
+    // Letter-by-letter drop — each letter eases in 80ms after the prior
+    // so the headline reads like an arcade attract sequence.
+    const letters = ['B', 'O', 'N', 'U', 'S'];
+    const spacing = 90;
+    const baseX = WORLD_W / 2 - spacing * 2;
+    for (let i = 0; i < letters.length; i++) {
+      const dropAt = 200 + i * 80;
+      if (elapsed < dropAt) continue;
+      const dt = Math.min(1, (elapsed - dropAt) / 200);
+      const yOff = (1 - dt) * -40;
+      ctx.fillText(letters[i], baseX + i * spacing, WORLD_H / 2 + yOff);
+    }
+    ctx.shadowBlur = 12;
+    ctx.font = 'bold 18px ui-monospace, monospace';
+    ctx.fillStyle = '#8cffb4';
+    ctx.shadowColor = '#8cffb4';
+    ctx.fillText('60 SECONDS · INVULNERABLE · NO HYPERSPACE COOLDOWN', WORLD_W / 2, WORLD_H / 2 + 56);
+  }
+
+  // Persistent countdown header — top of the canvas, visible the whole
+  // 60s. Switches sub-phase label at the 45s mark.
+  ctx.globalAlpha = 0.85;
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(WORLD_W / 2 - 200, 14, 400, 44);
+  ctx.globalAlpha = 1;
+  ctx.font = 'bold 22px ui-monospace, monospace';
+  ctx.fillStyle = '#ffd84a';
+  ctx.shadowColor = '#ffd84a';
+  ctx.shadowBlur = 16;
+  const secs = (remaining / 1000).toFixed(1);
+  ctx.fillText(`B·O·N·U·S · ${secs}s`, WORLD_W / 2, 30);
+  ctx.shadowBlur = 6;
+  ctx.font = '12px ui-monospace, monospace';
+  ctx.fillStyle = elapsed < 45_000 ? '#8cffb4' : '#ff8a3a';
+  ctx.shadowColor = ctx.fillStyle as string;
+  ctx.fillText(subPhase, WORLD_W / 2, 50);
+  ctx.restore();
 }
 
 /**
