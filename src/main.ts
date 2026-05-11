@@ -773,6 +773,10 @@ async function boot(): Promise<void> {
       const UFO_TYPE_CODE: Record<string, 's' | 'p' | 't' | 'e' | 'c' | 'b'> = {
         saucer: 's', sniper: 'p', tank: 't', elite: 'e', cruiser: 'c', boss: 'b',
       };
+      const POWERUP_TYPE_CODE: Record<string, 'r' | 'b' | 'n' | 't' | 'm'> = {
+        rapid: 'r', satboost: 'b', nova: 'n', trident: 't', magnet: 'm',
+      };
+      const COIN_KIND_CODE: Record<string, 's' | 'd'> = { sat: 's', dust: 'd' };
 
       const asteroids = (state.asteroids ?? [])
         .filter((a) => a.alive)
@@ -803,6 +807,24 @@ async function boot(): Promise<void> {
       for (const b of playerBullets) bullets.push([b.id ?? 0, b.pos.x, b.pos.y, 0]);
       for (const b of enemyBullets) bullets.push([b.id ?? 0, b.pos.x, b.pos.y, 1]);
 
+      // Coins — both sat (₿) and dust shards. sourceType '' for non-asteroid
+      // origins (mine/UFO drops). Capped at 32 — vein engagements can spawn
+      // a lot, but anything beyond 32 visible is decorative noise.
+      const coins = (state.coins ?? [])
+        .filter((c) => c.alive && !c.collected)
+        .slice(0, 32)
+        .map((c) => [
+          c.id ?? 0, c.pos.x, c.pos.y,
+          COIN_KIND_CODE[c.kind] ?? 's',
+          c.sourceType ? ({ stony: 's', iron: 'i', chondrite: 'c', pallasite: 'p' } as const)[c.sourceType] : '',
+        ] as [number, number, number, 's' | 'd', 's' | 'i' | 'c' | 'p' | '']);
+
+      // Powerups — rare, usually 0-2 on screen. Cap at 4 anyway.
+      const powerups = (state.powerups ?? [])
+        .filter((p) => p.alive && !p.collected)
+        .slice(0, 4)
+        .map((p) => [p.id ?? 0, p.pos.x, p.pos.y, POWERUP_TYPE_CODE[p.type] ?? 'r'] as [number, number, number, 'r' | 'b' | 'n' | 't' | 'm']);
+
       const frame = {
         t: now,
         x: state.ship?.pos?.x ?? 0,
@@ -818,6 +840,8 @@ async function boot(): Promise<void> {
         ufos,
         mines,
         bullets,
+        coins,
+        powerups,
         // SFX events accumulated since the last frame — drained here
         // so the live viewer can replay them in sync.
         events: drainStreamEvents(),

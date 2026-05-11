@@ -1661,6 +1661,8 @@ interface LiveUfo {
 }
 interface LiveMine { id: number; x: number; y: number; }
 interface LiveBullet { id: number; x: number; y: number; enemy: boolean; }
+interface LiveCoin { id: number; x: number; y: number; kind: 's' | 'd'; sourceType: 's' | 'i' | 'c' | 'p' | ''; }
+interface LivePowerup { id: number; x: number; y: number; type: 'r' | 'b' | 'n' | 't' | 'm'; }
 type LiveEventCode = 'ak' | 'uk' | 'md' | 'sh' | 'sb' | 'vc' | 'pu' | 'fi';
 interface LiveSfxEvent { code: LiveEventCode; x: number; y: number; }
 
@@ -1682,6 +1684,8 @@ interface LiveFrame {
   ufos: LiveUfo[];
   mines: LiveMine[];
   bullets: LiveBullet[];
+  coins: LiveCoin[];
+  powerups: LivePowerup[];
   events: LiveSfxEvent[];
 }
 
@@ -1691,6 +1695,8 @@ interface WireWorld {
   u?: unknown;
   m?: unknown;
   b?: unknown;
+  c?: unknown;
+  pu?: unknown;
   e?: unknown;
   shield?: number;
   dead?: number;
@@ -1760,6 +1766,31 @@ function parseMines(raw: unknown): LiveMine[] {
   }
   return out;
 }
+function parseCoins(raw: unknown): LiveCoin[] {
+  if (!Array.isArray(raw)) return [];
+  const out: LiveCoin[] = [];
+  for (const item of raw) {
+    if (!Array.isArray(item) || item.length < 4) continue;
+    const [id, x, y, kind, sourceType] = item;
+    if (typeof id !== 'number' || typeof x !== 'number' || typeof y !== 'number') continue;
+    if (kind !== 's' && kind !== 'd') continue;
+    const src = (sourceType === 's' || sourceType === 'i' || sourceType === 'c' || sourceType === 'p') ? sourceType : '';
+    out.push({ id, x, y, kind, sourceType: src as LiveCoin['sourceType'] });
+  }
+  return out;
+}
+function parsePowerups(raw: unknown): LivePowerup[] {
+  if (!Array.isArray(raw)) return [];
+  const out: LivePowerup[] = [];
+  for (const item of raw) {
+    if (!Array.isArray(item) || item.length < 4) continue;
+    const [id, x, y, type] = item;
+    if (typeof id !== 'number' || typeof x !== 'number' || typeof y !== 'number') continue;
+    if (type !== 'r' && type !== 'b' && type !== 'n' && type !== 't' && type !== 'm') continue;
+    out.push({ id, x, y, type });
+  }
+  return out;
+}
 function parseBullets(raw: unknown): LiveBullet[] {
   if (!Array.isArray(raw)) return [];
   const out: LiveBullet[] = [];
@@ -1806,6 +1837,8 @@ function readLiveFrame(event: { tags: string[][]; content?: string }): LiveFrame
     ufos: parseUfos(world.u),
     mines: parseMines(world.m),
     bullets: parseBullets(world.b),
+    coins: parseCoins(world.c),
+    powerups: parsePowerups(world.pu),
     events: parseEvents(world.e),
   };
 }
@@ -1945,6 +1978,9 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
             audio.explosion(1.4);
             spawnBurst(ev.x, ev.y, 36, '#ff8a3a', 280, 900);
             spawnBurst(ev.x, ev.y, 18, '#ffd84a', 200, 700);
+            // Ship-destroyed = hull shards flying out, matches the
+            // game's drawDebris look. Local cosmetic — wire pays nothing.
+            spawnDebris(ev.x, ev.y, 14);
             break;
           case 'sb':
             audio.shieldUp();
@@ -2080,8 +2116,31 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   // visual response. Bounded so a frenetic stream can't blow up frame
   // time on weaker devices.
   interface LiveParticle { x: number; y: number; vx: number; vy: number; ttl: number; ttlMax: number; colour: string; size: number; }
+  // Debris — line-segment shards from ship-destroyed bursts. Matches
+  // render.ts drawDebris look: tumbling angled segments fading to zero.
+  interface LiveDebris { x: number; y: number; vx: number; vy: number; rot: number; rotV: number; ttl: number; ttlMax: number; length: number; colour: string; }
   const particles: LiveParticle[] = [];
+  const debris: LiveDebris[] = [];
   const MAX_PARTICLES = 240;
+  const MAX_DEBRIS = 48;
+  const spawnDebris = (cx: number, cy: number, count: number): void => {
+    // Greens + golds — matches the ship hull palette. 700-1200ms life.
+    const colours = ['#8cffb4', '#ffd84a', '#ff8a3a', '#cfeaff'];
+    for (let i = 0; i < count && debris.length < MAX_DEBRIS; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = 90 + Math.random() * 140;
+      debris.push({
+        x: cx, y: cy,
+        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        rot: Math.random() * Math.PI * 2,
+        rotV: (Math.random() - 0.5) * 8,
+        ttl: 700 + Math.random() * 500,
+        ttlMax: 1200,
+        length: 6 + Math.random() * 10,
+        colour: colours[Math.floor(Math.random() * colours.length)],
+      });
+    }
+  };
   const spawnBurst = (cx: number, cy: number, count: number, colour: string, speed: number, ttl: number, size = 2): void => {
     for (let i = 0; i < count && particles.length < MAX_PARTICLES; i++) {
       const a = Math.random() * Math.PI * 2;
@@ -2512,45 +2571,227 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
       c2d.restore();
     }
 
+    // Mines — match render.ts drawMine: outward-pulsing gravity rings,
+    // dark core, pulsing red ring, six rotating spikes. Constants
+    // mirror types.ts MINE_RADIUS (11) and game's gravityRange (60-ish).
     for (const mNext of next.mines) {
       const mPrev = prevMine.get(mNext.id) ?? mNext;
       const mx = interpAxis(mPrev.x, mNext.x, t, PALL_WORLD_W) * sx;
       const my = interpAxis(mPrev.y, mNext.y, t, PALL_WORLD_H) * sy;
-      const pulse = 0.85 + 0.15 * Math.sin(performance.now() * 0.008);
+      const mineAge = nowPerf * 0.001;
+      const pulse = 0.5 + 0.5 * Math.sin(nowPerf * 0.005);
+      const mineR = 11 * sx;
+      const gravR = 80 * sx;
       c2d.save();
       c2d.translate(mx, my);
-      c2d.strokeStyle = `rgba(255,90,90,${pulse})`;
-      c2d.fillStyle = 'rgba(255,90,90,0.15)';
-      c2d.lineWidth = Math.max(1, 1.2 * dpr);
-      c2d.shadowColor = '#ff5050';
-      c2d.shadowBlur = 12 * dpr;
-      c2d.beginPath();
-      c2d.arc(0, 0, 18 * sx, 0, Math.PI * 2);
-      c2d.fill();
-      c2d.stroke();
-      for (let i = 0; i < 6; i++) {
-        const a = (i / 6) * Math.PI * 2;
-        const r1 = 14 * sx;
-        const r2 = 22 * sx;
+      // Gravity well rings
+      c2d.lineWidth = 1 * dpr;
+      for (let i = 0; i < 3; i++) {
+        const phase = ((mineAge * 0.5 + i / 3) % 1);
+        const r = gravR * phase;
+        const alpha = (1 - phase) * 0.18;
+        c2d.strokeStyle = `rgba(255, 80, 80, ${alpha})`;
         c2d.beginPath();
-        c2d.moveTo(Math.cos(a) * r1, Math.sin(a) * r1);
-        c2d.lineTo(Math.cos(a) * r2, Math.sin(a) * r2);
+        c2d.arc(0, 0, r, 0, Math.PI * 2);
+        c2d.stroke();
+      }
+      // Dark core
+      c2d.shadowColor = '#ff5050';
+      c2d.shadowBlur = (14 + pulse * 8) * dpr;
+      c2d.fillStyle = '#1a0808';
+      c2d.beginPath();
+      c2d.arc(0, 0, mineR, 0, Math.PI * 2);
+      c2d.fill();
+      // Pulsing red ring
+      c2d.lineWidth = 1.5 * dpr;
+      c2d.strokeStyle = `rgba(255, 80, 80, ${0.6 + pulse * 0.4})`;
+      c2d.beginPath();
+      c2d.arc(0, 0, mineR, 0, Math.PI * 2);
+      c2d.stroke();
+      // Spike pattern
+      for (let i = 0; i < 6; i++) {
+        const a = (Math.PI * 2 * i) / 6 + mineAge * 0.3;
+        const x1 = Math.cos(a) * (mineR - 2 * dpr);
+        const y1 = Math.sin(a) * (mineR - 2 * dpr);
+        const x2 = Math.cos(a) * (mineR + 4 * dpr);
+        const y2 = Math.sin(a) * (mineR + 4 * dpr);
+        c2d.strokeStyle = `rgba(255, 80, 80, ${0.7 + pulse * 0.3})`;
+        c2d.beginPath();
+        c2d.moveTo(x1, y1);
+        c2d.lineTo(x2, y2);
         c2d.stroke();
       }
       c2d.restore();
     }
 
+    // Bullets — match render.ts drawBullet: streak with semi-transparent
+    // trail behind the head + glowing core. Direction derived from
+    // prev→next motion (no velocity on wire). Friendly bullets are red
+    // with red shadow; enemy bullets are white-cored with orange shadow
+    // + a yellow centre dot to read as "hotter incoming".
     for (const bNext of next.bullets) {
       const bPrev = prevBullet.get(bNext.id) ?? bNext;
       const bx = interpAxis(bPrev.x, bNext.x, t, PALL_WORLD_W) * sx;
       const by = interpAxis(bPrev.y, bNext.y, t, PALL_WORLD_H) * sy;
+      // Direction unit vector from the prev→next delta. If the bullet
+      // just spawned (no prev), fall back to no streak.
+      const dxw = bNext.x - bPrev.x;
+      const dyw = bNext.y - bPrev.y;
+      const speed = Math.hypot(dxw, dyw);
+      let ux = 1, uy = 0;
+      if (speed > 0.01) { ux = dxw / speed; uy = dyw / speed; }
+      // Streak length proportional to per-frame speed, capped so a
+      // wrap-snap doesn't paint a screen-wide line.
+      const len = Math.max(6 * dpr, Math.min(speed * 0.012 * sx, 30 * dpr));
+      const trailLen = len * 3.5;
       c2d.save();
-      c2d.fillStyle = bNext.enemy ? '#ff5050' : '#ffd84a';
-      c2d.shadowColor = c2d.fillStyle;
-      c2d.shadowBlur = 6 * dpr;
+      // Trail (faint, flat alpha — much cheaper than gradient)
+      c2d.strokeStyle = bNext.enemy ? 'rgba(255,170,40,0.30)' : 'rgba(255,90,90,0.30)';
+      c2d.lineWidth = 1.6 * dpr;
       c2d.beginPath();
-      c2d.arc(bx, by, 2.4 * dpr, 0, Math.PI * 2);
+      c2d.moveTo(bx, by);
+      c2d.lineTo(bx - ux * trailLen, by - uy * trailLen);
+      c2d.stroke();
+      // Glowing head streak
+      c2d.lineWidth = bNext.enemy ? 2.6 * dpr : 2.2 * dpr;
+      c2d.strokeStyle = bNext.enemy ? '#ffffff' : '#ff5050';
+      c2d.shadowColor = bNext.enemy ? '#ff6a00' : '#ff5050';
+      c2d.shadowBlur = (bNext.enemy ? 14 : 10) * dpr;
+      c2d.beginPath();
+      c2d.moveTo(bx - ux * len * 0.5, by - uy * len * 0.5);
+      c2d.lineTo(bx + ux * len * 0.5, by + uy * len * 0.5);
+      c2d.stroke();
+      if (bNext.enemy) {
+        c2d.fillStyle = '#ffd84a';
+        c2d.beginPath();
+        c2d.arc(bx, by, 1.6 * dpr, 0, Math.PI * 2);
+        c2d.fill();
+      }
+      c2d.restore();
+    }
+
+    // Coins — sat ₿ glyph (gold) or dust shard (source-tinted). The
+    // glyph approach matches render.ts drawCoin closely enough that a
+    // spectator sees the same "₿ here" flash that the player does.
+    // Dust shards use the asteroid glow palette so iron drops orange,
+    // pallasite drops yellow, etc.
+    const COIN_RADIUS_WORLD = 6;
+    const coinR = COIN_RADIUS_WORLD * sx;
+    const tnowS = nowPerf * 0.001;
+    const DUST_SOURCE_TYPES: Record<'s' | 'i' | 'c' | 'p', 'stony' | 'iron' | 'chondrite' | 'pallasite'> = {
+      s: 'stony', i: 'iron', c: 'chondrite', p: 'pallasite',
+    };
+    for (const cNext of next.coins) {
+      const cPrev = prev.coins.find((p) => p.id === cNext.id) ?? cNext;
+      const cx = interpAxis(cPrev.x, cNext.x, t, PALL_WORLD_W) * sx;
+      const cy = interpAxis(cPrev.y, cNext.y, t, PALL_WORLD_H) * sy;
+      if (cNext.kind === 's') {
+        // Sat coin — gold ₿ with stretching wobble.
+        const wobble = 1 + 0.08 * Math.sin(nowPerf * 0.008 + cNext.x);
+        c2d.save();
+        c2d.translate(cx, cy);
+        c2d.scale(wobble, 1 / wobble);
+        c2d.lineWidth = 1.6 * dpr;
+        c2d.strokeStyle = '#ffd84a';
+        c2d.shadowColor = '#ffd84a';
+        c2d.shadowBlur = 10 * dpr;
+        c2d.beginPath();
+        c2d.arc(0, 0, coinR, 0, Math.PI * 2);
+        c2d.stroke();
+        c2d.fillStyle = '#ffd84a';
+        c2d.font = `bold ${Math.round((COIN_RADIUS_WORLD + 2) * sx)}px ui-monospace, monospace`;
+        c2d.textAlign = 'center';
+        c2d.textBaseline = 'middle';
+        c2d.fillText('₿', 0, 0);
+        c2d.textAlign = 'start';
+        c2d.textBaseline = 'alphabetic';
+        c2d.restore();
+      } else {
+        // Dust shard — tumbling small facet, tinted by source type.
+        const sourceKey = cNext.sourceType === '' ? 'stony' : DUST_SOURCE_TYPES[cNext.sourceType];
+        const style = getAsteroidStyle(sourceKey);
+        const dustColour = sourceKey === 'stony' ? '#7fffb0' : style.glow;
+        const tumble = tnowS * 3 + cNext.x * 0.02;
+        const r = coinR * 0.95;
+        c2d.save();
+        c2d.translate(cx, cy);
+        c2d.rotate(tumble);
+        c2d.lineWidth = 1.4 * dpr;
+        c2d.strokeStyle = dustColour;
+        c2d.shadowColor = dustColour;
+        c2d.shadowBlur = 9 * dpr;
+        // Simple diamond facet — readable at the small dust radius.
+        c2d.beginPath();
+        c2d.moveTo(0, -r);
+        c2d.lineTo(r * 0.7, 0);
+        c2d.lineTo(0, r);
+        c2d.lineTo(-r * 0.7, 0);
+        c2d.closePath();
+        c2d.stroke();
+        c2d.restore();
+      }
+    }
+
+    // Powerups — match render.ts drawPowerUp: outer halo + inner disc +
+    // bright core + glyph. POWERUP_CONFIG colours/glyphs are inlined so
+    // the viewer doesn't need to import the full game config.
+    const POWERUP_VIZ: Record<'r' | 'b' | 'n' | 't' | 'm', { glyph: string; colour: string }> = {
+      r: { glyph: '⚡', colour: '#ff8a3a' },
+      b: { glyph: '₿', colour: '#ffd84a' },
+      n: { glyph: '◉', colour: '#ff5050' },
+      t: { glyph: '🜂', colour: '#7fffea' },
+      m: { glyph: '☉', colour: '#b48cff' },
+    };
+    const POWERUP_RADIUS_WORLD = 16;
+    for (const pNext of next.powerups) {
+      const pPrev = prev.powerups.find((p) => p.id === pNext.id) ?? pNext;
+      const px = interpAxis(pPrev.x, pNext.x, t, PALL_WORLD_W) * sx;
+      const py = interpAxis(pPrev.y, pNext.y, t, PALL_WORLD_H) * sy;
+      const viz = POWERUP_VIZ[pNext.type];
+      const pr = POWERUP_RADIUS_WORLD * sx;
+      const pulse = 0.85 + 0.25 * Math.sin(nowPerf * 0.008);
+      const flash = (Math.sin(nowPerf * 0.012) + 1) * 0.5;
+      const trace = (tnowS) % 1.5;
+      const tracePhase = (trace / 1.5) % 1;
+      c2d.save();
+      c2d.translate(px, py);
+      // Expanding tracer ring
+      c2d.strokeStyle = viz.colour;
+      c2d.shadowColor = viz.colour;
+      c2d.shadowBlur = 12 * dpr;
+      c2d.lineWidth = 1.4 * dpr;
+      c2d.globalAlpha = (1 - tracePhase) * 0.7;
+      c2d.beginPath();
+      c2d.arc(0, 0, pr + tracePhase * 24 * dpr, 0, Math.PI * 2);
+      c2d.stroke();
+      c2d.globalAlpha = 1;
+      // Outer halo
+      c2d.shadowBlur = 20 * dpr;
+      c2d.lineWidth = 3 * dpr;
+      c2d.beginPath();
+      c2d.arc(0, 0, pr * pulse, 0, Math.PI * 2);
+      c2d.stroke();
+      // Inner disc
+      c2d.fillStyle = `${viz.colour}55`;
+      c2d.shadowBlur = 14 * dpr;
+      c2d.beginPath();
+      c2d.arc(0, 0, pr * 0.85, 0, Math.PI * 2);
       c2d.fill();
+      // Hot core
+      c2d.fillStyle = `rgba(255,255,255,${0.4 + flash * 0.3})`;
+      c2d.shadowBlur = 8 * dpr;
+      c2d.beginPath();
+      c2d.arc(0, 0, pr * 0.4, 0, Math.PI * 2);
+      c2d.fill();
+      // Glyph
+      c2d.fillStyle = '#000';
+      c2d.shadowBlur = 0;
+      c2d.font = `bold ${Math.round(18 * sx)}px ui-monospace, monospace`;
+      c2d.textAlign = 'center';
+      c2d.textBaseline = 'middle';
+      c2d.fillText(viz.glyph, 0, 0);
+      c2d.textAlign = 'start';
+      c2d.textBaseline = 'alphabetic';
       c2d.restore();
     }
 
@@ -2576,6 +2817,39 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
       c2d.beginPath();
       c2d.arc(p.x * sx, p.y * sy, p.size * dpr * (0.6 + k * 0.6), 0, Math.PI * 2);
       c2d.fill();
+      c2d.restore();
+    }
+    // 2d. Debris — line-segment shards from ship-destroyed bursts.
+    // Tumbling angled segments fading to zero, matching render.ts
+    // drawDebris. One save/restore for the lot per render-pass loop.
+    if (debris.length > 0) {
+      c2d.save();
+      c2d.lineCap = 'round';
+      c2d.lineWidth = 1.6 * dpr;
+      c2d.shadowBlur = 0;
+      for (let i = debris.length - 1; i >= 0; i--) {
+        const d = debris[i];
+        d.ttl -= dt * 1000;
+        if (d.ttl <= 0) { debris.splice(i, 1); continue; }
+        d.x += d.vx * dt;
+        d.y += d.vy * dt;
+        d.vx *= 0.96;
+        d.vy *= 0.96;
+        d.rot += d.rotV * dt;
+        const alpha = Math.max(0, Math.min(1, d.ttl / d.ttlMax));
+        if (alpha < 0.05) continue;
+        c2d.globalAlpha = alpha;
+        c2d.strokeStyle = d.colour;
+        c2d.save();
+        c2d.translate(d.x * sx, d.y * sy);
+        c2d.rotate(d.rot);
+        const half = (d.length / 2) * sx;
+        c2d.beginPath();
+        c2d.moveTo(-half, 0);
+        c2d.lineTo(half, 0);
+        c2d.stroke();
+        c2d.restore();
+      }
       c2d.restore();
     }
     c2d.shadowBlur = 0;
@@ -2647,13 +2921,19 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     // labels when the viewer's clock ran slightly behind the player's.
     const ageMs = latest ? performance.now() - latest.receivedAt : 0;
     const stale = ageMs > 3_000;
-    const veryStale = ageMs > 10_000;
-    const paused = next.paused === true && !veryStale;
+    const veryStale = ageMs > 6_000;
+    // PAUSED only sticks while frames keep arriving (the player is
+    // genuinely paused, frames keep flowing every 500ms with paused=1).
+    // If frames go stale during a paused frame, the player has quit
+    // or backgrounded — drop the PAUSED overlay so the watcher doesn't
+    // sit on PAUSED forever waiting for the very-stale threshold.
+    const paused = next.paused === true && !stale;
     // RUN ENDED only fires when frames stop arriving. Ship being dead
     // during deathreplay (alive=false in a fresh frame) is just a brief
     // gap between lives — the run is still in progress and frames keep
     // flowing every 500ms. When the run truly ends, the player stops
-    // publishing entirely and the stream goes stale.
+    // publishing entirely and the stream goes stale; 6s feels like a
+    // human "they've gone" rather than a network hiccup.
     const ended = veryStale;
 
     // Live / paused / ended pill in the top-left

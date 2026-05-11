@@ -128,6 +128,14 @@ export interface StreamFrame {
   ufos?: ReadonlyArray<readonly [number, number, number, 's' | 'p' | 't' | 'e' | 'c' | 'b']>;
   mines?: ReadonlyArray<readonly [number, number, number]>;
   bullets?: ReadonlyArray<readonly [number, number, number, 0 | 1]>;
+  /** Sat coin = 's' (₿ glyph), dust shard = 'd' (asteroid-tinted facet).
+   *  Source asteroid type carried alongside dust so the viewer can paint
+   *  the right glow + shape. Capped at 32/frame — most runs sit well
+   *  under this even mid-vein. */
+  coins?: ReadonlyArray<readonly [number, number, number, 's' | 'd', 's' | 'i' | 'c' | 'p' | '']>;
+  /** Powerups dropped from UFO/vein kills. Type letter maps directly to
+   *  POWERUP_CONFIG (r=rapid, b=satboost, n=nova, t=trident, m=magnet). */
+  powerups?: ReadonlyArray<readonly [number, number, number, 'r' | 'b' | 'n' | 't' | 'm']>;
   /** Audio events that fired since the prior frame — drained at publish
    *  time so the live theatre can replay them in sync with what the
    *  player heard. Capped at 24 per frame. */
@@ -147,6 +155,10 @@ interface WireWorld {
   u?: Array<[number, number, number, string]>;
   m?: Array<[number, number, number]>;
   b?: Array<[number, number, number, 0 | 1]>;
+  /** Coins — sat ₿ or dust shard. sourceType '' when not from an asteroid. */
+  c?: Array<[number, number, number, string, string]>;
+  /** Powerups — single-letter type from POWERUP_CONFIG. */
+  pu?: Array<[number, number, number, string]>;
   e?: Array<[string, number, number]>;
   shield?: 1;
   dead?: 1;
@@ -375,6 +387,12 @@ export async function publishStreamFrame(
   }
   if (frame.bullets?.length) {
     world.b = frame.bullets.map((b) => [b[0], round1(b[1]), round1(b[2]), b[3]]);
+  }
+  if (frame.coins?.length) {
+    world.c = frame.coins.map((c) => [c[0], round1(c[1]), round1(c[2]), c[3], c[4]]);
+  }
+  if (frame.powerups?.length) {
+    world.pu = frame.powerups.map((p) => [p[0], round1(p[1]), round1(p[2]), p[3]]);
   }
   if (frame.events?.length) {
     world.e = frame.events.map((e) => [e[0], e[1], e[2]]);
