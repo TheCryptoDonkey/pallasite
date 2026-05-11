@@ -1,52 +1,92 @@
 /**
  * Phone-as-controller — shared types + transport endpoint.
  *
- * v2 transport: raw WebSocket relay at controller.pallasite.app. Pair
- * by sessionId — both sides connect with the same id, one as
- * `role=host`, the other as `role=phone`, and the relay forwards bytes
- * between them. No signing, no Nostr semantics on the input stream;
- * the sessionId in the QR code is the only auth (32-bit random,
- * displayed for a brief pairing window).
+ * Architecture (v2 PWA):
  *
- * The earlier v1 transport used Nostr ephemeral events (kind 22770 +
- * 22771) on relay.trotters.cc. We retain the v1 module shape (claim →
- * input events) at the API level so the UI is unchanged; only the
- * underlying transport swapped.
+ *   mobile.pallasite.app is a generic game-controller PWA. It renders
+ *   a fixed gamepad layout (joystick + ABXY face buttons + L1/L2/R1/R2
+ *   shoulders + start/select). The game it pairs with sends a
+ *   ControllerSpec describing which slots it cares about and what
+ *   icon/label/colour to put on each. Buttons not in the spec are
+ *   hidden. Different game → different icons, same physical layout.
+ *
+ *   Transport: raw WebSocket pass-through at controller.pallasite.app.
+ *   Pair by sessionId (8-hex random in the QR code).
+ *
+ * Wire shape:
+ *
+ *   On pair, host sends:
+ *     { type: 'controller-spec', spec: ControllerSpec }
+ *
+ *   PWA sends slot-keyed input frames:
+ *     { k: 'joyL',        v: '<angle * 1000>' }  // heading update
+ *     { k: 'joyL-thrust', v: '0'|'1' }            // thrust state
+ *     { k: 'joyL-end',    v: '1' }                // joystick released
+ *     { k: 'joyL-tap',    v: '1' }                // tap-fire (one-shot)
+ *     { k: 'A',  v: '0'|'1' }                    // face button down/up
+ *     { k: 'R1', v: '0'|'1' }                    // shoulder press/release
+ *     ...
+ *
+ *   Host dispatches by slot name into game-specific actions.
  */
 
-/** Default WS endpoint in production. Overridable per-host via the
- *  `relay` field on the pairing token so dev / staging builds can
- *  point at a local controller-ws server. */
 export const CONTROLLER_WS_ENDPOINT_DEFAULT = 'wss://controller.pallasite.app/';
 
-/** Input kinds the host understands. The mobile controller is a
- *  thumb-driven virtual joystick (matches the in-game touch joystick
- *  mode), so the primary inputs are an analog heading + a thrust flag.
- *  Action buttons stay discrete one-shots. */
-export type ControllerInputKind =
-  | 'heading'      // value: angle * 1000 (rad → integer 0..6283)
-  | 'heading-end'  // joystick released, clear targetHeading
-  | 'thrust'       // value: 0|1 — joystick past deflection threshold
-  | 'fire'         // value: 0|1 — hold-to-fire
-  | 'hyperspace'   // one-shot
-  | 'shield'       // one-shot
-  | 'pause';       // one-shot toggle
+/** Standard gamepad slots. The PWA always reserves screen real estate
+ *  for these; the spec controls which become visible + how they're
+ *  labelled. `joyL` and `joyR` are analog sticks (multi-frame: heading
+ *  + thrust + end + tap). Everything else is a binary press. */
+export type ControllerSlot =
+  | 'joyL' | 'joyR'
+  | 'A' | 'B' | 'X' | 'Y'
+  | 'L1' | 'L2' | 'R1' | 'R2'
+  | 'start' | 'select'
+  | 'dpadU' | 'dpadD' | 'dpadL' | 'dpadR';
 
-/** Frame the controller sends over the WS data channel. Stringified
- *  JSON; the relay forwards it byte-for-byte to the host. */
+/** Per-slot configuration the host can ship to the PWA. */
+export interface SlotConfig {
+  /** For joystick slots only — how the analog input is interpreted.
+   *  'heading' sends an angle and a thrust flag (the only mode we
+   *  support today). 'xy' would send normalised x/y axes (future). */
+  mode?: 'heading' | 'xy';
+  /** For joystick slots: which face-button slot is "tap-fired" when
+   *  the joystick gets a short press with no drag. Set to e.g. 'A' to
+   *  match a quick-fire feel — the PWA emits a `joyL-tap` event the
+   *  host maps to the A button's game action. */
+  tapAction?: ControllerSlot;
+  /** Glyph or short emoji shown on the button. */
+  icon?: string;
+  /** One-line label under the icon. Short — fits the button. */
+  label?: string;
+  /** CSS colour for the button glow + border tint. */
+  colour?: string;
+}
+
+/** Controller spec — host → PWA on pair. */
+export interface ControllerSpec {
+  /** Human-readable game name. Shown on the PWA's status bar. */
+  name: string;
+  /** Spec protocol version. Bump on breaking changes. */
+  version: 1;
+  /** Map of slot name → config. Slots not present are hidden in the UI. */
+  slots: Partial<Record<ControllerSlot, SlotConfig>>;
+}
+
+/** Frame the PWA sends over the data channel. The `k` field is a slot
+ *  name (or a slot-name + suffix for joystick sub-events). */
 export interface ControllerInputFrame {
-  k: ControllerInputKind;
-  /** Value string. Booleans are '0'/'1'; heading is the angle * 1000
-   *  as a base-10 integer (positive, 0..6283). */
+  k: string;
   v: string;
 }
 
 /** Pairing token — encoded into the QR-code URL. */
 export interface PairingToken {
-  /** Session id (4-32 alphanumeric chars). Shared secret between
-   *  host and phone during the pairing window; the WS relay matches
-   *  the two sides on it. */
   sessionId: string;
-  /** WS endpoint. Defaults to CONTROLLER_WS_ENDPOINT_DEFAULT. */
   ws: string;
 }
+
+/** Backwards-compat re-export for any callers still importing the
+ *  legacy event-kind enum. ControllerInputKind is no longer used on
+ *  the wire — it's just an alias of the slot-name string for older
+ *  call sites. */
+export type ControllerInputKind = string;

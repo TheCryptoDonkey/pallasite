@@ -1,30 +1,36 @@
 /**
- * Phone-as-controller — mobile side.
+ * Phone-as-controller — PWA (mobile) side.
  *
  * Connects to the controller-ws relay as `role=phone` with the
- * sessionId read from the URL. From then on every input event is
- * just a JSON.stringify({k, v}) on the open socket — no signing, no
- * relay-broadcast indirection, ~30-50ms typical end-to-end on a
- * landlocked LTE connection (closer to ~10ms on the same Wi-Fi).
+ * sessionId from the URL, then exchanges JSON frames with the host.
+ *
+ * Two inbound message types:
+ *   { type: 'peer-up' | 'peer-down' }     — connection state
+ *   { type: 'controller-spec', spec: ... } — game's button layout
+ *
+ * Outbound:
+ *   { k: <slot>, v: <value> }              — slot-keyed input frame
  */
 
 import {
-  type ControllerInputKind,
   type ControllerInputFrame,
+  type ControllerSpec,
   type PairingToken,
 } from './controller-types.js';
 
 export interface ControllerClient {
   /** True once the relay reports the host is also connected. */
   paired: boolean;
-  /** Send one input event. Returns immediately; publish is fire-and-
-   *  forget. Backlog is dropped if the socket is disconnected for more
-   *  than a brief moment (controller input is time-sensitive). */
-  sendInput: (kind: ControllerInputKind, value: string) => void;
+  /** Current spec — null until the host sends one. */
+  spec: ControllerSpec | null;
+  /** Send one input event. Drops silently if the socket is closed. */
+  sendInput: (slot: string, value: string) => void;
   /** Force-close the WS. */
   close: () => void;
-  /** Hook for status changes — useful for the connection chip. */
+  /** Status callback. */
   onStatus: (cb: (s: ControllerClientStatus) => void) => void;
+  /** Spec callback — fires whenever a fresh spec arrives. */
+  onSpec: (cb: (spec: ControllerSpec) => void) => void;
 }
 
 export type ControllerClientStatus =
@@ -34,14 +40,16 @@ export type ControllerClientStatus =
   | { kind: 'reconnecting' }
   | { kind: 'closed' };
 
-/** Open the WS, set up listeners, return a client handle. */
 export function startControllerClient(token: PairingToken): ControllerClient {
   let ws: WebSocket | null = null;
   let closed = false;
   let paired = false;
+  let spec: ControllerSpec | null = null;
   let reconnectAttempt = 0;
   let statusCb: ((s: ControllerClientStatus) => void) | null = null;
+  let specCb: ((s: ControllerSpec) => void) | null = null;
   const fireStatus = (s: ControllerClientStatus): void => { try { statusCb?.(s); } catch { /* ignore */ } };
+  const fireSpec = (s: ControllerSpec): void => { try { specCb?.(s); } catch { /* ignore */ } };
   const url = `${token.ws}?s=${encodeURIComponent(token.sessionId)}&r=phone`;
 
   const connect = (): void => {
@@ -59,11 +67,16 @@ export function startControllerClient(token: PairingToken): ControllerClient {
       try { parsed = JSON.parse(data); } catch { return; }
       if (!parsed || typeof parsed !== 'object') return;
       const obj = parsed as Record<string, unknown>;
-      if (typeof obj.type !== 'string') return;
       if (obj.type === 'peer-up') {
         if (!paired) { paired = true; fireStatus({ kind: 'paired' }); }
       } else if (obj.type === 'peer-down') {
         if (paired) { paired = false; fireStatus({ kind: 'waiting' }); }
+      } else if (obj.type === 'controller-spec') {
+        const incoming = obj.spec as ControllerSpec | undefined;
+        if (incoming && typeof incoming === 'object' && incoming.slots) {
+          spec = incoming;
+          fireSpec(incoming);
+        }
       }
     };
     ws.onerror = () => { /* close handler will reconnect */ };
@@ -80,10 +93,10 @@ export function startControllerClient(token: PairingToken): ControllerClient {
   };
   connect();
 
-  const sendInput = (kind: ControllerInputKind, value: string): void => {
+  const sendInput = (slot: string, value: string): void => {
     if (closed) return;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const frame: ControllerInputFrame = { k: kind, v: value };
+    const frame: ControllerInputFrame = { k: slot, v: value };
     try { ws.send(JSON.stringify(frame)); } catch { /* ignore */ }
   };
 
@@ -95,8 +108,10 @@ export function startControllerClient(token: PairingToken): ControllerClient {
 
   return {
     get paired() { return paired; },
+    get spec() { return spec; },
     sendInput,
     close,
     onStatus: (cb) => { statusCb = cb; },
+    onSpec: (cb) => { specCb = cb; },
   };
 }

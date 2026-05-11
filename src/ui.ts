@@ -3455,9 +3455,6 @@ export function renderControllerPage(): void {
   document.documentElement.style.height = '100%';
   document.documentElement.style.overflow = 'hidden';
   document.body.style.cssText = 'background:#02050d;overflow:hidden;touch-action:none;position:fixed;inset:0;width:100vw;height:100vh;margin:0;padding:0;overscroll-behavior:none;';
-  // Tighten the viewport meta so pinch-zoom + double-tap-zoom can't
-  // accidentally bork the layout. user-scalable=no on iOS is honoured
-  // when accompanied by maximum-scale=1.
   let vp = document.querySelector('meta[name="viewport"]');
   if (!vp) {
     vp = document.createElement('meta');
@@ -3466,30 +3463,24 @@ export function renderControllerPage(): void {
   }
   vp.setAttribute('content', 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover');
 
-  // Hide the game canvas + global touch controls so they don't bleed
-  // through the controller overlay on weaker browsers.
   const gameCanvas = document.getElementById('game');
   if (gameCanvas) gameCanvas.style.display = 'none';
   const touchCtl = document.getElementById('touch-controls');
   if (touchCtl) touchCtl.style.display = 'none';
 
-  // Try to lock landscape — modern Chrome on Android supports this in
-  // PWA fullscreen mode. iOS Safari ignores it but the rotate-device
-  // overlay below catches portrait anyway.
   void (async () => {
     try {
       const orientation = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
       if (orientation?.lock) await orientation.lock('landscape');
-    } catch { /* ignore — not supported in non-PWA contexts */ }
+    } catch { /* not supported in non-PWA contexts */ }
   })();
 
   const overlay = el('div', { className: 'overlay', parent: root });
-  overlay.style.cssText = 'padding:0;margin:0;max-width:none;width:100vw;height:100vh;display:flex;flex-direction:column;overflow:hidden;';
+  overlay.style.cssText = 'padding:0;margin:0;max-width:none;width:100vw;height:100vh;display:flex;flex-direction:column;overflow:hidden;position:relative;';
 
-  // Rotate-device card — shown when the page is portrait. Toggles
-  // visibility on the resize/orientationchange events.
+  // ── Rotate-device card (portrait fallback) ─────────────────────────
   const rotateCard = el('div', { parent: overlay });
-  rotateCard.style.cssText = 'position:absolute;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;background:#02050d;color:rgba(220,210,255,0.85);text-align:center;padding:20px;z-index:10;';
+  rotateCard.style.cssText = 'position:absolute;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;background:#02050d;color:rgba(220,210,255,0.85);text-align:center;padding:20px;z-index:30;';
   const rotateIcon = el('div', { parent: rotateCard, text: '📱↺' });
   rotateIcon.style.cssText = 'font-size:4rem;margin-bottom:18px;filter:drop-shadow(0 0 10px rgba(140,255,180,0.5));';
   el('h2', { parent: rotateCard, text: 'ROTATE TO LANDSCAPE' }).style.cssText = 'margin:0 0 10px;letter-spacing:0.18em;color:#8cffb4;';
@@ -3497,7 +3488,6 @@ export function renderControllerPage(): void {
   const pwaHint = el('p', { parent: rotateCard });
   pwaHint.style.cssText = 'margin:8px 0 0;font-size:0.8rem;color:rgba(180,140,255,0.7);max-width:420px;line-height:1.5;';
   pwaHint.innerHTML = 'Tip: tap the share icon → <strong>Add to Home Screen</strong> to install this as a controller PWA — opens straight into the joystick.';
-
   const isPortrait = (): boolean => window.innerHeight > window.innerWidth;
   const applyOrientation = (): void => {
     rotateCard.style.display = isPortrait() ? 'flex' : 'none';
@@ -3506,74 +3496,161 @@ export function renderControllerPage(): void {
   window.addEventListener('resize', applyOrientation);
   window.addEventListener('orientationchange', applyOrientation);
 
+  // ── Top status strip ───────────────────────────────────────────────
   const titleBar = el('div', { parent: overlay });
-  titleBar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:4px 8px;font-size:0.85rem;color:rgba(220,210,255,0.85);letter-spacing:0.12em;';
-  el('span', { parent: titleBar, text: 'PALLASITE · CONTROLLER' });
+  titleBar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:4px 10px;font-size:0.78rem;color:rgba(220,210,255,0.85);letter-spacing:0.14em;height:22px;flex-shrink:0;z-index:5;';
+  const gameNameChip = el('span', { parent: titleBar, text: 'CONTROLLER' });
   const statusChip = el('span', { parent: titleBar });
-  statusChip.style.cssText = 'color:rgba(255,216,74,0.85);font-size:0.78rem;';
+  statusChip.style.cssText = 'color:rgba(255,216,74,0.85);font-size:0.7rem;';
   statusChip.textContent = '…';
 
-  // Decode pairing token from URL + connect.
-  const importMobile = import('./controller-mobile.js');
-  const importHost = import('./controller-host.js');
-  let client: import('./controller-mobile.js').ControllerClient | null = null;
-  void Promise.all([importMobile, importHost]).then(([m, h]) => {
-    const token = h.decodePairingUrl(window.location.href);
-    if (!token) {
-      statusChip.textContent = 'BAD PAIRING URL';
-      statusChip.style.color = 'rgba(255,120,120,0.9)';
-      const msg = el('p', { parent: overlay });
-      msg.style.cssText = 'padding:20px;color:rgba(220,210,255,0.7);text-align:center;';
-      msg.textContent = 'This page expects ?h=<pubkey>&s=<sessionId>&r=<relay>. Scan the QR from the big screen to get a fresh URL.';
-      return;
-    }
-    statusChip.textContent = 'CONNECTING…';
-    client = m.startControllerClient(token);
-    statusChip.textContent = 'PAIRED';
-    statusChip.style.color = 'rgba(91,255,140,0.85)';
-  });
+  // ── Gamepad surface — a single positioned canvas so shoulders sit
+  //    at the screen corners regardless of where the joystick + face
+  //    button clusters land. Joystick on the left thumb, face buttons
+  //    diamond on the right thumb, shoulders along the top edge.
+  const surface = el('div', { parent: overlay });
+  surface.style.cssText = 'flex:1;position:relative;min-height:0;';
 
-  // Main layout — joystick on left thumb, action buttons on right.
-  // Two columns, full height minus the title bar. Sized in viewport
-  // units so it auto-fits any landscape phone.
-  const playArea = el('div', { parent: overlay });
-  playArea.style.cssText = 'flex:1;display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:6px 12px 12px;min-height:0;';
+  // Buttons not in the spec stay hidden. We pre-build every standard
+  // slot at fixed positions and toggle visibility based on the spec.
+  const slotEls = new Map<string, HTMLElement>();
+  const slotLabels = new Map<string, HTMLElement>();
 
-  // ── Joystick (left thumb) ──────────────────────────────────────────
-  // Threshold constants match touch.ts so the feel is identical. The
-  // pad radius is read dynamically per-press because the pad is sized
-  // in viewport units — landscape phones span 280-400px, the in-game
-  // touch joystick was 70px on a much smaller canvas.
+  const makeButton = (slot: string, css: string, defaultColour = 'rgba(220,210,255,0.7)'): HTMLElement => {
+    const btn = el('div', { parent: surface });
+    btn.style.cssText = `${css};position:absolute;display:none;align-items:center;justify-content:center;background:rgba(255,255,255,0.04);border:2px solid ${defaultColour}55;border-radius:50%;user-select:none;-webkit-tap-highlight-color:transparent;touch-action:none;color:${defaultColour};text-shadow:0 0 12px ${defaultColour}88;font-weight:bold;`;
+    slotEls.set(slot, btn);
+    // Inner label container so we can update icon + label without
+    // wiping event listeners.
+    const inner = el('div', { parent: btn });
+    inner.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;line-height:1;pointer-events:none;';
+    slotLabels.set(slot, inner);
+    return btn;
+  };
+
+  // Standard slot positions for a landscape phone (~800×360 css after
+  // browser chrome). Sizes in vmin so the layout scales with viewport.
+  // Shoulders ride the top corners; face buttons cluster bottom-right;
+  // start/select sit centre-top. Joystick is rendered separately so it
+  // can size dynamically.
+  makeButton('L1', 'top:30px;left:14px;width:14vmin;height:14vmin;max-width:80px;max-height:80px;font-size:1.1rem;');
+  makeButton('L2', 'top:30px;left:calc(14px + 14vmin + 8px);width:14vmin;height:14vmin;max-width:80px;max-height:80px;font-size:1.1rem;');
+  makeButton('R2', 'top:30px;right:calc(14px + 14vmin + 8px);width:14vmin;height:14vmin;max-width:80px;max-height:80px;font-size:1.1rem;');
+  makeButton('R1', 'top:30px;right:14px;width:14vmin;height:14vmin;max-width:80px;max-height:80px;font-size:1.1rem;');
+  makeButton('select', 'top:30px;left:calc(50% - 11vmin);width:10vmin;height:10vmin;max-width:64px;max-height:64px;font-size:0.95rem;');
+  makeButton('start',  'top:30px;left:calc(50% + 1vmin);width:10vmin;height:10vmin;max-width:64px;max-height:64px;font-size:0.95rem;');
+
+  // Face button diamond on the right thumb. Positioned relative to a
+  // notional centre at (calc(100% - 100px), 60%). Y on top, X on left,
+  // B on right, A on bottom — standard Xbox/SNES arrangement.
+  makeButton('Y', 'right:calc(60px + 14vmin);top:calc(60% - 23vmin);width:14vmin;height:14vmin;max-width:88px;max-height:88px;font-size:1.6rem;');
+  makeButton('X', 'right:calc(60px + 28vmin);top:calc(60% - 8vmin);width:14vmin;height:14vmin;max-width:88px;max-height:88px;font-size:1.6rem;');
+  makeButton('B', 'right:60px;top:calc(60% - 8vmin);width:14vmin;height:14vmin;max-width:88px;max-height:88px;font-size:1.6rem;');
+  makeButton('A', 'right:calc(60px + 14vmin);top:calc(60% + 7vmin);width:14vmin;height:14vmin;max-width:88px;max-height:88px;font-size:1.6rem;');
+
+  // ── Joystick (left thumb) — pre-built, can be hidden if a spec
+  //    skips joyL. Inputs use the slot name `joyL` plus suffixes for
+  //    sub-events (joyL-thrust, joyL-end, joyL-tap).
   const JOY_HEADING_DEADZONE = 0.18;
   const JOY_THRUST_THRESHOLD = 0.45;
   const JOY_TAP_TIME_MS = 220;
   const JOY_TAP_MOVE_PX = 8;
-  const HEADING_SAMPLE_MS = 50;  // 20Hz cap on heading events
+  const HEADING_SAMPLE_MS = 50;
 
-  const joyWrap = el('div', { parent: playArea });
-  joyWrap.style.cssText = 'display:flex;align-items:center;justify-content:center;min-height:0;min-width:0;';
-  // Joystick sized to fit the available landscape area — min(80% of
-  // viewport-height, 40% of viewport-width). On a typical landscape
-  // phone (~360x780 css px after rotation, so ~780x360) this gives a
-  // ~288px circle, plenty of finger room.
-  const pad = el('div', { parent: joyWrap });
-  pad.style.cssText = 'width:min(80vh, 40vw);height:min(80vh, 40vw);border-radius:50%;background:radial-gradient(circle, rgba(140,255,180,0.10) 0%, rgba(140,255,180,0.04) 60%, rgba(140,255,180,0) 100%);border:2px solid rgba(140,255,180,0.35);position:relative;touch-action:none;-webkit-tap-highlight-color:transparent;';
+  const pad = el('div', { parent: surface });
+  pad.style.cssText = 'position:absolute;left:6vmin;top:50%;transform:translateY(-50%);width:min(70vh, 36vw);height:min(70vh, 36vw);border-radius:50%;background:radial-gradient(circle, rgba(140,255,180,0.10) 0%, rgba(140,255,180,0.04) 60%, rgba(140,255,180,0) 100%);border:2px solid rgba(140,255,180,0.35);touch-action:none;-webkit-tap-highlight-color:transparent;display:none;';
   const knob = el('div', { parent: pad });
   knob.style.cssText = 'position:absolute;left:50%;top:50%;width:32%;height:32%;margin:-16% 0 0 -16%;border-radius:50%;background:radial-gradient(circle, rgba(140,255,180,0.45) 0%, rgba(91,255,140,0.18) 70%);border:2px solid rgba(140,255,180,0.75);box-shadow:0 0 18px rgba(140,255,180,0.4);transform:translate(0,0);transition:transform 60ms ease-out;';
+  slotEls.set('joyL', pad);
 
+  // ── Waiting-for-game card (centre overlay, hidden once spec lands)
+  const waitCard = el('div', { parent: surface });
+  waitCard.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;color:rgba(220,210,255,0.7);text-align:center;padding:20px;pointer-events:none;';
+  const waitIcon = el('div', { parent: waitCard, text: '⏳' });
+  waitIcon.style.cssText = 'font-size:3rem;margin-bottom:14px;opacity:0.85;';
+  const waitTitle = el('h3', { parent: waitCard, text: 'WAITING FOR GAME…' });
+  waitTitle.style.cssText = 'margin:0 0 6px;letter-spacing:0.15em;color:#ffd84a;font-size:1rem;';
+  const waitBody = el('p', { parent: waitCard, text: 'Scan a game QR code or share a pairing link to start controlling.' });
+  waitBody.style.cssText = 'margin:0;font-size:0.85rem;max-width:480px;line-height:1.5;';
+
+  // ── Wire setup ──────────────────────────────────────────────────────
+  const importMobile = import('./controller-mobile.js');
+  const importHost = import('./controller-host.js');
+  let client: import('./controller-mobile.js').ControllerClient | null = null;
+
+  const setSlotConfig = (slot: string, cfg: import('./controller-types.js').SlotConfig): void => {
+    const btnEl = slotEls.get(slot);
+    if (!btnEl) return;
+    btnEl.style.display = slot === 'joyL' ? 'block' : 'flex';
+    const colour = cfg.colour ?? '#8cffb4';
+    btnEl.style.color = colour;
+    btnEl.style.borderColor = colour + '88';
+    btnEl.style.textShadow = `0 0 12px ${colour}88`;
+    if (slot !== 'joyL') {
+      const inner = slotLabels.get(slot);
+      if (inner) {
+        inner.innerHTML = '';
+        if (cfg.icon) {
+          const ic = el('span', { parent: inner, text: cfg.icon });
+          ic.style.cssText = 'font-size:1.6rem;line-height:1;';
+        }
+        if (cfg.label) {
+          const lb = el('span', { parent: inner, text: cfg.label });
+          lb.style.cssText = 'font-size:0.62rem;letter-spacing:0.14em;color:' + colour + ';';
+        }
+      }
+    }
+  };
+
+  const applySpec = (spec: import('./controller-types.js').ControllerSpec): void => {
+    gameNameChip.textContent = (spec.name ?? 'GAME').toUpperCase() + ' · CONTROLLER';
+    // Reset all slots to hidden, then enable the ones the spec lists.
+    for (const slotEl of slotEls.values()) slotEl.style.display = 'none';
+    for (const [slot, cfg] of Object.entries(spec.slots ?? {})) {
+      if (!cfg) continue;
+      setSlotConfig(slot, cfg);
+    }
+    waitCard.style.display = 'none';
+  };
+
+  void Promise.all([importMobile, importHost]).then(([m, h]) => {
+    const token = h.decodePairingUrl(window.location.href);
+    if (!token) {
+      statusChip.textContent = 'NEED PAIRING';
+      statusChip.style.color = 'rgba(255,120,120,0.9)';
+      waitTitle.textContent = 'NOT PAIRED';
+      waitBody.textContent = 'Open the QR scanner on the home page or scan a fresh game code.';
+      return;
+    }
+    statusChip.textContent = 'CONNECTING…';
+    client = m.startControllerClient(token);
+    client.onStatus((s) => {
+      switch (s.kind) {
+        case 'connecting':    statusChip.textContent = 'CONNECTING…'; statusChip.style.color = 'rgba(255,216,74,0.85)'; break;
+        case 'waiting':       statusChip.textContent = 'WAITING FOR GAME'; statusChip.style.color = 'rgba(255,216,74,0.85)'; break;
+        case 'paired':        statusChip.textContent = 'PAIRED · LIVE'; statusChip.style.color = 'rgba(91,255,140,0.95)'; break;
+        case 'reconnecting':  statusChip.textContent = 'RECONNECTING…'; statusChip.style.color = 'rgba(255,150,80,0.9)'; break;
+        case 'closed':        statusChip.textContent = 'CLOSED'; statusChip.style.color = 'rgba(255,120,120,0.9)'; break;
+      }
+    });
+    client.onSpec((spec) => applySpec(spec));
+  });
+
+  // ── Joystick interaction (always built; visible iff joyL in spec) ──
   let joyActive = false;
   let joyOriginX = 0, joyOriginY = 0;
-  let joyMaxRadius = 100;  // re-read per-press from pad rect
+  let joyMaxRadius = 100;
   let joyPressedAt = 0;
   let joyMaxDrift = 0;
   let joyDidEngage = false;
   let lastHeadingSendAt = 0;
   let thrustingNow = false;
+  let joyTapSlot: string | null = null;
 
   const sendThrust = (on: boolean): void => {
     if (thrustingNow === on) return;
     thrustingNow = on;
-    client?.sendInput('thrust', on ? '1' : '0');
+    client?.sendInput('joyL-thrust', on ? '1' : '0');
   };
 
   pad.addEventListener('pointerdown', (e) => {
@@ -3582,13 +3659,12 @@ export function renderControllerPage(): void {
     const rect = pad.getBoundingClientRect();
     joyOriginX = rect.left + rect.width / 2;
     joyOriginY = rect.top + rect.height / 2;
-    // Read max-radius from the actual pad size each press — it scales
-    // with viewport so the calc must run after layout. 0.34 leaves
-    // room for the knob (32% of pad width) plus a comfortable margin.
     joyMaxRadius = (rect.width / 2) * 0.7;
     joyPressedAt = performance.now();
     joyMaxDrift = 0;
     joyDidEngage = false;
+    // Look up tapAction from the live spec, if any.
+    joyTapSlot = client?.spec?.slots?.joyL?.tapAction ?? null;
     pad.setPointerCapture(e.pointerId);
   });
   pad.addEventListener('pointermove', (e) => {
@@ -3608,9 +3684,8 @@ export function renderControllerPage(): void {
       const now = performance.now();
       if (now - lastHeadingSendAt >= HEADING_SAMPLE_MS) {
         lastHeadingSendAt = now;
-        // Wrap to [0, 2π) before scaling so the int payload is positive.
         const norm = ((angle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
-        client?.sendInput('heading', String(Math.round(norm * 1000)));
+        client?.sendInput('joyL', String(Math.round(norm * 1000)));
       }
       sendThrust(magnitude > JOY_THRUST_THRESHOLD);
     } else {
@@ -3623,55 +3698,44 @@ export function renderControllerPage(): void {
     const heldMs = performance.now() - joyPressedAt;
     knob.style.transform = 'translate(0px, 0px)';
     sendThrust(false);
-    client?.sendInput('heading-end', '1');
-    // Tap-fire: short press with no drag = one shot.
+    client?.sendInput('joyL-end', '1');
     if (!joyDidEngage && heldMs < JOY_TAP_TIME_MS && joyMaxDrift < JOY_TAP_MOVE_PX) {
-      client?.sendInput('fire', '1');
-      window.setTimeout(() => client?.sendInput('fire', '0'), 60);
+      client?.sendInput('joyL-tap', '1');
+      // Also emit the tapAction slot if the spec wired one — gives the
+      // host a slot-keyed press event to feed straight into its slot map.
+      if (joyTapSlot) {
+        const target = joyTapSlot;
+        client?.sendInput(target, '1');
+        window.setTimeout(() => client?.sendInput(target, '0'), 60);
+      }
     }
   };
   pad.addEventListener('pointerup', joyRelease);
   pad.addEventListener('pointercancel', joyRelease);
 
-  // ── Action buttons (right thumb) ──────────────────────────────────
-  // FIRE is the big one (2fr); WARP / SHIELD / PAUSE are smaller. Grid
-  // fills the right column edge-to-edge so the buttons hit the corner
-  // and the player doesn't have to reach into the middle.
-  const actionCol = el('div', { parent: playArea });
-  actionCol.style.cssText = 'display:grid;grid-template-rows:2fr 1fr 1fr 1fr;gap:8px;min-height:0;min-width:0;';
-  const ctlBtn = (parent: HTMLElement, label: string, colour: string, fontSize = '1.6rem'): HTMLElement => {
-    const b = el('div', { parent });
-    b.style.cssText = `display:flex;align-items:center;justify-content:center;font-size:${fontSize};font-weight:bold;letter-spacing:0.15em;color:${colour};background:rgba(255,255,255,0.04);border:2px solid ${colour}55;border-radius:14px;user-select:none;-webkit-tap-highlight-color:transparent;touch-action:none;text-shadow:0 0 12px ${colour}88;`;
-    b.textContent = label;
-    return b;
-  };
-  const bindHold = (btn: HTMLElement, kind: 'fire'): void => {
-    const press = (): void => {
-      btn.style.background = 'rgba(255,255,255,0.14)';
-      client?.sendInput(kind, '1');
+  // ── Bind press/release on every standard button slot ───────────────
+  // Each slot is hold-style by default (presses send '1', releases '0').
+  // One-shot semantics are the host's job — the slot map can ignore
+  // releases for action buttons like SHIELD that should fire once per
+  // press.
+  const bindButton = (slot: string): void => {
+    const btn = slotEls.get(slot);
+    if (!btn || slot === 'joyL') return;
+    const press = (e: Event): void => {
+      e.preventDefault();
+      btn.style.background = 'rgba(255,255,255,0.18)';
+      client?.sendInput(slot, '1');
     };
     const release = (): void => {
       btn.style.background = 'rgba(255,255,255,0.04)';
-      client?.sendInput(kind, '0');
+      client?.sendInput(slot, '0');
     };
-    btn.addEventListener('pointerdown', (e) => { e.preventDefault(); press(); });
-    btn.addEventListener('pointerup', (e) => { e.preventDefault(); release(); });
-    btn.addEventListener('pointercancel', () => release());
-    btn.addEventListener('pointerleave', () => release());
+    btn.addEventListener('pointerdown', press);
+    btn.addEventListener('pointerup', release);
+    btn.addEventListener('pointercancel', release);
+    btn.addEventListener('pointerleave', release);
   };
-  const bindTap = (btn: HTMLElement, kind: 'hyperspace' | 'shield' | 'pause'): void => {
-    const fire = (e: Event): void => {
-      e.preventDefault();
-      btn.style.background = 'rgba(255,255,255,0.14)';
-      client?.sendInput(kind, '1');
-      window.setTimeout(() => { btn.style.background = 'rgba(255,255,255,0.04)'; }, 120);
-    };
-    btn.addEventListener('pointerdown', fire);
-  };
-  bindHold(ctlBtn(actionCol, 'FIRE', '#ff5050'), 'fire');
-  bindTap(ctlBtn(actionCol, 'WARP', '#b48cff', '1.05rem'), 'hyperspace');
-  bindTap(ctlBtn(actionCol, 'SHIELD', '#5b9dff', '1.05rem'), 'shield');
-  bindTap(ctlBtn(actionCol, '⏸', '#ffd84a', '1.4rem'), 'pause');
+  for (const slot of ['A', 'B', 'X', 'Y', 'L1', 'L2', 'R1', 'R2', 'start', 'select']) bindButton(slot);
 }
 
 export function renderAdminPanel(): void {
