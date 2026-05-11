@@ -38,7 +38,7 @@ const TRACKS: Record<string, Track> = {
   'banked-coin':     { src: '/music/banked-coin.opus',     id: 'banked-coin', loop: false },
   'belt-drill':      { src: '/music/belt-drill.opus',      id: 'belt-drill' },
   'hull-plating':    { src: '/music/hull-plating.opus',    id: 'hull-plating' },
-  'hyperspace':      { src: '/music/hyperspace.opus',      id: 'hyperspace', loop: false },
+  'hyperspace':      { src: '/music/hyperspace.opus',      id: 'hyperspace' },  // loops — bonus-level bed (W9 → W10)
   'ion-stream':      { src: '/music/ion-stream.opus',      id: 'ion-stream' },
   'mine-field':      { src: '/music/mine-field.opus',      id: 'mine-field' },
   'olivine':         { src: '/music/olivine.opus',         id: 'olivine' },
@@ -204,7 +204,18 @@ const TITLE_POOL: readonly string[] = [
 ];
 let titleVisits = 0;
 let currentTitleTrack: string = TITLE_POOL[0];
+/** One-shot override — after a successful sats claim, the very next
+ *  visit to the title screen plays 'banked-coin' instead of the
+ *  rotation pool, then clears on the next pick. Set by faucet
+ *  claim-success handler. */
+let pendingPostClaimTrack: string | null = null;
 function pickTitleTrack(): string {
+  if (pendingPostClaimTrack) {
+    currentTitleTrack = pendingPostClaimTrack;
+    pendingPostClaimTrack = null;
+    titleVisits += 1;
+    return currentTitleTrack;
+  }
   if (titleVisits === 0) {
     titleVisits += 1;
     currentTitleTrack = TITLE_POOL[0];
@@ -216,6 +227,13 @@ function pickTitleTrack(): string {
   currentTitleTrack = rest[Math.floor(Math.random() * rest.length)];
   titleVisits += 1;
   return currentTitleTrack;
+}
+
+/** Called by the claim-success handler to override the next title
+ *  visit's music with 'banked-coin'. The flag clears after a single
+ *  pick, so subsequent title returns resume the normal rotation. */
+export function musicNotifyClaimSuccess(): void {
+  pendingPostClaimTrack = 'banked-coin';
 }
 
 /** Map (phase, wave) to a track id. */
@@ -234,6 +252,14 @@ function trackForState(state: GameState): string | null {
       // Distinct riser bed during the inter-wave warp tunnel — the wave-band
       // track returns on the next 'wavestart' tick.
       return 'warp-transition';
+    case 'bonus':
+      // 60s W9 → W10 detour. hyperspace track is a frantic mental-prodigy
+      // bed that loops for the whole window (it's set loop:false in TRACKS
+      // because it's also used as a one-shot sting elsewhere, but the
+      // crossfade machinery here drives it via the music gain bus so
+      // looping vs not doesn't actually matter — the track plays for
+      // the bonus duration and crossfades out when wave 10 starts).
+      return 'hyperspace';
     case 'wavestart':
     case 'playing': {
       const w = state.wave;

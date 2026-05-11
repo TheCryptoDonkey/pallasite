@@ -35,7 +35,7 @@ import {
 import { renderLegalFooter, openTermsModal } from './legal.js';
 import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow } from './game.js';
 import * as audio from './audio.js';
-import { listTracks, currentTrackId, musicPreviewPlay, musicForceRefresh, musicStop } from './music.js';
+import { listTracks, currentTrackId, musicPreviewPlay, musicForceRefresh, musicStop, musicNotifyClaimSuccess } from './music.js';
 import { getMusicAnalyser } from './audio.js';
 import { fetchProfile, getCachedProfile, bestName } from './profile.js';
 import { type Difficulty, getStoredDifficulty, setStoredDifficulty, lockInDifficulty } from './difficulty.js';
@@ -7850,6 +7850,11 @@ async function maybePublishScore(
 
       if (result.ok) {
         clearPendingClaim();
+        // Override the next title-screen music pick with 'banked-coin'
+        // so the player returns to a celebratory bed. One-shot — the
+        // override clears after the next title visit, so subsequent
+        // returns resume the normal idle rotation.
+        musicNotifyClaimSuccess();
         const pityTail = result.pity_bonus && result.pity_bonus > 0
           ? ` (★ +${result.pity_bonus} pity bonus)`
           : '';
