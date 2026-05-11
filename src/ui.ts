@@ -660,6 +660,14 @@ export function renderTitle(state: GameState): void {
     void audio.unlockAudio();
     renderSettings(() => renderTitle(state));
   });
+  // Phone-as-controller — kicks off the pairing UI (QR code) and binds
+  // accepted controller inputs into state.keys / tryHyperspace / etc.
+  // Sits on the title screen so the player can pair before IGNITE.
+  const phoneBtn = el('button', { className: 'menu-btn secondary', parent: row, text: '📱 USE PHONE' });
+  phoneBtn.addEventListener('click', () => {
+    void audio.unlockAudio();
+    renderControllerHostPairing(state, () => renderTitle(state));
+  });
 
   // Show local high scores under the start button if any exist. Local entries
   // sometimes carry an eventId (set when the player published this run via the
