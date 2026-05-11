@@ -11,6 +11,9 @@ importers:
       '@noble/curves':
         specifier: ^2.2.0
         version: 2.2.0
+      nostr-veil:
+        specifier: ^0.8.4
+        version: 0.8.4
       qrcode:
         specifier: ^1.5.4
         version: 1.5.4
@@ -347,6 +350,9 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
+
+  '@forgesworn/ring-sig@3.0.0':
+    resolution: {integrity: sha512-LZ2fwwQ79U4BbHpggdeCZJDBwW2J/c/Zm2mIeKVO7BjOJLkZ/1nCOnlSZKPvCjRht5nMYyRaE+u/sz0pNvkYOg==}
 
   '@img/colour@1.1.0':
     resolution: {integrity: sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ==}
@@ -711,6 +717,11 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
+  nostr-veil@0.8.4:
+    resolution: {integrity: sha512-NUE1YhALeyP8u5kotFgfTNIti7emL8LafYBm3m4lzGa4Btd3KPY6OJJ/Kl6kTFZ+X5gYjKntxNjyUlr7Gm61LA==}
+    engines: {node: '>=20'}
+    hasBin: true
+
   p-limit@2.3.0:
     resolution: {integrity: sha512-//88mFWSJx8lxCzwdAABTJL2MyWB12+eIY7MDL2SqLmAkeKU9qxRvWuSyTjm3FUmpBEMuFfckAIqEaVGUDxb6w==}
     engines: {node: '>=6'}
@@ -1027,6 +1038,11 @@ snapshots:
   '@esbuild/win32-x64@0.27.7':
     optional: true
 
+  '@forgesworn/ring-sig@3.0.0':
+    dependencies:
+      '@noble/curves': 2.2.0
+      '@noble/hashes': 2.2.0
+
   '@img/colour@1.1.0': {}
 
   '@img/sharp-darwin-arm64@0.34.5':
@@ -1325,6 +1341,12 @@ snapshots:
       p-locate: 4.1.0
 
   nanoid@3.3.12: {}
+
+  nostr-veil@0.8.4:
+    dependencies:
+      '@forgesworn/ring-sig': 3.0.0
+      '@noble/curves': 2.2.0
+      '@noble/hashes': 2.2.0
 
   p-limit@2.3.0:
     dependencies:
