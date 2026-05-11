@@ -371,42 +371,44 @@ export function musicWarmUpAll(skipId?: string): void {
   }
 }
 
-/** Display metadata for the secret music-player easter egg. Order is the
- *  order tracks appear in the menu — roughly the order they're heard
- *  through a campaign run. */
+/** Display metadata for the music-player menu. `wave` lets the UI
+ *  render a prominent wave-number tag for wave tracks; null for
+ *  stings/title that aren't tied to a specific wave. */
 export interface TrackInfo {
   id: string;
   label: string;
   hint: string;
+  /** Wave the track is the primary score for, or null for non-wave tracks. */
+  wave: number | null;
 }
 
 const TRACK_INFO: TrackInfo[] = [
-  // Title + system stings.
-  { id: 'pallasite-idle',  label: 'PALLASITE IDLE',  hint: 'Title theme' },
-  { id: 'warp-transition', label: 'WARP TRANSITION', hint: 'Inter-wave riser' },
-  { id: 'hyperspace',      label: 'HYPERSPACE',      hint: 'Jump sting' },
-  { id: 'hull-breached',   label: 'HULL BREACHED',   hint: 'Death sting' },
-  { id: 'banked',          label: 'BANKED',          hint: 'Victory sting' },
-  { id: 'banked-coin',     label: 'BANKED COIN',     hint: 'Sat pickup sting' },
-  // Wave 1 → 25, in narrative order.
-  { id: 'slow-orbit',      label: 'SLOW ORBIT',      hint: 'Wave 1 · Krasnojarsk' },
-  { id: 'slow-gravity',    label: 'SLOW GRAVITY',    hint: 'Wave 2 · Brenham' },
-  { id: '303-belt',        label: '303 BELT',        hint: 'Wave 3 · Esquel' },
-  { id: 'ion-stream',      label: 'ION STREAM',      hint: 'Wave 4 · Fukang · elites' },
-  { id: 'olivine',         label: 'OLIVINE',         hint: 'Wave 5 · Imilac · bank' },
-  { id: 'belt-drill',      label: 'BELT DRILL',      hint: 'Wave 6 · Mineo · iron' },
-  { id: 'tank-dive',       label: 'TANK DIVE',       hint: 'Wave 7 · Zaisho · tanks' },
-  { id: 'mine-field',      label: 'MINE FIELD',      hint: 'Wave 8 · Marjalahti · mines' },
-  { id: 'tighter-orbits',  label: 'TIGHTER ORBITS',  hint: 'Wave 9 · Omolon · mid' },
-  { id: 'slipstream',      label: 'SLIPSTREAM',      hint: 'Wave 10 · Springwater · snipers' },
-  { id: 'tidal-locked',    label: 'TIDAL LOCKED',    hint: 'Wave 11 · Glorieta Mtn · wells' },
-  { id: 'tangent',         label: 'TANGENT',         hint: 'Wave 12 · Seymchan · reclassified' },
-  { id: 'vacuum',          label: 'VACUUM',          hint: 'Wave 13 · Albin · edges open' },
-  { id: 'hull-plating',    label: 'HULL PLATING',    hint: 'Wave 15 · Ahumada · defensive' },
-  { id: 'cascade',         label: 'CASCADE',         hint: 'Wave 16-17 · Itzawisis · seam' },
-  { id: 'perihelion',      label: 'PERIHELION',      hint: 'Wave 18 · Newport · close to sun' },
-  { id: 'apophis',         label: 'APOPHIS',         hint: 'Wave 23 · Admire · existential' },
-  { id: 'event-horizon',   label: 'EVENT HORIZON',   hint: 'Wave 25 · final arena' },
+  // ── Stings + system (no wave) ────────────────────────────────────
+  { id: 'pallasite-idle',  label: 'PALLASITE IDLE',  hint: 'Title theme',         wave: null },
+  { id: 'warp-transition', label: 'WARP TRANSITION', hint: 'Inter-wave riser',    wave: null },
+  { id: 'hyperspace',      label: 'HYPERSPACE',      hint: 'Jump sting',          wave: null },
+  { id: 'hull-breached',   label: 'HULL BREACHED',   hint: 'Death sting',         wave: null },
+  { id: 'banked',          label: 'BANKED',          hint: 'Victory sting',       wave: null },
+  { id: 'banked-coin',     label: 'BANKED COIN',     hint: 'Sat pickup sting',    wave: null },
+  // ── Wave tracks, in wave order so the menu reads like a setlist ──
+  { id: 'slow-orbit',      label: 'SLOW ORBIT',      hint: 'Krasnojarsk',         wave:  1 },
+  { id: 'slow-gravity',    label: 'SLOW GRAVITY',    hint: 'Brenham',             wave:  2 },
+  { id: '303-belt',        label: '303 BELT',        hint: 'Esquel',              wave:  3 },
+  { id: 'ion-stream',      label: 'ION STREAM',      hint: 'Fukang · elites',     wave:  4 },
+  { id: 'olivine',         label: 'OLIVINE',         hint: 'Imilac · bank',       wave:  5 },
+  { id: 'belt-drill',      label: 'BELT DRILL',      hint: 'Mineo · iron',        wave:  6 },
+  { id: 'tank-dive',       label: 'TANK DIVE',       hint: 'Zaisho · tanks',      wave:  7 },
+  { id: 'mine-field',      label: 'MINE FIELD',      hint: 'Marjalahti · mines',  wave:  8 },
+  { id: 'tighter-orbits',  label: 'TIGHTER ORBITS',  hint: 'Omolon',              wave:  9 },
+  { id: 'slipstream',      label: 'SLIPSTREAM',      hint: 'Springwater · snipers', wave: 10 },
+  { id: 'tidal-locked',    label: 'TIDAL LOCKED',    hint: 'Glorieta Mtn · wells', wave: 11 },
+  { id: 'tangent',         label: 'TANGENT',         hint: 'Seymchan',            wave: 12 },
+  { id: 'vacuum',          label: 'VACUUM',          hint: 'Albin · edges open',  wave: 13 },
+  { id: 'hull-plating',    label: 'HULL PLATING',    hint: 'Ahumada · defensive', wave: 15 },
+  { id: 'cascade',         label: 'CASCADE',         hint: 'Itzawisis · seam',    wave: 16 },
+  { id: 'perihelion',      label: 'PERIHELION',      hint: 'Newport · close to sun', wave: 18 },
+  { id: 'apophis',         label: 'APOPHIS',         hint: 'Admire · existential', wave: 23 },
+  { id: 'event-horizon',   label: 'EVENT HORIZON',   hint: 'Final arena · boss',  wave: 25 },
 ];
 
 export function listTracks(): readonly TrackInfo[] { return TRACK_INFO; }
