@@ -426,18 +426,10 @@ export function clearReplayBuffer(): void {
   replayBuffer = [];
 }
 
-export async function publishStreamFrame(
-  session: ActiveStreamSession,
-  frame: StreamFrame,
-  opts: { relays?: readonly string[] } = {},
-): Promise<void> {
-  // x/y/r serialised with bounded precision: 1 unit world space ≈ 1
-  // pixel at game-default zoom, 2 decimals on rotation is sub-degree
-  // resolution. Entities ride in the event content as JSON so the
-  // tag list stays small and the wire format is straightforward to
-  // extend without breaking older viewers. Older viewers (live
-  // theatre v2a and earlier) simply ignore content and still get
-  // ship pose + score from the tags.
+/** Build the on-wire world payload from a StreamFrame. Shared between
+ *  captureReplayFrame (buffer-only path) and publishStreamFrame
+ *  (buffer + WS path) so both produce identical content. */
+function buildWireWorld(frame: StreamFrame): WireWorld {
   const world: WireWorld = { v: 2 };
   if (frame.asteroids?.length) {
     world.a = frame.asteroids.map(
@@ -468,33 +460,44 @@ export async function publishStreamFrame(
   if (frame.phase) world.ph = frame.phase;
   if (typeof frame.nextWave === 'number') world.nw = frame.nextWave;
   if (frame.skin) world.sk = frame.skin;
+  return world;
+}
 
-  // Buffer this frame for the end-of-run replay bundle, but subsampled
-  // to ~30Hz regardless of wire rate. Wire is 60Hz for input latency;
-  // the replay buffer only needs spectator-smooth playback, so we save
-  // every ~33ms. Keeps the kind 30764 payload small (~30KB compressed
-  // for a 2min run) and the in-memory buffer manageable for long runs.
-  // 6000 frames at 30Hz ≈ 3.3 minutes of run, generous for an arcade
-  // session. Older frames drop from the front if we overflow.
+/** Push a frame into the in-memory replay buffer. No session required —
+ *  this is the path called when activeStream isn't set (NIP-53 signEvent
+ *  failed) so the kind 30764 publish at game-over still has frames.
+ *  Subsampled to 30Hz regardless of wire rate. */
+export function captureReplayFrame(frame: StreamFrame): void {
   const MAX_BUFFER = 6000;
   const REPLAY_SAMPLE_MS = 33;
   const last = replayBuffer[replayBuffer.length - 1];
-  if (!last || frame.t - last.t >= REPLAY_SAMPLE_MS) {
-    replayBuffer.push({
-      t: frame.t,
-      x: frame.x, y: frame.y, r: frame.r,
-      score: frame.score, wave: frame.wave,
-      lives: frame.lives ?? 0, sats: frame.sats ?? 0,
-      thrust: frame.thrust,
-      alive: frame.alive,
-      shielded: frame.shielded,
-      paused: frame.paused,
-      world,
-    });
-    if (replayBuffer.length > MAX_BUFFER) {
-      replayBuffer.splice(0, replayBuffer.length - MAX_BUFFER);
-    }
+  if (last && frame.t - last.t < REPLAY_SAMPLE_MS) return;
+  const world = buildWireWorld(frame);
+  replayBuffer.push({
+    t: frame.t,
+    x: frame.x, y: frame.y, r: frame.r,
+    score: frame.score, wave: frame.wave,
+    lives: frame.lives ?? 0, sats: frame.sats ?? 0,
+    thrust: frame.thrust,
+    alive: frame.alive,
+    shielded: frame.shielded,
+    paused: frame.paused,
+    world,
+  });
+  if (replayBuffer.length > MAX_BUFFER) {
+    replayBuffer.splice(0, replayBuffer.length - MAX_BUFFER);
   }
+}
+
+export async function publishStreamFrame(
+  session: ActiveStreamSession,
+  frame: StreamFrame,
+  opts: { relays?: readonly string[] } = {},
+): Promise<void> {
+  // Capture for the end-of-run replay buffer first — same shared helper
+  // main.ts uses on the no-activeStream fallback path.
+  captureReplayFrame(frame);
+  const world = buildWireWorld(frame);
 
   // Publish to the WebSocket relay — no signing, no Nostr envelope,
   // just the wire frame as JSON. ~3x lower latency than the legacy
