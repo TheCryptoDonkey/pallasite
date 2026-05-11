@@ -1985,6 +1985,23 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
 
   const speedRow = el('div', { parent: replayCtl });
   speedRow.style.cssText = 'display:flex;justify-content:center;align-items:center;gap:4px;font-family:monospace;font-size:0.78rem;flex-wrap:wrap;';
+
+  // JUMP TO DEATH — scan replay frames for the final 'sh' (ship-hit)
+  // SFX event, seek to ~2s before it. Surfaced only in replay mode +
+  // when at least one 'sh' event exists. Set up later (after `frames`
+  // is seeded) since the seed loop runs further down.
+  let deathSeekBtn: HTMLButtonElement | null = null;
+  if (replayMode) {
+    deathSeekBtn = el('button', { className: 'menu-btn secondary', parent: speedRow, text: '💀 LAST DEATH' }) as HTMLButtonElement;
+    deathSeekBtn.style.cssText += 'flex:0 0 auto;padding:4px 12px;font-size:0.78rem;color:#ffb0b0;border-color:rgba(255,120,120,0.5);margin-left:14px;display:none;';
+    deathSeekBtn.title = 'Seek to ~2s before the final ship-hit event.';
+  }
+
+  if (replayMode) {
+    const help = el('div', { parent: replayCtl });
+    help.style.cssText = 'text-align:center;font-family:monospace;font-size:0.7rem;color:rgba(220,210,255,0.45);letter-spacing:0.06em;';
+    help.textContent = 'SPACE pause · J/L ±5% · ,/. step · [/] speed · 0-9 jump · HOME restart';
+  }
   const SPEEDS = [0.5, 1, 2, 4];
   const speedBtns: HTMLButtonElement[] = [];
   for (const sp of SPEEDS) {
@@ -2240,7 +2257,92 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     window.removeEventListener('keydown', onKey);
   };
   const onKey = (e: KeyboardEvent): void => {
-    if (e.code === 'Escape') { cleanup(); input.onClose(); }
+    if (e.code === 'Escape') { cleanup(); input.onClose(); return; }
+    if (!replayMode) return;
+    // Replay-mode keyboard shortcuts — modelled on YouTube + standard
+    // media-player conventions. All edits go through the same scrub /
+    // pause / speed paths the buttons drive, so behaviour stays
+    // consistent regardless of input.
+    const tag = (e.target as HTMLElement | null)?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;  // don't hijack form fields
+    const seekFracBy = (delta: number): void => {
+      if (frames.length === 0) return;
+      const span = frames[frames.length - 1].capturedAt - frames[0].capturedAt;
+      if (span <= 0) return;
+      const cur = (playbackT - frames[0].capturedAt) / span;
+      const next = Math.max(0, Math.min(1, cur + delta));
+      seekTo(next);
+      scrub.value = String(Math.round(next * 1000));
+    };
+    const setSpeed = (sp: number): void => {
+      replaySpeed = sp;
+      for (let i = 0; i < SPEEDS.length; i++) {
+        const active = SPEEDS[i] === sp;
+        speedBtns[i].style.background = active ? 'rgba(140,255,180,0.20)' : '';
+        speedBtns[i].style.color = active ? '#8cffb4' : '';
+      }
+    };
+    switch (e.code) {
+      case 'Space':
+      case 'KeyK':
+        e.preventDefault();
+        replayPaused = !replayPaused;
+        playToggle.textContent = replayPaused ? '▶' : '⏸';
+        return;
+      case 'KeyJ':
+        e.preventDefault();
+        seekFracBy(-0.05);  // ~5% back
+        return;
+      case 'KeyL':
+        e.preventDefault();
+        seekFracBy(0.05);
+        return;
+      case 'Comma':
+        // Step back one wire frame (~16ms at 60Hz publish, ~33ms in
+        // the subsampled buffer). Easiest is to find the frame just
+        // before playbackT and seek to it.
+        e.preventDefault();
+        for (let i = frames.length - 1; i >= 0; i--) {
+          if (frames[i].capturedAt < playbackT - 1) {
+            seekTo((frames[i].capturedAt - frames[0].capturedAt) / Math.max(1, frames[frames.length - 1].capturedAt - frames[0].capturedAt));
+            return;
+          }
+        }
+        return;
+      case 'Period':
+        e.preventDefault();
+        for (const f of frames) {
+          if (f.capturedAt > playbackT + 1) {
+            seekTo((f.capturedAt - frames[0].capturedAt) / Math.max(1, frames[frames.length - 1].capturedAt - frames[0].capturedAt));
+            return;
+          }
+        }
+        return;
+      case 'BracketLeft': {
+        e.preventDefault();
+        const idx = SPEEDS.indexOf(replaySpeed);
+        setSpeed(SPEEDS[Math.max(0, idx - 1)]);
+        return;
+      }
+      case 'BracketRight': {
+        e.preventDefault();
+        const idx = SPEEDS.indexOf(replaySpeed);
+        setSpeed(SPEEDS[Math.min(SPEEDS.length - 1, idx + 1)]);
+        return;
+      }
+      case 'Home':
+        e.preventDefault();
+        if (frames.length > 0) seekTo(0);
+        return;
+    }
+    // Digits 0-9 seek to 0%, 10%, … 90%.
+    if (e.code.startsWith('Digit') && e.code.length === 6) {
+      const n = parseInt(e.code[5], 10);
+      if (Number.isFinite(n)) {
+        e.preventDefault();
+        seekTo(n / 10);
+      }
+    }
   };
   closeBtn.addEventListener('click', () => { cleanup(); input.onClose(); });
   window.addEventListener('keydown', onKey);
@@ -2450,6 +2552,30 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     if (first) {
       liveScore.textContent = `WAVE ${first.wave} · ${first.score.toLocaleString()}`;
       if (first.wave > 0) applyWaveAssets(first.wave, true);
+    }
+    // Scan for the latest 'sh' (ship-hit) SFX event — wire up the
+    // JUMP TO DEATH button if one exists. Lead-in 2s before the
+    // event so the spectator sees the lead-up + the hit.
+    if (deathSeekBtn) {
+      let deathT = -1;
+      for (let i = frames.length - 1; i >= 0; i--) {
+        const f = frames[i];
+        for (const ev of f.events) {
+          if (ev.code === 'sh') { deathT = f.capturedAt; break; }
+        }
+        if (deathT > 0) break;
+      }
+      if (deathT > 0 && frames.length > 0) {
+        const oldest = frames[0].capturedAt;
+        const newest = frames[frames.length - 1].capturedAt;
+        const span = Math.max(1, newest - oldest);
+        const seekTarget = (deathT - 2000 - oldest) / span;
+        deathSeekBtn.style.display = '';
+        deathSeekBtn.addEventListener('click', () => {
+          seekTo(Math.max(0, Math.min(1, seekTarget)));
+          scrub.value = String(Math.round(Math.max(0, Math.min(1, seekTarget)) * 1000));
+        });
+      }
     }
   }
 
@@ -4340,11 +4466,78 @@ export function renderControllerPage(): void {
 
   // ── Top status strip ───────────────────────────────────────────────
   const titleBar = el('div', { parent: overlay });
-  titleBar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:4px 10px;font-size:0.78rem;color:rgba(220,210,255,0.85);letter-spacing:0.14em;height:22px;flex-shrink:0;z-index:5;';
+  titleBar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:4px 10px;font-size:0.78rem;color:rgba(220,210,255,0.85);letter-spacing:0.14em;height:22px;flex-shrink:0;z-index:5;gap:10px;';
   const gameNameChip = el('span', { parent: titleBar, text: 'CONTROLLER' });
-  const statusChip = el('span', { parent: titleBar });
+  // Right cluster: status + battery + network. Status takes precedence
+  // for colour (paired green vs reconnecting orange); battery + net are
+  // muted-grey so they sit under the status visually.
+  const rightCluster = el('span', { parent: titleBar });
+  rightCluster.style.cssText = 'display:flex;align-items:center;gap:10px;';
+  const batteryChip = el('span', { parent: rightCluster });
+  batteryChip.style.cssText = 'color:rgba(220,210,255,0.55);font-size:0.7rem;font-family:monospace;';
+  batteryChip.textContent = '';
+  const netChip = el('span', { parent: rightCluster });
+  netChip.style.cssText = 'color:rgba(180,140,255,0.55);font-size:0.7rem;font-family:monospace;';
+  netChip.textContent = '';
+  const statusChip = el('span', { parent: rightCluster });
   statusChip.style.cssText = 'color:rgba(255,216,74,0.85);font-size:0.7rem;';
   statusChip.textContent = '…';
+
+  // Battery API — Android Chrome only; Safari + Firefox have removed
+  // it. Updates on level/charging changes. Silently no-ops elsewhere.
+  void (async () => {
+    type BatteryManager = { level: number; charging: boolean; addEventListener: (ev: string, cb: () => void) => void };
+    type WithBattery = { getBattery?: () => Promise<BatteryManager> };
+    const nav = navigator as unknown as WithBattery;
+    if (typeof nav.getBattery !== 'function') return;
+    let bm: BatteryManager;
+    try { bm = await nav.getBattery(); } catch { return; }
+    const paint = (): void => {
+      const pct = Math.round(bm.level * 100);
+      batteryChip.textContent = `${bm.charging ? '⚡' : '🔋'} ${pct}%`;
+      if (pct <= 15 && !bm.charging) batteryChip.style.color = 'rgba(255,120,120,0.85)';
+      else batteryChip.style.color = 'rgba(220,210,255,0.55)';
+    };
+    paint();
+    bm.addEventListener('levelchange', paint);
+    bm.addEventListener('chargingchange', paint);
+  })();
+
+  // Network Information API — Chromium-only. Surfaces effectiveType
+  // ('4g' / '3g' / 'slow-2g') + downlink so users can see when a
+  // congested link explains laggy input.
+  void (() => {
+    type NetInfo = { effectiveType?: string; downlink?: number; addEventListener?: (ev: string, cb: () => void) => void };
+    type WithConnection = { connection?: NetInfo };
+    const nav = navigator as unknown as WithConnection;
+    const info = nav.connection;
+    if (!info) return;
+    const paint = (): void => {
+      const et = info.effectiveType ?? '';
+      const dl = info.downlink ? `${info.downlink}Mb` : '';
+      netChip.textContent = et ? `${et.toUpperCase()}${dl ? ' · ' + dl : ''}` : '';
+    };
+    paint();
+    info.addEventListener?.('change', paint);
+  })();
+
+  // Screen Wake Lock — keep the phone screen on while paired so the
+  // controller doesn't suspend mid-run. Re-acquires on visibility
+  // change because the lock auto-releases when the tab backgrounds.
+  void (async () => {
+    type WakeLockSentinel = { release: () => Promise<void> };
+    type WithWakeLock = { wakeLock?: { request: (kind: 'screen') => Promise<WakeLockSentinel> } };
+    const nav = navigator as unknown as WithWakeLock;
+    if (!nav.wakeLock) return;
+    let sentinel: WakeLockSentinel | null = null;
+    const acquire = async (): Promise<void> => {
+      try { sentinel = await nav.wakeLock!.request('screen'); } catch { /* ignore */ }
+    };
+    await acquire();
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && !sentinel) void acquire();
+    });
+  })();
 
   // ── Gamepad surface — a single positioned canvas so shoulders sit
   //    at the screen corners regardless of where the joystick + face
