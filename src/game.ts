@@ -113,6 +113,11 @@ export function makeInitialState(): GameState {
       largestCombo: 0,
       powerupsCollected: 0,
       veinsBroken: 0,
+      asteroidsBroken: 0,
+      bulletsFired: 0,
+      bulletsMissed: 0,
+      hyperspacesUsed: 0,
+      livesLost: 0,
     },
     ghostSamples: [],
     ghostPoseSamples: [],
@@ -230,6 +235,11 @@ export function startGame(s: GameState): void {
     largestCombo: 0,
     powerupsCollected: 0,
     veinsBroken: 0,
+    asteroidsBroken: 0,
+    bulletsFired: 0,
+    bulletsMissed: 0,
+    hyperspacesUsed: 0,
+    livesLost: 0,
   };
   s.ghostSamples = [];
   s.ghostPoseSamples = [];
@@ -1341,6 +1351,7 @@ export function fireBullet(s: GameState): void {
       hasLanded: false,
     });
     s.bulletsFiredThisWave += 1;
+    s.runStats.bulletsFired += 1;
   }
   // Visual kick — every shot nudges the ship back a couple of px along its
   // own facing. Decays in a few frames; affects render only.
@@ -1576,6 +1587,7 @@ export function tryHyperspace(s: GameState, now: number): void {
   const malfunctionChance = isConsecutive ? HYPERSPACE_MALFUNCTION_CHANCE : 0;
   s.ship.hyperspaceMalfunction = gameRng() < malfunctionChance;
   s.ship.lastHyperspaceAt = now;
+  s.runStats.hyperspacesUsed += 1;
   markAchievement(s, 'first-warp');
   if (s.ship.hyperspaceMalfunction) {
     audio.warpJumpGlitch();
@@ -1626,6 +1638,7 @@ function emergeHyperspace(s: GameState): void {
     spawnParticles(s, s.ship.pos.x, s.ship.pos.y, 18, '#ffffff', 80, 400);
     s.ship.hyperspaceCloakMs = 0;
     s.lives -= 1;
+    s.runStats.livesLost += 1;
     toastNow(s, 'HYPERSPACE BREACH');
     if (s.lives <= 0) {
       s.phase = 'gameover';
@@ -2043,7 +2056,10 @@ export function updateGame(s: GameState, dt: number, now: number): void {
       // Bullet expired without ever connecting — counts as a miss for the
       // wave-end NO MISS bonus. A bullet that hit at least once (including a
       // pierce that hit then TTL'd before the next rock) does not.
-      if (!b.hasLanded) s.missedShotsThisWave += 1;
+      if (!b.hasLanded) {
+        s.missedShotsThisWave += 1;
+        s.runStats.bulletsMissed += 1;
+      }
     } else {
       // Detect wrap so a hit landed on the far side counts as a WRAP KILL.
       // wrap() only mutates pos when the bullet actually crosses an edge, so a
@@ -2646,6 +2662,7 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
   if (opts?.isWrap)  { bonusMul *= 2; trickLabels.push('WRAP');  markAchievement(s, 'first-wrap'); }
   // First-kill badge — fires the first time any asteroid breaks on this device.
   markAchievement(s, 'first-kill');
+  s.runStats.asteroidsBroken += 1;
   s.score += Math.round(POINTS_PER_SIZE[a.size] * cfg.scoreMul * mul * bonusMul);
   const satsValue = SATS_PER_SIZE[a.size] * cfg.satMul * bonusMul;
 
@@ -2805,6 +2822,7 @@ function killShip(s: GameState): void {
   spawnParticles(s, deathPos.x, deathPos.y, 18, '#ffffff', 380,  450);
   spawnShipDebris(s, s.ship);
   s.lives -= 1;
+  s.runStats.livesLost += 1;
   if (s.lives <= 0) {
     // Final death — capture the buffer for the replay, then route through
     // 'deathreplay' (provided we have something worth showing). The post-replay

@@ -3146,6 +3146,40 @@ async function maybePublishScore(
 
       const seed = getActiveSeed();
       const runAchievements = getRunAchievements();
+      const stats = state.runStats;
+      // Aggregate run telemetry — feeds the server-side heuristic cheat
+      // flagger (impossible hit ratios, sustained kill rates, score-per-
+      // kill outliers). Sent on every claim regardless of achievements so
+      // the server always has a fingerprint to compare against.
+      const durationSec = Math.max(1, duration / 1000);
+      const totalKills =
+        stats.asteroidsBroken +
+        stats.ufoKills.cruiser + stats.ufoKills.elite + stats.ufoKills.tank +
+        stats.ufoKills.sniper + stats.ufoKills.boss +
+        stats.minesDestroyed;
+      const telemetry: Record<string, unknown> = {
+        asteroids_broken: stats.asteroidsBroken,
+        ufo_kills: stats.ufoKills,
+        mines_destroyed: stats.minesDestroyed,
+        veins_broken: stats.veinsBroken,
+        bullets_fired: stats.bulletsFired,
+        bullets_missed: stats.bulletsMissed,
+        hit_ratio: stats.bulletsFired > 0
+          ? Math.round(((stats.bulletsFired - stats.bulletsMissed) / stats.bulletsFired) * 1000) / 1000
+          : 0,
+        largest_combo: stats.largestCombo,
+        powerups_collected: stats.powerupsCollected,
+        hyperspaces_used: stats.hyperspacesUsed,
+        lives_lost: stats.livesLost,
+        kills_per_sec: Math.round((totalKills / durationSec) * 100) / 100,
+        score_per_kill: totalKills > 0
+          ? Math.round((state.score / totalKills) * 10) / 10
+          : 0,
+        score_per_sec: Math.round((state.score / durationSec) * 10) / 10,
+        ...(runAchievements.length > 0
+          ? { achievements_unlocked: runAchievements }
+          : {}),
+      };
       const payload = {
         score: state.score,
         wave: state.wave,
@@ -3155,9 +3189,7 @@ async function maybePublishScore(
         sats_claimed: state.sats,
         cheated: state.cheatedThisRun,
         ...(seed ? { daily_seed: seed } : {}),
-        ...(runAchievements.length > 0
-          ? { telemetry: { achievements_unlocked: runAchievements } }
-          : {}),
+        telemetry,
       };
       // Persist BEFORE submit so a tab close, idle-skip, or signer hang
       // doesn't strand the sats. The server has a 5-min replay window for
