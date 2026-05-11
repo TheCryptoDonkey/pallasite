@@ -114,6 +114,13 @@ export interface StreamFrame {
   score: number;
   /** Current wave. */
   wave: number;
+  /** Lives remaining — surfaced to the live theatre HUD so spectators
+   *  see the same lives count the player does. Mirrors what's on the
+   *  player's HUD; cheap (single int per frame). */
+  lives?: number;
+  /** Sats banked this run (state.sats). Lets the viewer show the same
+   *  ₿ count the player can see on their HUD. */
+  sats?: number;
   /** Thrust on/off for trail rendering. */
   thrust: boolean;
   /** Optional ship-state flags for the viewer to render. */
@@ -431,6 +438,8 @@ export async function publishStreamFrame(
       ['r', frame.r.toFixed(3)],
       ['score', String(frame.score)],
       ['wave', String(frame.wave)],
+      ['lives', String(frame.lives ?? 0)],
+      ['sats', String(frame.sats ?? 0)],
       ['thrust', frame.thrust ? '1' : '0'],
     ],
   };
