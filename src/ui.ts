@@ -3837,18 +3837,38 @@ export function renderControllerPage(): void {
   makeButton('R1', `top:calc(16px + ${SYS_H} + 12px + ${SHOULDER_H});right:8px;width:${SHOULDER_W};height:${SHOULDER_H};border-radius:14px;font-size:1rem;`);
   makeButton('select', `top:14px;left:calc(50% - ${SYS_W} - 4px);width:${SYS_W};height:${SYS_H};border-radius:14px;font-size:0.78rem;`);
 
-  // Face cluster — matches the in-game touch.ts pattern:
-  //   PAUSE (Y) tucked top-right
-  //   WARP (X) + SHIELD (B) side-by-side pills above FIRE
-  //   FIRE (A) big rounded rect across the bottom-right
+  // Face cluster — vertically centred on the right thumb edge. Phone
+  // cases eat the bottom 30-50px of the screen so a bottom-anchored
+  // cluster forces thumb-reach down past the case lip. Centring on
+  // top:50% puts the cluster squarely in the thumb's natural sweep.
   //
-  // No more diamond. Buttons are positioned absolutely against the
-  // surface so they snap to the bottom-right thumb rest zone.
-  makeButton('start', `top:8px;right:calc(50% - ${SYS_W} / 2);width:${SYS_W};height:${SYS_H};border-radius:14px;font-size:0.78rem;`); // start = pause in some specs, but Y is the Pallasite pause slot
-  makeButton('Y', `top:8px;right:8px;width:${SYS_W};height:${SYS_H};border-radius:14px;font-size:0.85rem;`);
-  makeButton('A', `bottom:14px;right:14px;width:${FIRE_W};height:${FIRE_H};border-radius:calc(${FIRE_H} / 2);font-size:1.1rem;`);
-  makeButton('B', `bottom:calc(14px + ${FIRE_H} + 10px);right:14px;width:${SEC_W};height:${SEC_H};border-radius:calc(${SEC_H} / 2);font-size:1rem;`);
-  makeButton('X', `bottom:calc(14px + ${FIRE_H} + 10px);right:calc(14px + ${SEC_W} + 10px);width:${SEC_W};height:${SEC_H};border-radius:calc(${SEC_H} / 2);font-size:1rem;`);
+  //   [Y]                ← PAUSE (small, top of the column)
+  //   [X] [B]            ← WARP + SHIELD pills
+  //   [    A    ]        ← FIRE wide pill
+  //
+  // Wrapped in a flex column anchored to right:14px with translateY
+  // to perfectly centre. Buttons are flex children (position:static)
+  // so the column auto-sizes around them.
+  const faceWrap = el('div', { parent: surface });
+  faceWrap.style.cssText = 'position:absolute;top:50%;right:14px;transform:translateY(-50%);display:flex;flex-direction:column;align-items:flex-end;gap:10px;pointer-events:none;';
+  const secRow = el('div', { parent: faceWrap });
+  secRow.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;';
+
+  const reparent = (slot: string, parent: HTMLElement): void => {
+    const btn = slotEls.get(slot);
+    if (btn) parent.appendChild(btn);  // moves from `surface` to the flex parent
+  };
+  makeButton('Y', `position:static;width:${SYS_W};height:${SYS_H};border-radius:14px;font-size:0.85rem;pointer-events:auto;`);
+  makeButton('X', `position:static;width:${SEC_W};height:${SEC_H};border-radius:calc(${SEC_H} / 2);font-size:1rem;pointer-events:auto;`);
+  makeButton('B', `position:static;width:${SEC_W};height:${SEC_H};border-radius:calc(${SEC_H} / 2);font-size:1rem;pointer-events:auto;`);
+  makeButton('A', `position:static;width:${FIRE_W};height:${FIRE_H};border-radius:calc(${FIRE_H} / 2);font-size:1.1rem;pointer-events:auto;`);
+  reparent('Y', faceWrap);
+  reparent('X', secRow);
+  reparent('B', secRow);
+  reparent('A', faceWrap);
+  // `start` stays in the top centre — not used by Pallasite but
+  // available to other specs that want a system button surface.
+  makeButton('start', `top:8px;right:calc(50% - ${SYS_W} / 2);width:${SYS_W};height:${SYS_H};border-radius:14px;font-size:0.78rem;`);
 
   // ── Joystick (left thumb) — anchored bottom-left, sized to match
   //    the face cluster so left and right thumb work in symmetry.
@@ -3869,7 +3889,9 @@ export function renderControllerPage(): void {
   const JOY_SIZE = 'clamp(170px, 48vh, 240px)';
 
   const pad = el('div', { parent: surface });
-  pad.style.cssText = `position:absolute;left:14px;bottom:14px;width:${JOY_SIZE};height:${JOY_SIZE};border-radius:50%;background:radial-gradient(circle, rgba(140,255,180,0.10) 0%, rgba(140,255,180,0.04) 60%, rgba(140,255,180,0) 100%);border:2px solid rgba(140,255,180,0.35);touch-action:none;-webkit-tap-highlight-color:transparent;display:none;`;
+  // Vertically centred on the left thumb edge — bottom-anchored
+  // joysticks were unreachable past the phone case lip on most phones.
+  pad.style.cssText = `position:absolute;left:14px;top:50%;transform:translateY(-50%);width:${JOY_SIZE};height:${JOY_SIZE};border-radius:50%;background:radial-gradient(circle, rgba(140,255,180,0.10) 0%, rgba(140,255,180,0.04) 60%, rgba(140,255,180,0) 100%);border:2px solid rgba(140,255,180,0.35);touch-action:none;-webkit-tap-highlight-color:transparent;display:none;`;
   const knob = el('div', { parent: pad });
   knob.style.cssText = 'position:absolute;left:50%;top:50%;width:38%;height:38%;margin:-19% 0 0 -19%;border-radius:50%;background:radial-gradient(circle, rgba(140,255,180,0.45) 0%, rgba(91,255,140,0.18) 70%);border:2px solid rgba(140,255,180,0.75);box-shadow:0 0 18px rgba(140,255,180,0.4);transform:translate(0,0);transition:transform 60ms ease-out;';
   slotEls.set('joyL', pad);
