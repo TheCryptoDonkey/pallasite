@@ -32,6 +32,8 @@
 
 import { schnorr } from '@noble/curves/secp256k1.js';
 import { bytesToHex } from '@noble/curves/utils.js';
+import { createTrustCircle, contributeAssertion, type Contribution } from 'nostr-veil/proof';
+import { signEvent } from 'nostr-veil';
 import type { SignetSession, NostrEvent } from 'signet-login';
 import { getActiveRelays } from './relays.js';
 import { fetchGameInfo } from './faucet.js';
@@ -39,6 +41,8 @@ import { fetchGameInfo } from './faucet.js';
 export const REVIEW_CASE_KIND = 31764;
 export const JURY_DELEGATION_KIND = 30765;
 export const JURY_DELEGATION_D_TAG = 'pallasite-jury';
+export const VEIL_CONTRIBUTION_KIND = 31766;
+const VOTED_CASES_STORAGE_KEY = 'pallasite:jury-voted:v1';
 
 const FETCH_TIMEOUT_MS = 5000;
 const PUBLISH_TIMEOUT_MS = 5000;
@@ -360,6 +364,182 @@ export async function publishDelegation(
   return {
     ok: publishedTo.length > 0,
     eventId: signed.id,
+    publishedTo,
+    failed,
+  };
+}
+
+// ── Anonymous vote submission ───────────────────────────────────────────────
+
+export interface VoteSubmitResult {
+  ok: boolean;
+  eventId?: string;
+  keyImage?: string;
+  publishedTo: string[];
+  failed: string[];
+  error?: string;
+}
+
+/**
+ * Track cases this browser has already voted on. Defensive against the
+ * juror double-submitting in the same session — the LSAG key image is
+ * deterministic per (case, jury key), so a second submission would be
+ * rejected at aggregation anyway, but local UX should also dissuade.
+ *
+ * Stored as a simple `Record<case_event_id, key_image>` keyed by case so
+ * the same browser can vote on multiple cases without clashing entries.
+ */
+function loadVotedRecord(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(VOTED_CASES_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === 'string') out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function hasVotedOnCase(caseEventId: string): boolean {
+  return caseEventId in loadVotedRecord();
+}
+
+function markVotedOnCase(caseEventId: string, keyImage: string): void {
+  const rec = loadVotedRecord();
+  rec[caseEventId] = keyImage;
+  try { localStorage.setItem(VOTED_CASES_STORAGE_KEY, JSON.stringify(rec)); } catch { /* ignore */ }
+}
+
+/**
+ * Submit an anonymous LSAG ballot for a review case.
+ *
+ * The ballot is wrapped in a kind 31766 transport event signed by an
+ * **ephemeral keypair** generated for this single submission. Using the
+ * juror's master pubkey or their jury pubkey as the event author would
+ * deanonymise the vote immediately — the LSAG inside the content carries
+ * the anonymity guarantee; the outer Nostr signature is just transport
+ * and must not leak identity. The ephemeral key is discarded as soon as
+ * the event is published.
+ *
+ * The contribution's key image is deterministic per (case, jury key),
+ * so re-submission is detected by the aggregator and rejected at
+ * verdict time. We also dissuade re-submission locally via
+ * `hasVotedOnCase`.
+ */
+export async function submitVote(
+  args: {
+    reviewCase: ReviewCase;
+    identity: StoredJuryIdentity;
+    /** 0-100. 100 = clearly honest play; 0 = clearly cheating; 50 = uncertain. */
+    rank: number;
+    relays?: readonly string[];
+  },
+): Promise<VoteSubmitResult> {
+  const { reviewCase, identity, rank } = args;
+  const relays = args.relays ?? getActiveRelays();
+  if (relays.length === 0) {
+    return { ok: false, publishedTo: [], failed: [], error: 'no_relays' };
+  }
+  if (!Number.isFinite(rank) || rank < 0 || rank > 100) {
+    return { ok: false, publishedTo: [], failed: [], error: 'invalid_rank' };
+  }
+  if (reviewCase.circleMembers.length < 2) {
+    return { ok: false, publishedTo: [], failed: [], error: 'circle_too_small' };
+  }
+  let circle;
+  try {
+    circle = createTrustCircle(reviewCase.circleMembers);
+  } catch (err) {
+    return {
+      ok: false,
+      publishedTo: [],
+      failed: [],
+      error: err instanceof Error ? err.message : 'invalid_circle',
+    };
+  }
+  const idx = circle.members.indexOf(identity.pubkey);
+  if (idx < 0) {
+    return { ok: false, publishedTo: [], failed: [], error: 'not_in_circle' };
+  }
+
+  let contribution: Contribution;
+  try {
+    contribution = contributeAssertion(
+      circle,
+      reviewCase.flaggedPubkey,
+      { rank: Math.round(rank) },
+      identity.privkey,
+      idx,
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      publishedTo: [],
+      failed: [],
+      error: err instanceof Error ? err.message : 'sign_failed',
+    };
+  }
+
+  // Ephemeral transport key — the LSAG is the anonymity primitive; the
+  // outer event sig MUST NOT reuse the juror's master or jury pubkey.
+  const ephemeralSk = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
+  const template = {
+    kind: VEIL_CONTRIBUTION_KIND,
+    created_at: Math.floor(Date.now() / 1000),
+    content: JSON.stringify(contribution),
+    tags: [
+      ['e', reviewCase.eventId],
+      ['case_id', reviewCase.eventId],
+      ['circle_id', reviewCase.circleId],
+      ['veil-keyimage', contribution.keyImage],
+      ['t', 'pallasite-jury-vote'],
+    ],
+  };
+
+  let signed: NostrEvent;
+  try {
+    signed = signEvent(template, ephemeralSk) as unknown as NostrEvent;
+  } catch (err) {
+    return {
+      ok: false,
+      publishedTo: [],
+      failed: [],
+      error: err instanceof Error ? err.message : 'transport_sign_failed',
+    };
+  }
+
+  const publishedTo: string[] = [];
+  const failed: string[] = [];
+  await Promise.all(
+    relays.map((url) =>
+      publishToRelay(url, signed).then(
+        () => publishedTo.push(url),
+        () => failed.push(url),
+      ),
+    ),
+  );
+
+  if (publishedTo.length === 0) {
+    return {
+      ok: false,
+      eventId: signed.id,
+      keyImage: contribution.keyImage,
+      publishedTo,
+      failed,
+      error: 'all_relays_rejected',
+    };
+  }
+
+  markVotedOnCase(reviewCase.eventId, contribution.keyImage);
+  return {
+    ok: true,
+    eventId: signed.id,
+    keyImage: contribution.keyImage,
     publishedTo,
     failed,
   };
