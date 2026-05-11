@@ -111,6 +111,7 @@ export function makeInitialState(): GameState {
       minesDestroyed: 0,
       largestCombo: 0,
       powerupsCollected: 0,
+      veinsBroken: 0,
     },
     ghostSamples: [],
     ghostPoseSamples: [],
@@ -224,6 +225,7 @@ export function startGame(s: GameState): void {
     minesDestroyed: 0,
     largestCombo: 0,
     powerupsCollected: 0,
+    veinsBroken: 0,
   };
   s.ghostSamples = [];
   s.ghostPoseSamples = [];
@@ -2560,6 +2562,7 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
   a.alive = false;
   // Vein collapse: jackpot, big bloom, no fragments. Vapourises clean.
   if (a.isVein) {
+    s.runStats.veinsBroken += 1;
     if (s.session) s.sats += VEIN_JACKPOT_SATS;
     s.score += VEIN_JACKPOT_SCORE;
     bumpTrauma(s, 0.55);

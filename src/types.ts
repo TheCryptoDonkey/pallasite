@@ -534,6 +534,9 @@ export interface RunStats {
   largestCombo: number;
   /** Powerups collected (any type — drilling further is future work). */
   powerupsCollected: number;
+  /** Pallasite veins fully collapsed (jackpot triggered). Used by the
+   *  share-text emoji recap. */
+  veinsBroken: number;
 }
 
 export const EMPTY_RUN_STATS: RunStats = {
@@ -541,6 +544,7 @@ export const EMPTY_RUN_STATS: RunStats = {
   minesDestroyed: 0,
   largestCombo: 0,
   powerupsCollected: 0,
+  veinsBroken: 0,
 };
 
 /** Lurking easter egg — see GameState.lurking. Detection: ship within

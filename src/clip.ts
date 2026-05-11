@@ -128,3 +128,26 @@ export async function shareClip(clip: CapturedClip, opts: ShareClipOptions): Pro
     return 'failed';
   }
 }
+
+/**
+ * Text-only share for the Wordle-style daily recap. Tries the Web Share
+ * API first (system sheet, opens straight into Messages / X / etc.),
+ * falls back to clipboard write so the player can paste.
+ */
+export async function shareDailyStats(text: string): Promise<'shared' | 'copied' | 'failed'> {
+  if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+    try {
+      await navigator.share({ text });
+      return 'shared';
+    } catch {
+      // Cancelled or rejected — fall through to clipboard.
+    }
+  }
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return 'copied';
+    } catch { /* ignore */ }
+  }
+  return 'failed';
+}
