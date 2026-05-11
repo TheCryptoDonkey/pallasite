@@ -3486,20 +3486,23 @@ function renderControllerHomePage(): void {
   const subtitle = el('p', { parent: header, text: 'Pair with a game to start playing' });
   subtitle.style.cssText = 'margin:0;font-size:0.85rem;color:rgba(220,210,255,0.7);letter-spacing:0.08em;';
 
-  // ── Code entry — the primary path, always works ────────────────────
+  // ── Code entry — single big license-plate input ────────────────────
+  // Big, centred, uppercase via CSS. No mid-typing reformatting — that
+  // fights the user's cursor and the IME on mobile. Only normalise on
+  // submit. Accepts any combination of hex chars + punctuation (e.g.
+  // "ABCD 1234", "abcd-1234", "abcd1234"); strip non-hex on submit.
   const codeCard = el('div', { parent: overlay });
-  codeCard.style.cssText = 'border:1px solid rgba(140,255,180,0.35);border-radius:12px;padding:18px;background:rgba(60,200,140,0.06);display:flex;flex-direction:column;gap:12px;';
-  const codeLabel = el('label', { parent: codeCard, text: 'ENTER 8-CHARACTER CODE' });
-  codeLabel.style.cssText = 'font-size:0.78rem;letter-spacing:0.18em;color:rgba(140,255,180,0.85);';
-  const codeRow = el('div', { parent: codeCard });
-  codeRow.style.cssText = 'display:flex;gap:10px;align-items:center;';
-  const codeInput = el('input', { parent: codeRow, attrs: { type: 'text', inputmode: 'text', autocapitalize: 'characters', autocomplete: 'off', spellcheck: 'false', placeholder: 'XXXX XXXX', maxlength: '12' } }) as HTMLInputElement;
-  codeInput.style.cssText = 'flex:1;background:rgba(2,5,13,0.6);border:1px solid rgba(140,255,180,0.45);border-radius:8px;padding:14px 14px;font-size:1.3rem;letter-spacing:0.32em;color:#ffd84a;text-align:center;font-family:ui-monospace,monospace;outline:none;text-transform:uppercase;';
-  const goBtn = el('button', { parent: codeRow, text: 'PAIR' }) as HTMLButtonElement;
-  goBtn.style.cssText = 'background:rgba(140,255,180,0.18);border:1px solid rgba(140,255,180,0.6);color:#8cffb4;border-radius:8px;padding:14px 18px;font-size:0.95rem;letter-spacing:0.18em;font-weight:bold;cursor:pointer;font-family:ui-monospace,monospace;';
+  codeCard.style.cssText = 'border:1px solid rgba(140,255,180,0.35);border-radius:14px;padding:20px;background:rgba(60,200,140,0.06);display:flex;flex-direction:column;gap:14px;';
+  const codeLabel = el('label', { parent: codeCard, text: 'ENTER CODE FROM GAME' });
+  codeLabel.style.cssText = 'font-size:0.85rem;letter-spacing:0.18em;color:rgba(140,255,180,0.9);text-align:center;';
+  const codeInput = el('input', { parent: codeCard, attrs: { type: 'text', inputmode: 'text', autocapitalize: 'characters', autocomplete: 'off', spellcheck: 'false', placeholder: 'ABCD 1234' } }) as HTMLInputElement;
+  codeInput.style.cssText = 'background:rgba(2,5,13,0.7);border:2px solid rgba(140,255,180,0.5);border-radius:12px;padding:18px 14px;font-size:2rem;letter-spacing:0.18em;color:#ffd84a;text-align:center;font-family:ui-monospace,monospace;outline:none;text-transform:uppercase;width:100%;box-sizing:border-box;';
+  const goBtn = el('button', { parent: codeCard, text: 'PAIR' }) as HTMLButtonElement;
+  goBtn.style.cssText = 'background:rgba(140,255,180,0.22);border:2px solid rgba(140,255,180,0.7);color:#8cffb4;border-radius:12px;padding:18px;font-size:1.1rem;letter-spacing:0.22em;font-weight:bold;cursor:pointer;font-family:ui-monospace,monospace;';
   const codeHint = el('p', { parent: codeCard });
-  codeHint.style.cssText = 'margin:0;font-size:0.75rem;color:rgba(180,140,255,0.7);line-height:1.5;';
-  codeHint.textContent = 'On the big screen tap 📱 USE PHONE — the 8 character code is under the QR. e.g. "ABCD · 1234".';
+  codeHint.style.cssText = 'margin:0;font-size:0.78rem;color:rgba(180,140,255,0.7);line-height:1.5;text-align:center;';
+  const HINT_DEFAULT = 'Find the 8-character code under the QR on the game screen.';
+  codeHint.textContent = HINT_DEFAULT;
 
   const normalise = (raw: string): string | null => {
     const stripped = raw.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
@@ -3509,9 +3512,11 @@ function renderControllerHomePage(): void {
     if (msg) {
       codeHint.textContent = msg;
       codeHint.style.color = 'rgba(255,120,120,0.9)';
+      codeInput.style.borderColor = 'rgba(255,120,120,0.75)';
     } else {
-      codeHint.textContent = 'On the big screen tap 📱 USE PHONE — the 8 character code is under the QR. e.g. "ABCD · 1234".';
+      codeHint.textContent = HINT_DEFAULT;
       codeHint.style.color = 'rgba(180,140,255,0.7)';
+      codeInput.style.borderColor = 'rgba(140,255,180,0.5)';
     }
   };
   const submitCode = (): void => {
@@ -3520,8 +3525,6 @@ function renderControllerHomePage(): void {
       setError('Code must be 8 hex characters (0-9, A-F).');
       return;
     }
-    // Drop the search bar focus before nav so the keyboard collapses
-    // and the destination page lays out at the correct size.
     codeInput.blur();
     window.location.assign(`/?s=${code}`);
   };
@@ -3529,24 +3532,9 @@ function renderControllerHomePage(): void {
   codeInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); submitCode(); }
   });
-  codeInput.addEventListener('input', () => {
-    setError(null);
-    // Auto-format as "XXXX XXXX" while typing — readable, matches the
-    // big-screen display style.
-    const stripped = codeInput.value.replace(/[^a-fA-F0-9]/g, '').slice(0, 8).toUpperCase();
-    const formatted = stripped.length > 4 ? `${stripped.slice(0, 4)} ${stripped.slice(4)}` : stripped;
-    if (formatted !== codeInput.value) {
-      const cursor = codeInput.selectionStart ?? formatted.length;
-      codeInput.value = formatted;
-      // Reposition the cursor roughly where the user expected it.
-      const pos = Math.min(formatted.length, cursor + (formatted.length - codeInput.value.length));
-      try { codeInput.setSelectionRange(pos, pos); } catch { /* ignore */ }
-    }
-  });
-  // Autofocus on home page open so the code can be typed immediately
-  // (mobile keyboards generally pop on focus). Wrap in a timeout so
-  // the keyboard doesn't show before the layout is settled.
-  setTimeout(() => codeInput.focus(), 50);
+  // Only clear errors on input — no auto-formatting that fights the
+  // user. They type whatever, we strip on submit.
+  codeInput.addEventListener('input', () => setError(null));
 
   // ── QR scanner — optional, present iff BarcodeDetector is available
   const hasBarcodeDetector = typeof (window as unknown as { BarcodeDetector?: unknown }).BarcodeDetector === 'function';
@@ -3758,12 +3746,19 @@ export function renderControllerPage(): void {
   //     things)
   // Sizes use clamp() so a tiny phone and a large tablet both work.
 
-  const SHOULDER_W = 'clamp(54px, 13vmin, 78px)';
-  const SHOULDER_H = 'clamp(40px, 9vmin, 56px)';
-  const FACE_SIZE  = 'clamp(58px, 14vmin, 80px)';
-  const FACE_GAP   = 'clamp(72px, 18vmin, 104px)';   // centre-to-centre
-  const SYS_W      = 'clamp(46px, 11vmin, 64px)';
-  const SYS_H      = 'clamp(26px, 6vmin, 36px)';
+  // Sizes are clamped between phone-floor and tablet-ceiling. Floors
+  // are bumped from the previous draft — 58px face buttons felt too
+  // small for thumb play; 76px lands closer to a console gamepad and
+  // still fits a 320px-tall landscape phone with room either side.
+  // Using vh (height fraction) instead of vmin because in landscape
+  // height IS the smaller dimension on every phone, so vh tracks the
+  // limiting axis directly and scales tablet sizes more aggressively.
+  const SHOULDER_W = 'clamp(64px, 18vh, 92px)';
+  const SHOULDER_H = 'clamp(44px, 12vh, 62px)';
+  const FACE_SIZE  = 'clamp(76px, 22vh, 104px)';
+  const FACE_GAP   = 'clamp(108px, 30vh, 148px)';   // centre-to-centre
+  const SYS_W      = 'clamp(54px, 14vh, 72px)';
+  const SYS_H      = 'clamp(30px, 8vh, 42px)';
 
   // Top strip — shoulders + start/select. 8px margin from the edges.
   makeButton('L1', `top:8px;left:8px;width:${SHOULDER_W};height:${SHOULDER_H};border-radius:14px;font-size:1rem;`);
