@@ -41,7 +41,7 @@ import { DEV } from './credits.js';
 import { followUser, shareCompletion, endorseSubject, rankFromWave } from './social.js';
 import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipient } from './zap.js';
-import { subscribeRecentRuns, timeAgo, LIVE_FRESHNESS_MS, type WatchEntry } from './watch.js';
+import { subscribeRecentRuns, timeAgo, dismissWatchEntry, getDismissedWatchEntries, LIVE_FRESHNESS_MS, type WatchEntry } from './watch.js';
 import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, ghostPoseAt, ghostScoreAt, type GhostRun } from './ghost.js';
 import { savePersonalGhost } from './personal-ghost.js';
 import { canCaptureClip, captureClip, shareClip, shareDailyStats } from './clip.js';
@@ -2163,11 +2163,15 @@ export function renderWatchPage(state: GameState): void {
 
   watchActiveUnsubscribe = subscribeRecentRuns(
     (entries) => {
-      if (entries.length === 0) return; // status copy handled in onStatus
-      const count = entries.length;
+      // Drop locally-dismissed event ids; user removed them via the DISMISS
+      // button so they shouldn't re-appear on update emits.
+      const dismissed = getDismissedWatchEntries();
+      const visible = entries.filter((e) => !dismissed.has(e.eventId));
+      if (visible.length === 0) return; // status copy handled in onStatus
+      const count = visible.length;
       status.textContent = `${count} ${count === 1 ? 'player' : 'players'} surfaced from the last batch.`;
-      for (const e of entries) renderEntry(e);
-      reorderGrid(entries);
+      for (const e of visible) renderEntry(e);
+      reorderGrid(visible);
     },
     {
       onStatus: (s) => {
@@ -2270,7 +2274,24 @@ function renderWatchCard(entry: WatchEntry, state: GameState): HTMLElement {
   const actions = el('div', { parent: card });
   actions.style.cssText = 'display:flex;gap:8px;margin-top:4px;flex-wrap:wrap;';
   const watch = el('button', { className: 'menu-btn', parent: actions, text: 'WATCH' });
+  // The kind 30763 ghost is published at end-of-run by the player's
+  // client. Active runs haven't produced one yet, so WATCH is a noop
+  // until a final lands. Disable + label-swap rather than failing
+  // inside the theatre with "no replay event data found".
+  const updateWatchButton = (st: WatchEntry['state']): void => {
+    const isFinal = st === 'final';
+    watch.disabled = !isFinal;
+    watch.style.opacity = isFinal ? '1' : '0.45';
+    watch.style.cursor = isFinal ? 'pointer' : 'not-allowed';
+    watch.textContent = isFinal ? 'WATCH' : st === 'active' ? 'IN PROGRESS' : 'NO REPLAY YET';
+    watch.title = isFinal
+      ? 'Open the kind 30763 ghost in the replay theatre.'
+      : 'The replay (kind 30763 ghost) is published when the run ends. Check back after the player claims.';
+  };
+  updateWatchButton(entry.state);
+  watch.setAttribute('data-watch-button', '1');
   watch.addEventListener('click', () => {
+    if (watch.disabled) return;
     renderReplayTheatre({
       scoreEventId: entry.eventId,
       displayName: name.textContent ?? shortPubkey(entry.pubkey),
@@ -2284,6 +2305,14 @@ function renderWatchCard(entry: WatchEntry, state: GameState): HTMLElement {
   const zap = el('button', { className: 'menu-btn secondary', parent: actions, text: '⚡ ZAP' });
   zap.style.cssText = 'color:#ffd84a;border-color:rgba(255,216,74,0.45);';
   zap.addEventListener('click', () => { void onWatchZapClick(entry, name.textContent ?? shortPubkey(entry.pubkey), zap, actions, state); });
+
+  const dismiss = el('button', { className: 'menu-btn secondary', parent: actions, text: 'DISMISS' });
+  dismiss.style.cssText = 'color:rgba(220,210,255,0.6);border-color:rgba(220,210,255,0.25);font-size:0.78rem;';
+  dismiss.title = 'Hide this entry from your view. Local-only — does not publish a NIP-09 deletion.';
+  dismiss.addEventListener('click', () => {
+    dismissWatchEntry(entry.eventId);
+    card.remove();
+  });
 
   return card;
 }
