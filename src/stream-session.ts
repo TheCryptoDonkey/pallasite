@@ -142,6 +142,10 @@ export interface StreamFrame {
   phase?: string;
   /** When in 'warp' phase, the wave the player is jumping to. */
   nextWave?: number;
+  /** Ship skin id — single-letter code 'd' default / 'i' ironclad /
+   *  'h' halo. Lets the watcher render the same cosmetic the player
+   *  picked. Omitted = default. */
+  skin?: 'd' | 'i' | 'h';
   /** World-state snapshot of non-ship entities at frame time. Each
    *  entity is a fixed-shape tuple keyed by `id` (the first field)
    *  so the viewer can match the same entity across frames and
@@ -201,6 +205,8 @@ interface WireWorld {
    *  warpTargetWave). Lets the watcher show an incoming-wave banner
    *  before the actual wave-change frame arrives. */
   nw?: number;
+  /** Ship skin code (d/i/h). Omitted = default. */
+  sk?: 'd' | 'i' | 'h';
 }
 
 export interface ActiveStreamSession {
@@ -461,6 +467,7 @@ export async function publishStreamFrame(
   if (frame.paused) world.paused = 1;
   if (frame.phase) world.ph = frame.phase;
   if (typeof frame.nextWave === 'number') world.nw = frame.nextWave;
+  if (frame.skin) world.sk = frame.skin;
 
   // Buffer this frame for the end-of-run replay bundle, but subsampled
   // to ~30Hz regardless of wire rate. Wire is 60Hz for input latency;

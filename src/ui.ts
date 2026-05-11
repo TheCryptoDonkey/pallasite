@@ -1732,6 +1732,9 @@ interface LiveFrame {
   phase: string;
   /** Wave the player is jumping to during 'warp' (0 when not warping). */
   nextWave: number;
+  /** Ship skin code — drives the watcher ship palette. 'd' default,
+   *  'i' ironclad orange, 'h' halo cyan. */
+  skin: 'd' | 'i' | 'h';
   asteroids: LiveAsteroid[];
   ufos: LiveUfo[];
   mines: LiveMine[];
@@ -1867,6 +1870,7 @@ function readWsFrame(obj: Record<string, unknown>): LiveFrame | null {
     paused: obj.paused === true,
     phase: typeof world.ph === 'string' ? world.ph : '',
     nextWave: typeof world.nw === 'number' ? world.nw : 0,
+    skin: (world.sk === 'i' || world.sk === 'h' ? world.sk : 'd') as 'd' | 'i' | 'h',
     asteroids: parseAsteroids(world.a),
     ufos: parseUfos(world.u),
     mines: parseMines(world.m),
@@ -1970,6 +1974,14 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   scrub.step = '1';
   scrub.value = '0';
   scrub.style.cssText = 'flex:1;accent-color:#8cffb4;';
+
+  // Playhead info — wave/score/lives/sats at the current frame. Updates
+  // every tick as playback advances or the user scrubs. Sits between
+  // the time row and speed row so it tracks naturally with the scrub
+  // slider above it.
+  const playInfo = el('div', { parent: replayCtl });
+  playInfo.style.cssText = 'display:flex;justify-content:center;gap:14px;font-family:monospace;font-size:0.78rem;color:rgba(220,210,255,0.7);letter-spacing:0.08em;min-height:1.2em;';
+  playInfo.textContent = '';
 
   const speedRow = el('div', { parent: replayCtl });
   speedRow.style.cssText = 'display:flex;justify-content:center;align-items:center;gap:4px;font-family:monospace;font-size:0.78rem;flex-wrap:wrap;';
@@ -2635,7 +2647,10 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     const t = span > 0 ? Math.max(0, Math.min(1, (playbackT - prev.capturedAt) / span)) : 0;
     // Replay mode: drive the HUD off the playhead so score/wave/hearts
     // tick up as playback advances. Live mode updates HUD in pushFrame
-    // when each new frame lands.
+    // when each new frame lands. playInfo lives in the controls row;
+    // it duplicates the wave/score info next to the scrub slider so a
+    // user dragging the bar sees the playhead state without looking up
+    // at the main HUD.
     if (replayMode) {
       liveScore.textContent = `WAVE ${prev.wave} · ${prev.score.toLocaleString()}`;
       const heartsTotal = Math.max(0, prev.lives);
@@ -2643,6 +2658,10 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
       liveStats.textContent = `${hearts}  ·  ₿ ${prev.sats}`;
       liveStats.style.color = heartsTotal > 0 ? 'rgba(220,210,255,0.78)' : 'rgba(255,120,120,0.9)';
       if (prev.wave > 0) applyWaveAssets(prev.wave);
+      playInfo.innerHTML = `<span style="color:#8cffb4;">WAVE ${prev.wave}</span>`
+        + ` <span style="color:#ffe0a0;">SCORE ${prev.score.toLocaleString()}</span>`
+        + ` <span style="color:${heartsTotal > 0 ? 'rgba(255,120,120,0.7)' : 'rgba(255,120,120,0.95)'};">${hearts}</span>`
+        + ` <span style="color:#ffd84a;">₿ ${prev.sats}</span>`;
     }
     // Ship wraps too — same short-way-around treatment as entities.
     const x = interpAxis(prev.x, next.x, t, PALL_WORLD_W) * sx;
@@ -3498,17 +3517,40 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     const shipAlive = (t < 0.5 ? prev.alive : next.alive);
     const shielded = (t < 0.5 ? prev.shielded : next.shielded);
     if (shipAlive) {
+      // Skin palette — mirrors src/skins.ts SKINS[].palette closely
+      // enough that the watcher renders the cosmetic the player picked.
+      // RGBA-fill / shadow tweaks land via a single PALETTE record so
+      // adding a new skin is just adding an entry here + matching the
+      // wire code in stream-session.ts. Default = ship-green, matching
+      // the game's STANDARD skin.
+      const skinCode = (t < 0.5 ? prev.skin : next.skin) ?? 'd';
+      const WATCHER_SHIP_SKIN: Record<'d' | 'i' | 'h', {
+        ship: string; fill: string; shadow: string;
+        thrust: string; thrustShadow: string;
+        bloomCore: string; bloomMid: string;
+      }> = {
+        d: { ship: '#8cffb4', fill: 'rgba(140,255,180,0.18)', shadow: 'rgba(140,255,180,0.7)',
+             thrust: '#ffd84a', thrustShadow: 'rgba(255,216,74,0.8)',
+             bloomCore: 'rgba(255,216,74,0.55)', bloomMid: 'rgba(255,138,58,0.25)' },
+        i: { ship: '#ff7a3a', fill: 'rgba(255,122,58,0.20)', shadow: 'rgba(255,122,58,0.7)',
+             thrust: '#ffd84a', thrustShadow: 'rgba(255,122,58,0.8)',
+             bloomCore: 'rgba(255,160,80,0.55)', bloomMid: 'rgba(220,90,30,0.22)' },
+        h: { ship: '#5be0ff', fill: 'rgba(91,224,255,0.20)', shadow: 'rgba(91,224,255,0.7)',
+             thrust: '#cfeefb', thrustShadow: 'rgba(91,224,255,0.8)',
+             bloomCore: 'rgba(150,230,255,0.55)', bloomMid: 'rgba(60,160,220,0.22)' },
+      };
+      const skinPal = WATCHER_SHIP_SKIN[skinCode];
       // Match render.ts drawShip exactly — same triangle proportions
-      // (14, -10/8 wings, -6 notch), same green stroke + shadow. Scaled
-      // by sx so it occupies the same canvas fraction as in-game.
+      // (14, -10/8 wings, -6 notch). Scaled by sx so it occupies the
+      // same canvas fraction as in-game.
       c2d.save();
       c2d.translate(x, y);
       c2d.rotate(rot);
       c2d.scale(shipScale, shipScale);
       c2d.lineWidth = 1.6;
-      c2d.strokeStyle = '#8cffb4';
-      c2d.fillStyle = 'rgba(140,255,180,0.18)';
-      c2d.shadowColor = 'rgba(140,255,180,0.7)';
+      c2d.strokeStyle = skinPal.ship;
+      c2d.fillStyle = skinPal.fill;
+      c2d.shadowColor = skinPal.shadow;
       c2d.shadowBlur = 12;
       c2d.beginPath();
       c2d.moveTo(14, 0);
@@ -3519,20 +3561,19 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
       c2d.fill();
       c2d.stroke();
       if (thrusting) {
-        // Thrust bloom + flame, matching render.ts drawShip.
         c2d.save();
         c2d.globalCompositeOperation = 'lighter';
         const bloom = c2d.createRadialGradient(-10, 0, 0, -10, 0, 24);
-        bloom.addColorStop(0, 'rgba(255,216,74,0.55)');
-        bloom.addColorStop(0.5, 'rgba(255,138,58,0.25)');
+        bloom.addColorStop(0, skinPal.bloomCore);
+        bloom.addColorStop(0.5, skinPal.bloomMid);
         bloom.addColorStop(1, 'rgba(0,0,0,0)');
         c2d.fillStyle = bloom;
         c2d.beginPath();
         c2d.arc(-10, 0, 24, 0, Math.PI * 2);
         c2d.fill();
         c2d.restore();
-        c2d.strokeStyle = '#ffd84a';
-        c2d.shadowColor = 'rgba(255,216,74,0.8)';
+        c2d.strokeStyle = skinPal.thrust;
+        c2d.shadowColor = skinPal.thrustShadow;
         c2d.shadowBlur = 10;
         c2d.lineWidth = 1.4;
         c2d.beginPath();
@@ -5320,6 +5361,93 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
   status.style.cssText = 'margin:0 0 12px;font-size:0.88rem;color:rgba(255,216,74,0.75);letter-spacing:0.08em;min-height:1.2em;text-align:center;';
   status.textContent = 'Connecting to relays…';
 
+  // Per-relay status pills — one chip per relay we tried, coloured by
+  // state: green=settled with events, yellow=settled+empty, red=errored,
+  // grey=connecting. Event count appears next to the URL host so a
+  // spectator can see at a glance which relay actually has data.
+  const relayPills = el('div', { parent: overlay });
+  relayPills.style.cssText = 'display:flex;flex-wrap:wrap;justify-content:center;gap:6px;margin:0 auto 14px;max-width:760px;font-family:monospace;font-size:0.68rem;letter-spacing:0.06em;';
+  const renderRelayPills = (per: ReadonlyArray<{ url: string; settled: boolean; errored: boolean; events: number }>): void => {
+    relayPills.innerHTML = '';
+    for (const r of per) {
+      const host = (() => { try { return new URL(r.url).host; } catch { return r.url; } })();
+      const pill = el('span', { parent: relayPills, text: '' });
+      let colour = 'rgba(220,210,255,0.4)';  // connecting
+      let glyph = '○';
+      if (r.errored) { colour = 'rgba(255,120,120,0.85)'; glyph = '✗'; }
+      else if (r.settled && r.events > 0) { colour = '#8cffb4'; glyph = '✓'; }
+      else if (r.settled) { colour = 'rgba(255,216,74,0.75)'; glyph = '·'; }
+      pill.style.cssText = `border:1px solid ${colour}55;border-radius:3px;padding:2px 7px;color:${colour};background:transparent;`;
+      pill.textContent = `${glyph} ${host}${r.events > 0 ? ` ${r.events}` : ''}`;
+      pill.title = r.url + (r.errored ? ' — connection error/close' : r.settled ? ' — settled' : ' — connecting…');
+    }
+  };
+
+  // Filter tabs — LIVE / TODAY / ALL (+ MINE if signed in). Toggles
+  // card visibility client-side based on data-* attributes set in
+  // renderEntry. Tabs always render so the user knows the dimension
+  // exists; counts update when entries land.
+  type FilterKind = 'live' | 'today' | 'mine' | 'all';
+  let activeFilter: FilterKind = 'all';
+  const filterRow = el('div', { parent: overlay });
+  filterRow.style.cssText = 'display:flex;justify-content:center;gap:6px;margin:0 auto 12px;max-width:760px;width:100%;flex-wrap:wrap;';
+  const filterCounts: Record<FilterKind, HTMLSpanElement> = { live: el('span'), today: el('span'), mine: el('span'), all: el('span') };
+  const filterBtns: Record<FilterKind, HTMLButtonElement> = {} as Record<FilterKind, HTMLButtonElement>;
+  const FILTER_DEFS: Array<{ k: FilterKind; label: string; visible: boolean }> = [
+    { k: 'live', label: 'LIVE', visible: true },
+    { k: 'today', label: 'TODAY', visible: true },
+    { k: 'mine', label: 'MINE', visible: !!state.session },
+    { k: 'all', label: 'ALL', visible: true },
+  ];
+  const FILTER_COLOUR: Record<FilterKind, string> = {
+    live: '#8cffb4',
+    today: '#ffd84a',
+    mine: '#cbb6ff',
+    all: 'rgba(220,210,255,0.85)',
+  };
+  for (const def of FILTER_DEFS) {
+    if (!def.visible) continue;
+    const btn = el('button', { className: 'menu-btn secondary', parent: filterRow }) as HTMLButtonElement;
+    btn.style.cssText += 'flex:0 0 auto;padding:4px 14px;font-size:0.78rem;letter-spacing:0.16em;';
+    btn.innerHTML = '';
+    const labelEl = el('span', { parent: btn, text: def.label });
+    const countEl = filterCounts[def.k];
+    countEl.textContent = '0';
+    countEl.style.cssText = 'margin-left:6px;font-size:0.7rem;color:rgba(220,210,255,0.55);font-family:monospace;';
+    btn.appendChild(countEl);
+    void labelEl;
+    btn.addEventListener('click', () => setFilter(def.k));
+    filterBtns[def.k] = btn;
+  }
+  // Initial highlight on ALL — done before any clicks.
+  const setFilter = (k: FilterKind): void => {
+    activeFilter = k;
+    for (const def of FILTER_DEFS) {
+      if (!def.visible) continue;
+      const active = def.k === k;
+      const c = FILTER_COLOUR[def.k];
+      const btn = filterBtns[def.k];
+      btn.style.background = active ? `${c}22` : '';
+      btn.style.color = active ? c : '';
+      btn.style.borderColor = active ? c : '';
+    }
+    applyFilter();
+  };
+  const applyFilter = (): void => {
+    for (const card of cardByPubkey.values()) {
+      const isLive = card.dataset.live === '1';
+      const isMine = card.dataset.mine === '1';
+      const at = parseInt(card.dataset.createdAt ?? '0', 10);
+      const isToday = at > 0 && (Date.now() - at * 1000) < 24 * 60 * 60_000;
+      let show = true;
+      if (activeFilter === 'live') show = isLive;
+      else if (activeFilter === 'today') show = isToday;
+      else if (activeFilter === 'mine') show = isMine;
+      card.style.display = show ? '' : 'none';
+    }
+  };
+  setFilter('all');
+
   const grid = el('div', { parent: overlay });
   grid.style.cssText = 'display:flex;flex-direction:column;gap:10px;max-width:760px;width:100%;margin:0 auto;';
 
@@ -5347,6 +5475,7 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
   };
 
   const renderEntry = (entry: WatchEntry): void => {
+    const isMine = !!(state.session && state.session.pubkey === entry.pubkey);
     const existing = cardByPubkey.get(entry.pubkey);
     if (existing) {
       const scorePill = existing.querySelector('[data-watch-score]');
@@ -5356,13 +5485,30 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
       if (wavePill) wavePill.textContent = `WAVE ${entry.wave}`;
       if (whenPill) whenPill.textContent = entry.isLive ? 'LIVE' : timeAgo(entry.createdAt);
       existing.dataset.createdAt = String(entry.createdAt);
+      existing.dataset.mine = isMine ? '1' : '0';
       setCardLiveState(existing, entry.isLive);
       return;
     }
     const card = renderWatchCard(entry, state);
+    card.dataset.mine = isMine ? '1' : '0';
     cardByPubkey.set(entry.pubkey, card);
     setCardLiveState(card, entry.isLive);
     grid.appendChild(card);
+  };
+
+  const refreshFilterCounts = (): void => {
+    let live = 0, today = 0, mine = 0;
+    const now = Date.now();
+    for (const card of cardByPubkey.values()) {
+      if (card.dataset.live === '1') live += 1;
+      if (card.dataset.mine === '1') mine += 1;
+      const at = parseInt(card.dataset.createdAt ?? '0', 10);
+      if (at > 0 && (now - at * 1000) < 24 * 60 * 60_000) today += 1;
+    }
+    filterCounts.live.textContent = String(live);
+    filterCounts.today.textContent = String(today);
+    filterCounts.mine.textContent = String(mine);
+    filterCounts.all.textContent = String(cardByPubkey.size);
   };
 
   const reorderGrid = (entries: WatchEntry[]): void => {
@@ -5393,6 +5539,8 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
       grid.querySelector('[data-watch-empty-cta]')?.remove();
       for (const e of visible) renderEntry(e);
       reorderGrid(visible);
+      refreshFilterCounts();
+      applyFilter();
       // Auto-open into the live theatre if exactly one entry is LIVE and
       // we haven't already consumed the flag. Use a setTimeout so the
       // current onUpdate finishes rendering before the live theatre
@@ -5417,6 +5565,7 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
     },
     {
       onStatus: (s) => {
+        renderRelayPills(s.perRelay);
         // Only mutate copy while the grid is still empty — once cards land,
         // the entry-count line above takes precedence.
         if (cardByPubkey.size > 0) return;

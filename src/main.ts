@@ -21,6 +21,7 @@ import {
   STREAM_FRAME_INTERVAL_PAUSED_MS,
   type ActiveStreamSession,
 } from './stream-session.js';
+import { getActiveSkinId } from './skins.js';
 import { handleAuthCallback, tryRestore, sweepSignetArtefacts } from './auth.js';
 import * as audio from './audio.js';
 import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicResetElements, musicWarmUpAll } from './music.js';
@@ -860,6 +861,12 @@ async function boot(): Promise<void> {
         paused: state.phase === 'paused',
         phase: state.phase,
         nextWave: state.phase === 'warp' ? (state.warpTargetWave ?? undefined) : undefined,
+        // Skin code — single-letter mapping mirrors the wire schema's
+        // 'd' | 'i' | 'h' union so the watcher renders the same cosmetic.
+        skin: ((): 'd' | 'i' | 'h' => {
+          const id = getActiveSkinId();
+          return id === 'ironclad' ? 'i' : id === 'halo' ? 'h' : 'd';
+        })(),
         asteroids,
         ufos,
         mines,

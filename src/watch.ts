@@ -132,6 +132,18 @@ function parseEntry(event: ScoreEvent, nowMs: number = Date.now()): WatchEntry |
   };
 }
 
+/** Per-relay connection + event tally — drives the per-relay status
+ *  pills on the watch page header. */
+export interface RelayStatus {
+  url: string;
+  /** Has this relay sent EOSE? (initial backfill complete) */
+  settled: boolean;
+  /** Did the WS connection error or close before settling? */
+  errored: boolean;
+  /** Count of matching events this relay returned. */
+  events: number;
+}
+
 /** Snapshot of the subscription's progress, for surface-level status copy. */
 export interface SubscriptionStatus {
   /** Total relays we've attempted to connect to. */
@@ -140,6 +152,8 @@ export interface SubscriptionStatus {
   relaysSettled: number;
   /** True once at least one relay has settled with no matching events. */
   emptyConfirmed: boolean;
+  /** Per-relay detail, keyed by url. */
+  perRelay: RelayStatus[];
 }
 
 /**
@@ -170,6 +184,9 @@ export function subscribeRecentRuns(
   const sockets: WebSocket[] = [];
   const latestByPubkey = new Map<string, WatchEntry>();
   const settledRelays = new Set<string>();
+  const erroredRelays = new Set<string>();
+  const eventsByRelay = new Map<string, number>();
+  const knownRelays: string[] = [];
   let attempted = 0;
 
   const scheduleEmit = (): void => {
@@ -190,6 +207,12 @@ export function subscribeRecentRuns(
       relaysAttempted: attempted,
       relaysSettled: settledRelays.size,
       emptyConfirmed: settledRelays.size > 0 && latestByPubkey.size === 0,
+      perRelay: knownRelays.map((url) => ({
+        url,
+        settled: settledRelays.has(url),
+        errored: erroredRelays.has(url),
+        events: eventsByRelay.get(url) ?? 0,
+      })),
     });
   };
 
@@ -239,9 +262,12 @@ export function subscribeRecentRuns(
       if (attempt === 0) {
         attempted += 1;
         sockets.push(ws);
+        knownRelays.push(url);
       } else {
         const idx = sockets.findIndex((s) => s.readyState !== WebSocket.OPEN);
         if (idx >= 0) sockets[idx] = ws; else sockets.push(ws);
+        // Reconnect clears the prior error so the pill goes back to "settled" / live.
+        erroredRelays.delete(url);
       }
       const subId = 'w' + Math.random().toString(36).slice(2, 10);
       const markSettled = (): void => {
@@ -268,15 +294,21 @@ export function subscribeRecentRuns(
           if (msg[0] === 'EVENT' && msg[1] === subId) {
             const e = msg[2] as ScoreEvent;
             const entry = parseEntry(e);
-            if (entry) consider(entry);
+            if (entry) {
+              consider(entry);
+              eventsByRelay.set(url, (eventsByRelay.get(url) ?? 0) + 1);
+            }
           } else if (msg[0] === 'EOSE' && msg[1] === subId) {
             markSettled();
           }
         } catch { /* ignore parse errors */ }
       };
-      ws.onerror = markSettled;
+      ws.onerror = () => { erroredRelays.add(url); markSettled(); };
       ws.onclose = () => {
         window.clearInterval(livenessTimer);
+        // If the close came before EOSE, treat as errored so the pill
+        // shows red rather than green.
+        if (!settledRelays.has(url)) erroredRelays.add(url);
         markSettled();
         scheduleReconnect(url, attempt + 1);
       };

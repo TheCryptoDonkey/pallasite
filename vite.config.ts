@@ -38,6 +38,20 @@ export default defineConfig({
   build: {
     target: 'es2020',
     sourcemap: true,
+    rollupOptions: {
+      output: {
+        // Split heavy crypto / Nostr libs into their own chunks so the
+        // main bundle stays focused on game code, and the chunks can be
+        // cached independently across deploys. Game-engine + UI churn
+        // doesn't bust the crypto cache; signet-login version bumps
+        // don't bust the @noble cache.
+        manualChunks: {
+          'nobles': ['@noble/curves', '@noble/hashes'],
+          'signet': ['signet-login'],
+          'veil': ['nostr-veil'],
+        },
+      },
+    },
   },
   plugins: [{
     name: 'pallasite-version-json',
