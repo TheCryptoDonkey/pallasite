@@ -437,6 +437,82 @@ export interface FetchedReplay {
 /** Fetch + decode the kind 30764 replay for the supplied score event
  *  id. Returns null if the relay set doesn't have one yet (player has
  *  not claimed) or decompression fails. */
+/** Fetch + decode the kind 30764 replay by its own event id. Used by
+ *  the share-link flow — a watcher receives a URL like
+ *  `watch.pallasite.app/#replay=<event-id>` and opens directly into
+ *  the rich replay theatre. Resolves null on relay timeout or decode
+ *  failure. */
+export async function fetchReplayByEventId(
+  eventId: string,
+  opts: { relays?: readonly string[] } = {},
+): Promise<FetchedReplay | null> {
+  if (!/^[0-9a-f]{64}$/i.test(eventId)) return null;
+  const relays = ghostRelaySet(opts.relays);
+  if (relays.length === 0) return null;
+  console.log(`[replay] fetchReplayByEventId ${eventId.slice(0, 8)}… relays=${relays.length}`);
+
+  const filter: Record<string, unknown> = {
+    kinds: [REPLAY_KIND],
+    ids: [eventId],
+    limit: 1,
+  };
+
+  const events = await new Promise<NostrEvent[]>((resolve) => {
+    const collected: NostrEvent[] = [];
+    let done = 0;
+    const sockets: WebSocket[] = [];
+    let settled = false;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      sockets.forEach((s) => { try { s.close(); } catch { /* ignore */ } });
+      resolve(collected);
+    };
+    const timer = setTimeout(settle, FETCH_TIMEOUT_MS);
+    const markDone = (): void => { done += 1; if (done >= relays.length) settle(); };
+    for (const url of relays) {
+      let ws: WebSocket;
+      try { ws = new WebSocket(url); } catch { markDone(); continue; }
+      sockets.push(ws);
+      const subId = 're' + Math.random().toString(36).slice(2, 10);
+      ws.onopen = () => ws.send(JSON.stringify(['REQ', subId, filter]));
+      ws.onmessage = (ev) => {
+        try {
+          const msg: unknown = JSON.parse(typeof ev.data === 'string' ? ev.data : '');
+          if (!Array.isArray(msg)) return;
+          if (msg[0] === 'EVENT' && msg[1] === subId) {
+            const e = msg[2];
+            if (e && typeof e === 'object' && (e as { kind?: number }).kind === REPLAY_KIND) {
+              collected.push(e as NostrEvent);
+            }
+          } else if (msg[0] === 'EOSE' && msg[1] === subId) {
+            markDone();
+          }
+        } catch { /* ignore */ }
+      };
+      ws.onerror = markDone;
+      ws.onclose = markDone;
+    }
+  });
+
+  for (const e of events) {
+    if (!hasTagValue(e.tags, 'game', GAME_ID)) continue;
+    if (tagValue(e.tags, 'enc') !== 'replay-gzip-b64') continue;
+    const frames = await decodeReplay(e.content);
+    if (!frames) continue;
+    return {
+      eventId: e.id,
+      pubkey: e.pubkey,
+      score: parseInt(tagValue(e.tags, 'score') ?? '0', 10) || 0,
+      wave: parseInt(tagValue(e.tags, 'wave') ?? '0', 10) || 0,
+      durationMs: parseInt(tagValue(e.tags, 'duration') ?? '0', 10) || 0,
+      frames,
+    };
+  }
+  return null;
+}
+
 export async function fetchReplayByScoreEventId(
   scoreEventId: string,
   opts: { relays?: readonly string[] } = {},
