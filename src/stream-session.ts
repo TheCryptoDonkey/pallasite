@@ -97,15 +97,13 @@ export const STREAM_FRAME_KIND = 22769;
  *  Publishers connect as r=publish, watchers as r=subscribe; sessionId
  *  is the player's master pubkey (one stream per player). */
 export const STREAM_WS_ENDPOINT = 'wss://controller.pallasite.app/';
-/** 3 Hz frames (333ms). Was 500ms (2Hz) then 250ms (4Hz), settled on
- *  333ms — 4Hz cost noticeably more on mobile main-thread (sha256 +
- *  schnorr.sign per frame), and bullet extrapolation on the viewer
- *  already smooths fast entities visually. 3Hz is the sweet spot for
- *  perceived smoothness vs publish cost. */
-export const STREAM_FRAME_INTERVAL_MS = 333;
-/** During paused phases publish at 1Hz instead of full rate — nothing
- *  changes between samples and the viewer's PAUSED overlay only needs
- *  a heartbeat to know the player hasn't quit. */
+/** 5 Hz frames (200ms). Was 333ms back when each frame cost a
+ *  schnorr.sign on the player main thread. Now that frames go over WS
+ *  with no signing, the per-frame cost is JSON.stringify + ws.send —
+ *  negligible — so we can run faster for smoother live playback. */
+export const STREAM_FRAME_INTERVAL_MS = 200;
+/** During paused phases publish at 1Hz — heartbeat only, no
+ *  per-frame state change. */
 export const STREAM_FRAME_INTERVAL_PAUSED_MS = 1000;
 const PUBLISH_TIMEOUT_MS = 4000;
 
