@@ -3492,6 +3492,8 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
         c2d.restore();
       } else {
         // Dust shard — tumbling small facet, tinted by source type.
+        // Per-type silhouette mirrors render.ts drawDustShape so the
+        // four asteroid families read as distinct loot.
         const sourceKey = cNext.sourceType === '' ? 'stony' : DUST_SOURCE_TYPES[cNext.sourceType];
         const style = getAsteroidStyle(sourceKey);
         const dustColour = sourceKey === 'stony' ? '#7fffb0' : style.glow;
@@ -3504,14 +3506,67 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
         c2d.strokeStyle = dustColour;
         c2d.shadowColor = dustColour;
         c2d.shadowBlur = 9 * dpr;
-        // Simple diamond facet — readable at the small dust radius.
-        c2d.beginPath();
-        c2d.moveTo(0, -r);
-        c2d.lineTo(r * 0.7, 0);
-        c2d.lineTo(0, r);
-        c2d.lineTo(-r * 0.7, 0);
-        c2d.closePath();
-        c2d.stroke();
+        if (sourceKey === 'iron') {
+          // Hex nut — flat sides + bolt-mark.
+          c2d.beginPath();
+          for (let i = 0; i < 6; i++) {
+            const ang = (i / 6) * Math.PI * 2 - Math.PI / 2;
+            const px = Math.cos(ang) * r;
+            const py = Math.sin(ang) * r;
+            if (i === 0) c2d.moveTo(px, py); else c2d.lineTo(px, py);
+          }
+          c2d.closePath();
+          c2d.stroke();
+          c2d.lineWidth = 0.9 * dpr;
+          c2d.globalAlpha = 0.6;
+          c2d.beginPath();
+          c2d.arc(0, 0, r * 0.35, 0, Math.PI * 2);
+          c2d.stroke();
+          c2d.globalAlpha = 1;
+        } else if (sourceKey === 'chondrite') {
+          // Three-fragment cluster — chondrites split into three.
+          const off = r * 0.55;
+          const tri = (cxL: number, cyL: number): void => {
+            c2d.beginPath();
+            c2d.moveTo(cxL, cyL - r * 0.42);
+            c2d.lineTo(cxL + r * 0.36, cyL + r * 0.22);
+            c2d.lineTo(cxL - r * 0.36, cyL + r * 0.22);
+            c2d.closePath();
+            c2d.stroke();
+          };
+          tri(0, -off * 0.4);
+          tri(-off * 0.6, off * 0.4);
+          tri(off * 0.6, off * 0.4);
+        } else if (sourceKey === 'pallasite') {
+          // Six-point star — premium silhouette.
+          c2d.beginPath();
+          const points = 12;
+          for (let i = 0; i < points; i++) {
+            const ang = (i / points) * Math.PI * 2 - Math.PI / 2;
+            const radius = i % 2 === 0 ? r : r * 0.45;
+            const px = Math.cos(ang) * radius;
+            const py = Math.sin(ang) * radius;
+            if (i === 0) c2d.moveTo(px, py); else c2d.lineTo(px, py);
+          }
+          c2d.closePath();
+          c2d.stroke();
+        } else {
+          // Stony (default) — diamond facet with cross-hatch interior.
+          c2d.beginPath();
+          c2d.moveTo(0, -r);
+          c2d.lineTo(r * 0.78, 0);
+          c2d.lineTo(0, r);
+          c2d.lineTo(-r * 0.78, 0);
+          c2d.closePath();
+          c2d.stroke();
+          c2d.lineWidth = 0.9 * dpr;
+          c2d.globalAlpha = 0.6;
+          c2d.beginPath();
+          c2d.moveTo(0, -r * 0.6); c2d.lineTo(0, r * 0.6);
+          c2d.moveTo(-r * 0.5, 0); c2d.lineTo(r * 0.5, 0);
+          c2d.stroke();
+          c2d.globalAlpha = 1;
+        }
         c2d.restore();
       }
     }
@@ -5475,11 +5530,52 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
   watchActiveUnsubscribe?.();
   watchActiveUnsubscribe = null;
 
-  // Deep-link router: `watch.pallasite.app/#replay=<event-id>` opens
-  // the rich replay theatre directly without first showing the watch
-  // grid. Hash is cleared after the theatre opens so a BACK from the
-  // theatre lands on the normal grid instead of re-firing the deep-link.
+  // Deep-link router: two URL forms
+  //   /#replay=<kind-30764-event-id>  → fetch the rich replay directly
+  //   /#score=<kind-30762-score-id>   → fetch the matching kind 30764 via
+  //                                     its #e tag, then open the theatre.
+  // The score-id form is the SHARE-from-card link: card knows the score
+  // event id from the kind 30762 it subscribes to, doesn't need to fetch
+  // 30764 before building the URL. Hash is cleared after the theatre
+  // opens so a BACK from the theatre lands on the normal grid instead
+  // of re-firing the deep-link.
+  const scoreMatch = /^#score=([0-9a-f]{64})$/i.exec(window.location.hash);
   const hashMatch = /^#replay=([0-9a-f]{64})$/i.exec(window.location.hash);
+  if (scoreMatch) {
+    const scoreEventId = scoreMatch[1].toLowerCase();
+    try { history.replaceState(null, '', window.location.pathname + window.location.search); } catch { /* ignore */ }
+    const overlay = el('div', { className: 'overlay', parent: root });
+    setupOverlayArrowNav(overlay);
+    el('h2', { parent: overlay, text: 'OPENING REPLAY…' });
+    const stat = el('p', { parent: overlay, text: `Fetching kind 30764 via #e=${scoreEventId.slice(0, 8)}…` });
+    stat.style.cssText = 'margin:12px auto;font-size:0.85rem;color:rgba(220,210,255,0.7);max-width:560px;text-align:center;';
+    void (async () => {
+      const rich = await fetchReplayByScoreEventId(scoreEventId).catch(() => null);
+      if (rich && rich.frames.length >= 2) {
+        renderLiveTheatre({
+          masterPubkey: rich.pubkey,
+          displayName: shortPubkey(rich.pubkey),
+          initialScore: rich.score,
+          initialWave: rich.wave,
+          runStartedAtMs: Date.now() - rich.durationMs,
+          onClose: () => renderWatchPage(state),
+          replaySource: {
+            frames: rich.frames,
+            durationMs: rich.durationMs,
+            headerLabel: 'REPLAY · SHARED LINK',
+            eventId: rich.eventId,
+          },
+        });
+        return;
+      }
+      stat.textContent = 'Could not find a kind 30764 replay e-tagged to this score event. Player may not have published yet, or NIP-09 deleted it.';
+      stat.style.color = 'rgba(255,120,120,0.85)';
+      const back = el('button', { className: 'menu-btn', parent: overlay, text: 'CONTINUE TO WATCH PAGE' });
+      back.style.cssText += 'margin:14px auto;display:block;';
+      back.addEventListener('click', () => renderWatchPage(state));
+    })();
+    return;
+  }
   if (hashMatch) {
     const replayEventId = hashMatch[1].toLowerCase();
     try { history.replaceState(null, '', window.location.pathname + window.location.search); } catch { /* ignore */ }
@@ -5986,6 +6082,28 @@ function renderWatchCard(entry: WatchEntry, state: GameState): HTMLElement {
     })();
   });
 
+  // SHARE — copies a /#score=<eventId> deep-link. Single click, no
+  // pre-fetch needed — recipient's browser resolves the kind 30764
+  // via its #e tag on page load.
+  const share = el('button', { className: 'menu-btn secondary', parent: actions, text: 'SHARE' }) as HTMLButtonElement;
+  share.style.cssText += 'color:#cbb6ff;border-color:rgba(184,144,255,0.55);';
+  share.addEventListener('click', () => {
+    const url = `https://watch.pallasite.app/#score=${entry.eventId}`;
+    const restore = (): void => { setTimeout(() => { share.textContent = 'SHARE'; }, 1400); };
+    void (async () => {
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(url);
+          share.textContent = 'COPIED';
+          restore();
+          return;
+        }
+      } catch { /* fall through */ }
+      window.prompt('Copy the replay link:', url);
+      share.textContent = 'COPIED';
+      restore();
+    })();
+  });
   const zap = el('button', { className: 'menu-btn secondary', parent: actions, text: '⚡ ZAP' });
   zap.style.cssText = 'color:#ffd84a;border-color:rgba(255,216,74,0.45);';
   zap.addEventListener('click', () => { void onWatchZapClick(entry, name.textContent ?? shortPubkey(entry.pubkey), zap, actions, state); });
