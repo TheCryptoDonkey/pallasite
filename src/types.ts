@@ -547,6 +547,22 @@ export interface RunStats {
   /** Pallasite veins fully collapsed (jackpot triggered). Used by the
    *  share-text emoji recap. */
   veinsBroken: number;
+  /** Total asteroids broken across the run (any size, any type). Feeds
+   *  the score/kill outlier fingerprinter — score-per-kill in plausible
+   *  range is one of the cheapest cheat signals to read. */
+  asteroidsBroken: number;
+  /** Cumulative bullets fired (player shots only — UFO bullets excluded). */
+  bulletsFired: number;
+  /** Cumulative bullets that expired without ever connecting to anything.
+   *  Used with bulletsFired to compute hit ratio for the heuristic flagger. */
+  bulletsMissed: number;
+  /** Times the player invoked hyperspace (regardless of whether it detonated
+   *  a nearby mine). Capped behaviour at sane rates is a cheat signal. */
+  hyperspacesUsed: number;
+  /** Lives lost across the run. Sanity-check against duration/wave —
+   *  perfect-life runs at high waves are rare but possible; flat zero
+   *  combined with impossible hit ratios is the real tell. */
+  livesLost: number;
 }
 
 export const EMPTY_RUN_STATS: RunStats = {
@@ -555,6 +571,11 @@ export const EMPTY_RUN_STATS: RunStats = {
   largestCombo: 0,
   powerupsCollected: 0,
   veinsBroken: 0,
+  asteroidsBroken: 0,
+  bulletsFired: 0,
+  bulletsMissed: 0,
+  hyperspacesUsed: 0,
+  livesLost: 0,
 };
 
 /** Lurking easter egg — see GameState.lurking. Detection: ship within
