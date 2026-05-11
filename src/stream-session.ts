@@ -97,16 +97,17 @@ export const STREAM_FRAME_KIND = 22769;
  *  Publishers connect as r=publish, watchers as r=subscribe; sessionId
  *  is the player's master pubkey (one stream per player). */
 export const STREAM_WS_ENDPOINT = 'wss://controller.pallasite.app/';
-/** 10 Hz frames (100ms). User feedback: 15-25ms wire latency reads
- *  fine on the chip but the perceived "phone-input → see it on watch"
- *  loop felt like 2 seconds because (a) frames published every 200ms
- *  meant up to 200ms of "the player did something but hasn't published
- *  it yet" before the wire even fires, and (b) the playback buffer
- *  added another 250ms of intentional delay. Doubling the wire rate
- *  to 10Hz halves the publish-gap; shrinking the buffer halves the
- *  intentional lead. Each frame is still ~1.5KB so wire bandwidth at
- *  10Hz is 15KB/sec — trivial. */
-export const STREAM_FRAME_INTERVAL_MS = 100;
+/** 30 Hz frames (33ms). The wire transport (WS via
+ *  controller.pallasite.app) was never the bottleneck — phone→game-tab
+ *  is direct and feels instant. The watch-page lag is the snapshot
+ *  model layered on top: a 10Hz publish window means up to 100ms of
+ *  "the player did something but the host hasn't captured it yet"
+ *  before the wire even fires, then the watcher buffers another 100ms
+ *  for interpolation. 30Hz collapses the capture wait to ~16ms avg
+ *  and the watcher's playback lead drops to 0 (slam-cut to latest
+ *  frame). Each frame is ~1.5KB so wire bandwidth at 30Hz is ~45KB/sec
+ *  per spectator — trivial for our scale. */
+export const STREAM_FRAME_INTERVAL_MS = 33;
 /** During paused phases publish at 1Hz — heartbeat only, no
  *  per-frame state change. */
 export const STREAM_FRAME_INTERVAL_PAUSED_MS = 1000;
