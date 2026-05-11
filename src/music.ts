@@ -190,10 +190,39 @@ const WAVE_TRACKS: Record<number, string> = {
   25: 'event-horizon',   // 25 boss
 };
 
+/** Title-screen idle rotation. The first title visit of the session
+ *  always picks pallasite-idle so the brand theme plays on a fresh
+ *  launch; subsequent returns (back from game-over → title) rotate
+ *  through the pool so re-entries feel fresh. Pool keeps to calmer
+ *  pieces so the title screen never blasts a wave-25 boss bed. */
+const TITLE_POOL: readonly string[] = [
+  'pallasite-idle',
+  'slow-gravity',
+  'tidal-locked',
+  'slipstream',
+  'vacuum',
+];
+let titleVisits = 0;
+let currentTitleTrack: string = TITLE_POOL[0];
+function pickTitleTrack(): string {
+  if (titleVisits === 0) {
+    titleVisits += 1;
+    currentTitleTrack = TITLE_POOL[0];
+    return currentTitleTrack;
+  }
+  // Pick from the rest of the pool, excluding whichever we played last
+  // so we never repeat back-to-back.
+  const rest = TITLE_POOL.filter((t) => t !== currentTitleTrack);
+  currentTitleTrack = rest[Math.floor(Math.random() * rest.length)];
+  titleVisits += 1;
+  return currentTitleTrack;
+}
+
 /** Map (phase, wave) to a track id. */
 function trackForState(state: GameState): string | null {
   switch (state.phase) {
     case 'title':
+      return currentTitleTrack;
     case 'paused':
       // 'paused' should keep the wave track ducked, not switch — see musicSetTrackForState
       return 'pallasite-idle';
@@ -227,7 +256,14 @@ function trackForState(state: GameState): string | null {
  * Idempotent — call from the game loop. If the resolved track for the current
  * state differs from what's playing, crossfades. Pause uses ducking on top.
  */
+let lastPhase: string | null = null;
 export function musicSetTrackForState(state: GameState): void {
+  // Title rotation hook — on phase TRANSITION into 'title', pick a
+  // fresh track from the idle pool. Done here (in the once-per-frame
+  // setter) rather than in trackForState because the latter is called
+  // every frame and would re-pick on every tick.
+  if (lastPhase !== 'title' && state.phase === 'title') pickTitleTrack();
+  lastPhase = state.phase;
   // Pause ducks rather than switches; key the memo on phase+wave so we still
   // crossfade correctly when the wave changes during a paused mid-game.
   const isPaused = state.phase === 'paused';
