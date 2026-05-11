@@ -2279,7 +2279,9 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   // 350ms behind the live edge with 250ms frame cadence — enough to
   // bracket prev/next reliably and absorb a single dropped frame, low
   // enough that the perceived delay feels live.
-  const PLAYBACK_LEAD_MS = 350;
+  // 5Hz wire → 200ms inter-frame. Lead of 250ms = ~1.25 frames behind
+  // so we reliably bracket prev/next. Was 350ms with 333ms wire.
+  const PLAYBACK_LEAD_MS = 250;
   const PLAYBACK_LAG_LIMIT_MS = 2000;
 
   // Render loop — interpolate between adjacent frames for smooth motion
