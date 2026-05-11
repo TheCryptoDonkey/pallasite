@@ -1396,14 +1396,23 @@ function spawnParticles(s: GameState, x: number, y: number, count: number, colou
 
 // ── Coins (sat drops) ─────────────────────────────────────────────────────────
 
-/** Per-asteroid roll: in Nostr mode, 1-in-SAT_DROP_CHANCE_DENOM picks `sat`;
+/** Per-pickup roll: in Nostr mode, 1-in-SAT_DROP_CHANCE_DENOM picks `sat`;
  *  the rest pick `dust`. Guest mode never picks `sat` — pickups stay
  *  non-monetary so we don't accumulate uncashable sats against an unsigned
- *  identity. Pallasite asteroids ALWAYS drop sats in Nostr mode — they're
- *  the headline jackpot type and should reliably reward the player. */
-function rollPickupKind(s: GameState, asteroidType?: AsteroidType): PickupKind {
+ *  identity.
+ *
+ *  Asteroid-source rolls are now gated on size: only smalls can yield sats.
+ *  Larges and mediums always drop dust regardless of luck, which makes the
+ *  reward a follow-through gate (chase the chain to the smalls if you want
+ *  the sats) and keeps whole-run accrual within the server-side anti-cheat
+ *  cap. Pallasite SMALLS still always drop sats — the headline jackpot
+ *  reward is preserved at the chain's end. UFO / mine drops have no size,
+ *  so they continue rolling at the legacy 1-in-N rate.
+ */
+function rollPickupKind(s: GameState, asteroidType?: AsteroidType, size?: AsteroidSize): PickupKind {
   if (s.session === null) return 'dust';
-  if (asteroidType === 'pallasite') return 'sat';
+  if (size !== undefined && size !== 'small') return 'dust';
+  if (asteroidType === 'pallasite' && size === 'small') return 'sat';
   return Math.random() < (1 / SAT_DROP_CHANCE_DENOM) ? 'sat' : 'dust';
 }
 
@@ -1412,8 +1421,8 @@ function rollPickupKind(s: GameState, asteroidType?: AsteroidType): PickupKind {
  *  score boost without overshadowing the kill points themselves. */
 const DUST_SCORE_BASE = 25;
 
-function spawnCoins(s: GameState, x: number, y: number, value: number, count: number, kind?: PickupKind, asteroidType?: AsteroidType): void {
-  const resolvedKind = kind ?? rollPickupKind(s, asteroidType);
+function spawnCoins(s: GameState, x: number, y: number, value: number, count: number, kind?: PickupKind, asteroidType?: AsteroidType, size?: AsteroidSize): void {
+  const resolvedKind = kind ?? rollPickupKind(s, asteroidType, size);
   // Dust shards inherit the source asteroid's score multiplier so iron and
   // pallasite drops feel meaningfully better than stony or chondrite — and
   // the renderer tints them with the source's glow colour for at-a-glance
@@ -2643,7 +2652,7 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
   // asteroids always drop sats; other types roll for sat-vs-dust.
   if (!opts?.suppressCoins) {
     const coinCount = a.size === 'large' ? 4 : a.size === 'medium' ? 2 : 1;
-    spawnCoins(s, a.pos.x, a.pos.y, satsValue, coinCount, undefined, a.type);
+    spawnCoins(s, a.pos.x, a.pos.y, satsValue, coinCount, undefined, a.type, a.size);
   }
 
   audio.explosion(a.size === 'large' ? 1.0 : a.size === 'medium' ? 0.8 : 0.6);
