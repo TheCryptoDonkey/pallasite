@@ -17,7 +17,7 @@ import {
 import { getHapticsEnabled, setHapticsEnabled, hapticsSupported } from './haptics.js';
 import * as auth from './auth.js';
 import { addLocalHighScore, getLocalHighScores, isHighScore, subscribeGlobalHighScores, clearLocalHighScores, type GlobalHighScore } from './score.js';
-import { submitClaim, fetchPool, fetchPlayer, type PlayerTier } from './faucet.js';
+import { submitClaim, submitWithdraw, fetchPool, fetchPlayer, type PlayerTier } from './faucet.js';
 import { renderLegalFooter, openTermsModal } from './legal.js';
 import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow } from './game.js';
 import * as audio from './audio.js';
@@ -618,6 +618,12 @@ export function renderTitle(state: GameState): void {
   // the day" hook. Empty state ("be the first") is itself motivating.
   renderDailyLeaderChip(overlay);
 
+  // Persistent-balance chip — shows accumulated sats banked from prior
+  // claims + a WITHDRAW button when balance crosses the threshold. Only
+  // renders for signed-in players (anon balances live server-side
+  // anyway, but the chip is a signed-in surface).
+  renderBalanceChip(overlay, state);
+
   // Pending-claim recovery — if a previous run's claim failed (signer
   // hiccup, network blip, idle-skip dumped to title before retry), the
   // payload is still on localStorage within the server's 5-min replay
@@ -1048,9 +1054,8 @@ function renderPendingClaimBanner(parent: HTMLElement, state: GameState): void {
         const result = await submitClaim(session, pending.payload);
         if (result.ok) {
           clearPendingClaim();
-          const tail = result.status === 'paid_but_unannounced' ? ' (announce pending)' : '';
           status.style.color = '#58ff58';
-          status.textContent = `✓ Paid ${result.payout_sats} sats${tail}`;
+          status.textContent = `✓ Banked ${result.payout_sats} sats · balance: ${result.new_balance}`;
           btn.remove();
           dismissBtn.textContent = 'CLOSE';
           dismissBtn.disabled = false;
@@ -1077,6 +1082,202 @@ function renderPendingClaimBanner(parent: HTMLElement, state: GameState): void {
       }
     })();
   });
+}
+
+/** Minimum balance before the WITHDRAW button activates. Avoids LN payment
+ *  minima (some LSPs reject sub-10-sat invoices) and gives a satisfying
+ *  "saving up" feel rather than nudging every player to withdraw 3 sats. */
+const WITHDRAW_THRESHOLD_SATS = 100;
+
+function renderBalanceChip(parent: HTMLElement, state: GameState): void {
+  if (!state.session) return;
+  const wrap = el('div', { parent });
+  wrap.style.cssText = [
+    'display:flex', 'flex-direction:column', 'align-items:center', 'gap:6px',
+    'margin:10px auto 4px', 'padding:10px 14px', 'max-width:340px',
+    'border-radius:8px', 'background:rgba(91,157,255,0.05)',
+    'border:1px solid rgba(91,157,255,0.30)',
+    'text-align:center',
+  ].join(';');
+
+  const head = el('p', { parent: wrap });
+  head.style.cssText = 'margin:0;font-size:0.78rem;color:rgba(180,180,180,0.85);letter-spacing:0.08em';
+  head.textContent = 'BALANCE · loading…';
+
+  const sub = el('p', { parent: wrap });
+  sub.style.cssText = 'margin:0;font-size:0.72rem;color:#888;line-height:1.4';
+
+  const withdrawBtn = el('button', { className: 'menu-btn', parent: wrap, text: 'WITHDRAW' }) as HTMLButtonElement;
+  withdrawBtn.style.cssText = 'padding:6px 12px;font-size:0.85rem;cursor:pointer;display:none';
+
+  const session = state.session;
+  void fetchPlayer(session.pubkey).then((p) => {
+    if (!wrap.isConnected) return;
+    if (!p) {
+      head.textContent = 'BALANCE · unavailable';
+      sub.textContent = '';
+      return;
+    }
+    head.innerHTML = `BALANCE <span style="color:#5b9dff;font-weight:bold;">${p.balance_sats}</span>`;
+    if (p.balance_sats >= WITHDRAW_THRESHOLD_SATS) {
+      withdrawBtn.style.display = 'inline-block';
+      sub.textContent = `Ready to withdraw.`;
+    } else if (p.balance_sats > 0) {
+      const need = WITHDRAW_THRESHOLD_SATS - p.balance_sats;
+      sub.textContent = `${need} sats to unlock WITHDRAW.`;
+    } else {
+      sub.textContent = `Play a run to start banking sats.`;
+    }
+    onTap(withdrawBtn, () => openWithdrawDialog(state, p.balance_sats));
+  });
+}
+
+function openWithdrawDialog(state: GameState, balanceSats: number): void {
+  const session = state.session;
+  if (!session) return;
+
+  // Backdrop + modal — uses the same z-stack as the recap overlays so
+  // settings + how-to-play don't fight for layer order.
+  const backdrop = el('div');
+  backdrop.style.cssText = [
+    'position:fixed', 'inset:0', 'background:rgba(0,0,0,0.78)',
+    'display:flex', 'align-items:center', 'justify-content:center',
+    'z-index:9000', 'padding:20px',
+  ].join(';');
+  document.body.appendChild(backdrop);
+
+  const card = el('div', { parent: backdrop });
+  card.style.cssText = [
+    'background:#0a0a0a', 'border:1px solid #333', 'border-radius:10px',
+    'padding:18px 22px', 'max-width:360px', 'width:100%',
+    'display:flex', 'flex-direction:column', 'gap:10px',
+  ].join(';');
+
+  const head = el('h3', { parent: card, text: 'WITHDRAW SATS' });
+  head.style.cssText = 'margin:0;font-size:1.1rem;color:#5b9dff;letter-spacing:0.12em';
+
+  const balLine = el('p', { parent: card });
+  balLine.style.cssText = 'margin:0;font-size:0.82rem;color:#cccccc';
+  balLine.textContent = `Balance: ${balanceSats} sats`;
+
+  const label = el('p', { parent: card, text: 'Lightning address — where do you want sats sent?' });
+  label.style.cssText = 'margin:6px 0 0 0;font-size:0.8rem;color:#aaa';
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = 'alice@yourwallet.com';
+  input.spellcheck = false;
+  input.autocapitalize = 'off';
+  input.autocomplete = 'off';
+  input.style.cssText =
+    'padding:8px 10px;font-family:inherit;font-size:0.9rem;' +
+    'background:#0a0a0a;color:#eee;border:1px solid #333;border-radius:4px';
+  const stored = getStoredLnAddress();
+  input.value = state.profile?.lud16 ?? stored ?? '';
+  card.appendChild(input);
+
+  const amountLabel = el('p', { parent: card, text: 'Amount (sats)' });
+  amountLabel.style.cssText = 'margin:6px 0 0 0;font-size:0.8rem;color:#aaa';
+  const amountInput = document.createElement('input');
+  amountInput.type = 'number';
+  amountInput.min = String(10);
+  amountInput.max = String(balanceSats);
+  amountInput.value = String(balanceSats);
+  amountInput.style.cssText =
+    'padding:8px 10px;font-family:inherit;font-size:0.9rem;' +
+    'background:#0a0a0a;color:#eee;border:1px solid #333;border-radius:4px';
+  card.appendChild(amountInput);
+
+  const status = el('p', { parent: card });
+  status.style.cssText = 'margin:4px 0 0 0;font-size:0.78rem;min-height:1.1em;color:#888';
+
+  const buttonRow = el('div', { parent: card });
+  buttonRow.style.cssText = 'display:flex;gap:8px;margin-top:6px';
+  const cancelBtn = el('button', { className: 'menu-btn secondary', parent: buttonRow, text: 'CANCEL' }) as HTMLButtonElement;
+  cancelBtn.style.cssText = 'flex:1;padding:8px;font-size:0.85rem;cursor:pointer';
+  const confirmBtn = el('button', { className: 'menu-btn', parent: buttonRow, text: 'WITHDRAW' }) as HTMLButtonElement;
+  confirmBtn.style.cssText = 'flex:1;padding:8px;font-size:0.85rem;cursor:pointer';
+
+  const close = (): void => { try { backdrop.remove(); } catch { /* ignore */ } };
+  onTap(cancelBtn, close);
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+
+  onTap(confirmBtn, () => {
+    void (async () => {
+      const addr = input.value.trim();
+      if (!LN_ADDRESS_RE.test(addr)) {
+        status.textContent = 'Invalid lightning address.';
+        status.style.color = '#ff5050';
+        return;
+      }
+      const amount = Math.floor(Number(amountInput.value));
+      if (!Number.isFinite(amount) || amount < 10) {
+        status.textContent = 'Amount must be at least 10 sats.';
+        status.style.color = '#ff5050';
+        return;
+      }
+      if (amount > balanceSats) {
+        status.textContent = `Balance is only ${balanceSats} sats.`;
+        status.style.color = '#ff5050';
+        return;
+      }
+      setStoredLnAddress(addr);
+      confirmBtn.disabled = true;
+      cancelBtn.disabled = true;
+      status.textContent = 'Paying…';
+      status.style.color = '#5b9dff';
+      try {
+        const result = await submitWithdraw(session, {
+          amount_sats: amount,
+          lightning_address: addr,
+        });
+        if (result.ok) {
+          status.textContent = `✓ Paid ${result.amount_sats} sats · balance: ${result.new_balance}`;
+          status.style.color = '#58ff58';
+          confirmBtn.textContent = 'CLOSE';
+          confirmBtn.disabled = false;
+          confirmBtn.onclick = () => { close(); renderTitle(state); };
+          cancelBtn.style.display = 'none';
+        } else {
+          status.textContent = withdrawErrorMessage(result.error, result.detail);
+          status.style.color = '#ff8050';
+          confirmBtn.disabled = false;
+          cancelBtn.disabled = false;
+        }
+      } catch (err) {
+        status.textContent = err instanceof Error ? err.message : 'Withdraw failed.';
+        status.style.color = '#ff8050';
+        confirmBtn.disabled = false;
+        cancelBtn.disabled = false;
+      }
+    })();
+  });
+}
+
+function withdrawErrorMessage(error: string, detail?: string): string {
+  switch (error) {
+    case 'insufficient_balance': return 'Not enough balance.';
+    case 'invalid_lightning_address': return 'Invalid lightning address.';
+    case 'invalid_payload': return 'Invalid request.';
+    case 'no_balance': return 'No balance to withdraw.';
+    case 'player_flagged': return 'Account flagged. Contact dev.';
+    case 'pool_empty': return 'Float low — try again later.';
+    case 'payment_unavailable': return 'Payment service unavailable. Try later.';
+    case 'ln_resolve_failed':
+    case 'ln_invoice_failed': return 'Could not get an invoice from your wallet.';
+    case 'payment_failed': return 'Payment failed. Try later.';
+    case 'invoice_mismatch': return 'Invoice did not match expected amount.';
+    case 'no_signer': return 'Cannot sign with this session.';
+    case 'sign_failed': {
+      if (!detail) return 'Could not sign request. Check your signer.';
+      if (/timeout|signer-timeout/i.test(detail)) return 'Signer did not respond.';
+      if (/reject|denied|cancel/i.test(detail)) return 'Signature rejected.';
+      return `Sign failed: ${detail.slice(0, 80)}`;
+    }
+    case 'network_error': return 'Network error. Check connection.';
+    default:
+      return `Withdraw failed: ${error}${detail ? ' — ' + detail.slice(0, 80) : ''}`;
+  }
 }
 
 function renderStreakChip(parent: HTMLElement): void {
@@ -2634,7 +2835,9 @@ function setAgeAttestation(pubkey: string): void {
   }
 }
 
-function getStoredLnAddress(): string | null {
+// Used by the withdraw flow on title — players type their LN address once
+// and we remember it for future withdraws on this device.
+export function getStoredLnAddress(): string | null {
   try {
     const v = localStorage.getItem(LN_ADDRESS_KEY);
     return v && LN_ADDRESS_RE.test(v) ? v : null;
@@ -2643,7 +2846,7 @@ function getStoredLnAddress(): string | null {
   }
 }
 
-function setStoredLnAddress(v: string): void {
+export function setStoredLnAddress(v: string): void {
   try {
     if (LN_ADDRESS_RE.test(v)) localStorage.setItem(LN_ADDRESS_KEY, v);
   } catch {
@@ -2717,9 +2920,11 @@ async function maybePublishScore(
   wrapper.style.cssText =
     'display:flex;flex-direction:column;gap:6px;margin-top:12px;align-items:stretch';
 
-  // Two views: COMPACT (CLAIM N SATS button + tiny "to addr · change" line)
-  // and EDIT (input + SAVE button). Default to compact when we have an
-  // address; flip to edit when we don't.
+  // Recap claim flow: 18+ gate (Schedule 11 requirement) → CLAIM button →
+  // server credits the player's persistent balance. The LN-address-on-recap
+  // flow that lived here previously moved to the WITHDRAW screen on title;
+  // claim just banks the sats, withdraw cashes them out on the player's
+  // schedule (any time balance >= withdrawal threshold).
 
   const compactView = el('div', { parent: wrapper });
   compactView.style.cssText = 'display:flex;flex-direction:column;gap:4px;align-items:stretch';
@@ -2847,155 +3052,30 @@ async function maybePublishScore(
 
   const subline = el('p', { parent: compactView });
   subline.style.cssText = 'font-size:0.78rem;color:#888;margin:2px 0 0 0;text-align:center';
-
-  const editView = el('div', { parent: wrapper });
-  editView.style.cssText = 'display:none;flex-direction:column;gap:6px';
-
-  const editLabel = el('p', {
-    parent: editView,
-    text: 'Lightning address — where do you want sats sent?',
-  });
-  editLabel.style.cssText = 'font-size:0.85rem;color:#cccccc;margin:0';
-
-  const editRow = el('div', { parent: editView });
-  editRow.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap';
-
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.placeholder = 'alice@yourwallet.com';
-  input.spellcheck = false;
-  input.autocapitalize = 'off';
-  input.autocomplete = 'off';
-  input.style.cssText =
-    'flex:1;min-width:220px;padding:6px 8px;font-family:inherit;font-size:0.9rem;' +
-    'background:#0a0a0a;color:#eee;border:1px solid #333;border-radius:4px';
-  editRow.appendChild(input);
-
-  const saveBtn = el('button', { className: 'menu-btn secondary', parent: editRow, text: 'SAVE' });
-  saveBtn.style.cssText = 'padding:6px 14px;cursor:pointer;font-size:0.9rem';
+  subline.textContent = state.sats > 0
+    ? `Adds to your balance · withdraw on title screen`
+    : '';
 
   const status = el('p', { parent: wrapper, text: '' });
   status.style.cssText = 'font-size:0.85rem;margin:4px 0 0 0;min-height:1.2em';
-
-  // Single source of truth for the chosen address. Updated by setDefault on
-  // initial fill / async profile arrival, or by the SAVE button when the user
-  // edits.
-  let currentAddress = '';
-  let lastDefault = '';
-
-  const setDefault = (next: string): void => {
-    if (currentAddress === '' || currentAddress === lastDefault) {
-      currentAddress = next;
-    }
-    lastDefault = next;
-  };
 
   const setStatus = (msg: string, color: string): void => {
     status.textContent = msg;
     status.style.color = color;
   };
 
-  const updateClaimLabel = (): void => {
-    claimBtn.textContent = state.sats > 0 ? `CLAIM ${state.sats} SATS` : 'CLAIM';
-  };
-
-  const renderSubline = (): void => {
-    subline.replaceChildren();
-    if (currentAddress) {
-      subline.appendChild(document.createTextNode(`to ${currentAddress} · `));
-      const a = document.createElement('a');
-      a.href = '#';
-      a.textContent = 'change';
-      a.style.color = '#5b9dff';
-      a.addEventListener('click', (e) => {
-        e.preventDefault();
-        showEdit();
-      });
-      subline.appendChild(a);
-    } else {
-      const a = document.createElement('a');
-      a.href = '#';
-      a.textContent = 'set lightning address';
-      a.style.color = '#5b9dff';
-      a.addEventListener('click', (e) => {
-        e.preventDefault();
-        showEdit();
-      });
-      subline.appendChild(a);
-    }
-  };
-
-  const showCompact = (): void => {
-    editView.style.display = 'none';
-    compactView.style.display = 'flex';
-    renderSubline();
-  };
-
-  const showEdit = (): void => {
-    compactView.style.display = 'none';
-    editView.style.display = 'flex';
-    input.value = currentAddress;
-    setTimeout(() => input.focus(), 0);
-  };
-
-  // Initial fill: profile lud16 wins, then localStorage, then empty.
-  const profileLud = state.profile?.lud16 ?? null;
-  const stored = getStoredLnAddress();
-  setDefault(profileLud ?? stored ?? '');
-  updateClaimLabel();
-  if (currentAddress) showCompact();
-  else showEdit();
-
-  // Async profile refresh — picks up a fresher lud16 if the cache is stale.
-  void fetchProfile(state.session.pubkey, { force: true }).then((p) => {
-    if (!p) return;
-    state.profile = p;
-    if (p.lud16) {
-      setDefault(p.lud16);
-      if (compactView.style.display !== 'none') {
-        renderSubline();
-      } else if (input.value === '' || input.value === lastDefault) {
-        input.value = p.lud16;
-      }
-    }
-  });
-
-  const onSave = (): void => {
-    const addr = input.value.trim();
-    if (!LN_ADDRESS_RE.test(addr)) {
-      setStatus('Invalid lightning address.', '#ff5050');
-      return;
-    }
-    currentAddress = addr;
-    setStoredLnAddress(addr);
-    setStatus('', '');
-    showCompact();
-  };
-  onTap(saveBtn, onSave);
-  input.addEventListener('keydown', (e: Event) => {
-    if ((e as KeyboardEvent).key === 'Enter') {
-      e.preventDefault();
-      onSave();
-    }
-  });
+  claimBtn.textContent = state.sats > 0 ? `CLAIM ${state.sats} SATS` : 'CLAIM';
 
   const session = state.session;
 
   const onClaim = async (): Promise<void> => {
-    if (!currentAddress) {
-      setStatus('Set a lightning address first.', '#ff5050');
-      showEdit();
-      return;
-    }
-
     claimBtn.disabled = true;
-    setStatus('Validating…', '#5b9dff');
+    setStatus('Crediting balance…', '#5b9dff');
 
     // Pause the auto-skip-to-title countdown for the duration of the claim.
-    // Lightning + bunker round-trip + relay publish can take 20-30s on a
-    // cold path; without the pause, the credits-screen idle timer would
-    // navigate the player back to title mid-payment and they'd see no
-    // confirmation that their sats actually landed.
+    // Bunker round-trip + relay publish can take a few seconds on a cold
+    // path; without the pause, the credits-screen idle timer could navigate
+    // the player back to title before they see the success line.
     setIdlePaused?.(true);
 
     try {
@@ -3012,13 +3092,13 @@ async function maybePublishScore(
         started_at: startedAt,
         finished_at: finishedAt,
         sats_claimed: state.sats,
-        lightning_address: currentAddress,
         cheated: state.cheatedThisRun,
         ...(seed ? { daily_seed: seed } : {}),
       };
       // Persist BEFORE submit so a tab close, idle-skip, or signer hang
-      // doesn't strand the sats. The server has a 5-min replay window;
-      // we'll surface a RETRY banner on title if this one doesn't land.
+      // doesn't strand the sats. The server has a 5-min replay window for
+      // (pubkey, started_at, finished_at); RETRY banner on title surfaces
+      // it if this one doesn't land.
       if (state.sats > 0 && !state.cheatedThisRun) {
         savePendingClaim(session.pubkey, payload);
       }
@@ -3026,16 +3106,16 @@ async function maybePublishScore(
 
       if (result.ok) {
         clearPendingClaim();
-        const tail = result.status === 'paid_but_unannounced' ? ' (announce pending)' : '';
-        setStatus(`✓ Paid ${result.payout_sats} sats${tail}`, '#58ff58');
+        setStatus(
+          `✓ Banked ${result.payout_sats} sats · balance: ${result.new_balance}`,
+          '#58ff58',
+        );
       } else {
         if (isTerminalClaimError(result.error)) clearPendingClaim();
         setStatus(claimErrorMessage(result.error, result.detail), '#ff8050');
         claimBtn.disabled = false;
       }
     } finally {
-      // Always release the idle hold and reset the countdown so the player
-      // gets a fresh window to read the result before the auto-skip resumes.
       setIdlePaused?.(false);
     }
   };
