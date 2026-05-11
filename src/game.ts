@@ -735,6 +735,7 @@ function maybeDropPowerUp(s: GameState, x: number, y: number, force?: PowerUpTyp
   const angle = gameRng() * Math.PI * 2;
   const speed = 30 + gameRng() * 40;
   s.powerups.push({
+    id: nextStreamEntityId(),
     pos: { x, y },
     vel: { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed },
     radius: POWERUP_RADIUS,
@@ -1487,6 +1488,7 @@ function spawnCoins(s: GameState, x: number, y: number, value: number, count: nu
     const speed = 30 + Math.random() * 40;
     const perPickup = resolvedKind === 'sat' ? value / count : Math.round(DUST_SCORE_BASE * dustMul);
     s.coins.push({
+      id: nextStreamEntityId(),
       pos: { x, y },
       vel: { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed },
       radius: COIN_RADIUS,
