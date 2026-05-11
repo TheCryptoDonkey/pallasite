@@ -45,6 +45,8 @@ import { subscribeRecentRuns, timeAgo, dismissWatchEntry, getDismissedWatchEntri
 import { EXPERIMENTAL_RELAYS } from './credits.js';
 import { STREAM_FRAME_KIND } from './stream-session.js';
 import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, ghostPoseAt, ghostScoreAt, type GhostRun } from './ghost.js';
+import { preloadBackground } from './render.js';
+import { musicSetTrackForState } from './music.js';
 import { savePersonalGhost } from './personal-ghost.js';
 import { canCaptureClip, captureClip, shareClip, shareDailyStats } from './clip.js';
 import { REPLAY_TOTAL_WALL_MS, REPLAY_EXPLOSION_WALL_MS } from './types.js';
@@ -1694,15 +1696,29 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   stat.style.cssText = 'margin:0 0 14px;font-size:0.92rem;color:rgba(220,210,255,0.8);letter-spacing:0.1em;';
   stat.textContent = `WAVE ${input.initialWave} · ${input.initialScore.toLocaleString()} SCORE`;
 
-  const CANVAS_W = 600;
-  const CANVAS_H = Math.round(CANVAS_W * PALL_WORLD_H / PALL_WORLD_W);
+  // Sized to viewport. We pick the larger of "stay within the viewport
+  // padding" and a min width so the canvas feels like a real watch
+  // screen on desktop. Internal resolution scales with DPR so the ship
+  // and HUD are crisp on retina displays (the v1 fixed 600×375
+  // canvas displayed at 2x looked blurry).
+  const cssWidthMax = Math.min(window.innerWidth - 32, 980);
+  const cssWidth = Math.max(360, cssWidthMax);
+  const cssHeight = Math.round(cssWidth * PALL_WORLD_H / PALL_WORLD_W);
+  const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  const CANVAS_W = Math.round(cssWidth * dpr);
+  const CANVAS_H = Math.round(cssHeight * dpr);
   const canvas = el('canvas', { parent: overlay, attrs: { width: String(CANVAS_W), height: String(CANVAS_H) } });
-  canvas.style.cssText = 'border:1px solid rgba(140,255,180,0.45);border-radius:8px;background:#02050d;display:block;margin:0 auto;max-width:100%;box-shadow:0 0 18px rgba(140,255,180,0.18);';
+  canvas.style.cssText = `border:1px solid rgba(140,255,180,0.45);border-radius:8px;background:#02050d;display:block;margin:0 auto;width:${cssWidth}px;height:${cssHeight}px;max-width:100%;box-shadow:0 0 18px rgba(140,255,180,0.18);`;
   const ctx = canvas.getContext('2d');
   if (!ctx) {
     el('p', { parent: overlay, text: 'Canvas unsupported in this browser.' });
     return;
   }
+  // Match the device pixel ratio so 1 game unit becomes one CSS pixel
+  // after the implicit canvas → screen scale. The render loop also
+  // multiplies world coordinates by sx/sy (canvas-internal/world)
+  // which already accounts for both DPR and aspect.
+  void ctx;
 
   const status = el('p', { parent: overlay, text: 'Subscribing to relay…' });
   status.style.cssText = 'margin:10px 0 4px;font-size:0.9rem;color:rgba(140,255,180,0.8);letter-spacing:0.08em;min-height:1.2em;';
@@ -1714,10 +1730,34 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   const closeRow = el('div', { className: 'menu-row', parent: overlay });
   const closeBtn = el('button', { className: 'menu-btn', parent: closeRow, text: 'CLOSE · ESC' });
 
-  // Stable starfield — generated once.
+  // Wave assets — preload the most recent wave's background image so
+  // the canvas can paint it once it's decoded. Music comes from the
+  // shared music.ts pipeline, keyed on a synthetic playing-phase state
+  // so musicSetTrackForState resolves the same wave-band track the
+  // player is hearing.
+  let currentWaveAsset = 0;
+  const bgImage = new Image();
+  bgImage.decoding = 'async';
+  const applyWaveAssets = (wave: number): void => {
+    if (wave === currentWaveAsset || wave < 1) return;
+    currentWaveAsset = wave;
+    preloadBackground(wave);
+    bgImage.src = `/backgrounds/wave-${wave}.webp`;
+    // Synthetic state for music — only the fields trackForState reads
+    // need values. Keep this minimal so we don't accidentally trip
+    // anything else through musicSetTrackForState.
+    try {
+      musicSetTrackForState({ phase: 'playing', wave } as unknown as GameState);
+    } catch { /* ignore */ }
+  };
+  applyWaveAssets(Math.max(1, input.initialWave));
+
+  // Stable starfield — generated once. Used as a layer ABOVE the
+  // wave background image so the canvas still has motion-cues when
+  // the bg is solid colour or hasn't loaded yet.
   const stars: { x: number; y: number; r: number }[] = [];
   for (let i = 0; i < 80; i++) {
-    stars.push({ x: Math.random() * CANVAS_W, y: Math.random() * CANVAS_H, r: 0.4 + Math.random() * 1.0 });
+    stars.push({ x: Math.random() * CANVAS_W, y: Math.random() * CANVAS_H, r: 0.6 + Math.random() * 1.4 });
   }
 
   // Ring buffer of recent frames. Keep ~6s worth so a slow update path
@@ -1748,6 +1788,10 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     frames.push(frame);
     if (frames.length > FRAME_BUFFER_MAX) frames.shift();
     liveScore.textContent = `WAVE ${frame.wave} · ${frame.score.toLocaleString()}`;
+    // Music + bg follow the live wave the player is on — re-apply when
+    // the wave changes so a spectator who joins mid-run still gets the
+    // matching ambience as the player crosses wave boundaries.
+    if (frame.wave > 0) applyWaveAssets(frame.wave);
   };
 
   // Subscribe directly to kind 22769 events #p=<master>. v1 trusts
@@ -1793,19 +1837,42 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     };
   }
 
+  const c2d = canvas.getContext('2d')!;
+  // World-space (PALL_WORLD_W × PALL_WORLD_H) → canvas-space (with DPR
+  // baked in). Hoisted so we compute once per resize rather than every
+  // frame.
+  const sx = CANVAS_W / PALL_WORLD_W;
+  const sy = CANVAS_H / PALL_WORLD_H;
+  const shipScale = Math.max(1.0, dpr * 1.6);
+
   // Render loop — interpolate between adjacent frames for smooth motion
   // at 60fps even when the wire delivers 2 Hz.
   const tick = (): void => {
     if (cancelled) return;
     rafId = requestAnimationFrame(tick);
 
-    ctx.fillStyle = '#02050d';
-    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
-    ctx.fillStyle = 'rgba(180,140,255,0.7)';
+    // 1. Wave background (cover-fit, dimmed). Falls through to the
+    // solid base colour while the image is still decoding.
+    c2d.fillStyle = '#02050d';
+    c2d.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    if (bgImage.complete && bgImage.naturalWidth > 0) {
+      c2d.globalAlpha = 0.68;
+      const ar = bgImage.naturalWidth / bgImage.naturalHeight;
+      const canvasAr = CANVAS_W / CANVAS_H;
+      let drawW = CANVAS_W, drawH = CANVAS_H;
+      if (ar > canvasAr) drawW = CANVAS_H * ar;
+      else drawH = CANVAS_W / ar;
+      const drawX = (CANVAS_W - drawW) / 2;
+      const drawY = (CANVAS_H - drawH) / 2;
+      c2d.drawImage(bgImage, drawX, drawY, drawW, drawH);
+      c2d.globalAlpha = 1;
+    }
+    // 2. Starfield overlay (subtle parallax look).
+    c2d.fillStyle = 'rgba(220,210,255,0.55)';
     for (const s of stars) {
-      ctx.beginPath();
-      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
-      ctx.fill();
+      c2d.beginPath();
+      c2d.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      c2d.fill();
     }
 
     if (frames.length === 0) {
@@ -1824,10 +1891,6 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     }
     const span = next.capturedAt - prev.capturedAt;
     const t = span > 0 ? Math.max(0, Math.min(1, (renderAt - prev.capturedAt) / span)) : 0;
-
-    // World-space (PALL_WORLD_W × PALL_WORLD_H) → canvas-space.
-    const sx = CANVAS_W / PALL_WORLD_W;
-    const sy = CANVAS_H / PALL_WORLD_H;
     const x = (prev.x + (next.x - prev.x) * t) * sx;
     const y = (prev.y + (next.y - prev.y) * t) * sy;
     // Rotation lerp — pick the short way around the circle.
@@ -1837,46 +1900,48 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     const rot = prev.r + dr * t;
     const thrusting = (t < 0.5 ? prev.thrust : next.thrust);
 
-    // Draw ship — simple triangle outline, oriented by rot.
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(rot);
-    ctx.strokeStyle = '#8cffb4';
-    ctx.fillStyle = 'rgba(140,255,180,0.16)';
-    ctx.lineWidth = 1.5;
-    ctx.shadowColor = 'rgba(140,255,180,0.6)';
-    ctx.shadowBlur = 8;
-    ctx.beginPath();
-    ctx.moveTo(10, 0);
-    ctx.lineTo(-7, 6);
-    ctx.lineTo(-4, 0);
-    ctx.lineTo(-7, -6);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
+    // 3. Ship — triangle outline, oriented by rot, scaled for DPR so
+    // it stays sharp on retina.
+    c2d.save();
+    c2d.translate(x, y);
+    c2d.rotate(rot);
+    c2d.scale(shipScale, shipScale);
+    c2d.strokeStyle = '#8cffb4';
+    c2d.fillStyle = 'rgba(140,255,180,0.18)';
+    c2d.lineWidth = 1.4;
+    c2d.shadowColor = 'rgba(140,255,180,0.7)';
+    c2d.shadowBlur = 10;
+    c2d.beginPath();
+    c2d.moveTo(10, 0);
+    c2d.lineTo(-7, 6);
+    c2d.lineTo(-4, 0);
+    c2d.lineTo(-7, -6);
+    c2d.closePath();
+    c2d.fill();
+    c2d.stroke();
     if (thrusting) {
-      ctx.fillStyle = 'rgba(255,216,74,0.85)';
-      ctx.shadowColor = 'rgba(255,216,74,0.7)';
-      ctx.beginPath();
-      ctx.moveTo(-4, -2);
-      ctx.lineTo(-9, 0);
-      ctx.lineTo(-4, 2);
-      ctx.closePath();
-      ctx.fill();
+      c2d.fillStyle = 'rgba(255,216,74,0.9)';
+      c2d.shadowColor = 'rgba(255,216,74,0.8)';
+      c2d.beginPath();
+      c2d.moveTo(-4, -2);
+      c2d.lineTo(-9, 0);
+      c2d.lineTo(-4, 2);
+      c2d.closePath();
+      c2d.fill();
     }
-    ctx.restore();
+    c2d.restore();
 
-    // Live indicator dot + age label
-    ctx.shadowBlur = 0;
+    // 4. Live indicator + age label
+    c2d.shadowBlur = 0;
     const ageMs = frames.length > 0 ? Date.now() - frames[frames.length - 1].capturedAt : 0;
     const stale = ageMs > 3_000;
-    ctx.fillStyle = stale ? 'rgba(255,150,150,0.85)' : 'rgba(140,255,180,0.85)';
-    ctx.beginPath();
-    ctx.arc(14, 14, 4, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.font = '11px ui-monospace, monospace';
-    ctx.fillStyle = stale ? 'rgba(255,150,150,0.7)' : 'rgba(220,210,255,0.7)';
-    ctx.fillText(stale ? `STALE · ${(ageMs / 1000).toFixed(0)}s` : 'LIVE', 24, 18);
+    c2d.fillStyle = stale ? 'rgba(255,150,150,0.85)' : 'rgba(140,255,180,0.85)';
+    c2d.beginPath();
+    c2d.arc(14 * dpr, 14 * dpr, 4 * dpr, 0, Math.PI * 2);
+    c2d.fill();
+    c2d.font = `${Math.round(11 * dpr)}px ui-monospace, monospace`;
+    c2d.fillStyle = stale ? 'rgba(255,150,150,0.8)' : 'rgba(220,210,255,0.85)';
+    c2d.fillText(stale ? `STALE · ${(ageMs / 1000).toFixed(0)}s` : 'LIVE', 24 * dpr, 18 * dpr);
   };
   rafId = requestAnimationFrame(tick);
 }
