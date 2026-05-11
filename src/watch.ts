@@ -34,9 +34,16 @@ export interface WatchEntry {
   createdAt: number;
   /** kind 30762 event id — reachable ghost via the e-tag chain in C3/jury. */
   eventId: string;
-  /** Optional daily seed identifier. */
+  /** Optional daily seed identifier (also doubles as run_id for live events). */
   seed: string | null;
+  /** True when this event was tagged state='active' AND is fresh enough that
+   *  the player is plausibly still in the run. False for finals. */
+  isLive: boolean;
 }
+
+/** Live entries older than this with no fresh heartbeat are considered
+ *  stale and rendered as recently-active rather than LIVE. */
+export const LIVE_FRESHNESS_MS = 45_000;
 
 interface ScoreEvent extends NostrEvent {
   kind: typeof SCORE_EVENT_KIND;
@@ -52,14 +59,21 @@ function hasTagValue(tags: string[][], name: string, value: string): boolean {
   return false;
 }
 
-function parseEntry(event: ScoreEvent): WatchEntry | null {
+function parseEntry(event: ScoreEvent, nowMs: number = Date.now()): WatchEntry | null {
   if (event.kind !== SCORE_EVENT_KIND) return null;
   if (!hasTagValue(event.tags, 'game', GAME_ID)) return null;
   if (hasTagValue(event.tags, 'cheated', 'true')) return null;
+  // Active events may have score=0 in the very first second of a run; for
+  // finals we still want score>0 to weed out 0-score garbage. Differentiate
+  // the validation based on the state tag.
+  const stateTag = readTag(event.tags, 'state');
+  const isActive = stateTag === 'active';
   const score = parseInt(readTag(event.tags, 'score') ?? '', 10);
-  if (!Number.isFinite(score) || score <= 0) return null;
+  if (!Number.isFinite(score)) return null;
+  if (!isActive && score <= 0) return null;
   const playerPubkey = readTag(event.tags, 'p');
   if (!playerPubkey || !/^[0-9a-f]{64}$/i.test(playerPubkey)) return null;
+  const isLive = isActive && (nowMs - event.created_at * 1000) < LIVE_FRESHNESS_MS;
   return {
     pubkey: playerPubkey,
     score,
@@ -68,6 +82,7 @@ function parseEntry(event: ScoreEvent): WatchEntry | null {
     createdAt: event.created_at,
     eventId: event.id,
     seed: readTag(event.tags, 'seed'),
+    isLive,
   };
 }
 

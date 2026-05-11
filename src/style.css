@@ -493,6 +493,12 @@ body[data-display="modern"] #game {
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* Watch page — pulsing pill for currently-LIVE players */
+@keyframes pallasite-live-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+
 /* Honours strip — small badges shown when special run conditions met */
 .honours-row {
   display: flex;

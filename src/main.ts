@@ -10,6 +10,7 @@ import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadBackground, setRenderMode } from './render.js';
 import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderJuryPage, renderWatchPage } from './ui.js';
+import { postHeartbeat } from './faucet.js';
 import { handleAuthCallback, tryRestore, sweepSignetArtefacts } from './auth.js';
 import * as audio from './audio.js';
 import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicResetElements, musicWarmUpAll } from './music.js';
@@ -653,6 +654,36 @@ async function boot(): Promise<void> {
   document.body.dataset.phase = state.phase;
 
   renderTitle(state);
+
+  // Live-presence heartbeat — fires while a run is in progress so the
+  // watch.pallasite.app surface renders LIVE cards. setInterval polls
+  // every 5s; the inner throttle (15s minimum between sends) keeps
+  // signer + relay load low while letting a freshly-started run land
+  // on relays quickly (within 5s of IGNITE). NIP-98-authed POST so the
+  // pubkey can't be impersonated; failures are swallowed.
+  const HEARTBEAT_PHASES: ReadonlySet<string> = new Set([
+    'playing', 'wavestart', 'warp', 'paused', 'deathreplay',
+  ]);
+  const HEARTBEAT_INTERVAL_MS = 15_000;
+  let lastHeartbeatRunId: string | null = null;
+  let lastHeartbeatAt = 0;
+  const fireHeartbeat = (): void => {
+    if (!state.session) return;
+    if (!HEARTBEAT_PHASES.has(state.phase)) return;
+    if (state.runStartedAt <= 0) return;
+    const runId = String(state.runStartedAt);
+    const now = Date.now();
+    if (runId === lastHeartbeatRunId && now - lastHeartbeatAt < HEARTBEAT_INTERVAL_MS - 500) return;
+    lastHeartbeatRunId = runId;
+    lastHeartbeatAt = now;
+    void postHeartbeat(state.session, {
+      score: state.score,
+      wave: state.wave,
+      started_at: Math.floor(state.runStartedAt / 1000),
+      run_id: runId,
+    });
+  };
+  window.setInterval(fireHeartbeat, 5_000);
 
   // Route dispatch — query-param, path-based, and hostname-based surfaces.
   // Title renders first so the shared boot wiring (music, scoreboard subs,
