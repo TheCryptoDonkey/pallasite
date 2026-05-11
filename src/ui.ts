@@ -18,6 +18,16 @@ import { getHapticsEnabled, setHapticsEnabled, hapticsSupported } from './haptic
 import * as auth from './auth.js';
 import { addLocalHighScore, getLocalHighScores, isHighScore, subscribeGlobalHighScores, clearLocalHighScores, type GlobalHighScore } from './score.js';
 import { submitClaim, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, fetchFlagged, type PlayerTier, type FlaggedEntry } from './faucet.js';
+import {
+  fetchReviewCases,
+  generateJuryIdentity,
+  getStoredJuryIdentity,
+  setStoredJuryIdentity,
+  clearStoredJuryIdentity,
+  publishDelegation,
+  type ReviewCase,
+  type StoredJuryIdentity,
+} from './jury.js';
 import { renderLegalFooter, openTermsModal } from './legal.js';
 import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow } from './game.js';
 import * as audio from './audio.js';
@@ -1787,6 +1797,270 @@ function exitAdmin(): void {
     window.history.replaceState({}, '', url.toString());
   } catch { /* ignore */ }
   window.location.reload();
+}
+
+// ── Jury page ─────────────────────────────────────────────────────────────────
+//
+// Public cheat-review surface at /jury. Anyone can land here — no sign-in
+// required to spectate. Signed-in players can set up an anonymous jury
+// identity (kind 30765 delegation) so the faucet can include them in
+// future case circles, enabling LSAG ballot signing in a later phase.
+//
+// Pairs with src/jury.ts (data layer) and the faucet's review.ts +
+// delegations.ts (case publication + delegation watcher).
+
+function exitJury(): void {
+  // Path-based route: send the user back to "/" so a normal refresh shows
+  // the title screen. Using location.assign so the SPA reboots cleanly
+  // rather than trying to re-render the title from the jury overlay.
+  try {
+    window.location.assign('/');
+  } catch {
+    window.location.reload();
+  }
+}
+
+export function renderJuryPage(state: GameState): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+
+  const header = el('div', { parent: overlay });
+  header.style.cssText = 'display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;justify-content:center;margin-bottom:6px;';
+  el('h2', { parent: header, text: 'PALLASITE · JURY' });
+  const tag = el('span', { parent: header, text: 'PUBLIC · ANONYMOUS REVIEW' });
+  tag.style.cssText = 'font-size:0.72rem;color:rgba(180,140,255,0.7);letter-spacing:0.18em;font-family:monospace;';
+
+  const intro = el('p', { parent: overlay });
+  intro.style.cssText = 'margin:4px auto 18px;font-size:0.85rem;color:rgba(220,210,255,0.75);max-width:680px;line-height:1.5;text-align:center;';
+  intro.innerHTML =
+    'The faucet flags runs whose telemetry looks impossible (bot-tier hit ratios, score inflation, etc.). ' +
+    'Each flag publishes a kind 31764 case to relays. Anyone can watch the ghost replay. ' +
+    'Jurors verified by NIP-58 badges cast anonymous trust scores via <span style="color:#b890ff;font-family:monospace;">nostr-veil</span> — ' +
+    'the ring signature hides who voted while the verdict (median rank) is publicly auditable.';
+
+  // Setup banner — depends on session + identity state. Re-rendered on
+  // state changes (sign-in completes, identity created, delegation
+  // published, etc.).
+  const setupSection = el('div', { parent: overlay });
+  setupSection.style.cssText = 'margin:0 auto 18px;max-width:680px;width:100%;';
+  renderJurySetupBanner(setupSection, state);
+
+  const status = el('p', { parent: overlay });
+  status.style.cssText = 'margin:0 0 12px;font-size:0.88rem;color:rgba(180,140,255,0.7);letter-spacing:0.08em;min-height:1.2em;text-align:center;';
+  status.textContent = 'Loading open cases…';
+
+  const list = el('div', { parent: overlay });
+  list.style.cssText = 'display:flex;flex-direction:column;gap:10px;max-width:760px;width:100%;margin:0 auto;';
+
+  const footer = el('div', { className: 'menu-row', parent: overlay });
+  const refreshBtn = el('button', { className: 'menu-btn secondary', parent: footer, text: 'REFRESH' });
+  const backBtn = el('button', { className: 'menu-btn', parent: footer, text: 'BACK' });
+  refreshBtn.addEventListener('click', () => renderJuryPage(state));
+  backBtn.addEventListener('click', exitJury);
+
+  void (async () => {
+    const cases = await fetchReviewCases();
+    if (cases.length === 0) {
+      status.textContent = 'No open cases on relays right now. Either the heuristics have not tripped, or the relay set is unreachable.';
+      return;
+    }
+    const word = cases.length === 1 ? 'case' : 'cases';
+    status.textContent = `${cases.length} open ${word}.`;
+    const identity = getStoredJuryIdentity();
+    for (const c of cases) {
+      list.appendChild(renderJuryCaseCard(c, identity, state));
+    }
+  })();
+}
+
+function renderJurySetupBanner(parent: HTMLElement, state: GameState): void {
+  parent.innerHTML = '';
+  const session = state.session;
+  const identity = getStoredJuryIdentity();
+
+  if (!session) {
+    const card = el('div', { parent });
+    card.style.cssText = 'border:1px solid rgba(184,144,255,0.35);border-radius:8px;padding:12px 16px;background:rgba(120,90,200,0.08);display:flex;flex-direction:column;gap:8px;';
+    const title = el('div', { parent: card, text: 'Spectator mode' });
+    title.style.cssText = 'font-size:0.92rem;color:#cbb6ff;letter-spacing:0.12em;text-transform:uppercase;';
+    el('div', { parent: card, text: 'Anyone can watch the ghosts and read the verdict trail. Sign in if you want to set up an anonymous jury identity and vote on future cases.' })
+      .style.cssText = 'font-size:0.85rem;color:rgba(220,210,255,0.8);line-height:1.5;';
+    const row = el('div', { parent: card });
+    row.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+    const signInBtn = el('button', { className: 'menu-btn', parent: row, text: 'SIGN IN' });
+    signInBtn.addEventListener('click', () => { void onJurySignIn(state, parent); });
+    return;
+  }
+
+  if (!identity) {
+    const card = el('div', { parent });
+    card.style.cssText = 'border:1px solid rgba(184,144,255,0.45);border-radius:8px;padding:12px 16px;background:rgba(120,90,200,0.12);display:flex;flex-direction:column;gap:8px;';
+    el('div', { parent: card, text: 'You\'re signed in. Set up a jury identity to enable voting.' })
+      .style.cssText = 'font-size:0.95rem;color:#ddc8ff;letter-spacing:0.04em;';
+    el('div', { parent: card, text: 'A fresh keypair is generated locally; your master signs a delegation that links it to your Nostr identity. The master never leaves your signer. The jury private key stays in your browser.' })
+      .style.cssText = 'font-size:0.82rem;color:rgba(220,210,255,0.75);line-height:1.5;';
+    const row = el('div', { parent: card });
+    row.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+    const setupBtn = el('button', { className: 'menu-btn', parent: row, text: 'SET UP JURY IDENTITY' });
+    setupBtn.addEventListener('click', () => { void onJurySetupStart(state, parent); });
+    return;
+  }
+
+  // Has identity — assume delegation was published when it was set up.
+  // Future improvement: query relays for the kind 30765 event and show
+  // its publish status / event id. For phase 2a it's enough to surface
+  // that the identity is configured.
+  const card = el('div', { parent });
+  card.style.cssText = 'border:1px solid rgba(120,200,150,0.45);border-radius:8px;padding:12px 16px;background:rgba(80,200,150,0.08);display:flex;flex-direction:column;gap:8px;';
+  const head = el('div', { parent: card });
+  head.style.cssText = 'display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;';
+  el('div', { parent: head, text: 'Jury identity active' })
+    .style.cssText = 'font-size:0.95rem;color:#a8eecf;letter-spacing:0.04em;';
+  const pk = el('div', { parent: head, text: shortPubkey(identity.pubkey) });
+  pk.style.cssText = 'font-family:monospace;font-size:0.78rem;color:rgba(220,210,255,0.7);';
+  el('div', { parent: card, text: 'Your master pubkey has delegated voting authority to this key. When a case lands and your jury pubkey appears in its circle, you can cast an anonymous LSAG ballot — coming in the next deploy.' })
+    .style.cssText = 'font-size:0.82rem;color:rgba(220,210,255,0.75);line-height:1.5;';
+  const row = el('div', { parent: card });
+  row.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+  const republishBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'REPUBLISH DELEGATION' });
+  republishBtn.addEventListener('click', () => { void onJuryRepublish(state, identity); });
+  const clearBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'CLEAR JURY KEY' });
+  clearBtn.addEventListener('click', () => {
+    if (!window.confirm('Clear your jury identity? You\'ll need to set up a new one to vote again. The previously published delegation remains on relays and is still tied to your master — to fully rotate, publish a fresh delegation with a new key.')) return;
+    clearStoredJuryIdentity();
+    renderJurySetupBanner(parent, state);
+  });
+}
+
+async function onJurySignIn(state: GameState, banner: HTMLElement): Promise<void> {
+  try {
+    const session = await auth.signIn();
+    if (session) {
+      state.session = session;
+      renderJurySetupBanner(banner, state);
+    }
+  } catch (err) {
+    console.warn('[jury] sign-in failed:', err);
+    window.alert(
+      err instanceof auth.SignInTimeoutError
+        ? `Timeout — ${err.message}`
+        : `Sign-in failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+async function onJurySetupStart(state: GameState, banner: HTMLElement): Promise<void> {
+  const session = state.session;
+  if (!session) return;
+  const identity = generateJuryIdentity();
+  // Render an in-progress card so the user sees what's happening — sign +
+  // publish can take a few seconds and feedback matters here.
+  banner.innerHTML = '';
+  const card = el('div', { parent: banner });
+  card.style.cssText = 'border:1px solid rgba(184,144,255,0.55);border-radius:8px;padding:12px 16px;background:rgba(120,90,200,0.15);display:flex;flex-direction:column;gap:8px;';
+  el('div', { parent: card, text: 'Publishing your jury delegation…' })
+    .style.cssText = 'font-size:0.95rem;color:#ddc8ff;letter-spacing:0.04em;';
+  const statusLine = el('div', { parent: card });
+  statusLine.style.cssText = 'font-size:0.82rem;color:rgba(220,210,255,0.75);line-height:1.5;';
+  statusLine.textContent = 'Requesting signature from your Nostr signer…';
+
+  const result = await publishDelegation(session, identity.pubkey);
+  if (!result.ok) {
+    statusLine.textContent = `Failed: ${result.error ?? 'no relays accepted the event'}.`;
+    statusLine.style.color = '#ff8a8a';
+    const retryRow = el('div', { parent: card });
+    retryRow.style.cssText = 'display:flex;gap:8px;margin-top:6px;';
+    const retry = el('button', { className: 'menu-btn', parent: retryRow, text: 'RETRY' });
+    retry.addEventListener('click', () => { void onJurySetupStart(state, banner); });
+    const cancel = el('button', { className: 'menu-btn secondary', parent: retryRow, text: 'CANCEL' });
+    cancel.addEventListener('click', () => renderJurySetupBanner(banner, state));
+    return;
+  }
+  // Only persist the privkey after the delegation has been signed and
+  // accepted by at least one relay — a partial failure shouldn't leave a
+  // locally-stored key that nobody else knows about.
+  setStoredJuryIdentity(identity);
+  statusLine.innerHTML =
+    `Published to <strong>${result.publishedTo.length}</strong> of <strong>${result.publishedTo.length + result.failed.length}</strong> relays. ` +
+    `Jury identity stored locally. The faucet's watcher will pick it up on its next pass.`;
+  statusLine.style.color = '#a8eecf';
+  const ok = el('button', { className: 'menu-btn', parent: card, text: 'DONE' });
+  ok.style.alignSelf = 'flex-start';
+  ok.addEventListener('click', () => renderJurySetupBanner(banner, state));
+}
+
+async function onJuryRepublish(state: GameState, identity: StoredJuryIdentity): Promise<void> {
+  const session = state.session;
+  if (!session) return;
+  const result = await publishDelegation(session, identity.pubkey);
+  if (!result.ok) {
+    window.alert(`Republish failed: ${result.error ?? 'no relays accepted the event'}.`);
+    return;
+  }
+  window.alert(`Republished to ${result.publishedTo.length} of ${result.publishedTo.length + result.failed.length} relays.`);
+}
+
+function renderJuryCaseCard(c: ReviewCase, identity: StoredJuryIdentity | null, state: GameState): HTMLElement {
+  const row = el('div');
+  row.style.cssText = 'border:1px solid rgba(255,80,80,0.35);border-radius:8px;padding:10px 14px;background:rgba(255,80,80,0.06);display:flex;flex-direction:column;gap:6px;';
+
+  const head = el('div', { parent: row });
+  head.style.cssText = 'display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;';
+
+  const pk = el('div', { parent: head, text: shortPubkey(c.flaggedPubkey) });
+  pk.style.cssText = 'font-family:monospace;font-size:0.95rem;color:#ffb0b0;letter-spacing:0.06em;';
+
+  const when = el('div', { parent: head, text: formatFlaggedAt(c.createdAt * 1000) });
+  when.style.cssText = 'font-size:0.78rem;color:rgba(220,210,255,0.6);letter-spacing:0.06em;';
+
+  const reason = el('div', { parent: row, text: c.flagReason });
+  reason.style.cssText = 'font-size:0.82rem;color:rgba(255,200,200,0.85);font-family:monospace;word-break:break-word;';
+
+  const meta = el('div', { parent: row });
+  meta.style.cssText = 'display:flex;gap:14px;font-size:0.82rem;color:rgba(220,210,255,0.75);letter-spacing:0.06em;flex-wrap:wrap;';
+  el('span', { parent: meta, text: `WAVE ${c.wave}` });
+  el('span', { parent: meta, text: `SCORE ${c.score.toLocaleString()}` });
+  if (c.seed) el('span', { parent: meta, text: `SEED ${c.seed}` });
+  const circleLabel = c.underQuorum ? `${c.circleSize} JURORS · UNDER QUORUM` : `${c.circleSize} JURORS`;
+  const circleBadge = el('span', { parent: meta, text: circleLabel });
+  circleBadge.style.color = c.underQuorum ? 'rgba(255,184,120,0.85)' : 'rgba(180,255,200,0.85)';
+
+  // Eligibility hint for the signed-in juror.
+  if (identity) {
+    const inCircle = c.circleMembers.includes(identity.pubkey);
+    const elig = el('div', { parent: row });
+    elig.style.cssText = 'font-size:0.78rem;letter-spacing:0.08em;';
+    if (inCircle) {
+      elig.textContent = '✓ YOU ARE IN THIS CIRCLE — VOTING UI SHIPS IN THE NEXT DEPLOY';
+      elig.style.color = '#a8eecf';
+    } else {
+      elig.textContent = '— YOU ARE NOT IN THIS CIRCLE';
+      elig.style.color = 'rgba(220,210,255,0.45)';
+    }
+  }
+
+  const actions = el('div', { parent: row });
+  actions.style.cssText = 'display:flex;gap:8px;margin-top:4px;';
+  const watch = el('button', { className: 'menu-btn', parent: actions, text: 'WATCH' });
+  watch.addEventListener('click', () => {
+    renderReplayTheatre({
+      scoreEventId: c.scoreEventId,
+      displayName: shortPubkey(c.flaggedPubkey),
+      score: c.score,
+      wave: c.wave,
+      sats: 0,
+      onClose: () => renderJuryPage(state),
+    });
+  });
+  const copyPk = el('button', { className: 'menu-btn secondary', parent: actions, text: 'COPY PUBKEY' });
+  copyPk.addEventListener('click', () => {
+    void navigator.clipboard?.writeText(c.flaggedPubkey).then(() => {
+      copyPk.textContent = 'COPIED';
+      setTimeout(() => (copyPk.textContent = 'COPY PUBKEY'), 1200);
+    });
+  });
+  return row;
 }
 
 function renderLeaderboardBlock(parent: HTMLElement, list: ReturnType<typeof getLocalHighScores>, title: string, max = 5, onReplayClose?: () => void): void {

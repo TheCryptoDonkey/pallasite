@@ -9,7 +9,7 @@ import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHype
 import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadBackground, setRenderMode } from './render.js';
-import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel } from './ui.js';
+import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderJuryPage } from './ui.js';
 import { handleAuthCallback, tryRestore, sweepSignetArtefacts } from './auth.js';
 import * as audio from './audio.js';
 import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicResetElements, musicWarmUpAll } from './music.js';
@@ -654,11 +654,19 @@ async function boot(): Promise<void> {
 
   renderTitle(state);
 
-  // ?admin=1 → operator review surface (Layer 1). Renders after renderTitle so
-  // shared boot wiring (music, scoreboard subs) still runs; renderAdminPanel
-  // clears the overlay and owns the screen until the operator backs out.
+  // Route dispatch — both query-param and path-based surfaces. Title
+  // renders first so the shared boot wiring (music, scoreboard subs,
+  // bfcache hooks) still runs; the overlay then clears and the route's
+  // own panel owns the screen until the user backs out.
   const isAdmin = new URLSearchParams(window.location.search).has('admin');
-  if (isAdmin) renderAdminPanel();
+  if (isAdmin) {
+    renderAdminPanel();
+  } else {
+    const path = window.location.pathname.replace(/\/+$/, '');
+    if (path === '/jury') {
+      renderJuryPage(state);
+    }
+  }
 
   // bfcache restore: a player who taps SIGN IN, opens the Signet redirect,
   // then hits browser-back without completing returns to a frozen page that
