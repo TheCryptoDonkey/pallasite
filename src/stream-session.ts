@@ -79,6 +79,30 @@ export interface StreamFrame {
   wave: number;
   /** Thrust on/off for trail rendering. */
   thrust: boolean;
+  /** Optional ship-state flags for the viewer to render. */
+  alive?: boolean;
+  shielded?: boolean;
+  /** World-state snapshot of non-ship entities at frame time. Each
+   *  entity is a fixed-shape tuple to keep JSON small enough for
+   *  2 Hz wire delivery without compression: see encode helpers
+   *  below for the exact layouts. Particles + coins + powerups
+   *  are omitted (decorative / numerous / cheap to re-spawn). */
+  asteroids?: ReadonlyArray<readonly [number, number, 'l' | 'm' | 's', 's' | 'i' | 'c' | 'p', number]>;
+  ufos?: ReadonlyArray<readonly [number, number, 's' | 'p' | 't' | 'e' | 'c' | 'b']>;
+  mines?: ReadonlyArray<readonly [number, number]>;
+  bullets?: ReadonlyArray<readonly [number, number, 0 | 1]>;
+}
+
+/** Compact JSON wire format for the entity snapshot. v1 keys are
+ *  single letters to minimise bandwidth at 2 Hz × N players. */
+interface WireWorld {
+  v: 1;
+  a?: Array<[number, number, string, string, number]>;
+  u?: Array<[number, number, string]>;
+  m?: Array<[number, number]>;
+  b?: Array<[number, number, 0 | 1]>;
+  shield?: 1;
+  dead?: 1;
 }
 
 export interface ActiveStreamSession {
@@ -99,6 +123,16 @@ export interface ActiveStreamSession {
   liveDTag: string;
   /** Wall-ms of the most recent frame publish. */
   lastFramePublishedAt: number;
+}
+
+// ── Wire encoding helpers ────────────────────────────────────────────────────
+
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
 }
 
 // ── Event signing (local schnorr) ───────────────────────────────────────────
@@ -274,12 +308,33 @@ export async function publishStreamFrame(
 ): Promise<void> {
   // x/y/r serialised with bounded precision: 1 unit world space ≈ 1
   // pixel at game-default zoom, 2 decimals on rotation is sub-degree
-  // resolution. Keeps the event small without dropping rendering
-  // accuracy.
+  // resolution. Entities ride in the event content as JSON so the
+  // tag list stays small and the wire format is straightforward to
+  // extend without breaking older viewers. Older viewers (live
+  // theatre v2a and earlier) simply ignore content and still get
+  // ship pose + score from the tags.
+  const world: WireWorld = { v: 1 };
+  if (frame.asteroids?.length) {
+    world.a = frame.asteroids.map(
+      (a) => [round1(a[0]), round1(a[1]), a[2], a[3], round2(a[4])],
+    );
+  }
+  if (frame.ufos?.length) {
+    world.u = frame.ufos.map((u) => [round1(u[0]), round1(u[1]), u[2]]);
+  }
+  if (frame.mines?.length) {
+    world.m = frame.mines.map((m) => [round1(m[0]), round1(m[1])]);
+  }
+  if (frame.bullets?.length) {
+    world.b = frame.bullets.map((b) => [round1(b[0]), round1(b[1]), b[2]]);
+  }
+  if (frame.shielded) world.shield = 1;
+  if (frame.alive === false) world.dead = 1;
+
   const template = {
     kind: STREAM_FRAME_KIND,
     created_at: Math.floor(frame.t / 1000),
-    content: '',
+    content: JSON.stringify(world),
     tags: [
       // e-tag → NIP-53 kind 30311 live event so a viewer can verify
       // this session pubkey was master-authorised for this run.
