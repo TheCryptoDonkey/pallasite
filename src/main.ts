@@ -5,7 +5,7 @@
  * stored Signet session, and routes between title/playing/paused/game-over.
  */
 
-import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHyperspace, tryActivateShield, cheatJumpToWave, skipDeathReplay, skipWaveStart, skipWarp } from './game.js';
+import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHyperspace, tryActivateShield, cheatJumpToWave, cheatJumpToBonus, skipDeathReplay, skipWaveStart, skipWarp } from './game.js';
 import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadBackground, setRenderMode } from './render.js';
@@ -213,7 +213,12 @@ function closeCheatInput(commit: boolean): void {
   const buf = cheatInputBuffer;
   cheatInputBuffer = '';
   if (commit) {
-    if (buf.length > 0) {
+    if (buf.startsWith('B')) {
+      // 'B' or 'B1' jumps straight to the bonus phase. The trailing
+      // digit is reserved for future multi-bonus content; today only
+      // one bonus level exists so any digit (or none) maps to it.
+      cheatJumpToBonus(state);
+    } else if (buf.length > 0) {
       const target = parseInt(buf, 10);
       if (!isNaN(target)) cheatJumpToWave(state, target);
     } else {
@@ -281,6 +286,15 @@ window.addEventListener('keydown', e => {
     if (e.code === 'Enter') { closeCheatInput(true); e.preventDefault(); return; }
     if (e.code === 'Escape') { closeCheatInput(false); e.preventDefault(); return; }
     if (e.code === 'Equal' || e.code === 'NumpadAdd') { closeCheatInput(true); e.preventDefault(); return; }
+    // 'B' as first char = jump to bonus phase. Followed optionally by
+    // a digit (B1 = bonus 1; only one exists today but the slot is open).
+    if (e.code === 'KeyB' && cheatInputBuffer.length === 0) {
+      cheatInputBuffer = 'B';
+      refreshCheatBuffer();
+      resetCheatIdleTimer();
+      e.preventDefault();
+      return;
+    }
     const digit = digitFromCode(e.code);
     if (digit !== null) {
       if (cheatInputBuffer.length < 2) {
@@ -712,7 +726,7 @@ async function boot(): Promise<void> {
   let streamingRunId: string | null = null;
   let streamStartInFlight = false;
   const STREAM_PHASES: ReadonlySet<string> = new Set([
-    'playing', 'wavestart', 'warp', 'paused', 'deathreplay',
+    'playing', 'wavestart', 'warp', 'bonus', 'paused', 'deathreplay',
   ]);
 
   const tickStream = (): void => {
