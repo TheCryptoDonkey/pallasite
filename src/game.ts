@@ -50,7 +50,7 @@ import * as audio from './audio.js';
 import { preloadBackground, getCollisionWrap, getVisibleBoundsW } from './render.js';
 import { currentMods, lockInDifficulty, getStoredDifficulty, currentDifficulty } from './difficulty.js';
 import { lockInMode, getStoredMode, currentMode } from './mode.js';
-import { markAchievement } from './achievements.js';
+import { markAchievement, resetRunAchievements } from './achievements.js';
 import { gameRng } from './seed.js';
 import { haptic } from './haptics.js';
 import { markSkinUnlocked } from './skins.js';
@@ -197,6 +197,9 @@ export function startGame(s: GameState): void {
   s.nextMineSpawn = 0;
   s.runTimeMs = 0;
   s.runStartedAt = Date.now();
+  // Clear the "achievements unlocked this run" tracker so the NIP-58
+  // award handshake only ships badges genuinely earned in the new run.
+  resetRunAchievements();
   s.bossDefeated = false;
   s.combo = 0;
   s.comboExpiresAt = 0;
