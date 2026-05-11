@@ -50,6 +50,7 @@ import * as audio from './audio.js';
 import { preloadBackground, getCollisionWrap, getVisibleBoundsW } from './render.js';
 import { currentMods, lockInDifficulty, getStoredDifficulty, currentDifficulty } from './difficulty.js';
 import { lockInMode, getStoredMode, currentMode } from './mode.js';
+import { markAchievement } from './achievements.js';
 import { gameRng } from './seed.js';
 import { haptic } from './haptics.js';
 import { markSkinUnlocked } from './skins.js';
@@ -529,6 +530,10 @@ function makeCurtainCruiser(s: GameState, dir: 1 | -1): Ufo {
 
 export function beginWave(s: GameState, wave: number): void {
   s.wave = wave;
+  // Milestone achievements on wave entry — fired here so the badge lands
+  // during the wavestart banner rather than mid-fight.
+  if (wave === FINAL_WAVE) markAchievement(s, 'first-wave-25');
+  if (wave === 26) markAchievement(s, 'first-drift');
   // Wave-end bonus tracking — reset every wave so each one stands on its own.
   s.shieldUsedThisWave = false;
   s.bulletsFiredThisWave = 0;
@@ -1127,6 +1132,7 @@ function destroyMine(s: GameState, m: Mine): void {
   if (!m.alive) return;
   m.alive = false;
   s.runStats.minesDestroyed += 1;
+  markAchievement(s, 'first-mine');
   const mul = recordCombo(s, performance.now());
   s.score += MINE_POINTS * mul;
   audio.explosion(0.7);
@@ -1234,6 +1240,13 @@ function destroyUfo(s: GameState, u: Ufo): void {
   s.ufoKilledThisWave = true;
   if (u.type !== 'boss') s.ufoKillsThisWave += 1;
   s.runStats.ufoKills[u.type] += 1;
+  // Per-type kill achievements — first-ufo fires on any kill, plus a
+  // species-specific badge for the harder targets. Boss gets its own.
+  markAchievement(s, 'first-ufo');
+  if (u.type === 'tank')   markAchievement(s, 'first-tank');
+  if (u.type === 'elite')  markAchievement(s, 'first-elite');
+  if (u.type === 'sniper') markAchievement(s, 'first-sniper');
+  if (u.type === 'boss')   markAchievement(s, 'first-boss');
   const mul = recordCombo(s, performance.now());
   // Risk-proximity also pays out on UFO kills — sniping from safety is fine,
   // but landing the kill while threading the field earns a fatter score.
@@ -1490,6 +1503,7 @@ export function tryActivateShield(s: GameState, now: number): boolean {
   audio.pulseDuck(0.7, 180);
   haptic('tap');
   s.shieldUsedThisWave = true;
+  markAchievement(s, 'first-shield');
   toastNow(s, 'SHIELD UP');
   return true;
 }
@@ -1539,6 +1553,7 @@ export function tryHyperspace(s: GameState, now: number): void {
   const malfunctionChance = isConsecutive ? HYPERSPACE_MALFUNCTION_CHANCE : 0;
   s.ship.hyperspaceMalfunction = gameRng() < malfunctionChance;
   s.ship.lastHyperspaceAt = now;
+  markAchievement(s, 'first-warp');
   if (s.ship.hyperspaceMalfunction) {
     audio.warpJumpGlitch();
     // Sprinkle warning particles at the departure point so the cloak is visibly off
@@ -1566,6 +1581,7 @@ export function tryHyperspace(s: GameState, now: number): void {
       }
     }
     if (detonated > 0) {
+      markAchievement(s, 'first-warp-detonate');
       toastNow(s, `WARP DETONATE ×${detonated}`);
     } else {
       toastNow(s, 'HYPERSPACE LOCK');
@@ -1802,6 +1818,7 @@ function updateLurkState(s: GameState, now: number): void {
     const held = now - s.lurkingSince;
     if (!s.lurking && held >= LURK_DURATION_MS) {
       s.lurking = true;
+      markAchievement(s, 'lurker');
     }
     // Easter-egg toast fires only after a longer commitment so it lands as
     // discovery, not a hair-trigger explainer. Suppressed if previously
@@ -2394,6 +2411,10 @@ export function updateGame(s: GameState, dt: number, now: number): void {
         }
       }
     } else if (cleared) {
+      // Set-piece clear badges fire here so they land on the wave-clear
+      // beat alongside the bonus toast.
+      if (s.wave === 5)  markAchievement(s, 'first-heist');
+      if (s.wave === 12) markAchievement(s, 'first-curtain');
       // Award NO SHIELD / NO MISS / PACIFIST UFO bonuses before clearing the
       // stage so the per-wave flags still reflect what the player did. The
       // toast lands a beat before warp so the bonuses register.
@@ -2443,6 +2464,7 @@ function recordCombo(s: GameState, now: number): number {
   if (s.combo === COMBO_MAX && prev < COMBO_MAX) {
     s.hitStopUntil = now + 80;
     bumpTrauma(s, 0.18);
+    markAchievement(s, 'first-max-combo');
   }
   return s.combo;
 }
@@ -2469,14 +2491,17 @@ function awardWaveClearBonuses(s: GameState): void {
   if (!s.shieldUsedThisWave) {
     tags.push('NO SHIELD +1500');
     total += 1500;
+    markAchievement(s, 'first-no-shield');
   }
   if (s.bulletsFiredThisWave >= 8 && s.missedShotsThisWave === 0) {
     tags.push('NO MISS +2000');
     total += 2000;
+    markAchievement(s, 'first-no-miss');
   }
   if (s.ufoSpawnedThisWave && !s.ufoKilledThisWave) {
     tags.push('PACIFIST +1000');
     total += 1000;
+    markAchievement(s, 'first-pacifist');
   }
   if (total > 0) {
     s.score += total;
@@ -2563,6 +2588,7 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
   // Vein collapse: jackpot, big bloom, no fragments. Vapourises clean.
   if (a.isVein) {
     s.runStats.veinsBroken += 1;
+    markAchievement(s, 'first-vein');
     if (s.session) s.sats += VEIN_JACKPOT_SATS;
     s.score += VEIN_JACKPOT_SCORE;
     bumpTrauma(s, 0.55);
@@ -2588,10 +2614,12 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
   let bonusMul = 1;
   const trickLabels: string[] = [];
   const risk = computeRiskBonus(s);
-  if (risk.tier === 'risk') trickLabels.push('RISK');
+  if (risk.tier === 'risk') { trickLabels.push('RISK'); markAchievement(s, 'first-risk'); }
   bonusMul *= risk.mul;
-  if (opts?.isCarom) { bonusMul *= 2; trickLabels.push('CAROM'); }
-  if (opts?.isWrap)  { bonusMul *= 2; trickLabels.push('WRAP'); }
+  if (opts?.isCarom) { bonusMul *= 2; trickLabels.push('CAROM'); markAchievement(s, 'first-carom'); }
+  if (opts?.isWrap)  { bonusMul *= 2; trickLabels.push('WRAP');  markAchievement(s, 'first-wrap'); }
+  // First-kill badge — fires the first time any asteroid breaks on this device.
+  markAchievement(s, 'first-kill');
   s.score += Math.round(POINTS_PER_SIZE[a.size] * cfg.scoreMul * mul * bonusMul);
   const satsValue = SATS_PER_SIZE[a.size] * cfg.satMul * bonusMul;
 
