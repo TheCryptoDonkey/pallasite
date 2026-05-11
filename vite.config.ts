@@ -40,14 +40,15 @@ export default defineConfig({
     sourcemap: true,
     rollupOptions: {
       output: {
-        // Split heavy crypto / Nostr libs into their own chunks so the
-        // main bundle stays focused on game code, and the chunks can be
-        // cached independently across deploys. Game-engine + UI churn
-        // doesn't bust the crypto cache; signet-login version bumps
-        // don't bust the @noble cache.
+        // Split nostr-veil into its own chunk so future deploys that
+        // don't touch the veil cache independently. signet-login is
+        // intentionally NOT listed here — the SDK is loaded via the
+        // /signet-login.iife.js script tag at runtime, our imports are
+        // types-only, and Rollup would fail to resolve it as a chunk
+        // entry on CI where the sibling repo isn't present. @noble/*
+        // was also tree-shaken to ~50 bytes per chunk so wasn't worth
+        // splitting.
         manualChunks: {
-          'nobles': ['@noble/curves', '@noble/hashes'],
-          'signet': ['signet-login'],
           'veil': ['nostr-veil'],
         },
       },
