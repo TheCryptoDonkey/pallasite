@@ -9,6 +9,14 @@ export interface Entity {
   vel: Vec2;
   radius: number;
   alive: boolean;
+  /** Optional sequential identifier set in spawn functions for wire-
+   *  bound entities (ship, asteroids, UFOs, mines, bullets). The live
+   *  stream uses it to match entities across consecutive kind 22769
+   *  frames so the viewer can interpolate positions smoothly rather
+   *  than snap at the wire cadence. Decorative entities (coins,
+   *  particles, debris) leave this undefined — they don't go on the
+   *  wire. */
+  id?: number;
 }
 
 export interface Ship extends Entity {
