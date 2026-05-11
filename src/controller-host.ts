@@ -37,15 +37,11 @@ interface NostrEvent {
   sig: string;
 }
 
-/** Map a controller input kind to the keyboard code the game already
- *  understands. Hold-style inputs set/clear state.keys[code]; one-shots
- *  call the matching helper directly. */
-const HOLD_CODE: Record<'left' | 'right' | 'thrust' | 'fire', string> = {
-  left: 'ArrowLeft',
-  right: 'ArrowRight',
-  thrust: 'ArrowUp',
-  fire: 'Space',
-};
+/** Fire button maps to Space (matches the keyboard handler). Thrust
+ *  and heading go through state.thrustOverride / state.targetHeading
+ *  so the joystick semantics work identically to the in-game touch
+ *  joystick (touch.ts → attachJoystick). */
+const FIRE_CODE = 'Space';
 
 export interface ControllerHost {
   /** Ephemeral session pubkey (hex). Goes into the QR code. */
@@ -96,9 +92,11 @@ export function startControllerHost(state: GameState, opts: { relay?: string } =
     closed = true;
     sessionPrivkey.fill(0);
     if (ws) try { ws.close(); } catch { /* ignore */ }
-    // Release any held keys so the game doesn't get stuck thrusting
+    // Release any held inputs so the game doesn't get stuck thrusting
     // forever after the controller is disconnected.
-    for (const code of Object.values(HOLD_CODE)) state.keys[code] = false;
+    state.keys[FIRE_CODE] = false;
+    state.targetHeading = null;
+    state.thrustOverride = false;
     fireStatus({ kind: 'closed' });
   };
 
@@ -145,9 +143,9 @@ export function startControllerHost(state: GameState, opts: { relay?: string } =
       if (event.kind === CONTROLLER_INPUT_KIND) {
         if (!pairedWith || event.pubkey !== pairedWith) return;
         const k = tagValue(event.tags, 'k') as ControllerInputKind | undefined;
-        const v = tagValue(event.tags, 'v');
+        const v = tagValue(event.tags, 'v') ?? '0';
         if (!k) return;
-        applyInput(state, k, v === '1' ? 1 : 0);
+        applyInput(state, k, v);
         lastInputAt = performance.now();
       }
     } catch { /* ignore */ }
@@ -161,29 +159,38 @@ export function startControllerHost(state: GameState, opts: { relay?: string } =
   };
 }
 
-/** Apply a single controller input to the game. Hold-style inputs map
- *  to state.keys[code]; one-shots invoke the matching helper directly.
- *  Phase guards mirror the keyboard path so a stray "fire" arriving
- *  during pause doesn't fire bullets. */
-function applyInput(state: GameState, kind: ControllerInputKind, value: 0 | 1): void {
+/** Apply a single controller input to the game. Joystick events drive
+ *  state.targetHeading + state.thrustOverride exactly like the in-game
+ *  touch joystick (touch.ts); discrete buttons go through state.keys or
+ *  the helper functions the keyboard path uses. */
+function applyInput(state: GameState, kind: ControllerInputKind, value: string): void {
+  const on = value === '1';
   switch (kind) {
-    case 'left':
-    case 'right':
-    case 'thrust':
-    case 'fire': {
-      state.keys[HOLD_CODE[kind]] = value === 1;
+    case 'heading': {
+      const angle = parseInt(value, 10) / 1000;
+      if (Number.isFinite(angle)) state.targetHeading = angle;
       return;
     }
+    case 'heading-end':
+      state.targetHeading = null;
+      state.thrustOverride = false;
+      return;
+    case 'thrust':
+      state.thrustOverride = on;
+      return;
+    case 'fire':
+      state.keys[FIRE_CODE] = on;
+      return;
     case 'hyperspace':
-      if (value !== 1) return;
+      if (!on) return;
       if (state.phase === 'playing') tryHyperspace(state, performance.now());
       return;
     case 'shield':
-      if (value !== 1) return;
+      if (!on) return;
       if (state.phase === 'playing') tryActivateShield(state, performance.now());
       return;
     case 'pause':
-      if (value !== 1) return;
+      if (!on) return;
       if (state.phase === 'playing') pauseGame(state);
       else if (state.phase === 'paused') resumeGame(state);
       return;

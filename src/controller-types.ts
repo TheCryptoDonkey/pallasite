@@ -26,24 +26,24 @@
 export const CONTROLLER_INPUT_KIND = 22770;
 export const CONTROLLER_CLAIM_KIND = 22771;
 
-/** Input kinds the host understands. Maps onto keyboard codes inside
- *  controller-host so the existing game input plumbing (state.keys[],
- *  tryHyperspace, etc.) doesn't need to know it's been remoted. */
+/** Input kinds the host understands. The mobile controller is a
+ *  thumb-driven virtual joystick (matches the in-game touch joystick
+ *  mode), so the primary inputs are an analog heading + a thrust flag.
+ *  Action buttons stay discrete one-shots. */
 export type ControllerInputKind =
-  | 'left'        // hold-to-rotate-left  (maps to ArrowLeft held)
-  | 'right'       // hold-to-rotate-right (maps to ArrowRight held)
-  | 'thrust'      // hold-to-thrust       (maps to ArrowUp held)
-  | 'fire'        // hold-to-fire         (maps to Space held)
-  | 'hyperspace'  // one-shot
-  | 'shield'      // one-shot
-  | 'pause';      // one-shot toggle
+  | 'heading'      // value: angle * 1000 (rad → integer 0..6283)
+  | 'heading-end'  // value: '1' — joystick released, clear targetHeading
+  | 'thrust'       // value: 0|1 — joystick past deflection threshold
+  | 'fire'         // value: 0|1 — hold-to-fire
+  | 'hyperspace'   // one-shot
+  | 'shield'       // one-shot
+  | 'pause';       // one-shot toggle
 
 export interface ControllerInputEvent {
   kind: ControllerInputKind;
-  /** For hold-style inputs (left/right/thrust/fire), 1 = pressed,
-   *  0 = released. One-shot inputs (hyperspace/shield/pause) always
-   *  carry 1 — release is ignored. */
-  value: 0 | 1;
+  /** Value-as-string for wire-portability. Booleans encode as '0'/'1',
+   *  angle for heading encodes as Math.round(angle * 1000). */
+  value: string;
 }
 
 /** Pairing token — encoded into the QR-code URL. Mobile reads these

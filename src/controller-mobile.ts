@@ -36,8 +36,10 @@ export interface ControllerClient {
   pairPubkey: string;
   /** Send one input event. Returns immediately — publish is fire-and-
    *  forget; we don't await OK from the relay because latency matters
-   *  more than guaranteed delivery for controller input. */
-  sendInput: (kind: ControllerInputKind, value: 0 | 1) => void;
+   *  more than guaranteed delivery for controller input. value is a
+   *  string so we can carry analog data (joystick angle) alongside
+   *  booleans without a wire-format change. */
+  sendInput: (kind: ControllerInputKind, value: string) => void;
   /** Force-close the relay socket and wipe the ephemeral key. */
   close: () => void;
 }
@@ -78,7 +80,7 @@ export function startControllerClient(token: PairingToken): ControllerClient {
   };
   open();
 
-  const sendInput = (kind: ControllerInputKind, value: 0 | 1): void => {
+  const sendInput = (kind: ControllerInputKind, value: string): void => {
     if (closed) return;
     const event = signInputEvent(pairPrivkey, pairPubkey, token, kind, value);
     if (connected && ws) {
@@ -120,7 +122,7 @@ function signInputEvent(
   pubkey: string,
   token: PairingToken,
   kind: ControllerInputKind,
-  value: 0 | 1,
+  value: string,
 ): NostrEvent {
   return finalise(privkey, pubkey, {
     kind: CONTROLLER_INPUT_KIND,
@@ -131,7 +133,7 @@ function signInputEvent(
       ['s', token.sessionId],
       ['t', CONTROLLER_TAG],
       ['k', kind],
-      ['v', value === 1 ? '1' : '0'],
+      ['v', value],
     ],
   });
 }
