@@ -2143,16 +2143,31 @@ export function renderWatchPage(state: GameState): void {
     }
   };
 
-  watchActiveUnsubscribe = subscribeRecentRuns((entries) => {
-    if (entries.length === 0) {
-      status.textContent = 'No runs on relays yet. Be the first.';
-      return;
-    }
-    const count = entries.length;
-    status.textContent = `${count} ${count === 1 ? 'player' : 'players'} surfaced from the last batch.`;
-    for (const e of entries) renderEntry(e);
-    reorderGrid(entries);
-  });
+  watchActiveUnsubscribe = subscribeRecentRuns(
+    (entries) => {
+      if (entries.length === 0) return; // status copy handled in onStatus
+      const count = entries.length;
+      status.textContent = `${count} ${count === 1 ? 'player' : 'players'} surfaced from the last batch.`;
+      for (const e of entries) renderEntry(e);
+      reorderGrid(entries);
+    },
+    {
+      onStatus: (s) => {
+        // Only mutate copy while the grid is still empty — once cards land,
+        // the entry-count line above takes precedence.
+        if (cardByPubkey.size > 0) return;
+        if (s.relaysAttempted === 0) {
+          status.textContent = 'Connecting to relays…';
+        } else if (s.relaysSettled === 0) {
+          status.textContent = `Connecting to ${s.relaysAttempted} relays…`;
+        } else if (s.emptyConfirmed) {
+          status.textContent = `No runs on relays yet (${s.relaysSettled}/${s.relaysAttempted} settled). Be the first.`;
+        } else {
+          status.textContent = `Listening to ${s.relaysSettled}/${s.relaysAttempted} relays…`;
+        }
+      },
+    },
+  );
 
   // Lightweight "X minutes ago" updater so cards age visibly without a
   // full re-subscribe.

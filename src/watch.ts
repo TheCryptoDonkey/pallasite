@@ -71,22 +71,45 @@ function parseEntry(event: ScoreEvent): WatchEntry | null {
   };
 }
 
+/** Snapshot of the subscription's progress, for surface-level status copy. */
+export interface SubscriptionStatus {
+  /** Total relays we've attempted to connect to. */
+  relaysAttempted: number;
+  /** Relays that have signalled EOSE (initial backfill done). */
+  relaysSettled: number;
+  /** True once at least one relay has settled with no matching events. */
+  emptyConfirmed: boolean;
+}
+
 /**
  * Open a persistent live subscription to kind 30762 events from the
  * game pubkey. `onUpdate` is called with the latest deduplicated list
  * (one entry per pubkey, newest run wins) whenever the set changes.
  * Updates are debounced ~200ms to coalesce the initial backfill.
  *
+ * `onStatus` (optional) is called as relays connect and settle so the
+ * surface can show "Connecting..." → "Connected to N relays" → "No
+ * runs yet" rather than getting stuck on the initial copy when the
+ * filter genuinely returns zero events. The path that previously hid
+ * the empty-set case is fixed here too: we treat the first EOSE as
+ * confirmation that the relay has nothing matching, not as an error.
+ *
  * Returns an unsubscribe — call when the surface unmounts.
  */
 export function subscribeRecentRuns(
   onUpdate: (entries: WatchEntry[]) => void,
-  opts: { relays?: readonly string[]; limit?: number } = {},
+  opts: {
+    relays?: readonly string[];
+    limit?: number;
+    onStatus?: (s: SubscriptionStatus) => void;
+  } = {},
 ): () => void {
   let closed = false;
   let pendingEmit: number | null = null;
   const sockets: WebSocket[] = [];
   const latestByPubkey = new Map<string, WatchEntry>();
+  const settledRelays = new Set<string>();
+  let attempted = 0;
 
   const scheduleEmit = (): void => {
     if (closed || pendingEmit !== null) return;
@@ -100,11 +123,21 @@ export function subscribeRecentRuns(
     }, 200);
   };
 
+  const emitStatus = (): void => {
+    if (!opts.onStatus || closed) return;
+    opts.onStatus({
+      relaysAttempted: attempted,
+      relaysSettled: settledRelays.size,
+      emptyConfirmed: settledRelays.size > 0 && latestByPubkey.size === 0,
+    });
+  };
+
   const consider = (entry: WatchEntry): void => {
     const existing = latestByPubkey.get(entry.pubkey);
     if (existing && existing.createdAt >= entry.createdAt) return;
     latestByPubkey.set(entry.pubkey, entry);
     scheduleEmit();
+    emitStatus();
   };
 
   void (async () => {
@@ -112,25 +145,36 @@ export function subscribeRecentRuns(
     if (closed) return;
     if (!info) {
       onUpdate([]);
+      emitStatus();
       return;
     }
     const relays = opts.relays ?? getActiveRelays();
     if (relays.length === 0) {
       onUpdate([]);
+      emitStatus();
       return;
     }
+    // Filter intentionally omits #t: the faucet's t-tags are
+    // arcade/asteroids/lightning, not the game id. Author+kind is already
+    // tight (only the game pubkey signs kind 30762 for Pallasite), and the
+    // `game=pallasite` tag is verified in parseEntry.
     const filter = {
       kinds: [SCORE_EVENT_KIND],
       authors: [info.pubkey],
-      '#t': [GAME_ID],
       limit: opts.limit ?? 200,
     };
     for (const url of relays) {
       if (closed) return;
       let ws: WebSocket;
       try { ws = new WebSocket(url); } catch { continue; }
+      attempted += 1;
       sockets.push(ws);
       const subId = 'w' + Math.random().toString(36).slice(2, 10);
+      const markSettled = (): void => {
+        if (settledRelays.has(url)) return;
+        settledRelays.add(url);
+        emitStatus();
+      };
       ws.onopen = () => {
         try { ws.send(JSON.stringify(['REQ', subId, filter])); } catch { /* ignore */ }
       };
@@ -142,10 +186,15 @@ export function subscribeRecentRuns(
             const e = msg[2] as ScoreEvent;
             const entry = parseEntry(e);
             if (entry) consider(entry);
+          } else if (msg[0] === 'EOSE' && msg[1] === subId) {
+            markSettled();
           }
         } catch { /* ignore parse errors */ }
       };
+      ws.onerror = markSettled;
+      ws.onclose = markSettled;
     }
+    emitStatus();
   })();
 
   return (): void => {
