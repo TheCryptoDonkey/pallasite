@@ -661,9 +661,15 @@ export function renderTitle(state: GameState): void {
     renderSettings(() => renderTitle(state));
   });
   // Phone-as-controller — kicks off the pairing UI (QR code) and binds
-  // accepted controller inputs into state.keys / tryHyperspace / etc.
-  // Sits on the title screen so the player can pair before IGNITE.
-  const phoneBtn = el('button', { className: 'menu-btn secondary', parent: row, text: '📱 USE PHONE' });
+  // accepted controller inputs into state.keys / state.targetHeading.
+  // The host persists across the title→game transition; closing the
+  // dialog with "KEEP CONNECTED" leaves the phone in charge.
+  const phoneLabel = hasActiveControllerHost() ? '📱 PHONE · PAIRED' : '📱 USE PHONE';
+  const phoneBtn = el('button', { className: 'menu-btn secondary', parent: row, text: phoneLabel });
+  if (hasActiveControllerHost()) {
+    phoneBtn.style.color = '#8cffb4';
+    phoneBtn.style.borderColor = 'rgba(140,255,180,0.55)';
+  }
   phoneBtn.addEventListener('click', () => {
     void audio.unlockAudio();
     renderControllerHostPairing(state, () => renderTitle(state));
@@ -3311,8 +3317,23 @@ function formatFlaggedAt(ms: number | null): string {
 //      player taps "USE PHONE AS CONTROLLER" on the title screen. Shows
 //      QR + short pubkey, latches once the mobile paired.
 //   2. renderControllerPage — the mobile page itself, served from the
-//      same SPA at /controller?h=...&s=...&r=... . Big touch buttons,
-//      virtual joystick for rotation+thrust, fire + hyperspace/shield.
+//      same SPA at /controller?h=...&s=...&r=... . Joystick + buttons.
+//
+// The host is held in a module-level slot so it survives the pairing
+// dialog being closed — the user can pair, dismiss the dialog, then
+// IGNITE and the phone keeps driving the ship. Explicit DISCONNECT
+// (or window close) tears it down.
+
+let activeControllerHost: import('./controller-host.js').ControllerHost | null = null;
+
+export function hasActiveControllerHost(): boolean {
+  return activeControllerHost !== null;
+}
+
+export function disconnectActiveControllerHost(): void {
+  activeControllerHost?.close();
+  activeControllerHost = null;
+}
 
 export function renderControllerHostPairing(state: GameState, onClose: () => void): void {
   clearOverlay();
@@ -3340,54 +3361,89 @@ export function renderControllerHostPairing(state: GameState, onClose: () => voi
   hint.textContent = '';
 
   const row = el('div', { className: 'menu-row', parent: overlay });
-  const closeBtn = el('button', { className: 'menu-btn', parent: row, text: 'CANCEL' });
+  // Two action buttons: KEEP CONNECTED leaves the host alive so the
+  // phone can drive the game after the dialog closes; DISCONNECT tears
+  // the host down. Labels swap based on pair state.
+  const primaryBtn = el('button', { className: 'menu-btn', parent: row, text: 'CANCEL' });
+  const secondaryBtn = el('button', { className: 'menu-btn secondary', parent: row, text: '' });
+  secondaryBtn.style.display = 'none';
 
-  let host: import('./controller-host.js').ControllerHost | null = null;
-  void (async () => {
+  let paired = false;
+  const startOrReuseHost = async (): Promise<void> => {
     const mod = await import('./controller-host.js');
-    host = mod.startControllerHost(state);
+    // Reuse an existing host if one's already running — saves a key
+    // re-roll and lets the user re-open the QR mid-session.
+    if (!activeControllerHost) {
+      activeControllerHost = mod.startControllerHost(state);
+    } else {
+      // Already paired, jump to the paired view.
+      paired = true;
+    }
+    const host = activeControllerHost;
     void renderQRInto(qrSlot, host.pairingUrl);
     codeP.textContent = host.sessionPubkey.slice(0, 4).toUpperCase() + '·' + host.sessionPubkey.slice(4, 8).toUpperCase();
-    status.textContent = 'Waiting for phone to scan…';
-    hint.textContent = `Or visit ${host.pairingUrl} on your phone.`;
+    if (paired) {
+      status.textContent = 'Phone connected.';
+      status.style.color = 'rgba(91,255,140,0.95)';
+      hint.textContent = 'Close this dialog and IGNITE — your phone will keep driving the ship.';
+      primaryBtn.textContent = 'KEEP CONNECTED · ESC';
+      secondaryBtn.textContent = 'DISCONNECT';
+      secondaryBtn.style.display = '';
+    } else {
+      status.textContent = 'Waiting for phone to scan…';
+      hint.textContent = `Or visit ${host.pairingUrl} on your phone.`;
+    }
     host.onStatus((s) => {
       if (s.kind === 'paired') {
+        paired = true;
         status.textContent = `Phone connected (${s.pairPubkey.slice(0, 8)})`;
         status.style.color = 'rgba(91,255,140,0.95)';
-        hint.textContent = 'Inputs from your phone will now drive the ship. Cancel any time.';
-        closeBtn.textContent = 'DISCONNECT';
+        hint.textContent = 'Close this dialog and IGNITE — your phone will keep driving the ship.';
+        primaryBtn.textContent = 'KEEP CONNECTED · ESC';
+        secondaryBtn.textContent = 'DISCONNECT';
+        secondaryBtn.style.display = '';
       } else if (s.kind === 'closed') {
         status.textContent = 'Disconnected.';
+        primaryBtn.textContent = 'BACK';
+        secondaryBtn.style.display = 'none';
       }
     });
-  })();
+  };
+  void startOrReuseHost();
 
-  const cleanup = (): void => {
-    host?.close();
+  const closeDialog = (alsoDisconnect: boolean): void => {
+    window.removeEventListener('keydown', onKey);
+    if (alsoDisconnect) {
+      activeControllerHost?.close();
+      activeControllerHost = null;
+    }
     onClose();
   };
-  closeBtn.addEventListener('click', cleanup);
-  const onKey = (e: KeyboardEvent): void => { if (e.code === 'Escape') cleanup(); };
+  primaryBtn.addEventListener('click', () => {
+    // Primary action depends on pair state:
+    //  unpaired → CANCEL (close + tear down)
+    //  paired   → KEEP CONNECTED (close, host persists)
+    closeDialog(!paired);
+  });
+  secondaryBtn.addEventListener('click', () => closeDialog(true));
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.code === 'Escape') closeDialog(!paired);
+  };
   window.addEventListener('keydown', onKey);
-  const wrapClose = onClose;
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  void wrapClose;
-  // Remove the keydown listener on cleanup
-  const origCleanup = closeBtn.onclick;
-  void origCleanup;
-  closeBtn.addEventListener('click', () => window.removeEventListener('keydown', onKey));
 }
 
 // Controller mobile page — renders a touch UI that publishes input
 // events. Self-contained: doesn't touch the game state at all, only
 // reads the URL token and uses controller-mobile to publish.
+//
+// Joystick semantics mirror touch.ts → attachJoystick exactly: drag
+// angle drives target heading, deflection past THRUST_THRESHOLD turns
+// thrust on. Quick tap-and-release fires one shot. Action buttons
+// (fire-hold, hyperspace, shield, pause) sit on the right thumb side.
 export function renderControllerPage(): void {
   clearOverlay();
-  // Strip body background / locking layout — controller is full-screen.
   document.body.style.background = '#02050d';
   document.body.style.overflow = 'hidden';
-  // touch-action:none stops mobile browsers from scrolling/zooming while
-  // the player holds buttons.
   document.body.style.touchAction = 'none';
 
   const overlay = el('div', { className: 'overlay', parent: root });
@@ -3400,7 +3456,7 @@ export function renderControllerPage(): void {
   statusChip.style.cssText = 'color:rgba(255,216,74,0.85);font-size:0.78rem;';
   statusChip.textContent = '…';
 
-  // Decode pairing token from URL.
+  // Decode pairing token from URL + connect.
   const importMobile = import('./controller-mobile.js');
   const importHost = import('./controller-host.js');
   let client: import('./controller-mobile.js').ControllerClient | null = null;
@@ -3420,76 +3476,129 @@ export function renderControllerPage(): void {
     statusChip.style.color = 'rgba(91,255,140,0.85)';
   });
 
-  // Layout: top row is rotation buttons + thrust on left half, fire on
-  // right. Bottom row is shield + hyperspace + pause. Sized so big-
-  // thumbed players don't fat-finger.
-  const grid = el('div', { parent: overlay });
-  grid.style.cssText = 'flex:1;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:12px;padding:12px 6px;';
+  // Main layout — joystick on left thumb, action buttons on right.
+  const playArea = el('div', { parent: overlay });
+  playArea.style.cssText = 'flex:1;display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:8px;';
 
-  const ctlBtn = (parent: HTMLElement, label: string, colour: string): HTMLElement => {
+  // ── Joystick (left thumb) ──────────────────────────────────────────
+  // Matches touch.ts constants exactly so the feel is identical.
+  const JOY_MAX_RADIUS = 70;
+  const JOY_HEADING_DEADZONE = 0.18;
+  const JOY_THRUST_THRESHOLD = 0.45;
+  const JOY_TAP_TIME_MS = 220;
+  const JOY_TAP_MOVE_PX = 8;
+  const HEADING_SAMPLE_MS = 50;  // 20Hz cap on heading events
+
+  const joyWrap = el('div', { parent: playArea });
+  joyWrap.style.cssText = 'display:flex;align-items:center;justify-content:center;';
+  const pad = el('div', { parent: joyWrap });
+  pad.style.cssText = 'width:220px;height:220px;max-width:80vmin;max-height:80vmin;border-radius:50%;background:radial-gradient(circle, rgba(140,255,180,0.10) 0%, rgba(140,255,180,0.04) 60%, rgba(140,255,180,0) 100%);border:2px solid rgba(140,255,180,0.35);position:relative;touch-action:none;-webkit-tap-highlight-color:transparent;';
+  const knob = el('div', { parent: pad });
+  knob.style.cssText = 'position:absolute;left:50%;top:50%;width:72px;height:72px;margin:-36px 0 0 -36px;border-radius:50%;background:radial-gradient(circle, rgba(140,255,180,0.45) 0%, rgba(91,255,140,0.18) 70%);border:2px solid rgba(140,255,180,0.75);box-shadow:0 0 18px rgba(140,255,180,0.4);transform:translate(0,0);transition:transform 60ms ease-out;';
+
+  let joyActive = false;
+  let joyOriginX = 0, joyOriginY = 0;
+  let joyPressedAt = 0;
+  let joyMaxDrift = 0;
+  let joyDidEngage = false;
+  let lastHeadingSendAt = 0;
+  let thrustingNow = false;
+
+  const sendThrust = (on: boolean): void => {
+    if (thrustingNow === on) return;
+    thrustingNow = on;
+    client?.sendInput('thrust', on ? '1' : '0');
+  };
+
+  pad.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    joyActive = true;
+    const rect = pad.getBoundingClientRect();
+    joyOriginX = rect.left + rect.width / 2;
+    joyOriginY = rect.top + rect.height / 2;
+    joyPressedAt = performance.now();
+    joyMaxDrift = 0;
+    joyDidEngage = false;
+    pad.setPointerCapture(e.pointerId);
+  });
+  pad.addEventListener('pointermove', (e) => {
+    if (!joyActive) return;
+    const dx = e.clientX - joyOriginX;
+    const dy = e.clientY - joyOriginY;
+    const dist = Math.hypot(dx, dy);
+    if (dist > joyMaxDrift) joyMaxDrift = dist;
+    const clipped = Math.min(dist || 1, JOY_MAX_RADIUS);
+    const kx = (dx / (dist || 1)) * clipped;
+    const ky = (dy / (dist || 1)) * clipped;
+    knob.style.transform = `translate(${kx.toFixed(1)}px, ${ky.toFixed(1)}px)`;
+    const magnitude = clipped / JOY_MAX_RADIUS;
+    if (magnitude > JOY_HEADING_DEADZONE) {
+      joyDidEngage = true;
+      const angle = Math.atan2(dy, dx);
+      const now = performance.now();
+      if (now - lastHeadingSendAt >= HEADING_SAMPLE_MS) {
+        lastHeadingSendAt = now;
+        // Wrap to [0, 2π) before scaling so the int payload is positive.
+        const norm = ((angle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+        client?.sendInput('heading', String(Math.round(norm * 1000)));
+      }
+      sendThrust(magnitude > JOY_THRUST_THRESHOLD);
+    } else {
+      sendThrust(false);
+    }
+  });
+  const joyRelease = (): void => {
+    if (!joyActive) return;
+    joyActive = false;
+    const heldMs = performance.now() - joyPressedAt;
+    knob.style.transform = 'translate(0px, 0px)';
+    sendThrust(false);
+    client?.sendInput('heading-end', '1');
+    // Tap-fire: short press with no drag = one shot.
+    if (!joyDidEngage && heldMs < JOY_TAP_TIME_MS && joyMaxDrift < JOY_TAP_MOVE_PX) {
+      client?.sendInput('fire', '1');
+      window.setTimeout(() => client?.sendInput('fire', '0'), 60);
+    }
+  };
+  pad.addEventListener('pointerup', joyRelease);
+  pad.addEventListener('pointercancel', joyRelease);
+
+  // ── Action buttons (right thumb) ──────────────────────────────────
+  const actionCol = el('div', { parent: playArea });
+  actionCol.style.cssText = 'display:grid;grid-template-rows:2fr 1fr 1fr 1fr;gap:8px;';
+  const ctlBtn = (parent: HTMLElement, label: string, colour: string, fontSize = '1.6rem'): HTMLElement => {
     const b = el('div', { parent });
-    b.style.cssText = `display:flex;align-items:center;justify-content:center;font-size:1.6rem;font-weight:bold;letter-spacing:0.15em;color:${colour};background:rgba(255,255,255,0.04);border:2px solid ${colour}55;border-radius:14px;user-select:none;-webkit-tap-highlight-color:transparent;touch-action:none;text-shadow:0 0 12px ${colour}88;`;
+    b.style.cssText = `display:flex;align-items:center;justify-content:center;font-size:${fontSize};font-weight:bold;letter-spacing:0.15em;color:${colour};background:rgba(255,255,255,0.04);border:2px solid ${colour}55;border-radius:14px;user-select:none;-webkit-tap-highlight-color:transparent;touch-action:none;text-shadow:0 0 12px ${colour}88;`;
     b.textContent = label;
     return b;
   };
-
-  const bindHold = (btn: HTMLElement, kind: 'left' | 'right' | 'thrust' | 'fire'): void => {
+  const bindHold = (btn: HTMLElement, kind: 'fire'): void => {
     const press = (): void => {
       btn.style.background = 'rgba(255,255,255,0.14)';
-      client?.sendInput(kind, 1);
+      client?.sendInput(kind, '1');
     };
     const release = (): void => {
       btn.style.background = 'rgba(255,255,255,0.04)';
-      client?.sendInput(kind, 0);
+      client?.sendInput(kind, '0');
     };
-    btn.addEventListener('touchstart', (e) => { e.preventDefault(); press(); }, { passive: false });
-    btn.addEventListener('touchend', (e) => { e.preventDefault(); release(); }, { passive: false });
-    btn.addEventListener('touchcancel', () => release());
-    btn.addEventListener('mousedown', (e) => { e.preventDefault(); press(); });
-    btn.addEventListener('mouseup', release);
-    btn.addEventListener('mouseleave', release);
+    btn.addEventListener('pointerdown', (e) => { e.preventDefault(); press(); });
+    btn.addEventListener('pointerup', (e) => { e.preventDefault(); release(); });
+    btn.addEventListener('pointercancel', () => release());
+    btn.addEventListener('pointerleave', () => release());
   };
   const bindTap = (btn: HTMLElement, kind: 'hyperspace' | 'shield' | 'pause'): void => {
     const fire = (e: Event): void => {
       e.preventDefault();
       btn.style.background = 'rgba(255,255,255,0.14)';
-      client?.sendInput(kind, 1);
-      setTimeout(() => { btn.style.background = 'rgba(255,255,255,0.04)'; }, 120);
+      client?.sendInput(kind, '1');
+      window.setTimeout(() => { btn.style.background = 'rgba(255,255,255,0.04)'; }, 120);
     };
-    btn.addEventListener('touchstart', fire, { passive: false });
-    btn.addEventListener('mousedown', fire);
+    btn.addEventListener('pointerdown', fire);
   };
-
-  // Top-left quadrant — rotation buttons stacked vertically.
-  const rotQuad = el('div', { parent: grid });
-  rotQuad.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
-  const leftBtn = ctlBtn(rotQuad, '◀', '#8cffb4');
-  const rightBtn = ctlBtn(rotQuad, '▶', '#8cffb4');
-  bindHold(leftBtn, 'left');
-  bindHold(rightBtn, 'right');
-
-  // Top-right quadrant — thrust button.
-  const thrust = ctlBtn(grid, 'THRUST ▲', '#ffd84a');
-  bindHold(thrust, 'thrust');
-
-  // Bottom-left — fire button (big, easy to hit).
-  const fire = ctlBtn(grid, 'FIRE', '#ff5050');
-  bindHold(fire, 'fire');
-
-  // Bottom-right — small action buttons stacked.
-  const actionQuad = el('div', { parent: grid });
-  actionQuad.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:8px;';
-  const shield = ctlBtn(actionQuad, 'SHIELD', '#5b9dff');
-  const hyper = ctlBtn(actionQuad, 'WARP', '#b48cff');
-  const pause = ctlBtn(actionQuad, '⏸', '#ffd84a');
-  const spacer = el('div', { parent: actionQuad });
-  void spacer;
-  shield.style.fontSize = '1.05rem';
-  hyper.style.fontSize = '1.05rem';
-  pause.style.fontSize = '1.4rem';
-  bindTap(shield, 'shield');
-  bindTap(hyper, 'hyperspace');
-  bindTap(pause, 'pause');
+  bindHold(ctlBtn(actionCol, 'FIRE', '#ff5050'), 'fire');
+  bindTap(ctlBtn(actionCol, 'WARP', '#b48cff', '1.05rem'), 'hyperspace');
+  bindTap(ctlBtn(actionCol, 'SHIELD', '#5b9dff', '1.05rem'), 'shield');
+  bindTap(ctlBtn(actionCol, '⏸', '#ffd84a', '1.4rem'), 'pause');
 }
 
 export function renderAdminPanel(): void {
