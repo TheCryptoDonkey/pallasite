@@ -1664,7 +1664,7 @@ interface LiveUfo {
   type: 's' | 'p' | 't' | 'e' | 'c' | 'b';
 }
 interface LiveMine { id: number; x: number; y: number; }
-interface LiveBullet { id: number; x: number; y: number; enemy: boolean; }
+interface LiveBullet { id: number; x: number; y: number; vx: number; vy: number; enemy: boolean; }
 interface LiveCoin { id: number; x: number; y: number; kind: 's' | 'd'; sourceType: 's' | 'i' | 'c' | 'p' | ''; }
 interface LivePowerup { id: number; x: number; y: number; type: 'r' | 'b' | 'n' | 't' | 'm'; }
 type LiveEventCode = 'ak' | 'uk' | 'md' | 'sh' | 'sb' | 'vc' | 'pu' | 'fi';
@@ -1800,9 +1800,21 @@ function parseBullets(raw: unknown): LiveBullet[] {
   const out: LiveBullet[] = [];
   for (const item of raw) {
     if (!Array.isArray(item) || item.length < 4) continue;
-    const [id, x, y, enemy] = item;
+    // v2g wire shape: [id, x, y, vx, vy, enemy]. v2b/v2c/v2d/v2e/v2f used
+    // [id, x, y, enemy] (no velocity). Accept both so a viewer can still
+    // read older relayed events without crashing.
+    let id: unknown, x: unknown, y: unknown, vx: unknown, vy: unknown, enemy: unknown;
+    if (item.length >= 6) {
+      [id, x, y, vx, vy, enemy] = item;
+    } else {
+      [id, x, y, enemy] = item;
+      vx = 0;
+      vy = 0;
+    }
     if (typeof id !== 'number' || typeof x !== 'number' || typeof y !== 'number') continue;
-    out.push({ id, x, y, enemy: enemy === 1 });
+    const vxn = typeof vx === 'number' ? vx : 0;
+    const vyn = typeof vy === 'number' ? vy : 0;
+    out.push({ id, x, y, vx: vxn, vy: vyn, enemy: enemy === 1 });
   }
   return out;
 }
@@ -1980,7 +1992,14 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   let currentWaveAsset = 0;
   const bgImage = new Image();
   bgImage.decoding = 'async';
-  const applyWaveAssets = (wave: number): void => {
+  // Wave banner — when frame.wave increments (or on the very first
+  // frame), we flash a "WAVE N · NAME · subtitle" banner over the
+  // canvas for a few seconds so the spectator gets the same wave-intro
+  // beat the player gets.
+  let waveBannerShownAt = 0;
+  let waveBannerWave = 0;
+  const WAVE_BANNER_MS = 3500;
+  const applyWaveAssets = (wave: number, isInitial = false): void => {
     if (wave === currentWaveAsset || wave < 1) return;
     currentWaveAsset = wave;
     preloadBackground(wave);
@@ -1991,8 +2010,15 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     try {
       musicSetTrackForState({ phase: 'playing', wave } as unknown as GameState);
     } catch { /* ignore */ }
+    // Trigger the banner — skip on the very first call so the spectator
+    // doesn't see a banner the moment they open the theatre. The first
+    // real wave-change after that gets a banner.
+    if (!isInitial) {
+      waveBannerShownAt = performance.now();
+      waveBannerWave = wave;
+    }
   };
-  applyWaveAssets(Math.max(1, input.initialWave));
+  applyWaveAssets(Math.max(1, input.initialWave), true);
 
   // Stable starfield — generated once. Used as a layer ABOVE the
   // wave background image so the canvas still has motion-cues when
@@ -2243,8 +2269,11 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   // dragged the interpolation window off the frame data.
   let playbackT = 0;
   let lastPerfMs = performance.now();
-  const PLAYBACK_LEAD_MS = 700;  // sit 700ms behind latest frame
-  const PLAYBACK_LAG_LIMIT_MS = 2000;  // resync if more than 2s behind
+  // 350ms behind the live edge with 250ms frame cadence — enough to
+  // bracket prev/next reliably and absorb a single dropped frame, low
+  // enough that the perceived delay feels live.
+  const PLAYBACK_LEAD_MS = 350;
+  const PLAYBACK_LAG_LIMIT_MS = 2000;
 
   // Render loop — interpolate between adjacent frames for smooth motion
   // at 60fps even when the wire delivers 2 Hz.
@@ -2705,24 +2734,35 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
       c2d.restore();
     }
 
-    // Bullets — match render.ts drawBullet: streak with semi-transparent
-    // trail behind the head + glowing core. Direction derived from
-    // prev→next motion (no velocity on wire). Friendly bullets are red
-    // with red shadow; enemy bullets are white-cored with orange shadow
-    // + a yellow centre dot to read as "hotter incoming".
+    // Bullets — extrapolate from the most recent frame using velocity
+    // on the wire (vx, vy). Bullets move ~500px/sec, so even at 4Hz
+    // wire cadence the inter-frame gap is 60-125 world units; without
+    // extrapolation they snap visibly between samples. With it they
+    // glide at 60fps just like in the player's canvas.
+    // Direction unit vector comes from velocity directly so the streak
+    // points the right way even on the bullet's very first appearance.
+    const bulletExtrapMs = playbackT - next.capturedAt;
     for (const bNext of next.bullets) {
-      const bPrev = prevBullet.get(bNext.id) ?? bNext;
-      const bx = interpAxis(bPrev.x, bNext.x, t, PALL_WORLD_W) * sx;
-      const by = interpAxis(bPrev.y, bNext.y, t, PALL_WORLD_H) * sy;
-      // Direction unit vector from the prev→next delta. If the bullet
-      // just spawned (no prev), fall back to no streak.
-      const dxw = bNext.x - bPrev.x;
-      const dyw = bNext.y - bPrev.y;
-      const speed = Math.hypot(dxw, dyw);
+      const vx = bNext.vx;
+      const vy = bNext.vy;
+      const speed = Math.hypot(vx, vy);
+      // Position = next.pos + velocity × (playbackT - next.capturedAt).
+      // If extrapMs is negative we're between prev and next — same
+      // formula works (it interpolates back from `next`).
+      const ext = bulletExtrapMs / 1000;
+      let xw = bNext.x + vx * ext;
+      let yw = bNext.y + vy * ext;
+      // World wrap — same behaviour the game enforces, so a bullet
+      // that crosses an edge in the extrapolated window still draws
+      // at the right side.
+      if (xw < 0) xw += PALL_WORLD_W;
+      if (xw > PALL_WORLD_W) xw -= PALL_WORLD_W;
+      if (yw < 0) yw += PALL_WORLD_H;
+      if (yw > PALL_WORLD_H) yw -= PALL_WORLD_H;
+      const bx = xw * sx;
+      const by = yw * sy;
       let ux = 1, uy = 0;
-      if (speed > 0.01) { ux = dxw / speed; uy = dyw / speed; }
-      // Streak length proportional to per-frame speed, capped so a
-      // wrap-snap doesn't paint a screen-wide line.
+      if (speed > 0.01) { ux = vx / speed; uy = vy / speed; }
       const len = Math.max(6 * dpr, Math.min(speed * 0.012 * sx, 30 * dpr));
       const trailLen = len * 3.5;
       c2d.save();
@@ -2992,6 +3032,55 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
         c2d.stroke();
       }
       c2d.restore();
+    }
+
+    // 3b. Wave-change banner — fires on each frame.wave increment.
+    // Shows for WAVE_BANNER_MS (~3.5s) with fade-in/out. Mirrors the
+    // game's wave-start banner so spectators see "WAVE N · NAME · lore"
+    // when the player crosses a wave boundary on their canvas.
+    if (waveBannerShownAt > 0 && waveBannerWave > 0) {
+      const ageMs = nowPerf - waveBannerShownAt;
+      if (ageMs < WAVE_BANNER_MS) {
+        const lore = WAVE_LORE[waveBannerWave - 1];
+        if (lore) {
+          // Fade in over first 200ms, hold, fade out over last 600ms.
+          const fadeIn = Math.min(1, ageMs / 200);
+          const fadeOut = Math.min(1, Math.max(0, WAVE_BANNER_MS - ageMs) / 600);
+          const alpha = Math.min(fadeIn, fadeOut);
+          const bannerY = CANVAS_H * 0.22;
+          c2d.save();
+          c2d.globalAlpha = alpha * 0.75;
+          c2d.fillStyle = '#02050d';
+          c2d.fillRect(0, bannerY - 40 * dpr, CANVAS_W, 110 * dpr);
+          c2d.globalAlpha = alpha;
+          c2d.textAlign = 'center';
+          c2d.textBaseline = 'middle';
+          // WAVE n
+          c2d.fillStyle = 'rgba(140,255,180,0.85)';
+          c2d.font = `${Math.round(14 * dpr)}px ui-monospace, monospace`;
+          c2d.fillText(`WAVE ${waveBannerWave}`, CANVAS_W / 2, bannerY - 18 * dpr);
+          // NAME (large gold)
+          c2d.fillStyle = '#ffd84a';
+          c2d.shadowColor = 'rgba(255,216,74,0.6)';
+          c2d.shadowBlur = 14 * dpr;
+          c2d.font = `bold ${Math.round(28 * dpr)}px ui-monospace, monospace`;
+          c2d.fillText(lore.name, CANVAS_W / 2, bannerY + 8 * dpr);
+          c2d.shadowBlur = 0;
+          // Subtitle
+          c2d.fillStyle = 'rgba(220,210,255,0.75)';
+          c2d.font = `${Math.round(11 * dpr)}px ui-monospace, monospace`;
+          c2d.fillText(lore.subtitle, CANVAS_W / 2, bannerY + 32 * dpr);
+          // Tagline
+          c2d.fillStyle = 'rgba(140,255,180,0.7)';
+          c2d.font = `${Math.round(10 * dpr)}px ui-monospace, monospace`;
+          c2d.fillText(lore.tagline, CANVAS_W / 2, bannerY + 50 * dpr);
+          c2d.textAlign = 'start';
+          c2d.textBaseline = 'alphabetic';
+          c2d.restore();
+        }
+      } else {
+        waveBannerShownAt = 0;
+      }
     }
 
     // 4. Live indicator + age label + paused / ended overlays
@@ -3759,7 +3848,9 @@ function renderWatchCard(entry: WatchEntry, state: GameState): HTMLElement {
   // Finals open the replay theatre (kind 30763 ghost from gamestr-spec).
   // Stale/orphan actives that aren't fresh enough to be LIVE get a
   // disabled label since their kind 30763 ghost was never published
-  // either.
+  // either. Non-live / non-final entries still get a clickable button:
+  // we attempt the ghost fetch on demand — if the player has since
+  // claimed, the replay opens; if not, we surface a friendly retry.
   const updateWatchButton = (live: boolean, st: WatchEntry['state']): void => {
     if (live) {
       watch.disabled = false;
@@ -3770,13 +3861,13 @@ function renderWatchCard(entry: WatchEntry, state: GameState): HTMLElement {
       return;
     }
     const isFinal = st === 'final';
-    watch.disabled = !isFinal;
-    watch.style.opacity = isFinal ? '1' : '0.45';
-    watch.style.cursor = isFinal ? 'pointer' : 'not-allowed';
-    watch.textContent = isFinal ? 'WATCH' : st === 'active' ? 'OFFLINE' : 'NO REPLAY YET';
+    watch.disabled = false;
+    watch.style.opacity = '1';
+    watch.style.cursor = 'pointer';
+    watch.textContent = isFinal ? 'WATCH' : 'TRY REPLAY';
     watch.title = isFinal
       ? 'Open the kind 30763 ghost in the replay theatre.'
-      : 'The replay (kind 30763 ghost) is published when the run ends. Check back after the player claims.';
+      : 'The replay (kind 30763 ghost) is published when the run ends. We\'ll check the relay — if the player has claimed since, it will open.';
   };
   updateWatchButton(entry.isLive, entry.state);
   watch.setAttribute('data-watch-button', '1');
@@ -3795,6 +3886,35 @@ function renderWatchCard(entry: WatchEntry, state: GameState): HTMLElement {
         runStartedAtMs: entry.createdAt * 1000,
         onClose: () => renderWatchPage(state),
       });
+      return;
+    }
+    if (entry.state !== 'final') {
+      // Speculative ghost fetch — the entry's state event was
+      // 'active' (or null) so renderReplayTheatre would 404 on the
+      // entry.eventId. Look the player's most-recent ghost up by
+      // author + since-time and hand off if it lands. Mirrors the
+      // STREAM ENDED auto-try in the live theatre.
+      watch.disabled = true;
+      const original = watch.textContent;
+      watch.textContent = 'LOADING…';
+      void (async () => {
+        const sinceSec = Math.max(0, entry.createdAt - 30);
+        const scoreEventId = await findScoreIdForLatestGhost(entry.pubkey, sinceSec).catch(() => null);
+        if (!scoreEventId) {
+          watch.textContent = 'NO REPLAY YET';
+          watch.title = 'Player has not claimed yet — the kind 30763 ghost is published at claim. Try again later.';
+          setTimeout(() => { watch.disabled = false; watch.textContent = original ?? 'TRY REPLAY'; }, 2_500);
+          return;
+        }
+        renderReplayTheatre({
+          scoreEventId,
+          displayName: name.textContent ?? shortPubkey(entry.pubkey),
+          score: entry.score,
+          wave: entry.wave,
+          sats: entry.sats,
+          onClose: () => renderWatchPage(state),
+        });
+      })();
       return;
     }
     renderReplayTheatre({

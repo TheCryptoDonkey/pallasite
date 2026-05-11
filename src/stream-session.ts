@@ -94,7 +94,12 @@ export const NIP53_LIVE_EVENT_KIND = 30311;
  *  and the gamestr-spec kind 30763 ghost captures the canonical
  *  recording at end-of-run). */
 export const STREAM_FRAME_KIND = 22769;
-export const STREAM_FRAME_INTERVAL_MS = 500;
+/** 4 Hz frames. Was 500ms in v2 — 250ms cuts the visible delay
+ *  in half and makes fast entities (bullets, debris) feel real-time.
+ *  At ~1.5 KB per frame the wire still sits well under 8 KB/sec per
+ *  player, trivial for relay.trotters.cc and not enough to dent a
+ *  mobile data budget. */
+export const STREAM_FRAME_INTERVAL_MS = 250;
 const PUBLISH_TIMEOUT_MS = 4000;
 
 export interface StreamFrame {
@@ -127,7 +132,10 @@ export interface StreamFrame {
   asteroids?: ReadonlyArray<readonly [number, number, number, 'l' | 'm' | 's', 's' | 'i' | 'c' | 'p', number]>;
   ufos?: ReadonlyArray<readonly [number, number, number, 's' | 'p' | 't' | 'e' | 'c' | 'b']>;
   mines?: ReadonlyArray<readonly [number, number, number]>;
-  bullets?: ReadonlyArray<readonly [number, number, number, 0 | 1]>;
+  /** Bullets carry velocity (vx, vy) so the viewer can extrapolate
+   *  between frames at 60fps. Without this the bullet snaps each 250ms
+   *  to the new position; with velocity it glides smoothly. */
+  bullets?: ReadonlyArray<readonly [number, number, number, number, number, 0 | 1]>;
   /** Sat coin = 's' (₿ glyph), dust shard = 'd' (asteroid-tinted facet).
    *  Source asteroid type carried alongside dust so the viewer can paint
    *  the right glow + shape. Capped at 32/frame — most runs sit well
@@ -154,7 +162,7 @@ interface WireWorld {
   a?: Array<[number, number, number, string, string, number]>;
   u?: Array<[number, number, number, string]>;
   m?: Array<[number, number, number]>;
-  b?: Array<[number, number, number, 0 | 1]>;
+  b?: Array<[number, number, number, number, number, 0 | 1]>;
   /** Coins — sat ₿ or dust shard. sourceType '' when not from an asteroid. */
   c?: Array<[number, number, number, string, string]>;
   /** Powerups — single-letter type from POWERUP_CONFIG. */
@@ -386,7 +394,7 @@ export async function publishStreamFrame(
     world.m = frame.mines.map((m) => [m[0], round1(m[1]), round1(m[2])]);
   }
   if (frame.bullets?.length) {
-    world.b = frame.bullets.map((b) => [b[0], round1(b[1]), round1(b[2]), b[3]]);
+    world.b = frame.bullets.map((b) => [b[0], round1(b[1]), round1(b[2]), Math.round(b[3]), Math.round(b[4]), b[5]]);
   }
   if (frame.coins?.length) {
     world.c = frame.coins.map((c) => [c[0], round1(c[1]), round1(c[2]), c[3], c[4]]);

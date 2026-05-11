@@ -649,13 +649,22 @@ export function beginWave(s: GameState, wave: number): void {
     audio.levelUp();
     toastNow(s, `WAVE ${wave} · ${waveName(wave)}`);
   }, WAVE_REVEAL_DELAY_MS);
+  // Wave-1 wavestart runs longer (6s vs 4s) so a spectator who lands on
+  // watch.pallasite.app within a couple of seconds of the player
+  // clicking IGNITE still catches the launch beat — the watch page
+  // discovers new runs via the faucet's 5-second heartbeat cycle, and
+  // the standard 4s wavestart could otherwise be half over by the time
+  // they click WATCH. Skip-window still applies if the player wants to
+  // jump in immediately.
+  const wavestartMs = wave === 1 ? WAVESTART_MS_WAVE1 : WAVESTART_MS;
   setTimeout(() => {
     audio.setMusicDuck(1);
     if (s.phase === 'wavestart' || s.phase === 'warp') s.phase = 'playing';
-  }, WAVESTART_MS);
+  }, wavestartMs);
 }
 
 const WAVESTART_MS = 4000;
+const WAVESTART_MS_WAVE1 = 6000;
 const WAVE_REVEAL_DELAY_MS = 400;
 /** Earliest moment after wavestart begins that a tap/key can skip — give the
  *  banner enough time to fully fade in so accidental skips don't show nothing. */
