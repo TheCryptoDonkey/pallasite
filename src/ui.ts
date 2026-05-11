@@ -5522,6 +5522,12 @@ function renderJuryCaseCard(c: ReviewCase, identity: StoredJuryIdentity | null, 
 const WATCH_ZAP_PRESETS_SATS = [50, 200, 1000] as const;
 
 let watchActiveUnsubscribe: (() => void) | null = null;
+/** Module-scoped teardown for the top-3 live mini-tile WS subscriptions.
+ *  Tracked here (not in renderWatchPage's closure) so a re-entry into
+ *  the watch page or a route-away tears down the previous tiles' WS
+ *  connections — otherwise each renderWatchPage call would leak 3+
+ *  sockets per visit. */
+let watchActiveMiniTeardown: (() => void) | null = null;
 
 export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean } = {}): void {
   clearOverlay();
@@ -5529,6 +5535,8 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
   // the page (e.g. via BACK from the theatre) would otherwise leak sockets.
   watchActiveUnsubscribe?.();
   watchActiveUnsubscribe = null;
+  watchActiveMiniTeardown?.();
+  watchActiveMiniTeardown = null;
 
   // Deep-link router: two URL forms
   //   /#replay=<kind-30764-event-id>  → fetch the rich replay directly
@@ -5708,6 +5716,23 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
     btn.addEventListener('click', () => setFilter(def.k));
     filterBtns[def.k] = btn;
   }
+  // Top live tiles — up to 3 mini canvases of currently-live players,
+  // one per row of the grid below. Click expands into the full live
+  // theatre via makeMiniLiveTile's own click handler. Kept above the
+  // grid so a glance at the watch page surfaces who's actually playing
+  // right now without having to scan the score list.
+  const liveTiles = el('div', { parent: overlay });
+  liveTiles.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit, minmax(190px, 1fr));gap:10px;max-width:760px;width:100%;margin:0 auto 14px;';
+  liveTiles.style.display = 'none';  // shown once at least one live tile lands
+  // Per-pubkey tracker so we can keep stable tiles across update emits
+  // (rebuilding from scratch every emit would flicker the canvas and
+  // re-subscribe the WS, killing the smooth-frame illusion).
+  const miniTiles = new Map<string, { el: HTMLElement; unsubscribe: () => void }>();
+  watchActiveMiniTeardown = () => {
+    for (const t of miniTiles.values()) t.unsubscribe();
+    miniTiles.clear();
+  };
+
   const grid = el('div', { parent: overlay });
   grid.style.cssText = 'display:flex;flex-direction:column;gap:10px;max-width:760px;width:100%;margin:0 auto;';
 
@@ -5716,6 +5741,8 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
   backBtn.addEventListener('click', () => {
     watchActiveUnsubscribe?.();
     watchActiveUnsubscribe = null;
+    for (const t of miniTiles.values()) t.unsubscribe();
+    miniTiles.clear();
     try { window.location.assign('https://pallasite.app/'); }
     catch { window.location.assign('/'); }
   });
@@ -5834,6 +5861,28 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
       reorderGrid(visible);
       refreshFilterCounts();
       applyFilter();
+      // Sync top-3 live mini-canvas tiles. Live entries with the most
+      // recent heartbeat win the slots. Add new ones, remove tiles whose
+      // entry dropped out of the live set, leave matching ones in place.
+      const liveTop = visible.filter((e) => e.isLive).slice(0, 3);
+      const wanted = new Set(liveTop.map((e) => e.pubkey));
+      for (const [pk, t] of miniTiles) {
+        if (!wanted.has(pk)) { t.unsubscribe(); t.el.remove(); miniTiles.delete(pk); }
+      }
+      for (const e of liveTop) {
+        if (miniTiles.has(e.pubkey)) continue;
+        const t = makeMiniLiveTile(
+          e.pubkey,
+          shortPubkey(e.pubkey),
+          e.score,
+          e.wave,
+          e.createdAt * 1000,
+          state,
+        );
+        liveTiles.appendChild(t.el);
+        miniTiles.set(e.pubkey, t);
+      }
+      liveTiles.style.display = miniTiles.size > 0 ? 'grid' : 'none';
       // Auto-open into the live theatre if exactly one entry is LIVE and
       // we haven't already consumed the flag. Use a setTimeout so the
       // current onUpdate finishes rendering before the live theatre
@@ -5931,6 +5980,197 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
     window.clearInterval(ageTimer);
     baseUnsub?.();
   };
+}
+
+/** Mini live preview canvas for a player. Subscribes to the same WS
+ *  endpoint the full theatre uses but renders a stripped-down view:
+ *  ship triangle + asteroid dots + UFO dots, no particles, no skins,
+ *  no shield/thrust effects. Optimised for ≤200px-wide tiles so 3-4
+ *  can run in parallel at 60fps without burning the main thread.
+ *
+ *  Returns an unsubscribe — call when the tile is removed. The caller
+ *  can also call .onClick to wire up expand-to-full-theatre. */
+function makeMiniLiveTile(
+  pubkey: string,
+  displayName: string,
+  initialScore: number,
+  initialWave: number,
+  runStartedAtMs: number,
+  state: GameState,
+): { el: HTMLElement; unsubscribe: () => void } {
+  const card = el('div');
+  card.style.cssText = [
+    'position:relative',
+    'border:1px solid rgba(140,255,180,0.55)',
+    'border-radius:8px',
+    'background:#02050d',
+    'box-shadow:0 0 14px rgba(140,255,180,0.18)',
+    'overflow:hidden',
+    'cursor:pointer',
+    '-webkit-tap-highlight-color:transparent',
+    'display:flex',
+    'flex-direction:column',
+  ].join(';');
+  const MINI_W_CSS = 200;
+  const MINI_H_CSS = Math.round(MINI_W_CSS * PALL_WORLD_H / PALL_WORLD_W);
+  const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  const canvas = el('canvas', { parent: card, attrs: { width: String(MINI_W_CSS * dpr), height: String(MINI_H_CSS * dpr) } }) as HTMLCanvasElement;
+  canvas.style.cssText = `display:block;width:${MINI_W_CSS}px;height:${MINI_H_CSS}px;`;
+  const ctx = canvas.getContext('2d');
+
+  // Live pulse pill — confirms a stream is connected even before the
+  // first frame lands.
+  const pill = el('span', { parent: card, text: 'LIVE' });
+  pill.style.cssText = 'position:absolute;top:6px;left:6px;font-size:0.6rem;letter-spacing:0.16em;color:#8cffb4;border:1px solid rgba(140,255,180,0.55);padding:1px 6px;border-radius:3px;font-family:monospace;background:rgba(2,5,13,0.7);animation:pallasite-live-pulse 1.6s ease-in-out infinite;';
+
+  // HUD strip at the bottom — name + score + wave. Compact, readable
+  // at a glance.
+  const hud = el('div', { parent: card });
+  hud.style.cssText = 'display:flex;align-items:baseline;justify-content:space-between;padding:6px 8px;background:rgba(2,5,13,0.85);font-family:monospace;font-size:0.72rem;color:rgba(220,210,255,0.9);gap:6px;';
+  const nameEl = el('span', { parent: hud, text: displayName });
+  nameEl.style.cssText = 'color:#fff5d8;letter-spacing:0.08em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;';
+  const scoreEl = el('span', { parent: hud, text: initialScore.toLocaleString() });
+  scoreEl.style.cssText = 'color:#ffd84a;letter-spacing:0.06em;';
+  const waveEl = el('span', { parent: hud, text: `W${initialWave}` });
+  waveEl.style.cssText = 'color:#8cffb4;letter-spacing:0.06em;font-size:0.66rem;';
+
+  // Asynchronously resolve a profile name (replaces displayName if found).
+  void (async () => {
+    try {
+      const profile = await fetchProfile(pubkey);
+      const display = bestName(profile, pubkey);
+      if (display && display !== pubkey) nameEl.textContent = display;
+    } catch { /* ignore */ }
+  })();
+
+  // Click → open full live theatre.
+  card.addEventListener('click', () => {
+    unsubscribe();
+    renderLiveTheatre({
+      masterPubkey: pubkey,
+      displayName: nameEl.textContent ?? shortPubkey(pubkey),
+      initialScore: parseInt((scoreEl.textContent ?? '0').replace(/,/g, ''), 10) || 0,
+      initialWave: parseInt((waveEl.textContent ?? 'W0').replace('W', ''), 10) || 0,
+      runStartedAtMs,
+      onClose: () => renderWatchPage(state),
+    });
+  });
+
+  // WS subscription — minimal frame parse, render ship pose + entity
+  // dots. Don't bother with interpolation / extrapolation at this
+  // size; a 60fps slam-cut reads fine.
+  let lastFrame: { x: number; y: number; r: number; asteroids: unknown[][]; ufos: unknown[][]; score: number; wave: number } | null = null;
+  let ws: WebSocket | null = null;
+  let closed = false;
+  let lastActivity = Date.now();
+  const open = (): void => {
+    if (closed) return;
+    try {
+      ws = new WebSocket(`wss://controller.pallasite.app/?s=${encodeURIComponent(pubkey)}&r=subscribe`);
+    } catch { return; }
+    ws.onmessage = (ev) => {
+      try {
+        const obj = JSON.parse(typeof ev.data === 'string' ? ev.data : '');
+        if (!obj || typeof obj.type === 'string') return;  // ignore peer-up/down
+        const world = (typeof obj.world === 'object' && obj.world) ? obj.world : {};
+        lastFrame = {
+          x: typeof obj.x === 'number' ? obj.x : 0,
+          y: typeof obj.y === 'number' ? obj.y : 0,
+          r: typeof obj.r === 'number' ? obj.r : 0,
+          asteroids: Array.isArray(world.a) ? world.a as unknown[][] : [],
+          ufos: Array.isArray(world.u) ? world.u as unknown[][] : [],
+          score: typeof obj.score === 'number' ? obj.score : 0,
+          wave: typeof obj.wave === 'number' ? obj.wave : 0,
+        };
+        lastActivity = Date.now();
+        scoreEl.textContent = lastFrame.score.toLocaleString();
+        waveEl.textContent = `W${lastFrame.wave}`;
+      } catch { /* ignore */ }
+    };
+    ws.onclose = () => { if (!closed) window.setTimeout(open, 1500); };
+    ws.onerror = () => { try { ws?.close(); } catch { /* ignore */ } };
+  };
+  open();
+
+  let raf = 0;
+  const draw = (): void => {
+    if (closed) return;
+    raf = requestAnimationFrame(draw);
+    if (!ctx) return;
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.fillStyle = '#02050d';
+    ctx.fillRect(0, 0, w, h);
+    if (!lastFrame) {
+      // No data yet — faint scanline at centre.
+      ctx.fillStyle = 'rgba(140,255,180,0.18)';
+      ctx.fillRect(0, h / 2, w, 1);
+      return;
+    }
+    const sx = w / PALL_WORLD_W;
+    const sy = h / PALL_WORLD_H;
+    // Asteroids — small grey dots, slightly larger for size 'l'.
+    ctx.fillStyle = 'rgba(220,210,255,0.55)';
+    for (const a of lastFrame.asteroids) {
+      const ax = (a[1] as number) * sx;
+      const ay = (a[2] as number) * sy;
+      const size = a[3] as string;
+      const r = size === 'l' ? 3 * dpr : size === 'm' ? 2 * dpr : 1.4 * dpr;
+      ctx.beginPath();
+      ctx.arc(ax, ay, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // UFOs — red dots, distinct from asteroids at this scale.
+    ctx.fillStyle = '#ff5050';
+    for (const u of lastFrame.ufos) {
+      const ux = (u[1] as number) * sx;
+      const uy = (u[2] as number) * sy;
+      ctx.beginPath();
+      ctx.arc(ux, uy, 3 * dpr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Ship — small green triangle.
+    const shipX = lastFrame.x * sx;
+    const shipY = lastFrame.y * sy;
+    ctx.save();
+    ctx.translate(shipX, shipY);
+    ctx.rotate(lastFrame.r);
+    ctx.scale(sx, sy);
+    ctx.fillStyle = 'rgba(140,255,180,0.45)';
+    ctx.strokeStyle = '#8cffb4';
+    ctx.lineWidth = 1 / sx;
+    ctx.beginPath();
+    ctx.moveTo(14, 0);
+    ctx.lineTo(-10, 8);
+    ctx.lineTo(-6, 0);
+    ctx.lineTo(-10, -8);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+    // Stale indicator — if no frame in 6s, fade the canvas to signal
+    // the stream went quiet without removing the tile.
+    if (Date.now() - lastActivity > 6000) {
+      ctx.fillStyle = 'rgba(2,5,13,0.55)';
+      ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = 'rgba(255,120,120,0.85)';
+      ctx.font = `bold ${Math.round(10 * dpr)}px ui-monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('STALE', w / 2, h / 2);
+      ctx.textAlign = 'start';
+      ctx.textBaseline = 'alphabetic';
+    }
+  };
+  raf = requestAnimationFrame(draw);
+
+  const unsubscribe = (): void => {
+    closed = true;
+    cancelAnimationFrame(raf);
+    try { ws?.close(); } catch { /* ignore */ }
+  };
+
+  return { el: card, unsubscribe };
 }
 
 function renderWatchCard(entry: WatchEntry, state: GameState): HTMLElement {
