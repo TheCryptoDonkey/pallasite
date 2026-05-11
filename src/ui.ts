@@ -3496,115 +3496,210 @@ function renderControllerHomePage(): void {
   // user. They type whatever, we strip on submit.
   codeInput.addEventListener('input', () => setError(null));
 
-  // ── QR scanner — optional, present iff BarcodeDetector is available
-  const hasBarcodeDetector = typeof (window as unknown as { BarcodeDetector?: unknown }).BarcodeDetector === 'function';
-  if (hasBarcodeDetector && navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function') {
-    const scanCard = el('div', { parent: overlay });
-    scanCard.style.cssText = 'border:1px solid rgba(184,144,255,0.35);border-radius:12px;padding:18px;background:rgba(120,90,200,0.06);display:flex;flex-direction:column;gap:12px;align-items:stretch;';
-    const scanLabel = el('div', { parent: scanCard, text: 'OR SCAN QR CODE' });
-    scanLabel.style.cssText = 'font-size:0.78rem;letter-spacing:0.18em;color:rgba(184,144,255,0.85);';
-    const scanBtn = el('button', { parent: scanCard, text: '📷  OPEN SCANNER' }) as HTMLButtonElement;
-    scanBtn.style.cssText = 'background:rgba(184,144,255,0.18);border:1px solid rgba(184,144,255,0.6);color:#cbb6ff;border-radius:8px;padding:18px 18px;font-size:1rem;letter-spacing:0.16em;font-weight:bold;cursor:pointer;font-family:ui-monospace,monospace;';
-    const scanHost = el('div', { parent: scanCard });
-    scanHost.style.cssText = 'display:none;flex-direction:column;gap:10px;align-items:stretch;';
-    const video = el('video', { parent: scanHost }) as HTMLVideoElement;
-    video.style.cssText = 'width:100%;max-height:60vh;border-radius:8px;background:#000;object-fit:cover;';
-    video.playsInline = true;
-    video.muted = true;
-    const scanStatus = el('p', { parent: scanHost });
-    scanStatus.style.cssText = 'margin:0;font-size:0.78rem;color:rgba(220,210,255,0.7);text-align:center;letter-spacing:0.08em;';
-    scanStatus.textContent = 'Point at the QR on the big screen';
-    const stopBtn = el('button', { parent: scanHost, text: 'CANCEL' }) as HTMLButtonElement;
-    stopBtn.style.cssText = 'background:rgba(255,255,255,0.06);border:1px solid rgba(220,210,255,0.3);color:rgba(220,210,255,0.85);border-radius:8px;padding:10px 12px;font-size:0.85rem;letter-spacing:0.12em;cursor:pointer;font-family:ui-monospace,monospace;';
+  // ── QR scanner — works on every browser via jsQR (pure JS decoder).
+  //    Live video on cameras that support getUserMedia, file-upload
+  //    fallback (snap a photo, decode the image) where camera access
+  //    is denied or unsupported.
+  const tryParse = (raw: string): string | null => {
+    try {
+      const u = new URL(raw);
+      const s = u.searchParams.get('s');
+      if (s) return normalise(s);
+    } catch { /* not a URL — try as plain code */ }
+    return normalise(raw);
+  };
 
-    let stream: MediaStream | null = null;
-    let scanRaf: number | null = null;
-    let detector: { detect: (image: HTMLVideoElement) => Promise<Array<{ rawValue: string }>> } | null = null;
+  const scanCard = el('div', { parent: overlay });
+  scanCard.style.cssText = 'border:1px solid rgba(184,144,255,0.35);border-radius:12px;padding:18px;background:rgba(120,90,200,0.06);display:flex;flex-direction:column;gap:12px;align-items:stretch;';
+  const scanLabel = el('div', { parent: scanCard, text: 'OR SCAN QR CODE' });
+  scanLabel.style.cssText = 'font-size:0.85rem;letter-spacing:0.18em;color:rgba(184,144,255,0.9);text-align:center;';
+  const scanRow = el('div', { parent: scanCard });
+  scanRow.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;';
+  const scanBtn = el('button', { parent: scanRow, text: '📷  CAMERA' }) as HTMLButtonElement;
+  scanBtn.style.cssText = 'flex:1;min-width:140px;background:rgba(184,144,255,0.18);border:2px solid rgba(184,144,255,0.6);color:#cbb6ff;border-radius:10px;padding:16px;font-size:1rem;letter-spacing:0.16em;font-weight:bold;cursor:pointer;font-family:ui-monospace,monospace;';
+  // File-upload fallback — picks/takes a photo, we decode with jsQR.
+  // Works on every browser (including older iOS) and doesn't require
+  // an always-on camera stream.
+  const fileBtn = el('button', { parent: scanRow, text: '🖼  FILE' }) as HTMLButtonElement;
+  fileBtn.style.cssText = 'flex:1;min-width:140px;background:rgba(220,210,255,0.08);border:2px solid rgba(184,144,255,0.4);color:rgba(220,210,255,0.85);border-radius:10px;padding:16px;font-size:0.95rem;letter-spacing:0.14em;cursor:pointer;font-family:ui-monospace,monospace;';
+  const fileInput = el('input', { parent: scanCard, attrs: { type: 'file', accept: 'image/*' } }) as HTMLInputElement;
+  fileInput.setAttribute('capture', 'environment');
+  fileInput.style.display = 'none';
 
-    const stopScan = (): void => {
-      if (scanRaf !== null) { cancelAnimationFrame(scanRaf); scanRaf = null; }
-      if (stream) { for (const t of stream.getTracks()) t.stop(); stream = null; }
-      scanHost.style.display = 'none';
-      scanBtn.style.display = '';
+  const scanHost = el('div', { parent: scanCard });
+  scanHost.style.cssText = 'display:none;flex-direction:column;gap:10px;align-items:stretch;';
+  const video = el('video', { parent: scanHost }) as HTMLVideoElement;
+  video.style.cssText = 'width:100%;max-height:48vh;border-radius:8px;background:#000;object-fit:cover;';
+  video.playsInline = true;
+  video.muted = true;
+  const scanStatus = el('p', { parent: scanHost });
+  scanStatus.style.cssText = 'margin:0;font-size:0.8rem;color:rgba(220,210,255,0.75);text-align:center;letter-spacing:0.08em;';
+  scanStatus.textContent = 'Point at the QR on the big screen';
+  const stopBtn = el('button', { parent: scanHost, text: 'CANCEL' }) as HTMLButtonElement;
+  stopBtn.style.cssText = 'background:rgba(255,255,255,0.06);border:1px solid rgba(220,210,255,0.3);color:rgba(220,210,255,0.85);border-radius:8px;padding:10px 12px;font-size:0.85rem;letter-spacing:0.12em;cursor:pointer;font-family:ui-monospace,monospace;';
+
+  let stream: MediaStream | null = null;
+  let scanRaf: number | null = null;
+  let jsQRLib: typeof import('jsqr').default | null = null;
+
+  const loadJsQR = async (): Promise<typeof import('jsqr').default> => {
+    if (jsQRLib) return jsQRLib;
+    const mod = await import('jsqr');
+    jsQRLib = mod.default;
+    return jsQRLib;
+  };
+
+  const stopScan = (): void => {
+    if (scanRaf !== null) { cancelAnimationFrame(scanRaf); scanRaf = null; }
+    if (stream) { for (const t of stream.getTracks()) t.stop(); stream = null; }
+    scanHost.style.display = 'none';
+    scanRow.style.display = 'flex';
+    scanBtn.disabled = false;
+  };
+
+  const handleResult = (raw: string): boolean => {
+    const code = tryParse(raw);
+    if (!code) return false;
+    scanStatus.textContent = 'Got it — pairing…';
+    stopScan();
+    window.location.assign(`/?s=${code}`);
+    return true;
+  };
+
+  const startCameraScan = async (): Promise<void> => {
+    scanBtn.disabled = true;
+    setError(null);
+    let jsQR: typeof import('jsqr').default;
+    try { jsQR = await loadJsQR(); } catch {
       scanBtn.disabled = false;
-    };
-
-    const tryParse = (raw: string): string | null => {
-      // Two acceptable formats:
-      //   1. A pairing URL: https://mobile.pallasite.app/?s=XXXXXXXX
-      //   2. Just the 8-char code (manual)
-      try {
-        const u = new URL(raw);
-        const s = u.searchParams.get('s');
-        if (s) return normalise(s);
-      } catch { /* not a URL — try as plain code */ }
-      return normalise(raw);
-    };
-
-    const startScan = async (): Promise<void> => {
-      scanBtn.disabled = true;
-      try {
-        // Prefer the rear-facing camera on phones.
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: 'environment' } },
-          audio: false,
-        });
-      } catch (err) {
-        scanBtn.disabled = false;
-        codeHint.textContent = err instanceof Error && err.name === 'NotAllowedError'
-          ? 'Camera permission denied — use the code field above instead.'
-          : 'Could not open the camera — use the code field above instead.';
-        codeHint.style.color = 'rgba(255,180,80,0.9)';
-        return;
-      }
-      scanBtn.style.display = 'none';
-      scanHost.style.display = 'flex';
-      video.srcObject = stream;
-      try { await video.play(); } catch { /* ignore — some browsers want user gesture */ }
-      const BD = (window as unknown as { BarcodeDetector: new (opts: { formats: string[] }) => typeof detector }).BarcodeDetector;
-      try { detector = new BD({ formats: ['qr_code'] }) as typeof detector; } catch { detector = null; }
-      if (!detector) {
-        scanStatus.textContent = 'QR scanning unavailable on this browser.';
-        return;
-      }
-      const tick = async (): Promise<void> => {
-        if (!stream || !detector) return;
+      setError('QR library failed to load — use FILE or type the code.');
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      scanBtn.disabled = false;
+      setError('This browser has no camera API — use FILE or type the code.');
+      return;
+    }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false,
+      });
+    } catch (err) {
+      scanBtn.disabled = false;
+      setError(err instanceof Error && err.name === 'NotAllowedError'
+        ? 'Camera permission denied — use FILE or type the code.'
+        : 'Could not open the camera — use FILE or type the code.');
+      return;
+    }
+    scanRow.style.display = 'none';
+    scanHost.style.display = 'flex';
+    video.srcObject = stream;
+    try { await video.play(); } catch { /* ignore */ }
+    const canvas = document.createElement('canvas');
+    const cctx = canvas.getContext('2d');
+    if (!cctx) return;
+    const tick = (): void => {
+      if (!stream) return;
+      if (video.readyState >= 2 && video.videoWidth > 0) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        cctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         try {
-          const found = await detector.detect(video);
-          if (found && found.length > 0) {
-            const code = tryParse(found[0].rawValue);
-            if (code) {
-              scanStatus.textContent = 'Got it — pairing…';
-              stopScan();
-              window.location.assign(`/?s=${code}`);
-              return;
-            }
-          }
+          const data = cctx.getImageData(0, 0, canvas.width, canvas.height);
+          const found = jsQR(data.data, data.width, data.height, { inversionAttempts: 'dontInvert' });
+          if (found && handleResult(found.data)) return;
         } catch { /* keep scanning */ }
-        scanRaf = requestAnimationFrame(() => { void tick(); });
-      };
-      void tick();
+      }
+      scanRaf = requestAnimationFrame(tick);
     };
+    tick();
+  };
 
-    scanBtn.addEventListener('click', () => { void startScan(); });
-    stopBtn.addEventListener('click', stopScan);
-  } else {
-    // Browser without BarcodeDetector — leave the code field as the
-    // only path. Add a small hint so users know why no scanner.
-    const noScanHint = el('p', { parent: overlay });
-    noScanHint.style.cssText = 'margin:0;font-size:0.75rem;color:rgba(180,140,255,0.55);text-align:center;letter-spacing:0.05em;';
-    noScanHint.textContent = 'QR scanning needs a modern Chromium-based browser. Use the code field above.';
-  }
+  const handleFile = async (file: File): Promise<void> => {
+    setError(null);
+    let jsQR: typeof import('jsqr').default;
+    try { jsQR = await loadJsQR(); } catch {
+      setError('QR library failed to load.');
+      return;
+    }
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.src = url;
+    try { await img.decode(); } catch {
+      URL.revokeObjectURL(url);
+      setError('Could not read that image.');
+      return;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const cctx = canvas.getContext('2d');
+    if (!cctx) { URL.revokeObjectURL(url); return; }
+    cctx.drawImage(img, 0, 0);
+    URL.revokeObjectURL(url);
+    let data: ImageData;
+    try { data = cctx.getImageData(0, 0, canvas.width, canvas.height); }
+    catch { setError('Could not read image data.'); return; }
+    const found = jsQR(data.data, data.width, data.height);
+    if (!found || !handleResult(found.data)) {
+      setError('No QR code found in that photo — try again or type the code.');
+    }
+  };
 
-  // ── Add-to-Home-Screen hint ─────────────────────────────────────────
-  // Only show when not already installed (display-mode standalone is
-  // matchMedia-checkable).
+  scanBtn.addEventListener('click', () => { void startCameraScan(); });
+  fileBtn.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files?.[0];
+    if (file) void handleFile(file);
+    fileInput.value = '';
+  });
+  stopBtn.addEventListener('click', stopScan);
+
+  // ── Add-to-Home-Screen install ──────────────────────────────────────
+  // iOS has no programmatic install — show a banner with manual
+  // instructions on first visit. Android Chrome fires
+  // beforeinstallprompt — capture + expose an INSTALL button.
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches
     || (window.navigator as unknown as { standalone?: boolean }).standalone === true;
   if (!isStandalone) {
-    const pwaCard = el('div', { parent: overlay });
-    pwaCard.style.cssText = 'margin-top:8px;font-size:0.72rem;color:rgba(180,140,255,0.6);text-align:center;line-height:1.6;';
-    pwaCard.innerHTML = 'Add this page to your home screen for one-tap access.<br>iOS: share → Add to Home Screen. Android: ⋮ → Install app.';
+    const seenKey = 'pall:a2hs:seen';
+    const seen = localStorage.getItem(seenKey) === '1';
+    const ua = navigator.userAgent;
+    const isIOS = /iPhone|iPad|iPod/.test(ua) && !/Android/.test(ua);
+    const a2hsCard = el('div', { parent: overlay });
+    a2hsCard.style.cssText = `border:1px solid rgba(140,255,180,0.3);border-radius:10px;padding:12px 14px;background:rgba(60,200,140,0.05);display:${seen ? 'none' : 'flex'};flex-direction:column;gap:8px;font-size:0.8rem;color:rgba(220,210,255,0.85);line-height:1.5;`;
+    const a2hsTitle = el('div', { parent: a2hsCard, text: '📲 INSTALL AS APP' });
+    a2hsTitle.style.cssText = 'font-size:0.78rem;letter-spacing:0.16em;color:rgba(140,255,180,0.95);';
+    const a2hsBody = el('div', { parent: a2hsCard });
+    a2hsBody.style.fontSize = '0.78rem';
+    a2hsBody.innerHTML = isIOS
+      ? 'Tap the <strong>share icon</strong> in Safari and choose <strong>Add to Home Screen</strong> — opens straight into the controller.'
+      : 'Tap the <strong>⋮ menu</strong> in your browser and choose <strong>Install app</strong> or <strong>Add to Home screen</strong>.';
+    const a2hsRow = el('div', { parent: a2hsCard });
+    a2hsRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:4px;';
+    let installPromptDeferred: { prompt: () => Promise<void>; userChoice: Promise<{ outcome: string }> } | null = null;
+    const installBtn = el('button', { parent: a2hsRow, text: 'INSTALL' }) as HTMLButtonElement;
+    installBtn.style.cssText = 'background:rgba(140,255,180,0.18);border:1px solid rgba(140,255,180,0.5);color:#8cffb4;border-radius:6px;padding:8px 14px;font-size:0.78rem;letter-spacing:0.12em;cursor:pointer;font-family:ui-monospace,monospace;display:none;';
+    installBtn.addEventListener('click', () => {
+      if (!installPromptDeferred) return;
+      installBtn.disabled = true;
+      void installPromptDeferred.prompt();
+      void installPromptDeferred.userChoice.then(() => { installPromptDeferred = null; });
+    });
+    const dismissBtn = el('button', { parent: a2hsRow, text: 'DISMISS' }) as HTMLButtonElement;
+    dismissBtn.style.cssText = 'background:transparent;border:1px solid rgba(220,210,255,0.25);color:rgba(220,210,255,0.65);border-radius:6px;padding:8px 14px;font-size:0.78rem;letter-spacing:0.12em;cursor:pointer;font-family:ui-monospace,monospace;';
+    dismissBtn.addEventListener('click', () => {
+      localStorage.setItem(seenKey, '1');
+      a2hsCard.style.display = 'none';
+    });
+    // Capture Android Chrome's beforeinstallprompt so we can fire it
+    // from the INSTALL button (the spec requires user-gesture trigger).
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      installPromptDeferred = e as unknown as typeof installPromptDeferred;
+      if (installPromptDeferred) installBtn.style.display = '';
+    });
   }
 }
 
