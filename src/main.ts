@@ -9,7 +9,7 @@ import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHype
 import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadBackground, setRenderMode } from './render.js';
-import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding } from './ui.js';
+import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel } from './ui.js';
 import { handleAuthCallback, tryRestore, sweepSignetArtefacts } from './auth.js';
 import * as audio from './audio.js';
 import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicResetElements, musicWarmUpAll } from './music.js';
@@ -653,6 +653,12 @@ async function boot(): Promise<void> {
   document.body.dataset.phase = state.phase;
 
   renderTitle(state);
+
+  // ?admin=1 → operator review surface (Layer 1). Renders after renderTitle so
+  // shared boot wiring (music, scoreboard subs) still runs; renderAdminPanel
+  // clears the overlay and owns the screen until the operator backs out.
+  const isAdmin = new URLSearchParams(window.location.search).has('admin');
+  if (isAdmin) renderAdminPanel();
 
   // bfcache restore: a player who taps SIGN IN, opens the Signet redirect,
   // then hits browser-back without completing returns to a frozen page that
