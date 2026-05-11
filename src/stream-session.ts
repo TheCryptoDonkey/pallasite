@@ -45,8 +45,7 @@
  */
 
 import { schnorr } from '@noble/curves/secp256k1.js';
-import { sha256 } from '@noble/hashes/sha2.js';
-import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import type { SignetSession, NostrEvent } from 'signet-login';
 import { EXPERIMENTAL_RELAYS } from './credits.js';
 
@@ -87,13 +86,17 @@ export function drainStreamEvents(): Array<[StreamEventCode, number, number]> {
  *  announcement that zap.stream / Nostrudel / any NIP-53 client
  *  surfaces alongside human streamers. */
 export const NIP53_LIVE_EVENT_KIND = 30311;
-/** Ephemeral kind for per-frame pose telemetry. No NIP covers
- *  high-frequency game telemetry streams; the 20000-29999 range is
- *  Nostr's "ephemeral events" slot, which matches our needs (relays
- *  broadcast but don't persist — viewers catch frames as they fly,
- *  and the gamestr-spec kind 30763 ghost captures the canonical
- *  recording at end-of-run). */
+/** Legacy: kind 22769 was the per-frame Nostr ephemeral event kind.
+ *  v3 moved high-rate frames off Nostr onto controller.pallasite.app
+ *  WebSocket pass-through — no per-event signing, no relay-storage
+ *  tax, ~3x lower latency. Kept exported for backwards compatibility
+ *  with any tooling that still references the kind. */
 export const STREAM_FRAME_KIND = 22769;
+/** WebSocket endpoint for live frame stream — same host as the
+ *  controller pair channel; the server distinguishes by role param.
+ *  Publishers connect as r=publish, watchers as r=subscribe; sessionId
+ *  is the player's master pubkey (one stream per player). */
+export const STREAM_WS_ENDPOINT = 'wss://controller.pallasite.app/';
 /** 3 Hz frames (333ms). Was 500ms (2Hz) then 250ms (4Hz), settled on
  *  333ms — 4Hz cost noticeably more on mobile main-thread (sha256 +
  *  schnorr.sign per frame), and bullet extrapolation on the viewer
@@ -215,35 +218,6 @@ function round2(n: number): number {
 }
 
 // ── Event signing (local schnorr) ───────────────────────────────────────────
-
-function getEventHash(unsigned: {
-  pubkey: string;
-  created_at: number;
-  kind: number;
-  tags: string[][];
-  content: string;
-}): string {
-  const serialised = JSON.stringify([
-    0,
-    unsigned.pubkey,
-    unsigned.created_at,
-    unsigned.kind,
-    unsigned.tags,
-    unsigned.content,
-  ]);
-  return bytesToHex(sha256(utf8ToBytes(serialised)));
-}
-
-function finaliseLocalEvent(
-  template: { kind: number; created_at: number; content: string; tags: string[][] },
-  privkey: Uint8Array,
-): NostrEvent {
-  const pubkey = bytesToHex(schnorr.getPublicKey(privkey));
-  const unsigned = { ...template, pubkey };
-  const id = getEventHash(unsigned);
-  const sig = bytesToHex(schnorr.sign(hexToBytes(id), privkey));
-  return { ...unsigned, id, sig } as NostrEvent;
-}
 
 // ── Relay publish (raw WebSocket) ────────────────────────────────────────────
 
@@ -484,46 +458,64 @@ export async function publishStreamFrame(
     replayBuffer.splice(0, replayBuffer.length - MAX_BUFFER);
   }
 
-  const template = {
-    kind: STREAM_FRAME_KIND,
-    created_at: Math.floor(frame.t / 1000),
-    content: JSON.stringify(world),
-    tags: [
-      // e-tag → NIP-53 kind 30311 live event so a viewer can verify
-      // this session pubkey was master-authorised for this run.
-      ['e', session.liveEventId],
-      // a-tag → addressable reference to the same live event, which is
-      // the NIP-01 way for non-replaceable events to point at
-      // parameterized-replaceable ones.
-      ['a', `${NIP53_LIVE_EVENT_KIND}:${session.masterPubkey}:${session.liveDTag}`],
-      ['run_id', session.runId],
-      ['p', session.masterPubkey],
-      ['t', 'pallasite-stream-frame'],
-      ['t', 'nostr-veil'],
-      ['frame_t', String(frame.t)],
-      ['x', frame.x.toFixed(2)],
-      ['y', frame.y.toFixed(2)],
-      ['r', frame.r.toFixed(3)],
-      ['score', String(frame.score)],
-      ['wave', String(frame.wave)],
-      ['lives', String(frame.lives ?? 0)],
-      ['sats', String(frame.sats ?? 0)],
-      ['thrust', frame.thrust ? '1' : '0'],
-    ],
-  };
-
-  let signed: NostrEvent;
-  try {
-    signed = finaliseLocalEvent(template, session.sessionPrivkey);
-  } catch {
-    return;
-  }
-
-  const relays = opts.relays ?? EXPERIMENTAL_RELAYS;
-  await Promise.all(
-    relays.map((url) => publishToRelay(url, signed).catch(() => undefined)),
-  );
+  // Publish to the WebSocket relay — no signing, no Nostr envelope,
+  // just the wire frame as JSON. ~3x lower latency than the legacy
+  // kind 22769 path and zero per-event CPU on the player. Watchers
+  // subscribe to the same relay with their target pubkey.
+  void publishStreamFrameWs(session.masterPubkey, {
+    t: frame.t,
+    x: round1(frame.x), y: round1(frame.y), r: round2(frame.r),
+    score: frame.score, wave: frame.wave,
+    lives: frame.lives ?? 0, sats: frame.sats ?? 0,
+    thrust: frame.thrust,
+    alive: frame.alive,
+    shielded: frame.shielded,
+    paused: frame.paused,
+    world,
+  });
+  void opts; // relays no longer used — kept for caller compat
   session.lastFramePublishedAt = frame.t;
+}
+
+// ── Live WebSocket publisher ────────────────────────────────────────────────
+//
+// One persistent socket per process, keyed by sessionId (= master
+// pubkey). Reconnects on drop. Frames are JSON.stringify'd and sent
+// as-is; the relay forwards bytes verbatim to all subscribers.
+
+interface LiveWsState { ws: WebSocket | null; sessionId: string; lastConnectAttempt: number; }
+let liveWs: LiveWsState | null = null;
+
+function publishStreamFrameWs(masterPubkey: string, frame: ReplayFrameRaw): void {
+  if (!liveWs || liveWs.sessionId !== masterPubkey) {
+    if (liveWs?.ws) try { liveWs.ws.close(); } catch { /* ignore */ }
+    liveWs = { ws: null, sessionId: masterPubkey, lastConnectAttempt: 0 };
+  }
+  if (!liveWs.ws || liveWs.ws.readyState >= WebSocket.CLOSING) {
+    // Reopen if closed; throttle reconnect attempts to avoid hot-loops
+    // when the relay is unreachable.
+    const now = Date.now();
+    if (now - liveWs.lastConnectAttempt < 1000) return;
+    liveWs.lastConnectAttempt = now;
+    try {
+      liveWs.ws = new WebSocket(`${STREAM_WS_ENDPOINT}?s=${encodeURIComponent(masterPubkey)}&r=publish`);
+    } catch {
+      liveWs.ws = null;
+      return;
+    }
+    return; // skip this frame — socket isn't open yet
+  }
+  if (liveWs.ws.readyState !== WebSocket.OPEN) return; // CONNECTING — drop
+  try {
+    liveWs.ws.send(JSON.stringify(frame));
+  } catch { /* ignore */ }
+}
+
+/** Close the live WS publisher — called from endStreamSession so a new
+ *  game-over correctly tears down the publisher socket. */
+export function closeLiveStreamWs(): void {
+  if (liveWs?.ws) try { liveWs.ws.close(); } catch { /* ignore */ }
+  liveWs = null;
 }
 
 /**
@@ -538,6 +530,10 @@ export async function publishStreamFrame(
  */
 export function endStreamSession(session: ActiveStreamSession): void {
   session.sessionPrivkey.fill(0);
+  // Close the live WS publisher so a follow-up session can rebind to
+  // the same master pubkey cleanly (the server replaces stale
+  // publishers but explicit close is tidier).
+  closeLiveStreamWs();
 }
 
 /**

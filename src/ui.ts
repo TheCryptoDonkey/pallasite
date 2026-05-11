@@ -43,8 +43,7 @@ import { followUser, shareCompletion, endorseSubject, rankFromWave } from './soc
 import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipient } from './zap.js';
 import { subscribeRecentRuns, timeAgo, dismissWatchEntry, getDismissedWatchEntries, LIVE_FRESHNESS_MS, type WatchEntry } from './watch.js';
-import { EXPERIMENTAL_RELAYS } from './credits.js';
-import { STREAM_FRAME_KIND, getReplayBuffer } from './stream-session.js';
+import { getReplayBuffer } from './stream-session.js';
 import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, type GhostRun } from './ghost.js';
 import { preloadBackground } from './render.js';
 import { musicSetTrackForState } from './music.js';
@@ -1716,20 +1715,6 @@ interface LiveFrame {
   events: LiveSfxEvent[];
 }
 
-interface WireWorld {
-  v?: number;
-  a?: unknown;
-  u?: unknown;
-  m?: unknown;
-  b?: unknown;
-  c?: unknown;
-  pu?: unknown;
-  e?: unknown;
-  shield?: number;
-  dead?: number;
-  paused?: number;
-}
-
 const KNOWN_EVENT_CODES: ReadonlySet<LiveEventCode> = new Set([
   'ak', 'uk', 'md', 'sh', 'sb', 'vc', 'pu', 'fi',
 ]);
@@ -1744,17 +1729,6 @@ function parseEvents(raw: unknown): LiveSfxEvent[] {
     out.push({ code: code as LiveEventCode, x, y });
   }
   return out;
-}
-
-function parseWireWorld(content: string): WireWorld {
-  if (!content) return {};
-  try {
-    const obj = JSON.parse(content);
-    if (!obj || typeof obj !== 'object') return {};
-    return obj as WireWorld;
-  } catch {
-    return {};
-  }
 }
 
 function parseAsteroids(raw: unknown): LiveAsteroid[] {
@@ -1842,40 +1816,29 @@ function parseBullets(raw: unknown): LiveBullet[] {
   return out;
 }
 
-function readLiveFrame(event: { tags: string[][]; content?: string }): LiveFrame | null {
-  let frameT: number | null = null;
-  let x: number | null = null;
-  let y: number | null = null;
-  let r: number | null = null;
-  let score = 0;
-  let wave = 0;
-  let lives = 0;
-  let sats = 0;
-  let thrust = false;
-  for (const tag of event.tags) {
-    switch (tag[0]) {
-      case 'frame_t': frameT = parseInt(tag[1] ?? '', 10); break;
-      case 'x': x = parseFloat(tag[1] ?? ''); break;
-      case 'y': y = parseFloat(tag[1] ?? ''); break;
-      case 'r': r = parseFloat(tag[1] ?? ''); break;
-      case 'score': score = parseInt(tag[1] ?? '0', 10) || 0; break;
-      case 'wave': wave = parseInt(tag[1] ?? '0', 10) || 0; break;
-      case 'lives': lives = parseInt(tag[1] ?? '0', 10) || 0; break;
-      case 'sats': sats = parseInt(tag[1] ?? '0', 10) || 0; break;
-      case 'thrust': thrust = tag[1] === '1'; break;
-    }
-  }
-  if (frameT === null || !Number.isFinite(frameT)) return null;
-  if (x === null || y === null || r === null) return null;
-  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(r)) return null;
-  const world = parseWireWorld(event.content ?? '');
+/** Convert a raw WS frame (the ReplayFrameRaw shape published by
+ *  stream-session.ts → publishStreamFrameWs) into the parsed LiveFrame
+ *  shape the renderer uses. The wire delivers the same world payload
+ *  as kind 22769 used to — we just skip the Nostr envelope. */
+function readWsFrame(obj: Record<string, unknown>): LiveFrame | null {
+  const t = typeof obj.t === 'number' ? obj.t : null;
+  const x = typeof obj.x === 'number' ? obj.x : null;
+  const y = typeof obj.y === 'number' ? obj.y : null;
+  const r = typeof obj.r === 'number' ? obj.r : null;
+  if (t === null || x === null || y === null || r === null) return null;
+  const world = (typeof obj.world === 'object' && obj.world) ? obj.world as Record<string, unknown> : {};
   return {
-    capturedAt: frameT,
+    capturedAt: t,
     receivedAt: performance.now(),
-    x, y, r, score, wave, lives, sats, thrust,
-    alive: world.dead !== 1,
-    shielded: world.shield === 1,
-    paused: world.paused === 1,
+    x, y, r,
+    score: typeof obj.score === 'number' ? obj.score : 0,
+    wave: typeof obj.wave === 'number' ? obj.wave : 0,
+    lives: typeof obj.lives === 'number' ? obj.lives : 0,
+    sats: typeof obj.sats === 'number' ? obj.sats : 0,
+    thrust: obj.thrust === true,
+    alive: obj.alive !== false,
+    shielded: obj.shielded === true,
+    paused: obj.paused === true,
     asteroids: parseAsteroids(world.a),
     ufos: parseUfos(world.u),
     mines: parseMines(world.m),
@@ -2126,70 +2089,60 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     }
   };
 
-  // Subscribe directly to kind 22769 events #p=<master>. v1 trusts
-  // the relay; v2 will verify the session pubkey against the NIP-53
-  // kind 30311 stream-key role tag.
+  // Subscribe to the controller-ws relay as r=subscribe with the
+  // player's master pubkey as the streamId. The relay broadcasts every
+  // frame the player publishes to all subscribers. No Nostr envelope,
+  // no per-event signature verification, ~3x lower latency than the
+  // kind 22769 path.
   let frameCount = 0;
-  // Reconnect watchdog — kind 22769 is ephemeral so most relays don't
-  // serve historic frames on subscribe; we wait for the next live
-  // frame from the player. If something raced (relay hadn't registered
-  // our REQ before the player's last publish), we can sit on "Connected
-  // · waiting for first frame…" indefinitely. The watchdog forces a
-  // fresh subscription after 2.5s of silence on first join — once we
-  // start getting frames it idles until needed again.
   let watchdog: number | null = null;
   const armWatchdog = (subOpen: () => void): void => {
     if (watchdog !== null) window.clearTimeout(watchdog);
     watchdog = window.setTimeout(() => {
       if (cancelled) return;
       if (frameCount > 0) return;
-      // Tear down + rebuild — closes the old sockets cleanly first so
-      // the relay doesn't end up with two subs from us.
       for (const s of sockets) try { s.close(); } catch { /* ignore */ }
       sockets.length = 0;
       status.textContent = 'Reconnecting…';
       subOpen();
-    }, 2500);
+    }, 4000);
   };
   const openSubscriptions = (): void => {
-    for (const url of EXPERIMENTAL_RELAYS) {
-      if (cancelled) break;
-      let ws: WebSocket;
-      try { ws = new WebSocket(url); } catch { continue; }
-      sockets.push(ws);
-      const subId = 'lt' + Math.random().toString(36).slice(2, 10);
-      ws.onopen = () => {
-        try {
-          ws.send(JSON.stringify([
-            'REQ',
-            subId,
-            {
-              kinds: [STREAM_FRAME_KIND],
-              '#p': [input.masterPubkey],
-              // 60s look-back is mostly a no-op for ephemeral kinds
-              // (relays don't persist them) but harmless on the wire.
-              since: Math.floor(Date.now() / 1000) - 60,
-            },
-          ]));
-          status.textContent = `Connected · waiting for first frame…`;
-        } catch { /* ignore */ }
-      };
-      ws.onmessage = (ev) => {
-        try {
-          const msg: unknown = JSON.parse(typeof ev.data === 'string' ? ev.data : '');
-          if (!Array.isArray(msg)) return;
-          if (msg[0] === 'EVENT' && msg[1] === subId) {
-            const frame = readLiveFrame(msg[2] as { tags: string[][] });
-            if (frame) {
-              pushFrame(frame);
-              frameCount += 1;
-              status.textContent = `Live · ${frameCount} frame${frameCount === 1 ? '' : 's'} received`;
-              if (watchdog !== null) { window.clearTimeout(watchdog); watchdog = null; }
-            }
-          }
-        } catch { /* ignore */ }
-      };
-    }
+    if (cancelled) return;
+    const url = `wss://controller.pallasite.app/?s=${encodeURIComponent(input.masterPubkey)}&r=subscribe`;
+    let ws: WebSocket;
+    try { ws = new WebSocket(url); } catch { armWatchdog(openSubscriptions); return; }
+    sockets.push(ws);
+    ws.onopen = () => {
+      status.textContent = 'Connected · waiting for first frame…';
+    };
+    ws.onmessage = (ev) => {
+      const data = typeof ev.data === 'string' ? ev.data : '';
+      if (!data) return;
+      let parsed: unknown;
+      try { parsed = JSON.parse(data); } catch { return; }
+      if (!parsed || typeof parsed !== 'object') return;
+      const obj = parsed as Record<string, unknown>;
+      // Server control frames: {type: 'publisher-up' | 'publisher-down'}
+      if (typeof obj.type === 'string') {
+        if (obj.type === 'publisher-up') {
+          status.textContent = 'Player connected — waiting for first frame…';
+        } else if (obj.type === 'publisher-down') {
+          status.textContent = 'Player disconnected.';
+        }
+        return;
+      }
+      // Otherwise it's a wire frame — same shape as ReplayFrameRaw.
+      const frame = readWsFrame(obj);
+      if (frame) {
+        pushFrame(frame);
+        frameCount += 1;
+        status.textContent = `Live · ${frameCount} frame${frameCount === 1 ? '' : 's'} received`;
+        if (watchdog !== null) { window.clearTimeout(watchdog); watchdog = null; }
+      }
+    };
+    ws.onerror = () => { armWatchdog(openSubscriptions); };
+    ws.onclose = () => { armWatchdog(openSubscriptions); };
     armWatchdog(openSubscriptions);
   };
   openSubscriptions();

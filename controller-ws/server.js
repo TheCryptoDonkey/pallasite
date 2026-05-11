@@ -30,8 +30,15 @@ const MAX_SESSIONS = 4096;
  *  5 minutes so QR codes that were never scanned don't leak the slot. */
 const ORPHAN_TIMEOUT_MS = 5 * 60 * 1000;
 
-const SESSION_RE = /^[a-z0-9]{4,32}$/i;
-const ROLES = new Set(['host', 'phone']);
+// SESSION_RE accepts the legacy controller pair ids (8 hex chars) AND
+// the longer stream ids used by the live frame relay (player master
+// pubkey, 64 hex). Anything alphanumeric, 4-128 chars, is fine.
+const SESSION_RE = /^[a-z0-9_-]{4,128}$/i;
+/** Pair-role: 1-to-1 phone↔host controller. Stream-role: 1-to-many
+ *  publisher↔subscribers for live frame broadcast. They share the same
+ *  matching logic (by sessionId) but the multiplicity rules differ —
+ *  one host, one phone, one publisher, many subscribers. */
+const ROLES = new Set(['host', 'phone', 'publish', 'subscribe']);
 
 /** Map sessionId → { host?: ws, phone?: ws, createdAt }. */
 const sessions = new Map();
@@ -63,58 +70,107 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 function attach(ws, session, role) {
-  // Reject if the role is already taken on this session — first
-  // connection wins. Prevents a tab refresh from accidentally hijacking
-  // an active pair without an explicit re-pair.
   let slot = sessions.get(session);
   if (!slot) {
-    slot = { host: undefined, phone: undefined, createdAt: Date.now() };
+    slot = { host: undefined, phone: undefined, publish: undefined, subscribe: new Set(), createdAt: Date.now() };
     sessions.set(session, slot);
     // Orphan sweep so unattached sessions don't leak the map slot.
     setTimeout(() => {
       const current = sessions.get(session);
       if (!current) return;
-      if (!current.host || !current.phone) {
-        // Still unpaired after the timeout — close any remaining
-        // socket and drop the entry.
+      const empty = !current.host && !current.phone && !current.publish && current.subscribe.size === 0;
+      const pairIncomplete = !current.host || !current.phone;
+      const streamIncomplete = !current.publish && current.subscribe.size === 0;
+      if (empty || (pairIncomplete && streamIncomplete)) {
         if (current.host) try { current.host.close(); } catch {}
         if (current.phone) try { current.phone.close(); } catch {}
+        if (current.publish) try { current.publish.close(); } catch {}
+        for (const s of current.subscribe) try { s.close(); } catch {}
         sessions.delete(session);
       }
     }, ORPHAN_TIMEOUT_MS);
   }
-  if (slot[role]) {
-    // Force-close the prior holder so the newcomer can take over —
-    // simpler than rejecting (handles browser refresh edge cases).
-    try { slot[role].close(1000, 'replaced'); } catch {}
-  }
-  slot[role] = ws;
 
-  // Tell both sides their peer is on (or off).
-  notifyPeerState(slot);
+  // Multiplicity rules:
+  //   host/phone/publish: singleton — new connection replaces old.
+  //   subscribe:          many — added to a Set.
+  if (role === 'subscribe') {
+    slot.subscribe.add(ws);
+  } else {
+    if (slot[role]) {
+      try { slot[role].close(1000, 'replaced'); } catch {}
+    }
+    slot[role] = ws;
+  }
+
+  notifyPeerState(slot, role);
 
   ws.on('message', (data, isBinary) => {
-    const peer = role === 'host' ? slot.phone : slot.host;
-    if (!peer || peer.readyState !== peer.OPEN) return;
-    try { peer.send(data, { binary: isBinary }); } catch {}
+    // Forwarding rules by role:
+    //   host → phone (pair)
+    //   phone → host (pair)
+    //   publish → subscribe* (broadcast)
+    //   subscribe → ignored (uplink-only — viewers can't drive)
+    if (role === 'host' && slot.phone && slot.phone.readyState === slot.phone.OPEN) {
+      try { slot.phone.send(data, { binary: isBinary }); } catch {}
+    } else if (role === 'phone' && slot.host && slot.host.readyState === slot.host.OPEN) {
+      try { slot.host.send(data, { binary: isBinary }); } catch {}
+    } else if (role === 'publish') {
+      for (const sub of slot.subscribe) {
+        if (sub.readyState !== sub.OPEN) continue;
+        try { sub.send(data, { binary: isBinary }); } catch {}
+      }
+    }
   });
 
   const closeHandler = () => {
-    if (slot[role] === ws) slot[role] = undefined;
-    notifyPeerState(slot);
-    if (!slot.host && !slot.phone) sessions.delete(session);
+    if (role === 'subscribe') {
+      slot.subscribe.delete(ws);
+    } else if (slot[role] === ws) {
+      slot[role] = undefined;
+    }
+    notifyPeerState(slot, role);
+    const empty = !slot.host && !slot.phone && !slot.publish && slot.subscribe.size === 0;
+    if (empty) sessions.delete(session);
   };
   ws.on('close', closeHandler);
   ws.on('error', closeHandler);
 }
 
-function notifyPeerState(slot) {
-  const bothUp = slot.host && slot.host.readyState === slot.host.OPEN
-              && slot.phone && slot.phone.readyState === slot.phone.OPEN;
-  const msg = JSON.stringify({ type: bothUp ? 'peer-up' : 'peer-down' });
-  for (const ws of [slot.host, slot.phone]) {
-    if (!ws || ws.readyState !== ws.OPEN) continue;
-    try { ws.send(msg); } catch {}
+function notifyPeerState(slot, changedRole) {
+  // Pair-mode (host + phone): both sides see peer-up/down on each other.
+  if (changedRole === 'host' || changedRole === 'phone') {
+    const bothUp = slot.host && slot.host.readyState === slot.host.OPEN
+                && slot.phone && slot.phone.readyState === slot.phone.OPEN;
+    const msg = JSON.stringify({ type: bothUp ? 'peer-up' : 'peer-down' });
+    for (const ws of [slot.host, slot.phone]) {
+      if (!ws || ws.readyState !== ws.OPEN) continue;
+      try { ws.send(msg); } catch {}
+    }
+  }
+  // Stream-mode (publish + subscribers):
+  //  - On publisher state change, notify all subscribers.
+  //  - On subscriber join, just notify that subscriber (so they know
+  //    if a publisher is already live).
+  if (changedRole === 'publish') {
+    const pubUp = slot.publish && slot.publish.readyState === slot.publish.OPEN;
+    const msg = JSON.stringify({ type: pubUp ? 'publisher-up' : 'publisher-down' });
+    for (const sub of slot.subscribe) {
+      if (sub.readyState !== sub.OPEN) continue;
+      try { sub.send(msg); } catch {}
+    }
+  } else if (changedRole === 'subscribe') {
+    const pubUp = slot.publish && slot.publish.readyState === slot.publish.OPEN;
+    // A subscriber just joined — tell them whether a publisher is live.
+    // We don't need to broadcast to other subscribers; only the new one
+    // cares. But notifyPeerState is called for both joins AND leaves,
+    // so we conservatively notify the whole subscribe set (any closed
+    // sockets are skipped by the readyState check above).
+    const msg = JSON.stringify({ type: pubUp ? 'publisher-up' : 'publisher-down' });
+    for (const sub of slot.subscribe) {
+      if (sub.readyState !== sub.OPEN) continue;
+      try { sub.send(msg); } catch {}
+    }
   }
 }
 
