@@ -511,6 +511,80 @@ export async function fetchGhostByScoreEventId(
   return null;
 }
 
+/**
+ * Find the most recent ghost from `pubkey` created after `sinceSec` and
+ * return its score-event-id (the 'e' tag pointing at the kind 30762 final
+ * score event). Useful when a spectator wants to replay a run they just
+ * watched live — the live theatre knows the player pubkey and run start
+ * time but not the score event id directly. Returns null if no ghost has
+ * been published yet (player hasn't claimed) or no relays respond.
+ */
+export async function findScoreIdForLatestGhost(
+  pubkey: string,
+  sinceSec: number,
+  opts: { relays?: readonly string[] } = {},
+): Promise<string | null> {
+  if (!/^[0-9a-f]{64}$/i.test(pubkey)) return null;
+  const relays = opts.relays ?? getActiveRelays();
+  if (relays.length === 0) return null;
+
+  const filter: Record<string, unknown> = {
+    kinds: [GHOST_KIND],
+    authors: [pubkey],
+    since: Math.max(0, sinceSec - 30),
+    limit: 5,
+  };
+
+  const events = await new Promise<NostrEvent[]>((resolve) => {
+    const collected: NostrEvent[] = [];
+    let done = 0;
+    const sockets: WebSocket[] = [];
+    let settled = false;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      sockets.forEach((s) => { try { s.close(); } catch { /* ignore */ } });
+      resolve(collected);
+    };
+    const timer = setTimeout(settle, FETCH_TIMEOUT_MS);
+    const markDone = (): void => {
+      done += 1;
+      if (done >= relays.length) settle();
+    };
+    for (const url of relays) {
+      let ws: WebSocket;
+      try { ws = new WebSocket(url); } catch { markDone(); continue; }
+      sockets.push(ws);
+      const subId = 'gl' + Math.random().toString(36).slice(2, 10);
+      ws.onopen = () => ws.send(JSON.stringify(['REQ', subId, filter]));
+      ws.onmessage = (ev) => {
+        try {
+          const msg: unknown = JSON.parse(typeof ev.data === 'string' ? ev.data : '');
+          if (!Array.isArray(msg)) return;
+          if (msg[0] === 'EVENT' && msg[1] === subId) {
+            const e = msg[2];
+            if (isGhostEvent(e)) collected.push(e);
+          } else if (msg[0] === 'EOSE' && msg[1] === subId) {
+            markDone();
+          }
+        } catch { /* ignore */ }
+      };
+      ws.onerror = markDone;
+      ws.onclose = markDone;
+    }
+  });
+
+  // Most recent first — pick the newest that has a valid 'e' tag.
+  events.sort((a, b) => b.created_at - a.created_at);
+  for (const e of events) {
+    if (!hasTagValue(e.tags, 'game', GAME_ID)) continue;
+    const scoreEventId = tagValue(e.tags, 'e');
+    if (scoreEventId && /^[0-9a-f]{64}$/i.test(scoreEventId)) return scoreEventId;
+  }
+  return null;
+}
+
 function isGhostEvent(value: unknown): value is NostrEvent {
   if (typeof value !== 'object' || value === null) return false;
   const e = value as Record<string, unknown>;
