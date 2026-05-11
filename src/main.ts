@@ -1040,9 +1040,24 @@ function setupServiceWorker(): void {
     const promptIfWaiting = (): void => {
       const waiting = reg.waiting;
       if (!waiting) return;
-      // Only prompt if there's already a controller — otherwise this is the
-      // first install and no reload is needed.
       if (!navigator.serviceWorker.controller) return;
+      // Auto-update on safe surfaces (watch page, controller PWA, jury,
+      // title screen, gameover) — the user shouldn't have to chase a
+      // banner. Mid-run shows the banner so we don't yank a play in
+      // progress. The visibility check lets the player resume after a
+      // suspend without the banner appearing immediately on focus.
+      const host = window.location.hostname;
+      const path = window.location.pathname.replace(/\/+$/, '');
+      const isPassivePage =
+        host.startsWith('watch.') || host.startsWith('mobile.') ||
+        path === '/jury' || path === '/controller';
+      const phase = state?.phase;
+      const inActivePlay = phase === 'playing' || phase === 'wavestart'
+        || phase === 'warp' || phase === 'paused' || phase === 'deathreplay';
+      if (isPassivePage || !inActivePlay) {
+        waiting.postMessage({ type: 'SKIP_WAITING' });
+        return;
+      }
       showUpdateBanner(() => waiting.postMessage({ type: 'SKIP_WAITING' }));
     };
 
