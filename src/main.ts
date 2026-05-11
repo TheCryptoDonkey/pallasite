@@ -891,6 +891,12 @@ async function boot(): Promise<void> {
     if (mfst) mfst.setAttribute('href', '/controller-manifest.webmanifest');
     const themeMeta = document.querySelector('meta[name=apple-mobile-web-app-title]');
     if (themeMeta) themeMeta.setAttribute('content', 'Controller');
+    // iOS Safari uses apple-touch-icon for "Add to Home Screen", NOT
+    // the manifest icon list. Swap it to the Kempston rasterised PNG
+    // so the installed PWA gets the joystick icon on iPhone home
+    // screens (Chromium PWA installs honour the manifest icons).
+    const atIcon = document.querySelector('link[rel="apple-touch-icon"]');
+    if (atIcon) atIcon.setAttribute('href', '/kempston-apple-touch.png');
     renderControllerPage();
   } else {
     const path = window.location.pathname.replace(/\/+$/, '');

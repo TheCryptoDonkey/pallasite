@@ -20,25 +20,44 @@ import { tryHyperspace, tryActivateShield } from './game.js';
 
 /** Pallasite slot map — which standard slot maps to which game action.
  *  The host's spec advertises icons/labels for these slots; the PWA
- *  shows the matching buttons and emits slot-keyed events back. Update
- *  this map AND the spec together if you re-skin the controller.
+ *  shows the matching buttons and emits slot-keyed events back.
  *
- *  Slot vs action separation lets a different game reuse the same
- *  PWA — the future TROTT-style two-player or non-Pallasite arcade
- *  would have its own slot-map + spec without touching the PWA. */
-const PALLASITE_SPEC: ControllerSpec = {
+ *  We ship TWO specs: PLAY (joystick + face) and MENU (d-pad + face).
+ *  The host watches game phase and re-sends whichever matches. The
+ *  analog stick handles smooth heading; the d-pad handles discrete
+ *  navigation with proper auto-repeat for selecting menu items + the
+ *  3-character initials picker.
+ *
+ *  Face button colours match the in-game touch.ts palette (FIRE orange,
+ *  SHIELD green, WARP purple) so the PWA reads as the same controller
+ *  the player sees overlaid on the game canvas in touch mode. */
+const FACE_BUTTONS: ControllerSpec['slots'] = {
+  A: { icon: '●',  label: 'FIRE',   colour: '#ff8a3a' },  // south — primary (orange — matches in-game .touch-btn.fire)
+  B: { icon: '⛨',  label: 'SHIELD', colour: '#58ff58' },  // east — secondary (green — matches .shield)
+  X: { icon: '⚡', label: 'WARP',   colour: '#b48cff' },  // west — escape (purple — matches .hyper)
+  Y: { icon: '⏸',  label: 'PAUSE',  colour: '#ffd84a' },  // north — rare
+};
+
+const PALLASITE_SPEC_PLAY: ControllerSpec = {
   name: 'PALLASITE',
   version: 1,
   slots: {
     joyL: { mode: 'heading', tapAction: 'A' },
-    // All four actions live on the face-button diamond so the right
-    // thumb reaches everything without leaving its rest position.
-    // Stuffing SHIELD/WARP on shoulder buttons stranded them at the
-    // top edge of the phone, out of natural reach in landscape grip.
-    A: { icon: '●',  label: 'FIRE',   colour: '#ff5050' },  // south — primary
-    B: { icon: '⛨',  label: 'SHIELD', colour: '#5b9dff' },  // east — secondary
-    X: { icon: '⚡', label: 'WARP',   colour: '#b48cff' },  // west — escape
-    Y: { icon: '⏸',  label: 'PAUSE',  colour: '#ffd84a' },  // north — rare
+    ...FACE_BUTTONS,
+  },
+};
+
+const PALLASITE_SPEC_MENU: ControllerSpec = {
+  name: 'PALLASITE · MENU',
+  version: 1,
+  slots: {
+    // D-pad replaces the analog stick in menus + initials — discrete
+    // press-and-hold-to-repeat instead of a finicky analog deflection.
+    dpadU: { icon: '▲', label: '', colour: '#8cffb4' },
+    dpadD: { icon: '▼', label: '', colour: '#8cffb4' },
+    dpadL: { icon: '◀', label: '', colour: '#8cffb4' },
+    dpadR: { icon: '▶', label: '', colour: '#8cffb4' },
+    ...FACE_BUTTONS,
   },
 };
 
@@ -77,18 +96,32 @@ export function startControllerHost(state: GameState, opts: { ws?: string } = {}
     if (closed) return;
     closed = true;
     if (ws) try { ws.close(); } catch { /* ignore */ }
+    window.clearInterval(phaseWatchTimer);
+    clearDpadRepeats();
     state.keys[FIRE_CODE] = false;
     state.targetHeading = null;
     state.thrustOverride = false;
     fireStatus({ kind: 'closed' });
   };
 
+  let lastSpecKind: 'play' | 'menu' | null = null;
   const sendSpec = (): void => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const wantKind: 'play' | 'menu' = MENU_PHASES.has(state.phase) ? 'menu' : 'play';
+    if (wantKind === lastSpecKind) return;
+    lastSpecKind = wantKind;
+    const spec = wantKind === 'menu' ? PALLASITE_SPEC_MENU : PALLASITE_SPEC_PLAY;
     try {
-      ws.send(JSON.stringify({ type: 'controller-spec', spec: PALLASITE_SPEC }));
+      ws.send(JSON.stringify({ type: 'controller-spec', spec }));
     } catch { /* ignore */ }
   };
+  // Watch game phase — when it crosses the menu/play boundary, push a
+  // fresh spec so the PWA swaps between joystick (play) and d-pad
+  // (menu) layouts. 4Hz poll is cheap and the swap is rare enough that
+  // the latency is invisible.
+  const phaseWatchTimer = window.setInterval(() => {
+    if (paired) sendSpec();
+  }, 250);
 
   const connect = (): void => {
     if (closed) return;
@@ -161,6 +194,49 @@ export function startControllerHost(state: GameState, opts: { ws?: string } = {}
  *  (synthetic arrow keys + Enter / Escape). Anything else is gameplay. */
 const MENU_PHASES = new Set(['title', 'paused', 'gameover', 'completed']);
 let lastMenuCardinal: 'up' | 'down' | 'left' | 'right' | null = null;
+
+/** D-pad button → repeating keyboard arrow. The press starts an
+ *  immediate ArrowX key, then a delayed auto-repeat at standard
+ *  keyboard cadence (~250ms initial delay, ~80ms repeat). Release
+ *  cancels both timers. Multiple held directions stack independently. */
+const DPAD_CODE: Record<string, string> = {
+  dpadU: 'ArrowUp',
+  dpadD: 'ArrowDown',
+  dpadL: 'ArrowLeft',
+  dpadR: 'ArrowRight',
+};
+const dpadRepeats = new Map<string, { initial: number; interval: number | null }>();
+function clearDpadRepeats(): void {
+  for (const { initial, interval } of dpadRepeats.values()) {
+    window.clearTimeout(initial);
+    if (interval !== null) window.clearInterval(interval);
+  }
+  dpadRepeats.clear();
+}
+function startDpadRepeat(slot: string): void {
+  const code = DPAD_CODE[slot];
+  if (!code) return;
+  // Cancel any existing repeat for this slot (debounce repeated press).
+  const existing = dpadRepeats.get(slot);
+  if (existing) {
+    window.clearTimeout(existing.initial);
+    if (existing.interval !== null) window.clearInterval(existing.interval);
+  }
+  dispatchKey(code);
+  const initial = window.setTimeout(() => {
+    const entry = dpadRepeats.get(slot);
+    if (!entry) return;
+    entry.interval = window.setInterval(() => dispatchKey(code), 80);
+  }, 250);
+  dpadRepeats.set(slot, { initial, interval: null });
+}
+function stopDpadRepeat(slot: string): void {
+  const entry = dpadRepeats.get(slot);
+  if (!entry) return;
+  window.clearTimeout(entry.initial);
+  if (entry.interval !== null) window.clearInterval(entry.interval);
+  dpadRepeats.delete(slot);
+}
 
 function angleToCardinal(rad: number): 'up' | 'down' | 'left' | 'right' {
   const a = ((rad % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
@@ -241,6 +317,14 @@ function applySlotInput(state: GameState, slot: string, value: string): void {
       // Universally Escape — game's keydown handler interprets per
       // phase (pauses playing, resumes paused, dismisses overlays).
       dispatchKey('Escape');
+      return;
+    // ── D-pad — arrow keys with keyboard-style auto-repeat ─────────
+    case 'dpadU':
+    case 'dpadD':
+    case 'dpadL':
+    case 'dpadR':
+      if (on) startDpadRepeat(slot);
+      else stopDpadRepeat(slot);
       return;
     case 'L1':
     case 'L2':
