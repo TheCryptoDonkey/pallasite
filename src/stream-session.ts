@@ -114,6 +114,10 @@ export interface StreamFrame {
   /** Optional ship-state flags for the viewer to render. */
   alive?: boolean;
   shielded?: boolean;
+  /** True while the player has paused mid-run — the viewer freezes
+   *  motion and renders a PAUSED overlay so spectators know the run
+   *  hasn't crashed. */
+  paused?: boolean;
   /** World-state snapshot of non-ship entities at frame time. Each
    *  entity is a fixed-shape tuple keyed by `id` (the first field)
    *  so the viewer can match the same entity across frames and
@@ -146,6 +150,7 @@ interface WireWorld {
   e?: Array<[string, number, number]>;
   shield?: 1;
   dead?: 1;
+  paused?: 1;
 }
 
 export interface ActiveStreamSession {
@@ -376,6 +381,7 @@ export async function publishStreamFrame(
   }
   if (frame.shielded) world.shield = 1;
   if (frame.alive === false) world.dead = 1;
+  if (frame.paused) world.paused = 1;
 
   const template = {
     kind: STREAM_FRAME_KIND,
