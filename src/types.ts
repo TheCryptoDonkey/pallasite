@@ -64,6 +64,11 @@ export interface Asteroid extends Entity {
   type: AsteroidType;
   /** HP remaining. Drops by 1 per hit; breaks at 0. Set per type × size. */
   hp: number;
+  /** Initial HP at spawn — used for milestone math (vein power-up drops at
+   *  every Nth landed hit) and for HP bars where applicable. Lets a set
+   *  piece override the default vein scaling without breaking the
+   *  hits-landed accounting. */
+  hpMax: number;
   /** Hit-flash decay 0..1 (fades over ~250ms). */
   hitFlash: number;
   rot: number;
