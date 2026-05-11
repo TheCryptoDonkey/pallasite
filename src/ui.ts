@@ -5708,6 +5708,27 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
     btn.addEventListener('click', () => setFilter(def.k));
     filterBtns[def.k] = btn;
   }
+  const grid = el('div', { parent: overlay });
+  grid.style.cssText = 'display:flex;flex-direction:column;gap:10px;max-width:760px;width:100%;margin:0 auto;';
+
+  const footer = el('div', { className: 'menu-row', parent: overlay });
+  const backBtn = el('button', { className: 'menu-btn', parent: footer, text: 'BACK TO PALLASITE.APP' });
+  backBtn.addEventListener('click', () => {
+    watchActiveUnsubscribe?.();
+    watchActiveUnsubscribe = null;
+    try { window.location.assign('https://pallasite.app/'); }
+    catch { window.location.assign('/'); }
+  });
+
+  // Card rendering — keyed by pubkey so update emits can patch existing
+  // cards rather than tear down and rebuild the grid (avoids layout jank
+  // and keeps any open zap popovers anchored to the right element).
+  // Declared BEFORE setFilter/applyFilter because the initial
+  // setFilter('all') call walks the empty map at boot — declaring this
+  // after that call hit TDZ on a fresh visit and froze the watch page
+  // on 'Connecting to relays…'.
+  const cardByPubkey = new Map<string, HTMLElement>();
+
   // Initial highlight on ALL — done before any clicks.
   const setFilter = (k: FilterKind): void => {
     activeFilter = k;
@@ -5736,23 +5757,6 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
     }
   };
   setFilter('all');
-
-  const grid = el('div', { parent: overlay });
-  grid.style.cssText = 'display:flex;flex-direction:column;gap:10px;max-width:760px;width:100%;margin:0 auto;';
-
-  const footer = el('div', { className: 'menu-row', parent: overlay });
-  const backBtn = el('button', { className: 'menu-btn', parent: footer, text: 'BACK TO PALLASITE.APP' });
-  backBtn.addEventListener('click', () => {
-    watchActiveUnsubscribe?.();
-    watchActiveUnsubscribe = null;
-    try { window.location.assign('https://pallasite.app/'); }
-    catch { window.location.assign('/'); }
-  });
-
-  // Card rendering — keyed by pubkey so update emits can patch existing
-  // cards rather than tear down and rebuild the grid (avoids layout jank
-  // and keeps any open zap popovers anchored to the right element).
-  const cardByPubkey = new Map<string, HTMLElement>();
 
   const setCardLiveState = (card: HTMLElement, isLive: boolean): void => {
     card.dataset.live = isLive ? '1' : '0';
