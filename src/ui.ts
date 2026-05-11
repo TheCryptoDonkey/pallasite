@@ -42,6 +42,8 @@ import { followUser, shareCompletion, endorseSubject, rankFromWave } from './soc
 import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipient } from './zap.js';
 import { subscribeRecentRuns, timeAgo, dismissWatchEntry, getDismissedWatchEntries, LIVE_FRESHNESS_MS, type WatchEntry } from './watch.js';
+import { EXPERIMENTAL_RELAYS } from './credits.js';
+import { STREAM_FRAME_KIND } from './stream-session.js';
 import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, ghostPoseAt, ghostScoreAt, type GhostRun } from './ghost.js';
 import { savePersonalGhost } from './personal-ghost.js';
 import { canCaptureClip, captureClip, shareClip, shareDailyStats } from './clip.js';
@@ -1614,6 +1616,271 @@ function renderReplayTheatre(input: ReplayTheatreInput): void {
   })();
 }
 
+// ── Live theatre (NIP-53 kind 30311 stream → kind 22769 frames) ────────────
+//
+// Pairs with src/stream-session.ts. The watching browser:
+//   1. Subscribes to kind 22769 events with #p=<master_pubkey>
+//   2. Each arriving frame is parsed for ship pose (x, y, r) +
+//      score + wave + frame_t (millisecond timestamp the player
+//      captured the pose)
+//   3. RAF loop linearly interpolates ship position between the two
+//      most-recent frames in the buffer for smooth motion at 60fps
+//      even though the wire frequency is ~2 Hz
+//   4. HUD shows latest score + wave
+//   5. CLOSE returns to the watch grid
+//
+// Trust model: v1 trusts the relay set to deliver only authentic
+// frames (we read from relay.trotters.cc only, controlled by us).
+// v2 will verify against the NIP-53 kind 30311 event — fetch the
+// stream-key role's pubkey, accept only frames signed by it.
+
+interface LiveTheatreInput {
+  masterPubkey: string;
+  displayName: string;
+  initialScore: number;
+  initialWave: number;
+  onClose: () => void;
+}
+
+interface LiveFrame {
+  /** When the player captured this frame (unix ms). */
+  capturedAt: number;
+  /** When this client received the frame from the relay (perf ms). */
+  receivedAt: number;
+  x: number;
+  y: number;
+  r: number;
+  score: number;
+  wave: number;
+  thrust: boolean;
+}
+
+function readLiveFrame(event: { tags: string[][] }): LiveFrame | null {
+  let frameT: number | null = null;
+  let x: number | null = null;
+  let y: number | null = null;
+  let r: number | null = null;
+  let score = 0;
+  let wave = 0;
+  let thrust = false;
+  for (const tag of event.tags) {
+    switch (tag[0]) {
+      case 'frame_t': frameT = parseInt(tag[1] ?? '', 10); break;
+      case 'x': x = parseFloat(tag[1] ?? ''); break;
+      case 'y': y = parseFloat(tag[1] ?? ''); break;
+      case 'r': r = parseFloat(tag[1] ?? ''); break;
+      case 'score': score = parseInt(tag[1] ?? '0', 10) || 0; break;
+      case 'wave': wave = parseInt(tag[1] ?? '0', 10) || 0; break;
+      case 'thrust': thrust = tag[1] === '1'; break;
+    }
+  }
+  if (frameT === null || !Number.isFinite(frameT)) return null;
+  if (x === null || y === null || r === null) return null;
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(r)) return null;
+  return { capturedAt: frameT, receivedAt: performance.now(), x, y, r, score, wave, thrust };
+}
+
+function renderLiveTheatre(input: LiveTheatreInput): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+
+  el('h2', { parent: overlay, text: 'LIVE · WATCHING' });
+
+  const nameEl = el('p', { parent: overlay, text: input.displayName.toUpperCase() });
+  nameEl.style.cssText = 'margin:6px 0 4px;font-size:1.2rem;letter-spacing:0.18em;color:#8cffb4;text-shadow:0 0 10px rgba(140,255,180,0.5);';
+
+  const stat = el('p', { parent: overlay });
+  stat.style.cssText = 'margin:0 0 14px;font-size:0.92rem;color:rgba(220,210,255,0.8);letter-spacing:0.1em;';
+  stat.textContent = `WAVE ${input.initialWave} · ${input.initialScore.toLocaleString()} SCORE`;
+
+  const CANVAS_W = 600;
+  const CANVAS_H = Math.round(CANVAS_W * PALL_WORLD_H / PALL_WORLD_W);
+  const canvas = el('canvas', { parent: overlay, attrs: { width: String(CANVAS_W), height: String(CANVAS_H) } });
+  canvas.style.cssText = 'border:1px solid rgba(140,255,180,0.45);border-radius:8px;background:#02050d;display:block;margin:0 auto;max-width:100%;box-shadow:0 0 18px rgba(140,255,180,0.18);';
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    el('p', { parent: overlay, text: 'Canvas unsupported in this browser.' });
+    return;
+  }
+
+  const status = el('p', { parent: overlay, text: 'Subscribing to relay…' });
+  status.style.cssText = 'margin:10px 0 4px;font-size:0.9rem;color:rgba(140,255,180,0.8);letter-spacing:0.08em;min-height:1.2em;';
+
+  const liveScore = el('p', { parent: overlay });
+  liveScore.style.cssText = 'margin:6px 0 0;font-size:1.4rem;letter-spacing:0.18em;color:var(--hud-yellow);text-shadow:0 0 12px rgba(255,216,74,0.5);min-height:1.4em;';
+  liveScore.textContent = `WAVE ${input.initialWave} · ${input.initialScore.toLocaleString()}`;
+
+  const closeRow = el('div', { className: 'menu-row', parent: overlay });
+  const closeBtn = el('button', { className: 'menu-btn', parent: closeRow, text: 'CLOSE · ESC' });
+
+  // Stable starfield — generated once.
+  const stars: { x: number; y: number; r: number }[] = [];
+  for (let i = 0; i < 80; i++) {
+    stars.push({ x: Math.random() * CANVAS_W, y: Math.random() * CANVAS_H, r: 0.4 + Math.random() * 1.0 });
+  }
+
+  // Ring buffer of recent frames. Keep ~6s worth so a slow update path
+  // can still interpolate without skipping.
+  const FRAME_BUFFER_MAX = 24;
+  const frames: LiveFrame[] = [];
+  let rafId: number | null = null;
+  let cancelled = false;
+  const sockets: WebSocket[] = [];
+
+  const cleanup = (): void => {
+    cancelled = true;
+    if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
+    for (const ws of sockets) { try { ws.close(); } catch { /* ignore */ } }
+    window.removeEventListener('keydown', onKey);
+  };
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.code === 'Escape') { cleanup(); input.onClose(); }
+  };
+  closeBtn.addEventListener('click', () => { cleanup(); input.onClose(); });
+  window.addEventListener('keydown', onKey);
+
+  const pushFrame = (frame: LiveFrame): void => {
+    // De-dupe by capturedAt (relays can echo the same event).
+    if (frames.length > 0 && frames[frames.length - 1].capturedAt === frame.capturedAt) return;
+    // Out-of-order: discard older arrivals.
+    if (frames.length > 0 && frame.capturedAt < frames[frames.length - 1].capturedAt) return;
+    frames.push(frame);
+    if (frames.length > FRAME_BUFFER_MAX) frames.shift();
+    liveScore.textContent = `WAVE ${frame.wave} · ${frame.score.toLocaleString()}`;
+  };
+
+  // Subscribe directly to kind 22769 events #p=<master>. v1 trusts
+  // the relay; v2 will verify the session pubkey against the NIP-53
+  // kind 30311 stream-key role tag.
+  let frameCount = 0;
+  for (const url of EXPERIMENTAL_RELAYS) {
+    if (cancelled) break;
+    let ws: WebSocket;
+    try { ws = new WebSocket(url); } catch { continue; }
+    sockets.push(ws);
+    const subId = 'lt' + Math.random().toString(36).slice(2, 10);
+    ws.onopen = () => {
+      try {
+        ws.send(JSON.stringify([
+          'REQ',
+          subId,
+          {
+            kinds: [STREAM_FRAME_KIND],
+            '#p': [input.masterPubkey],
+            // 60s look-back so we pick up the most-recent frame from
+            // relay storage on a fresh subscribe before the next live
+            // frame arrives.
+            since: Math.floor(Date.now() / 1000) - 60,
+          },
+        ]));
+        status.textContent = `Connected · waiting for first frame…`;
+      } catch { /* ignore */ }
+    };
+    ws.onmessage = (ev) => {
+      try {
+        const msg: unknown = JSON.parse(typeof ev.data === 'string' ? ev.data : '');
+        if (!Array.isArray(msg)) return;
+        if (msg[0] === 'EVENT' && msg[1] === subId) {
+          const frame = readLiveFrame(msg[2] as { tags: string[][] });
+          if (frame) {
+            pushFrame(frame);
+            frameCount += 1;
+            status.textContent = `Live · ${frameCount} frame${frameCount === 1 ? '' : 's'} received`;
+          }
+        }
+      } catch { /* ignore */ }
+    };
+  }
+
+  // Render loop — interpolate between adjacent frames for smooth motion
+  // at 60fps even when the wire delivers 2 Hz.
+  const tick = (): void => {
+    if (cancelled) return;
+    rafId = requestAnimationFrame(tick);
+
+    ctx.fillStyle = '#02050d';
+    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    ctx.fillStyle = 'rgba(180,140,255,0.7)';
+    for (const s of stars) {
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    if (frames.length === 0) {
+      // No frames yet — wait.
+      return;
+    }
+    // Interpolate at "now ms minus a small buffer" so we always have
+    // a future frame to interpolate toward. 600ms behind real wall
+    // time keeps us between frames given a 500ms wire interval.
+    const renderAt = Date.now() - 600;
+    let prev = frames[0];
+    let next = frames[0];
+    for (let i = 0; i < frames.length; i++) {
+      if (frames[i].capturedAt <= renderAt) prev = frames[i];
+      if (frames[i].capturedAt >= renderAt) { next = frames[i]; break; }
+    }
+    const span = next.capturedAt - prev.capturedAt;
+    const t = span > 0 ? Math.max(0, Math.min(1, (renderAt - prev.capturedAt) / span)) : 0;
+
+    // World-space (PALL_WORLD_W × PALL_WORLD_H) → canvas-space.
+    const sx = CANVAS_W / PALL_WORLD_W;
+    const sy = CANVAS_H / PALL_WORLD_H;
+    const x = (prev.x + (next.x - prev.x) * t) * sx;
+    const y = (prev.y + (next.y - prev.y) * t) * sy;
+    // Rotation lerp — pick the short way around the circle.
+    let dr = next.r - prev.r;
+    while (dr > Math.PI) dr -= Math.PI * 2;
+    while (dr < -Math.PI) dr += Math.PI * 2;
+    const rot = prev.r + dr * t;
+    const thrusting = (t < 0.5 ? prev.thrust : next.thrust);
+
+    // Draw ship — simple triangle outline, oriented by rot.
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rot);
+    ctx.strokeStyle = '#8cffb4';
+    ctx.fillStyle = 'rgba(140,255,180,0.16)';
+    ctx.lineWidth = 1.5;
+    ctx.shadowColor = 'rgba(140,255,180,0.6)';
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.moveTo(10, 0);
+    ctx.lineTo(-7, 6);
+    ctx.lineTo(-4, 0);
+    ctx.lineTo(-7, -6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    if (thrusting) {
+      ctx.fillStyle = 'rgba(255,216,74,0.85)';
+      ctx.shadowColor = 'rgba(255,216,74,0.7)';
+      ctx.beginPath();
+      ctx.moveTo(-4, -2);
+      ctx.lineTo(-9, 0);
+      ctx.lineTo(-4, 2);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // Live indicator dot + age label
+    ctx.shadowBlur = 0;
+    const ageMs = frames.length > 0 ? Date.now() - frames[frames.length - 1].capturedAt : 0;
+    const stale = ageMs > 3_000;
+    ctx.fillStyle = stale ? 'rgba(255,150,150,0.85)' : 'rgba(140,255,180,0.85)';
+    ctx.beginPath();
+    ctx.arc(14, 14, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.font = '11px ui-monospace, monospace';
+    ctx.fillStyle = stale ? 'rgba(255,150,150,0.7)' : 'rgba(220,210,255,0.7)';
+    ctx.fillText(stale ? `STALE · ${(ageMs / 1000).toFixed(0)}s` : 'LIVE', 24, 18);
+  };
+  rafId = requestAnimationFrame(tick);
+}
+
 // ── Admin panel ───────────────────────────────────────────────────────────────
 //
 // Layer 1 visual review surface. Reached via ?admin=1 in the URL; the operator
@@ -2274,24 +2541,43 @@ function renderWatchCard(entry: WatchEntry, state: GameState): HTMLElement {
   const actions = el('div', { parent: card });
   actions.style.cssText = 'display:flex;gap:8px;margin-top:4px;flex-wrap:wrap;';
   const watch = el('button', { className: 'menu-btn', parent: actions, text: 'WATCH' });
-  // The kind 30763 ghost is published at end-of-run by the player's
-  // client. Active runs haven't produced one yet, so WATCH is a noop
-  // until a final lands. Disable + label-swap rather than failing
-  // inside the theatre with "no replay event data found".
-  const updateWatchButton = (st: WatchEntry['state']): void => {
+  // LIVE actives open the live theatre (kind 22769 frame subscription).
+  // Finals open the replay theatre (kind 30763 ghost from gamestr-spec).
+  // Stale/orphan actives that aren't fresh enough to be LIVE get a
+  // disabled label since their kind 30763 ghost was never published
+  // either.
+  const updateWatchButton = (live: boolean, st: WatchEntry['state']): void => {
+    if (live) {
+      watch.disabled = false;
+      watch.style.opacity = '1';
+      watch.style.cursor = 'pointer';
+      watch.textContent = '👁  WATCH LIVE';
+      watch.title = 'Live spectate — kind 22769 frame stream rendered in lockstep.';
+      return;
+    }
     const isFinal = st === 'final';
     watch.disabled = !isFinal;
     watch.style.opacity = isFinal ? '1' : '0.45';
     watch.style.cursor = isFinal ? 'pointer' : 'not-allowed';
-    watch.textContent = isFinal ? 'WATCH' : st === 'active' ? 'IN PROGRESS' : 'NO REPLAY YET';
+    watch.textContent = isFinal ? 'WATCH' : st === 'active' ? 'OFFLINE' : 'NO REPLAY YET';
     watch.title = isFinal
       ? 'Open the kind 30763 ghost in the replay theatre.'
       : 'The replay (kind 30763 ghost) is published when the run ends. Check back after the player claims.';
   };
-  updateWatchButton(entry.state);
+  updateWatchButton(entry.isLive, entry.state);
   watch.setAttribute('data-watch-button', '1');
   watch.addEventListener('click', () => {
     if (watch.disabled) return;
+    if (entry.isLive) {
+      renderLiveTheatre({
+        masterPubkey: entry.pubkey,
+        displayName: name.textContent ?? shortPubkey(entry.pubkey),
+        initialScore: entry.score,
+        initialWave: entry.wave,
+        onClose: () => renderWatchPage(state),
+      });
+      return;
+    }
     renderReplayTheatre({
       scoreEventId: entry.eventId,
       displayName: name.textContent ?? shortPubkey(entry.pubkey),
