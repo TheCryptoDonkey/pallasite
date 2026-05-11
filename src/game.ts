@@ -318,6 +318,7 @@ export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?
   const t = isVein ? 'pallasite' : (type ?? pickAsteroidType(wave));
   const cfg = ASTEROID_TYPE_CONFIG[t];
 
+  const hp = isVein ? veinScaledHp() : (size === 'large' ? cfg.hp : 1);
   return {
     pos: position,
     vel: velocity,
@@ -325,7 +326,8 @@ export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?
     alive: true,
     size,
     type: t,
-    hp: isVein ? veinScaledHp() : (size === 'large' ? cfg.hp : 1),
+    hp,
+    hpMax: hp,
     hitFlash: 0,
     rot: Math.random() * Math.PI * 2,
     rotVel: (Math.random() - 0.5) * (isVein ? 0.6 : 1.6),
@@ -395,8 +397,17 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
     playerSpawn: { x: WORLD_W / 2, y: WORLD_H - 90 },
     setup(s) {
       const cx = WORLD_W / 2, cy = WORLD_H / 2;
-      // The prize.
-      s.asteroids.push(spawnAsteroid('large', s.wave, { x: cx, y: cy }, { x: 0, y: 0 }, 'pallasite'));
+      // The prize — a stationary vein at centre, beefier than the random
+      // vein event so the heist plays as a sustained mini-boss fight on
+      // top of the mine ring + chondrite chaos. 100/200/300 hits on
+      // easy/normal/hard, with the standard vein power-up drops every 25
+      // hits to keep the player armed during the long engagement.
+      const d = currentDifficulty();
+      const vaultHp = d === 'easy' ? 100 : d === 'hard' ? 300 : 200;
+      const vault = spawnAsteroid('large', s.wave, { x: cx, y: cy }, { x: 0, y: 0 }, 'pallasite', { vein: true });
+      vault.hp = vaultHp;
+      vault.hpMax = vaultHp;
+      s.asteroids.push(vault);
       // Vault — 5 mines in a tight ring. Tight enough that brute-forcing
       // through gets the player nicked by gravity wells, so they need to
       // either snipe through gaps or warp.
@@ -2573,9 +2584,12 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
     audio.coinPickup();
     spawnParticles(s, a.pos.x, a.pos.y, 10, '#ffd84a', 200, 480);
     // Power-up drop on hit milestones — the long engagement deserves
-    // tools. hp started at veinScaledHp(); after this hit a.hp is one
-    // less, so hits-landed = scaledHp - a.hp.
-    const hitsLanded = veinScaledHp() - a.hp;
+    // tools. hp started at a.hpMax; after this hit a.hp is one less,
+    // so hits-landed = hpMax - a.hp. Using the asteroid's own hpMax
+    // (rather than the global veinScaledHp()) so set-piece veins with
+    // a custom HP — wave 5 heist vault, etc — drop power-ups on their
+    // own milestones.
+    const hitsLanded = a.hpMax - a.hp;
     if (hitsLanded > 0 && hitsLanded % VEIN_POWERUP_PER_N_HITS === 0) {
       const pool: PowerUpType[] = s.session
         ? ['rapid', 'trident', 'satboost']
