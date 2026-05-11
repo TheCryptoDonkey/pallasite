@@ -2064,6 +2064,7 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   const cleanup = (): void => {
     cancelled = true;
     if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
+    if (watchdog !== null) { window.clearTimeout(watchdog); watchdog = null; }
     for (const ws of sockets) { try { ws.close(); } catch { /* ignore */ } }
     window.removeEventListener('keydown', onKey);
   };
@@ -2108,44 +2109,69 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   // the relay; v2 will verify the session pubkey against the NIP-53
   // kind 30311 stream-key role tag.
   let frameCount = 0;
-  for (const url of EXPERIMENTAL_RELAYS) {
-    if (cancelled) break;
-    let ws: WebSocket;
-    try { ws = new WebSocket(url); } catch { continue; }
-    sockets.push(ws);
-    const subId = 'lt' + Math.random().toString(36).slice(2, 10);
-    ws.onopen = () => {
-      try {
-        ws.send(JSON.stringify([
-          'REQ',
-          subId,
-          {
-            kinds: [STREAM_FRAME_KIND],
-            '#p': [input.masterPubkey],
-            // 60s look-back so we pick up the most-recent frame from
-            // relay storage on a fresh subscribe before the next live
-            // frame arrives.
-            since: Math.floor(Date.now() / 1000) - 60,
-          },
-        ]));
-        status.textContent = `Connected · waiting for first frame…`;
-      } catch { /* ignore */ }
-    };
-    ws.onmessage = (ev) => {
-      try {
-        const msg: unknown = JSON.parse(typeof ev.data === 'string' ? ev.data : '');
-        if (!Array.isArray(msg)) return;
-        if (msg[0] === 'EVENT' && msg[1] === subId) {
-          const frame = readLiveFrame(msg[2] as { tags: string[][] });
-          if (frame) {
-            pushFrame(frame);
-            frameCount += 1;
-            status.textContent = `Live · ${frameCount} frame${frameCount === 1 ? '' : 's'} received`;
+  // Reconnect watchdog — kind 22769 is ephemeral so most relays don't
+  // serve historic frames on subscribe; we wait for the next live
+  // frame from the player. If something raced (relay hadn't registered
+  // our REQ before the player's last publish), we can sit on "Connected
+  // · waiting for first frame…" indefinitely. The watchdog forces a
+  // fresh subscription after 2.5s of silence on first join — once we
+  // start getting frames it idles until needed again.
+  let watchdog: number | null = null;
+  const armWatchdog = (subOpen: () => void): void => {
+    if (watchdog !== null) window.clearTimeout(watchdog);
+    watchdog = window.setTimeout(() => {
+      if (cancelled) return;
+      if (frameCount > 0) return;
+      // Tear down + rebuild — closes the old sockets cleanly first so
+      // the relay doesn't end up with two subs from us.
+      for (const s of sockets) try { s.close(); } catch { /* ignore */ }
+      sockets.length = 0;
+      status.textContent = 'Reconnecting…';
+      subOpen();
+    }, 2500);
+  };
+  const openSubscriptions = (): void => {
+    for (const url of EXPERIMENTAL_RELAYS) {
+      if (cancelled) break;
+      let ws: WebSocket;
+      try { ws = new WebSocket(url); } catch { continue; }
+      sockets.push(ws);
+      const subId = 'lt' + Math.random().toString(36).slice(2, 10);
+      ws.onopen = () => {
+        try {
+          ws.send(JSON.stringify([
+            'REQ',
+            subId,
+            {
+              kinds: [STREAM_FRAME_KIND],
+              '#p': [input.masterPubkey],
+              // 60s look-back is mostly a no-op for ephemeral kinds
+              // (relays don't persist them) but harmless on the wire.
+              since: Math.floor(Date.now() / 1000) - 60,
+            },
+          ]));
+          status.textContent = `Connected · waiting for first frame…`;
+        } catch { /* ignore */ }
+      };
+      ws.onmessage = (ev) => {
+        try {
+          const msg: unknown = JSON.parse(typeof ev.data === 'string' ? ev.data : '');
+          if (!Array.isArray(msg)) return;
+          if (msg[0] === 'EVENT' && msg[1] === subId) {
+            const frame = readLiveFrame(msg[2] as { tags: string[][] });
+            if (frame) {
+              pushFrame(frame);
+              frameCount += 1;
+              status.textContent = `Live · ${frameCount} frame${frameCount === 1 ? '' : 's'} received`;
+              if (watchdog !== null) { window.clearTimeout(watchdog); watchdog = null; }
+            }
           }
-        }
-      } catch { /* ignore */ }
-    };
-  }
+        } catch { /* ignore */ }
+      };
+    }
+    armWatchdog(openSubscriptions);
+  };
+  openSubscriptions();
 
   const c2d = canvas.getContext('2d')!;
   // World-space (PALL_WORLD_W × PALL_WORLD_H) → canvas-space (with DPR
@@ -3270,6 +3296,194 @@ function formatFlaggedAt(ms: number | null): string {
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}Z`;
 }
 
+// ── Phone-as-controller ──────────────────────────────────────────────────────
+//
+// Two surfaces live in this section:
+//   1. renderControllerHostPairing — big-screen overlay shown when the
+//      player taps "USE PHONE AS CONTROLLER" on the title screen. Shows
+//      QR + short pubkey, latches once the mobile paired.
+//   2. renderControllerPage — the mobile page itself, served from the
+//      same SPA at /controller?h=...&s=...&r=... . Big touch buttons,
+//      virtual joystick for rotation+thrust, fire + hyperspace/shield.
+
+export function renderControllerHostPairing(state: GameState, onClose: () => void): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+
+  el('h2', { parent: overlay, text: 'USE PHONE AS CONTROLLER' });
+
+  const desc = el('p', { parent: overlay });
+  desc.style.cssText = 'margin:8px 0 14px;font-size:0.95rem;color:rgba(220,210,255,0.85);max-width:520px;line-height:1.55;';
+  desc.textContent = 'Open the QR on your phone to drive this screen. Pairing key is one-shot — it lives for this session only.';
+
+  const qrSlot = el('div', { parent: overlay });
+  qrSlot.style.cssText = 'width:200px;height:200px;background:#fff;border-radius:8px;padding:8px;margin:0 auto;box-shadow:0 0 20px rgba(140,255,180,0.25);';
+
+  const codeP = el('p', { parent: overlay });
+  codeP.style.cssText = 'margin:14px 0 6px;font-size:1.1rem;letter-spacing:0.2em;color:var(--hud-yellow);text-shadow:0 0 8px rgba(255,216,74,0.45);';
+
+  const status = el('p', { parent: overlay });
+  status.style.cssText = 'margin:8px 0 4px;font-size:0.95rem;color:rgba(140,255,180,0.85);min-height:1.4em;letter-spacing:0.08em;';
+  status.textContent = 'Generating session key…';
+
+  const hint = el('p', { parent: overlay });
+  hint.style.cssText = 'margin:6px 0 18px;font-size:0.8rem;color:rgba(180,140,255,0.7);max-width:520px;line-height:1.4em;';
+  hint.textContent = '';
+
+  const row = el('div', { className: 'menu-row', parent: overlay });
+  const closeBtn = el('button', { className: 'menu-btn', parent: row, text: 'CANCEL' });
+
+  let host: import('./controller-host.js').ControllerHost | null = null;
+  void (async () => {
+    const mod = await import('./controller-host.js');
+    host = mod.startControllerHost(state);
+    void renderQRInto(qrSlot, host.pairingUrl);
+    codeP.textContent = host.sessionPubkey.slice(0, 4).toUpperCase() + '·' + host.sessionPubkey.slice(4, 8).toUpperCase();
+    status.textContent = 'Waiting for phone to scan…';
+    hint.textContent = `Or visit ${host.pairingUrl} on your phone.`;
+    host.onStatus((s) => {
+      if (s.kind === 'paired') {
+        status.textContent = `Phone connected (${s.pairPubkey.slice(0, 8)})`;
+        status.style.color = 'rgba(91,255,140,0.95)';
+        hint.textContent = 'Inputs from your phone will now drive the ship. Cancel any time.';
+        closeBtn.textContent = 'DISCONNECT';
+      } else if (s.kind === 'closed') {
+        status.textContent = 'Disconnected.';
+      }
+    });
+  })();
+
+  const cleanup = (): void => {
+    host?.close();
+    onClose();
+  };
+  closeBtn.addEventListener('click', cleanup);
+  const onKey = (e: KeyboardEvent): void => { if (e.code === 'Escape') cleanup(); };
+  window.addEventListener('keydown', onKey);
+  const wrapClose = onClose;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  void wrapClose;
+  // Remove the keydown listener on cleanup
+  const origCleanup = closeBtn.onclick;
+  void origCleanup;
+  closeBtn.addEventListener('click', () => window.removeEventListener('keydown', onKey));
+}
+
+// Controller mobile page — renders a touch UI that publishes input
+// events. Self-contained: doesn't touch the game state at all, only
+// reads the URL token and uses controller-mobile to publish.
+export function renderControllerPage(): void {
+  clearOverlay();
+  // Strip body background / locking layout — controller is full-screen.
+  document.body.style.background = '#02050d';
+  document.body.style.overflow = 'hidden';
+  // touch-action:none stops mobile browsers from scrolling/zooming while
+  // the player holds buttons.
+  document.body.style.touchAction = 'none';
+
+  const overlay = el('div', { className: 'overlay', parent: root });
+  overlay.style.cssText = 'padding:8px;max-width:none;width:100vw;min-height:100vh;display:flex;flex-direction:column;';
+
+  const titleBar = el('div', { parent: overlay });
+  titleBar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:4px 8px;font-size:0.85rem;color:rgba(220,210,255,0.85);letter-spacing:0.12em;';
+  el('span', { parent: titleBar, text: 'PALLASITE · CONTROLLER' });
+  const statusChip = el('span', { parent: titleBar });
+  statusChip.style.cssText = 'color:rgba(255,216,74,0.85);font-size:0.78rem;';
+  statusChip.textContent = '…';
+
+  // Decode pairing token from URL.
+  const importMobile = import('./controller-mobile.js');
+  const importHost = import('./controller-host.js');
+  let client: import('./controller-mobile.js').ControllerClient | null = null;
+  void Promise.all([importMobile, importHost]).then(([m, h]) => {
+    const token = h.decodePairingUrl(window.location.href);
+    if (!token) {
+      statusChip.textContent = 'BAD PAIRING URL';
+      statusChip.style.color = 'rgba(255,120,120,0.9)';
+      const msg = el('p', { parent: overlay });
+      msg.style.cssText = 'padding:20px;color:rgba(220,210,255,0.7);text-align:center;';
+      msg.textContent = 'This page expects ?h=<pubkey>&s=<sessionId>&r=<relay>. Scan the QR from the big screen to get a fresh URL.';
+      return;
+    }
+    statusChip.textContent = 'CONNECTING…';
+    client = m.startControllerClient(token);
+    statusChip.textContent = 'PAIRED';
+    statusChip.style.color = 'rgba(91,255,140,0.85)';
+  });
+
+  // Layout: top row is rotation buttons + thrust on left half, fire on
+  // right. Bottom row is shield + hyperspace + pause. Sized so big-
+  // thumbed players don't fat-finger.
+  const grid = el('div', { parent: overlay });
+  grid.style.cssText = 'flex:1;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:12px;padding:12px 6px;';
+
+  const ctlBtn = (parent: HTMLElement, label: string, colour: string): HTMLElement => {
+    const b = el('div', { parent });
+    b.style.cssText = `display:flex;align-items:center;justify-content:center;font-size:1.6rem;font-weight:bold;letter-spacing:0.15em;color:${colour};background:rgba(255,255,255,0.04);border:2px solid ${colour}55;border-radius:14px;user-select:none;-webkit-tap-highlight-color:transparent;touch-action:none;text-shadow:0 0 12px ${colour}88;`;
+    b.textContent = label;
+    return b;
+  };
+
+  const bindHold = (btn: HTMLElement, kind: 'left' | 'right' | 'thrust' | 'fire'): void => {
+    const press = (): void => {
+      btn.style.background = 'rgba(255,255,255,0.14)';
+      client?.sendInput(kind, 1);
+    };
+    const release = (): void => {
+      btn.style.background = 'rgba(255,255,255,0.04)';
+      client?.sendInput(kind, 0);
+    };
+    btn.addEventListener('touchstart', (e) => { e.preventDefault(); press(); }, { passive: false });
+    btn.addEventListener('touchend', (e) => { e.preventDefault(); release(); }, { passive: false });
+    btn.addEventListener('touchcancel', () => release());
+    btn.addEventListener('mousedown', (e) => { e.preventDefault(); press(); });
+    btn.addEventListener('mouseup', release);
+    btn.addEventListener('mouseleave', release);
+  };
+  const bindTap = (btn: HTMLElement, kind: 'hyperspace' | 'shield' | 'pause'): void => {
+    const fire = (e: Event): void => {
+      e.preventDefault();
+      btn.style.background = 'rgba(255,255,255,0.14)';
+      client?.sendInput(kind, 1);
+      setTimeout(() => { btn.style.background = 'rgba(255,255,255,0.04)'; }, 120);
+    };
+    btn.addEventListener('touchstart', fire, { passive: false });
+    btn.addEventListener('mousedown', fire);
+  };
+
+  // Top-left quadrant — rotation buttons stacked vertically.
+  const rotQuad = el('div', { parent: grid });
+  rotQuad.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
+  const leftBtn = ctlBtn(rotQuad, '◀', '#8cffb4');
+  const rightBtn = ctlBtn(rotQuad, '▶', '#8cffb4');
+  bindHold(leftBtn, 'left');
+  bindHold(rightBtn, 'right');
+
+  // Top-right quadrant — thrust button.
+  const thrust = ctlBtn(grid, 'THRUST ▲', '#ffd84a');
+  bindHold(thrust, 'thrust');
+
+  // Bottom-left — fire button (big, easy to hit).
+  const fire = ctlBtn(grid, 'FIRE', '#ff5050');
+  bindHold(fire, 'fire');
+
+  // Bottom-right — small action buttons stacked.
+  const actionQuad = el('div', { parent: grid });
+  actionQuad.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:8px;';
+  const shield = ctlBtn(actionQuad, 'SHIELD', '#5b9dff');
+  const hyper = ctlBtn(actionQuad, 'WARP', '#b48cff');
+  const pause = ctlBtn(actionQuad, '⏸', '#ffd84a');
+  const spacer = el('div', { parent: actionQuad });
+  void spacer;
+  shield.style.fontSize = '1.05rem';
+  hyper.style.fontSize = '1.05rem';
+  pause.style.fontSize = '1.4rem';
+  bindTap(shield, 'shield');
+  bindTap(hyper, 'hyperspace');
+  bindTap(pause, 'pause');
+}
+
 export function renderAdminPanel(): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
@@ -3710,12 +3924,18 @@ const WATCH_ZAP_PRESETS_SATS = [50, 200, 1000] as const;
 
 let watchActiveUnsubscribe: (() => void) | null = null;
 
-export function renderWatchPage(state: GameState): void {
+export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean } = {}): void {
   clearOverlay();
   // Tear down any prior subscription before we open a new one — re-entering
   // the page (e.g. via BACK from the theatre) would otherwise leak sockets.
   watchActiveUnsubscribe?.();
   watchActiveUnsubscribe = null;
+  // When the user lands fresh on the watch page (initial navigation, not
+  // a BACK from the theatre), auto-jump into the live theatre if there's
+  // exactly one player live. Saves a click during testing and feels right
+  // when nobody else is around. Reset on user-initiated close so they
+  // don't get bounced back in.
+  let autoOpenPending = opts.autoOpenLive ?? false;
 
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
@@ -3806,6 +4026,27 @@ export function renderWatchPage(state: GameState): void {
       status.textContent = `${count} ${count === 1 ? 'player' : 'players'} surfaced from the last batch.`;
       for (const e of visible) renderEntry(e);
       reorderGrid(visible);
+      // Auto-open into the live theatre if exactly one entry is LIVE and
+      // we haven't already consumed the flag. Use a setTimeout so the
+      // current onUpdate finishes rendering before the live theatre
+      // tears the watch DOM down underneath us.
+      const liveOnly = visible.filter((e) => e.isLive);
+      if (autoOpenPending && liveOnly.length === 1) {
+        autoOpenPending = false;
+        const e = liveOnly[0];
+        window.setTimeout(() => {
+          watchActiveUnsubscribe?.();
+          watchActiveUnsubscribe = null;
+          renderLiveTheatre({
+            masterPubkey: e.pubkey,
+            displayName: shortPubkey(e.pubkey),
+            initialScore: e.score,
+            initialWave: e.wave,
+            runStartedAtMs: e.createdAt * 1000,
+            onClose: () => renderWatchPage(state),
+          });
+        }, 60);
+      }
     },
     {
       onStatus: (s) => {
