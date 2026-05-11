@@ -3738,49 +3738,73 @@ export function renderControllerPage(): void {
 
   const makeButton = (slot: string, css: string, defaultColour = 'rgba(220,210,255,0.7)'): HTMLElement => {
     const btn = el('div', { parent: surface });
-    btn.style.cssText = `${css};position:absolute;display:none;align-items:center;justify-content:center;background:rgba(255,255,255,0.04);border:2px solid ${defaultColour}55;border-radius:50%;user-select:none;-webkit-tap-highlight-color:transparent;touch-action:none;color:${defaultColour};text-shadow:0 0 12px ${defaultColour}88;font-weight:bold;`;
+    // border-radius comes from the caller's css string (face buttons
+    // want 50%, shoulders want 14px). Same for width/height/position.
+    btn.style.cssText = `position:absolute;display:none;align-items:center;justify-content:center;background:rgba(255,255,255,0.04);border:2px solid ${defaultColour}55;user-select:none;-webkit-tap-highlight-color:transparent;touch-action:none;color:${defaultColour};text-shadow:0 0 12px ${defaultColour}88;font-weight:bold;${css}`;
     slotEls.set(slot, btn);
-    // Inner label container so we can update icon + label without
-    // wiping event listeners.
     const inner = el('div', { parent: btn });
     inner.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;line-height:1;pointer-events:none;';
     slotLabels.set(slot, inner);
     return btn;
   };
 
-  // Standard slot positions for a landscape phone (~800×360 css after
-  // browser chrome). Sizes in vmin so the layout scales with viewport.
-  // Shoulders ride the top corners; face buttons cluster bottom-right;
-  // start/select sit centre-top. Joystick is rendered separately so it
-  // can size dynamically.
-  makeButton('L1', 'top:30px;left:14px;width:14vmin;height:14vmin;max-width:80px;max-height:80px;font-size:1.1rem;');
-  makeButton('L2', 'top:30px;left:calc(14px + 14vmin + 8px);width:14vmin;height:14vmin;max-width:80px;max-height:80px;font-size:1.1rem;');
-  makeButton('R2', 'top:30px;right:calc(14px + 14vmin + 8px);width:14vmin;height:14vmin;max-width:80px;max-height:80px;font-size:1.1rem;');
-  makeButton('R1', 'top:30px;right:14px;width:14vmin;height:14vmin;max-width:80px;max-height:80px;font-size:1.1rem;');
-  makeButton('select', 'top:30px;left:calc(50% - 11vmin);width:10vmin;height:10vmin;max-width:64px;max-height:64px;font-size:0.95rem;');
-  makeButton('start',  'top:30px;left:calc(50% + 1vmin);width:10vmin;height:10vmin;max-width:64px;max-height:64px;font-size:0.95rem;');
+  // Ergonomic two-thumb layout. Thumbs rest at the bottom corners of
+  // a phone held in landscape, so:
+  //   - Joystick sits bottom-left, centred ~thumb-reach from corner
+  //   - Face-button diamond sits bottom-right, mirroring it
+  //   - Shoulders ride the top-left + top-right corners (index fingers
+  //     or thumb-stretches)
+  //   - start + select small at the top centre (rarely-pressed pause-y
+  //     things)
+  // Sizes use clamp() so a tiny phone and a large tablet both work.
 
-  // Face button diamond on the right thumb. Positioned relative to a
-  // notional centre at (calc(100% - 100px), 60%). Y on top, X on left,
-  // B on right, A on bottom — standard Xbox/SNES arrangement.
-  makeButton('Y', 'right:calc(60px + 14vmin);top:calc(60% - 23vmin);width:14vmin;height:14vmin;max-width:88px;max-height:88px;font-size:1.6rem;');
-  makeButton('X', 'right:calc(60px + 28vmin);top:calc(60% - 8vmin);width:14vmin;height:14vmin;max-width:88px;max-height:88px;font-size:1.6rem;');
-  makeButton('B', 'right:60px;top:calc(60% - 8vmin);width:14vmin;height:14vmin;max-width:88px;max-height:88px;font-size:1.6rem;');
-  makeButton('A', 'right:calc(60px + 14vmin);top:calc(60% + 7vmin);width:14vmin;height:14vmin;max-width:88px;max-height:88px;font-size:1.6rem;');
+  const SHOULDER_W = 'clamp(54px, 13vmin, 78px)';
+  const SHOULDER_H = 'clamp(40px, 9vmin, 56px)';
+  const FACE_SIZE  = 'clamp(58px, 14vmin, 80px)';
+  const FACE_GAP   = 'clamp(72px, 18vmin, 104px)';   // centre-to-centre
+  const SYS_W      = 'clamp(46px, 11vmin, 64px)';
+  const SYS_H      = 'clamp(26px, 6vmin, 36px)';
 
-  // ── Joystick (left thumb) — pre-built, can be hidden if a spec
-  //    skips joyL. Inputs use the slot name `joyL` plus suffixes for
-  //    sub-events (joyL-thrust, joyL-end, joyL-tap).
+  // Top strip — shoulders + start/select. 8px margin from the edges.
+  makeButton('L1', `top:8px;left:8px;width:${SHOULDER_W};height:${SHOULDER_H};border-radius:14px;font-size:1rem;`);
+  makeButton('L2', `top:8px;left:calc(16px + ${SHOULDER_W});width:${SHOULDER_W};height:${SHOULDER_H};border-radius:14px;font-size:1rem;`);
+  makeButton('R2', `top:8px;right:calc(16px + ${SHOULDER_W});width:${SHOULDER_W};height:${SHOULDER_H};border-radius:14px;font-size:1rem;`);
+  makeButton('R1', `top:8px;right:8px;width:${SHOULDER_W};height:${SHOULDER_H};border-radius:14px;font-size:1rem;`);
+  makeButton('select', `top:14px;left:calc(50% - ${SYS_W} - 4px);width:${SYS_W};height:${SYS_H};border-radius:14px;font-size:0.78rem;`);
+  makeButton('start',  `top:14px;left:calc(50% + 4px);width:${SYS_W};height:${SYS_H};border-radius:14px;font-size:0.78rem;`);
+
+  // Face-button diamond — wrapped in a relative-positioned container
+  // so the four buttons stay correctly diamond-arranged regardless of
+  // viewport width. Container sits in the bottom-right thumb zone.
+  const faceCluster = el('div', { parent: surface });
+  faceCluster.style.cssText = `position:absolute;right:24px;bottom:24px;width:calc(${FACE_GAP} + ${FACE_SIZE});height:calc(${FACE_GAP} + ${FACE_SIZE});pointer-events:none;`;
+
+  const faceBtn = (slot: string, css: string): void => {
+    const btn = makeButton(slot, `width:${FACE_SIZE};height:${FACE_SIZE};border-radius:50%;font-size:1.5rem;pointer-events:auto;${css}`);
+    btn.parentElement?.removeChild(btn);
+    faceCluster.appendChild(btn);
+  };
+  // Position each face button at one of the diamond points. Container
+  // is (FACE_GAP + FACE_SIZE) square; centres are at gap-spacing from
+  // the corners.
+  faceBtn('Y', `top:0;left:calc(50% - ${FACE_SIZE} / 2);`);
+  faceBtn('X', `top:calc(50% - ${FACE_SIZE} / 2);left:0;`);
+  faceBtn('B', `top:calc(50% - ${FACE_SIZE} / 2);right:0;`);
+  faceBtn('A', `bottom:0;left:calc(50% - ${FACE_SIZE} / 2);`);
+
+  // ── Joystick (left thumb) — anchored bottom-left, sized to match
+  //    the face cluster so left and right thumb work in symmetry.
   const JOY_HEADING_DEADZONE = 0.18;
   const JOY_THRUST_THRESHOLD = 0.45;
   const JOY_TAP_TIME_MS = 220;
   const JOY_TAP_MOVE_PX = 8;
   const HEADING_SAMPLE_MS = 50;
+  const JOY_SIZE = `calc(${FACE_GAP} + ${FACE_SIZE})`;
 
   const pad = el('div', { parent: surface });
-  pad.style.cssText = 'position:absolute;left:6vmin;top:50%;transform:translateY(-50%);width:min(70vh, 36vw);height:min(70vh, 36vw);border-radius:50%;background:radial-gradient(circle, rgba(140,255,180,0.10) 0%, rgba(140,255,180,0.04) 60%, rgba(140,255,180,0) 100%);border:2px solid rgba(140,255,180,0.35);touch-action:none;-webkit-tap-highlight-color:transparent;display:none;';
+  pad.style.cssText = `position:absolute;left:24px;bottom:24px;width:${JOY_SIZE};height:${JOY_SIZE};border-radius:50%;background:radial-gradient(circle, rgba(140,255,180,0.10) 0%, rgba(140,255,180,0.04) 60%, rgba(140,255,180,0) 100%);border:2px solid rgba(140,255,180,0.35);touch-action:none;-webkit-tap-highlight-color:transparent;display:none;`;
   const knob = el('div', { parent: pad });
-  knob.style.cssText = 'position:absolute;left:50%;top:50%;width:32%;height:32%;margin:-16% 0 0 -16%;border-radius:50%;background:radial-gradient(circle, rgba(140,255,180,0.45) 0%, rgba(91,255,140,0.18) 70%);border:2px solid rgba(140,255,180,0.75);box-shadow:0 0 18px rgba(140,255,180,0.4);transform:translate(0,0);transition:transform 60ms ease-out;';
+  knob.style.cssText = 'position:absolute;left:50%;top:50%;width:38%;height:38%;margin:-19% 0 0 -19%;border-radius:50%;background:radial-gradient(circle, rgba(140,255,180,0.45) 0%, rgba(91,255,140,0.18) 70%);border:2px solid rgba(140,255,180,0.75);box-shadow:0 0 18px rgba(140,255,180,0.4);transform:translate(0,0);transition:transform 60ms ease-out;';
   slotEls.set('joyL', pad);
 
   // ── Waiting-for-game card (centre overlay, hidden once spec lands)
