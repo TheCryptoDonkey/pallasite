@@ -699,17 +699,26 @@ function startWarp(s: GameState, targetWave?: number): void {
 
 /** BONUS phase length + sub-phase split. 60s total: 45s HYPER BLITZ
  *  (dense asteroid storm, removed hyperspace cooldown, ship invuln)
- *  then 15s EVENT HORIZON PRELUDE (5 pallasite mini-bosses). */
+ *  then 15s EVENT HORIZON PRELUDE (pallasite mini-bosses).
+ *
+ *  Density is capped: an asteroid kill spawns 2-3 medium/small children
+ *  before they're shot down, so an uncapped refill loop drives the
+ *  on-screen entity count to 200+ and tanks framerate. Cap is enforced
+ *  in tickBonus before each refill. */
 export const BONUS_TOTAL_MS = 60_000;
 export const BONUS_BLITZ_MS = 45_000;
-export const BONUS_BLITZ_SPAWN_INTERVAL_MS = 1800;
-export const BONUS_PRELUDE_SPAWN_INTERVAL_MS = 3000;
+export const BONUS_BLITZ_SPAWN_INTERVAL_MS = 3000;
+export const BONUS_PRELUDE_SPAWN_INTERVAL_MS = 3500;
+/** Max asteroids on screen during bonus — refills skip when above. Sized
+ *  so 6 large can fully shatter (6 × ~9 children = 54 entities, room for
+ *  bullets/coins/particles on top) without the frame budget exploding. */
+export const BONUS_ASTEROID_CAP = 14;
 
-function startBonus(s: GameState): void {
+export function startBonus(s: GameState): void {
   s.phase = 'bonus';
   s.phaseStart = performance.now();
   s.bonusStartedAt = performance.now();
-  s.bonusNextSpawnAt = performance.now() + 800;  // first refill 800ms in
+  s.bonusNextSpawnAt = performance.now() + 1500;  // first refill 1.5s in
   s.bonusPreludeSpawned = 0;
   // Re-centre ship + grant invuln for the FULL bonus duration. Hyperspace
   // cooldown wiped so the player can spam X.
@@ -721,9 +730,11 @@ function startBonus(s: GameState): void {
     s.ship.invulnerableUntil = performance.now() + BONUS_TOTAL_MS + 200;
     s.ship.hyperspaceReadyAt = 0;
   }
-  // Dense initial spawn — 12 large mixed-type asteroids so the screen is
-  // immediately busy.
-  for (let i = 0; i < 12; i++) {
+  // Initial spawn — 6 large mixed-type asteroids. They shatter into
+  // mediums + smalls, so 6 large = up to 54 entities in flight before
+  // any refill. Previously 12 with unbounded refill = ~200+ entities,
+  // which made the framerate hit a wall.
+  for (let i = 0; i < 6; i++) {
     s.asteroids.push(spawnAsteroid('large', s.wave));
   }
   audio.warpJump();
@@ -742,22 +753,31 @@ function startBonus(s: GameState): void {
 
 /** Tick called every frame from updateGame while in bonus phase.
  *  Maintains spawn density during HYPER BLITZ + flips into the PRELUDE
- *  spawn pattern in the last 15s. */
+ *  spawn pattern in the last 15s. Throttled by BONUS_ASTEROID_CAP so a
+ *  player who isn't keeping up doesn't get drowned in entities. */
 export function tickBonus(s: GameState): void {
   if (s.phase !== 'bonus') return;
   const now = performance.now();
   const elapsed = now - s.bonusStartedAt;
   if (now < s.bonusNextSpawnAt) return;
+  // Skip refill while the screen is busy — keeps the entity count
+  // sustainable for 60fps on lower-end devices.
+  const alive = s.asteroids.filter((a) => a.alive).length;
+  if (alive >= BONUS_ASTEROID_CAP) {
+    s.bonusNextSpawnAt = now + 600;  // retry soon, don't block forever
+    return;
+  }
   if (elapsed < BONUS_BLITZ_MS) {
-    // HYPER BLITZ — spawn 2 random asteroids on each tick
+    // HYPER BLITZ — spawn ONE large asteroid per tick. It shatters
+    // into 3-9 children over its lifetime, naturally keeping the
+    // screen busy without the firehose effect.
     s.asteroids.push(spawnAsteroid('large', s.wave));
-    s.asteroids.push(spawnAsteroid('medium', s.wave));
     s.bonusNextSpawnAt = now + BONUS_BLITZ_SPAWN_INTERVAL_MS;
   } else if (s.bonusPreludeSpawned < 5) {
-    // EVENT HORIZON PRELUDE — spawn one large pallasite at a time, up
-    // to 5 total across the remaining 15s. Each kill mimics the boss
-    // shape via the pallasite vein silhouette + jackpot payout.
-    s.asteroids.push(spawnAsteroid('large', s.wave, undefined, undefined, 'pallasite', { vein: true }));
+    // EVENT HORIZON PRELUDE — large pallasite asteroid (no vein
+    // modifier, which would otherwise trigger the jackpot cascade
+    // and dump a giant particle burst per kill).
+    s.asteroids.push(spawnAsteroid('large', s.wave, undefined, undefined, 'pallasite'));
     s.bonusPreludeSpawned += 1;
     s.bonusNextSpawnAt = now + BONUS_PRELUDE_SPAWN_INTERVAL_MS;
   }
@@ -793,6 +813,29 @@ export function cheatJumpToWave(s: GameState, wave: number): void {
   preloadBackground(target);
   toastNow(s, `► CHEAT: WAVE ${target}`);
   startWarp(s, target);
+}
+
+/** Cheat: jump straight to the bonus phase. Same gate + sat-void
+ *  semantics as cheatJumpToWave. Used by the 'B' / 'B1' cheat code
+ *  to test the W9 → W10 bonus mid-run without grinding to wave 9. */
+export function cheatJumpToBonus(s: GameState): void {
+  if (s.phase !== 'playing' && s.phase !== 'wavestart' && s.phase !== 'warp') return;
+  if (!s.cheatedThisRun) {
+    s.cheatedThisRun = true;
+    if (s.sats > 0) {
+      s.lurkSatsBlocked += s.sats;
+      s.sats = 0;
+    }
+    toastNow(s, '► CHEAT · SATS VOIDED');
+  }
+  // Park s.wave at 9 so the bonus → wave-10 transition lands on a
+  // valid wave number (preload + banner expect a sane wave index).
+  s.wave = 9;
+  clearStage(s, { autoCollect: false });
+  audio.ufoSirenStop();
+  preloadBackground(10);
+  toastNow(s, '► CHEAT: BONUS');
+  startBonus(s);
 }
 
 // ── Power-ups ─────────────────────────────────────────────────────────────────

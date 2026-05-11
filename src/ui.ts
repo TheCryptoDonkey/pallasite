@@ -8027,6 +8027,7 @@ function renderRunCredits(
     if (s >= 5)  markAchievement(state, 'streak-5');
   }
   if (state.session) {
+    console.log(`[replay] game-over · session=${state.session.pubkey.slice(0, 8)}… cheated=${state.cheatedThisRun} score=${state.score} wave=${state.wave}`);
     void publishGhost({
       session: state.session,
       samples: state.ghostSamples,
@@ -8037,13 +8038,16 @@ function renderRunCredits(
       seed: getActiveSeed(),
       cheated: state.cheatedThisRun,
     });
-    // Full-world replay (kind 30764) — built from the buffered kind
-    // 22769 frames we shipped at 3 Hz during the run. Cheated runs and
+    // Full-world replay (kind 30764) — built from the buffered wire
+    // frames we shipped at 30 Hz during the run. Cheated runs and
     // sub-2-frame runs are skipped (publishReplay validates internally).
     // Decoupled from the score claim — sign-capable sessions leave a
     // replay even when they don't claim, same policy as the ghost.
-    if (!state.cheatedThisRun) {
+    if (state.cheatedThisRun) {
+      console.warn('[replay] skipping kind 30764 — run was cheated');
+    } else {
       const replayFrames = getReplayBuffer();
+      console.log(`[replay] replay buffer size at game-over: ${replayFrames.length} frame(s)`);
       if (replayFrames.length >= 2) {
         void publishReplay({
           session: state.session,
@@ -8052,8 +8056,12 @@ function renderRunCredits(
           durationMs: Math.max(0, Math.floor(state.runTimeMs)),
           frames: replayFrames,
         });
+      } else {
+        console.warn('[replay] skipping kind 30764 — fewer than 2 frames buffered. Likely cause: NIP-53 startStreamSession never completed (signer rejected? popup blocked?). Check earlier [stream] logs.');
       }
     }
+  } else {
+    console.warn('[replay] no kind 30763/30764 published — guest run (state.session is null). Sign in to enable replays.');
   }
 
   // Prominent zap CTA — the entire reason this stage exists per the user
