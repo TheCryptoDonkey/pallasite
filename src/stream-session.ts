@@ -291,6 +291,9 @@ export async function startStreamSession(
 ): Promise<ActiveStreamSession | null> {
   if (!master.signer.capabilities.canSignEvents) return null;
 
+  // Wipe any frames from a prior session — fresh keypair, fresh buffer.
+  clearReplayBuffer();
+
   const sessionPrivkey = new Uint8Array(32);
   crypto.getRandomValues(sessionPrivkey);
   let sessionPubkey: string;
@@ -380,6 +383,47 @@ export async function startStreamSession(
  * signer round-trip. Best-effort: a failed publish doesn't surface
  * to the caller (gameplay must not block on a flaky relay).
  */
+/** In-memory frame buffer for the current run, used to compose the
+ *  end-of-run kind 30764 "full replay" bundle. Reset when a new stream
+ *  session starts; drained by getReplayBuffer() on claim. */
+let replayBuffer: ReplayFrameRaw[] = [];
+
+export interface ReplayFrameRaw {
+  /** Frame timestamp (unix ms). */
+  t: number;
+  /** Ship pose. */
+  x: number;
+  y: number;
+  r: number;
+  /** Live HUD numbers. */
+  score: number;
+  wave: number;
+  lives: number;
+  sats: number;
+  thrust: boolean;
+  /** Ship-state flags (omitted when default). */
+  alive?: boolean;
+  shielded?: boolean;
+  paused?: boolean;
+  /** Wire world payload — same JSON shape we publish at 3 Hz today. */
+  world: unknown;
+}
+
+/** Drain the buffer (returns the frames + clears in-memory state).
+ *  Called once at end-of-run when the player claims; the result is
+ *  compressed and shipped as the kind 30764 replay event. */
+export function getReplayBuffer(): ReplayFrameRaw[] {
+  const out = replayBuffer;
+  replayBuffer = [];
+  return out;
+}
+
+/** Clear the buffer without returning it — used when starting a fresh
+ *  session so a previous run's frames don't bleed in. */
+export function clearReplayBuffer(): void {
+  replayBuffer = [];
+}
+
 export async function publishStreamFrame(
   session: ActiveStreamSession,
   frame: StreamFrame,
@@ -419,6 +463,26 @@ export async function publishStreamFrame(
   if (frame.shielded) world.shield = 1;
   if (frame.alive === false) world.dead = 1;
   if (frame.paused) world.paused = 1;
+
+  // Buffer this frame for the end-of-run replay bundle. Cap the buffer
+  // so a stuck/long-paused run can't blow memory — 4096 frames at 3 Hz
+  // ≈ 22 minutes, well beyond any single Pallasite run. Older frames
+  // are dropped from the front if we overflow.
+  const MAX_BUFFER = 4096;
+  replayBuffer.push({
+    t: frame.t,
+    x: frame.x, y: frame.y, r: frame.r,
+    score: frame.score, wave: frame.wave,
+    lives: frame.lives ?? 0, sats: frame.sats ?? 0,
+    thrust: frame.thrust,
+    alive: frame.alive,
+    shielded: frame.shielded,
+    paused: frame.paused,
+    world,
+  });
+  if (replayBuffer.length > MAX_BUFFER) {
+    replayBuffer.splice(0, replayBuffer.length - MAX_BUFFER);
+  }
 
   const template = {
     kind: STREAM_FRAME_KIND,
