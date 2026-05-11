@@ -18,7 +18,7 @@ import {
 import { getHapticsEnabled, setHapticsEnabled, hapticsSupported } from './haptics.js';
 import * as auth from './auth.js';
 import { addLocalHighScore, getLocalHighScores, isHighScore, subscribeGlobalHighScores, clearLocalHighScores, type GlobalHighScore } from './score.js';
-import { submitClaim, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, fetchFlagged, type PlayerTier, type FlaggedEntry } from './faucet.js';
+import { submitClaim, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, fetchFlagged, requestDeleteFlag, type PlayerTier, type FlaggedEntry } from './faucet.js';
 import {
   fetchReviewCases,
   generateJuryIdentity,
@@ -26,8 +26,11 @@ import {
   setStoredJuryIdentity,
   clearStoredJuryIdentity,
   publishDelegation,
+  submitVote,
+  hasVotedOnCase,
   type ReviewCase,
   type StoredJuryIdentity,
+  type VoteSubmitResult,
 } from './jury.js';
 import { renderLegalFooter, openTermsModal } from './legal.js';
 import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow } from './game.js';
@@ -4592,12 +4595,12 @@ function renderAdminFlaggedList(overlay: HTMLElement, token: string): void {
     }
     status.textContent = `${result.flagged.length} flagged ${result.flagged.length === 1 ? 'player' : 'players'}.`;
     for (const entry of result.flagged) {
-      list.appendChild(renderFlaggedRow(entry));
+      list.appendChild(renderFlaggedRow(entry, token));
     }
   })();
 }
 
-function renderFlaggedRow(entry: FlaggedEntry): HTMLElement {
+function renderFlaggedRow(entry: FlaggedEntry, token: string): HTMLElement {
   const row = el('div');
   row.style.cssText = 'border:1px solid rgba(255,80,80,0.35);border-radius:8px;padding:10px 14px;background:rgba(255,80,80,0.06);display:flex;flex-direction:column;gap:6px;';
 
@@ -4651,6 +4654,40 @@ function renderFlaggedRow(entry: FlaggedEntry): HTMLElement {
       setTimeout(() => (copyPk.textContent = 'COPY PUBKEY'), 1200);
     });
   });
+  // DELETE — publishes a NIP-09 kind 5 deletion from the game pubkey
+  // referencing the kind 30762 score event id (and any associated
+  // ghost/replay/case events the faucet has on file), and clears the
+  // flag from the faucet DB. Only enabled when we have a score event
+  // id to delete by — anonymous flags or claim-less rows don't have a
+  // canonical thing to point the NIP-09 at.
+  const scoreId = entry.claim?.score_event_id ?? null;
+  const del = el('button', { className: 'menu-btn secondary', parent: actions, text: 'DELETE' }) as HTMLButtonElement;
+  del.style.cssText += 'color:#ffb0b0;border-color:rgba(255,120,120,0.5);';
+  if (!scoreId) {
+    del.disabled = true;
+    del.style.opacity = '0.4';
+    del.title = 'No score event id stored — no canonical event to NIP-09 against.';
+  } else {
+    del.addEventListener('click', () => {
+      if (!window.confirm(`Delete this flag and publish NIP-09 kind 5 referencing ${scoreId.slice(0, 12)}…?\n\nThis broadcasts a deletion to all relays. Honest relays will drop the score + ghost + replay events. Cannot be undone.`)) return;
+      void (async () => {
+        del.disabled = true;
+        del.textContent = 'DELETING…';
+        const result = await requestDeleteFlag(token, { scoreEventId: scoreId });
+        if (result.ok) {
+          row.style.opacity = '0.4';
+          row.style.pointerEvents = 'none';
+          del.textContent = result.deletionEventId
+            ? `DELETED · ${result.deletionEventId.slice(0, 8)}…`
+            : 'DELETED';
+        } else {
+          del.disabled = false;
+          del.textContent = `FAILED · ${result.error}`;
+          setTimeout(() => (del.textContent = 'DELETE'), 2400);
+        }
+      })();
+    });
+  }
   return row;
 }
 
@@ -4866,6 +4903,112 @@ async function onJuryRepublish(state: GameState, identity: StoredJuryIdentity): 
   window.alert(`Republished to ${result.publishedTo.length} of ${result.publishedTo.length + result.failed.length} relays.`);
 }
 
+/** Render the rank slider + submit / already-voted panel for a juror
+ *  who's eligible to vote on this case. State machine:
+ *    idle     → slider + SUBMIT VOTE (default rank 50)
+ *    sending  → slider locked + "SUBMITTING…" button
+ *    sent     → read-only "✓ VOTE SUBMITTED · rank N" line
+ *    failed   → slider unlocked + error text under the button
+ *  Already-voted state (from localStorage) skips the slider and renders
+ *  the sent panel directly.
+ *
+ *  Rank semantics: 100 = clearly honest, 50 = uncertain, 0 = clearly
+ *  cheating. submitVote enforces 0..100 server-side; the slider mirrors. */
+function renderJuryVotePanel(parent: HTMLElement, c: ReviewCase, identity: StoredJuryIdentity): void {
+  const panel = el('div', { parent });
+  panel.style.cssText = 'border-top:1px dashed rgba(184,144,255,0.25);margin-top:4px;padding-top:8px;display:flex;flex-direction:column;gap:8px;';
+
+  // Already-voted from localStorage — render read-only state, skip slider.
+  if (hasVotedOnCase(c.eventId)) {
+    const done = el('div', { parent: panel });
+    done.style.cssText = 'font-size:0.85rem;color:#a8eecf;letter-spacing:0.06em;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;';
+    el('span', { parent: done, text: '✓ VOTE SUBMITTED' });
+    const sub = el('span', { parent: done, text: 'Your LSAG ballot is on relays. Verdict aggregates when the case closes.' });
+    sub.style.cssText = 'font-size:0.78rem;color:rgba(220,210,255,0.6);letter-spacing:0.04em;';
+    return;
+  }
+
+  const label = el('div', { parent: panel });
+  label.style.cssText = 'font-size:0.85rem;color:#cbb6ff;letter-spacing:0.08em;';
+  label.textContent = '✓ YOU ARE IN THIS CIRCLE — CAST AN ANONYMOUS RANK';
+
+  // Slider row: 0 ── (rank value bubble) ── 100 with cheat ↔ honest hints.
+  const sliderRow = el('div', { parent: panel });
+  sliderRow.style.cssText = 'display:flex;align-items:center;gap:10px;font-family:monospace;font-size:0.78rem;color:rgba(220,210,255,0.7);';
+  const minHint = el('span', { parent: sliderRow, text: '0 · CHEAT' });
+  minHint.style.cssText = 'color:#ffb0b0;min-width:80px;';
+  const slider = el('input', { parent: sliderRow }) as HTMLInputElement;
+  slider.type = 'range';
+  slider.min = '0';
+  slider.max = '100';
+  slider.step = '1';
+  slider.value = '50';
+  slider.style.cssText = 'flex:1;accent-color:#b890ff;';
+  const maxHint = el('span', { parent: sliderRow, text: 'HONEST · 100' });
+  maxHint.style.cssText = 'color:#a8eecf;min-width:90px;text-align:right;';
+
+  const liveBubble = el('div', { parent: panel });
+  liveBubble.style.cssText = 'font-size:0.8rem;color:rgba(220,210,255,0.85);text-align:center;letter-spacing:0.06em;';
+  const renderBubble = (): void => {
+    const v = parseInt(slider.value, 10);
+    let verdict: string;
+    if (v >= 80) verdict = 'CLEARLY HONEST';
+    else if (v >= 60) verdict = 'PROBABLY HONEST';
+    else if (v >= 40) verdict = 'UNCERTAIN';
+    else if (v >= 20) verdict = 'PROBABLY CHEATING';
+    else verdict = 'CLEARLY CHEATING';
+    liveBubble.textContent = `RANK ${v} · ${verdict}`;
+  };
+  renderBubble();
+  slider.addEventListener('input', renderBubble);
+
+  const actions = el('div', { parent: panel });
+  actions.style.cssText = 'display:flex;gap:8px;align-items:center;';
+  const submitBtn = el('button', { className: 'menu-btn', parent: actions, text: 'SUBMIT VOTE' }) as HTMLButtonElement;
+  submitBtn.style.cssText += 'flex:0 1 200px;';
+  const statusLine = el('div', { parent: actions });
+  statusLine.style.cssText = 'font-size:0.78rem;color:rgba(220,210,255,0.6);letter-spacing:0.04em;flex:1;min-height:1.2em;';
+
+  submitBtn.addEventListener('click', () => {
+    void (async () => {
+      const rank = parseInt(slider.value, 10);
+      submitBtn.disabled = true;
+      slider.disabled = true;
+      submitBtn.textContent = 'SUBMITTING…';
+      statusLine.textContent = 'Signing LSAG ballot + publishing to relays…';
+      statusLine.style.color = 'rgba(255,216,74,0.85)';
+      let result: VoteSubmitResult;
+      try {
+        result = await submitVote({ reviewCase: c, identity, rank });
+      } catch (err) {
+        result = { ok: false, publishedTo: [], failed: [], error: err instanceof Error ? err.message : 'unknown' };
+      }
+      if (result.ok) {
+        // Replace the whole panel with the sent state.
+        panel.innerHTML = '';
+        const done = el('div', { parent: panel });
+        done.style.cssText = 'font-size:0.85rem;color:#a8eecf;letter-spacing:0.06em;display:flex;flex-direction:column;gap:4px;';
+        const head = el('div', { parent: done });
+        head.style.cssText = 'display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;';
+        el('span', { parent: head, text: '✓ VOTE SUBMITTED' });
+        const rankTag = el('span', { parent: head, text: `RANK ${rank}` });
+        rankTag.style.cssText = 'font-family:monospace;color:#ffd84a;letter-spacing:0.06em;';
+        const meta = el('div', { parent: done });
+        meta.style.cssText = 'font-size:0.74rem;color:rgba(220,210,255,0.55);letter-spacing:0.04em;font-family:monospace;';
+        const pubCount = result.publishedTo.length;
+        const failCount = result.failed.length;
+        meta.textContent = `Published to ${pubCount}/${pubCount + failCount} relays · key-image ${(result.keyImage ?? '').slice(0, 12)}…`;
+      } else {
+        submitBtn.disabled = false;
+        slider.disabled = false;
+        submitBtn.textContent = 'TRY AGAIN';
+        statusLine.style.color = 'rgba(255,120,120,0.9)';
+        statusLine.textContent = `Vote failed: ${result.error ?? 'unknown'}`;
+      }
+    })();
+  });
+}
+
 function renderJuryCaseCard(c: ReviewCase, identity: StoredJuryIdentity | null, state: GameState): HTMLElement {
   const row = el('div');
   row.style.cssText = 'border:1px solid rgba(255,80,80,0.35);border-radius:8px;padding:10px 14px;background:rgba(255,80,80,0.06);display:flex;flex-direction:column;gap:6px;';
@@ -4891,17 +5034,15 @@ function renderJuryCaseCard(c: ReviewCase, identity: StoredJuryIdentity | null, 
   const circleBadge = el('span', { parent: meta, text: circleLabel });
   circleBadge.style.color = c.underQuorum ? 'rgba(255,184,120,0.85)' : 'rgba(180,255,200,0.85)';
 
-  // Eligibility hint for the signed-in juror.
+  // Eligibility + voting UI for the signed-in juror.
   if (identity) {
     const inCircle = c.circleMembers.includes(identity.pubkey);
-    const elig = el('div', { parent: row });
-    elig.style.cssText = 'font-size:0.78rem;letter-spacing:0.08em;';
-    if (inCircle) {
-      elig.textContent = '✓ YOU ARE IN THIS CIRCLE — VOTING UI SHIPS IN THE NEXT DEPLOY';
-      elig.style.color = '#a8eecf';
-    } else {
+    if (!inCircle) {
+      const elig = el('div', { parent: row });
+      elig.style.cssText = 'font-size:0.78rem;letter-spacing:0.08em;color:rgba(220,210,255,0.45);';
       elig.textContent = '— YOU ARE NOT IN THIS CIRCLE';
-      elig.style.color = 'rgba(220,210,255,0.45)';
+    } else {
+      renderJuryVotePanel(row, c, identity);
     }
   }
 

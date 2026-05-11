@@ -559,3 +559,63 @@ export async function fetchFlagged(adminToken: string): Promise<FlaggedResult> {
     return { ok: false, error: 'bad_response', status: res.status };
   }
 }
+
+export type DeleteFlagResult =
+  | { ok: true; deletionEventId?: string; cleared: boolean }
+  | { ok: false; error: 'unauthorized' | 'network_error' | 'bad_response' | 'not_found'; status?: number };
+
+/**
+ * POST /api/admin/delete-flag — operator-only deletion of a flagged
+ * run. The faucet does two things on the server: (1) sign + publish a
+ * NIP-09 kind 5 deletion event from the game pubkey referencing the
+ * supplied kind 30762 score event id (and optionally the matching kind
+ * 31764 review case + kind 30763 ghost + kind 30764 replay), (2) clear
+ * the flag from its database so the run no longer appears in the admin
+ * list.
+ *
+ * Expected request body: { score_event_id: string, reason?: string }
+ * Expected response: { ok: true, deletion_event_id?: string, cleared: boolean }
+ *
+ * This endpoint must exist on the faucet for the UI to work — it is not
+ * provided by this repo. See trott-business/docs/plans for the
+ * implementation plan if/when it lands.
+ */
+export async function requestDeleteFlag(
+  adminToken: string,
+  input: { scoreEventId: string; reason?: string },
+): Promise<DeleteFlagResult> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/admin/delete-flag`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        score_event_id: input.scoreEventId,
+        reason: input.reason,
+      }),
+    });
+  } catch {
+    return { ok: false, error: 'network_error' };
+  }
+  if (res.status === 401) return { ok: false, error: 'unauthorized', status: 401 };
+  if (res.status === 404) return { ok: false, error: 'not_found', status: 404 };
+  if (!res.ok) return { ok: false, error: 'bad_response', status: res.status };
+  try {
+    const data = await res.json() as {
+      ok?: boolean;
+      deletion_event_id?: string;
+      cleared?: boolean;
+    };
+    if (!data.ok) return { ok: false, error: 'bad_response', status: res.status };
+    return {
+      ok: true,
+      deletionEventId: data.deletion_event_id,
+      cleared: data.cleared === true,
+    };
+  } catch {
+    return { ok: false, error: 'bad_response', status: res.status };
+  }
+}
