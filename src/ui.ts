@@ -6501,7 +6501,10 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
     'display:flex', 'justify-content:center',
   ].join(';');
   const canvas = el('canvas', { parent: vizSticky, attrs: { width: '960', height: '360' } }) as HTMLCanvasElement;
-  canvas.style.cssText = 'width:100%;max-width:460px;height:172px;border-radius:6px;background:radial-gradient(ellipse at 50% 100%, rgba(180,140,255,0.18), rgba(0,0,0,0.7));';
+  // Shrink the viz on phones so the 20-row track list isn't pushed
+  // below the fold. 110px is enough for the bar pattern to read; the
+  // 172px desktop version stays via the min() ceiling.
+  canvas.style.cssText = 'width:100%;max-width:460px;height:min(172px, 22vh);border-radius:6px;background:radial-gradient(ellipse at 50% 100%, rgba(180,140,255,0.18), rgba(0,0,0,0.7));';
 
   const BAR_COUNT = 96;
   const peaks = new Float32Array(BAR_COUNT);
@@ -6671,8 +6674,26 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
   };
   requestAnimationFrame(drawViz);
 
+  // Buttons go ABOVE the list so STOP + BACK are reachable without
+  // scrolling past 20+ rows on a phone. Previously they sat at the
+  // bottom of the overlay; with the expanded track set they were
+  // off-screen on iPhone SE-class displays.
+  const buttons = el('div', { className: 'menu-row', parent: overlay });
+  const stop = el('button', { className: 'menu-btn secondary', parent: buttons, text: 'STOP' });
+  const back = el('button', { className: 'menu-btn', parent: buttons, text: 'BACK' });
+
+  // Group tracks by section: stings (wave===null) and wave tracks.
+  const tracks = listTracks();
+  const stings = tracks.filter((t) => t.wave === null);
+  const waveTracks = tracks.filter((t) => t.wave !== null);
+
   const list = el('div', { parent: overlay });
-  list.style.cssText = 'display:flex;flex-direction:column;gap:8px;width:100%;max-width:420px;';
+  list.style.cssText = 'display:flex;flex-direction:column;gap:8px;width:100%;max-width:460px;';
+
+  const renderHeader = (text: string): void => {
+    const h = el('div', { parent: list, text });
+    h.style.cssText = 'margin:8px 0 2px;font-size:0.78rem;letter-spacing:0.22em;color:rgba(184,144,255,0.75);text-align:left;font-family:monospace;';
+  };
 
   const rows: Array<{ id: string; el: HTMLElement; glyph: HTMLElement }> = [];
   const paint = (): void => {
@@ -6686,11 +6707,11 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
     }
   };
 
-  for (const t of listTracks()) {
+  const addRow = (t: import('./music.js').TrackInfo): void => {
     const row = el('div', { parent: list });
     row.style.cssText = [
-      'display:flex', 'align-items:center', 'gap:14px',
-      'padding:10px 14px', 'border-radius:8px',
+      'display:flex', 'align-items:center', 'gap:10px',
+      'padding:10px 12px', 'border-radius:8px',
       'border:1px solid rgba(180,140,255,0.3)',
       'background:rgba(180,140,255,0.04)',
       'cursor:pointer', '-webkit-tap-highlight-color:transparent',
@@ -6698,14 +6719,28 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
     ].join(';');
 
     const glyph = el('span', { parent: row, text: '·' });
-    glyph.style.cssText = 'font-size:1.2rem;width:1.6rem;text-align:center;color:rgba(180,140,255,0.6);';
+    glyph.style.cssText = 'font-size:1.1rem;width:1.4rem;text-align:center;color:rgba(180,140,255,0.6);flex:0 0 1.4rem;';
+
+    // Prominent wave-number chip on the left for wave tracks. Stings
+    // get a small dim chip so the columns align visually.
+    const waveChip = el('span', { parent: row });
+    waveChip.style.cssText = [
+      'flex:0 0 56px',
+      'font-family:monospace', 'font-size:0.95rem', 'letter-spacing:0.06em',
+      'text-align:center', 'padding:3px 0',
+      'border-radius:4px',
+      t.wave !== null
+        ? 'background:rgba(255,216,74,0.12);color:#ffd84a;border:1px solid rgba(255,216,74,0.35);'
+        : 'background:rgba(184,144,255,0.08);color:rgba(184,144,255,0.55);border:1px solid rgba(184,144,255,0.25);',
+    ].join(';');
+    waveChip.textContent = t.wave !== null ? `W${t.wave}` : '·';
 
     const text = el('div', { parent: row });
-    text.style.cssText = 'flex:1;display:flex;flex-direction:column;gap:2px;text-align:left;';
+    text.style.cssText = 'flex:1;display:flex;flex-direction:column;gap:1px;text-align:left;min-width:0;';
     const label = el('span', { parent: text, text: t.label });
-    label.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:1.1rem;letter-spacing:0.18em;color:#fff5d8;";
+    label.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:1.05rem;letter-spacing:0.16em;color:#fff5d8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
     const hint = el('span', { parent: text, text: t.hint });
-    hint.style.cssText = 'font-size:0.72rem;letter-spacing:0.06em;color:rgba(220,210,255,0.6);';
+    hint.style.cssText = 'font-size:0.72rem;letter-spacing:0.06em;color:rgba(220,210,255,0.6);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
 
     onTap(row, () => {
       void audio.unlockAudio();
@@ -6714,13 +6749,15 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
     });
 
     rows.push({ id: t.id, el: row, glyph });
-  }
+  };
+
+  renderHeader('STINGS · SYSTEM');
+  for (const t of stings) addRow(t);
+  renderHeader('WAVE TRACKS (1 → 25)');
+  for (const t of waveTracks) addRow(t);
   paint();
 
-  const buttons = el('div', { className: 'menu-row', parent: overlay });
-  const stop = el('button', { className: 'menu-btn secondary', parent: buttons, text: 'STOP' });
   onTap(stop, () => { musicStop(250); paint(); });
-  const back = el('button', { className: 'menu-btn', parent: buttons, text: 'BACK' });
   onTap(back, () => {
     // Restore state-driven music. Force-refresh invalidates the memo so the
     // next musicSetTrackForState tick (the game loop runs every frame) will
