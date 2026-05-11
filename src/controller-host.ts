@@ -30,11 +30,15 @@ const PALLASITE_SPEC: ControllerSpec = {
   name: 'PALLASITE',
   version: 1,
   slots: {
-    joyL:  { mode: 'heading', tapAction: 'A' },
-    A:     { icon: '●',  label: 'FIRE',   colour: '#ff5050' },
-    R1:    { icon: '⛨',  label: 'SHIELD', colour: '#5b9dff' },
-    R2:    { icon: '⚡', label: 'WARP',   colour: '#b48cff' },
-    start: { icon: '⏸',  label: 'PAUSE',  colour: '#ffd84a' },
+    joyL: { mode: 'heading', tapAction: 'A' },
+    // All four actions live on the face-button diamond so the right
+    // thumb reaches everything without leaving its rest position.
+    // Stuffing SHIELD/WARP on shoulder buttons stranded them at the
+    // top edge of the phone, out of natural reach in landscape grip.
+    A: { icon: '●',  label: 'FIRE',   colour: '#ff5050' },  // south — primary
+    B: { icon: '⛨',  label: 'SHIELD', colour: '#5b9dff' },  // east — secondary
+    X: { icon: '⚡', label: 'WARP',   colour: '#b48cff' },  // west — escape
+    Y: { icon: '⏸',  label: 'PAUSE',  colour: '#ffd84a' },  // north — rare
   },
 };
 
@@ -187,32 +191,27 @@ function applySlotInput(state: GameState, slot: string, value: string): void {
       state.keys[FIRE_CODE] = on;
       return;
     case 'B':
-    case 'X':
-    case 'Y':
-      // Not bound in PALLASITE_SPEC today but reserved for future
-      // game-mode buttons (e.g. powerup pickup, weapon swap).
-      return;
-    // ── Shoulders ───────────────────────────────────────────────────
-    case 'R1':
       // SHIELD — one-shot per press.
       if (!on) return;
       if (state.phase === 'playing') tryActivateShield(state, performance.now());
       return;
-    case 'R2':
+    case 'X':
       // WARP / hyperspace — one-shot per press.
       if (!on) return;
       if (state.phase === 'playing') tryHyperspace(state, performance.now());
       return;
-    case 'L1':
-    case 'L2':
-      return;
-    // ── System buttons ──────────────────────────────────────────────
-    case 'start':
+    case 'Y':
       // PAUSE — toggle on press.
       if (!on) return;
       if (state.phase === 'playing') pauseGame(state);
       else if (state.phase === 'paused') resumeGame(state);
       return;
+    // ── Shoulders + system buttons unused for Pallasite today ──────
+    case 'L1':
+    case 'L2':
+    case 'R1':
+    case 'R2':
+    case 'start':
     case 'select':
       return;
   }

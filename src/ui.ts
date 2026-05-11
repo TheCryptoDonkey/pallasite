@@ -3746,19 +3746,17 @@ export function renderControllerPage(): void {
   //     things)
   // Sizes use clamp() so a tiny phone and a large tablet both work.
 
-  // Sizes are clamped between phone-floor and tablet-ceiling. Floors
-  // are bumped from the previous draft — 58px face buttons felt too
-  // small for thumb play; 76px lands closer to a console gamepad and
-  // still fits a 320px-tall landscape phone with room either side.
-  // Using vh (height fraction) instead of vmin because in landscape
-  // height IS the smaller dimension on every phone, so vh tracks the
-  // limiting axis directly and scales tablet sizes more aggressively.
-  const SHOULDER_W = 'clamp(64px, 18vh, 92px)';
-  const SHOULDER_H = 'clamp(44px, 12vh, 62px)';
-  const FACE_SIZE  = 'clamp(76px, 22vh, 104px)';
-  const FACE_GAP   = 'clamp(108px, 30vh, 148px)';   // centre-to-centre
-  const SYS_W      = 'clamp(54px, 14vh, 72px)';
-  const SYS_H      = 'clamp(30px, 8vh, 42px)';
+  // Sizes are clamped between phone-floor and tablet-ceiling. Bumped
+  // floors substantially after a screenshot showed FIRE looking like
+  // a postage stamp in a sea of empty bottom-right. Using vh because
+  // in landscape phone, height IS the smaller dimension on every
+  // device, so vh tracks the limiting axis directly.
+  const SHOULDER_W = 'clamp(84px, 24vh, 120px)';
+  const SHOULDER_H = 'clamp(54px, 16vh, 78px)';
+  const FACE_SIZE  = 'clamp(104px, 32vh, 144px)';
+  const FACE_GAP   = 'clamp(132px, 38vh, 192px)';   // centre-to-centre
+  const SYS_W      = 'clamp(68px, 18vh, 88px)';
+  const SYS_H      = 'clamp(38px, 11vh, 52px)';
 
   // Top strip — shoulders + start/select. 8px margin from the edges.
   makeButton('L1', `top:8px;left:8px;width:${SHOULDER_W};height:${SHOULDER_H};border-radius:14px;font-size:1rem;`);
@@ -3829,13 +3827,20 @@ export function renderControllerPage(): void {
       const inner = slotLabels.get(slot);
       if (inner) {
         inner.innerHTML = '';
+        // Bigger glyph + label so the buttons read clearly. The font
+        // sizes track the slot family — face buttons are the focus,
+        // shoulders + system buttons sit smaller.
+        const isFace = slot === 'A' || slot === 'B' || slot === 'X' || slot === 'Y';
+        const isSys  = slot === 'start' || slot === 'select';
+        const iconSize = isFace ? '2.2rem' : isSys ? '1rem' : '1.4rem';
+        const labelSize = isFace ? '0.72rem' : isSys ? '0.6rem' : '0.65rem';
         if (cfg.icon) {
           const ic = el('span', { parent: inner, text: cfg.icon });
-          ic.style.cssText = 'font-size:1.6rem;line-height:1;';
+          ic.style.cssText = `font-size:${iconSize};line-height:1;`;
         }
         if (cfg.label) {
           const lb = el('span', { parent: inner, text: cfg.label });
-          lb.style.cssText = 'font-size:0.62rem;letter-spacing:0.14em;color:' + colour + ';';
+          lb.style.cssText = `font-size:${labelSize};letter-spacing:0.14em;color:${colour};`;
         }
       }
     }
