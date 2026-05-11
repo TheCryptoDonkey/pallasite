@@ -2137,7 +2137,14 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
       if (frame) {
         pushFrame(frame);
         frameCount += 1;
-        status.textContent = `Live · ${frameCount} frame${frameCount === 1 ? '' : 's'} received`;
+        // Surface end-to-end latency (player publish time → here) so
+        // we can spot when the WS pipe is congested or the player is
+        // backgrounded. capturedAt is the player's Date.now() at
+        // publish; receivedAt is our local performance.now() so we
+        // compute against a fresh Date.now() to keep the same clock
+        // base. Difference > 500ms is unusual.
+        const lagMs = Math.max(0, Math.round(Date.now() - frame.capturedAt));
+        status.textContent = `Live · ${frameCount} frames · ${lagMs}ms`;
         if (watchdog !== null) { window.clearTimeout(watchdog); watchdog = null; }
       }
     };
