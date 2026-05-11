@@ -101,7 +101,7 @@ export const ASTEROID_TYPE_CONFIG: Record<AsteroidType, AsteroidTypeConfig> = {
   stony:     { hp: 1, satMul: 1.0, scoreMul: 1.0, breakInto: 2, hueBase: 265, glow: '#b48cff', label: 'STONY' },
   iron:      { hp: 2, satMul: 1.5, scoreMul: 1.6, breakInto: 2, hueBase: 16,  glow: '#ff7a3a', label: 'IRON' },
   chondrite: { hp: 1, satMul: 0.6, scoreMul: 0.8, breakInto: 3, hueBase: 195, glow: '#7fbfff', label: 'CHONDRITE' },
-  pallasite: { hp: 1, satMul: 4.0, scoreMul: 2.0, breakInto: 2, hueBase: 80,  glow: '#ffd84a', label: 'PALLASITE' },
+  pallasite: { hp: 1, satMul: 1.5, scoreMul: 2.0, breakInto: 2, hueBase: 80,  glow: '#ffd84a', label: 'PALLASITE' },
 };
 
 export interface Bullet extends Entity {
@@ -184,9 +184,12 @@ export interface Coin extends Entity {
   sourceType?: AsteroidType;
 }
 
-/** 1-in-N chance a break drops sat coins (Nostr mode only). The remaining
- *  rolls drop dust shards. Tunes the perceived rarity of sats. */
-export const SAT_DROP_CHANCE_DENOM = 8;
+/** 1-in-N chance a small asteroid (or a UFO / mine drop) yields sat coins
+ *  rather than dust. Large + medium asteroid breaks no longer roll for sat
+ *  at all — that gate is enforced in rollPickupKind — so smalls are the only
+ *  asteroid path. Tuned to ~1 sat drop every 2-3 chains so wave 1 reliably
+ *  pays a handful without flooding later waves. */
+export const SAT_DROP_CHANCE_DENOM = 4;
 
 /** Pallasite VEIN tuning. The event is a long engagement — the prize is
  *  fat and the fight is real. Streams sats per hit, lands a jackpot on
@@ -198,9 +201,9 @@ export const VEIN_HP_BASE = 100;
 export const VEIN_HP_EASY_MUL = 0.6;
 export const VEIN_HP_HARD_MUL = 3.0;
 export const VEIN_RADIUS_MUL = 1.4;
-export const VEIN_SATS_PER_HIT = 3;
+export const VEIN_SATS_PER_HIT = 1;
 export const VEIN_SCORE_PER_HIT = 35;  // guest payout (no sats)
-export const VEIN_JACKPOT_SATS = 150;
+export const VEIN_JACKPOT_SATS = 50;
 export const VEIN_JACKPOT_SCORE = 2500;
 /** Drop a helpful power-up every N landed hits on the vein. Tuned so a
  *  normal-mode 100-HP vein gets four drops across the engagement. */
@@ -208,7 +211,7 @@ export const VEIN_POWERUP_PER_N_HITS = 25;
 /** Nova chips this many HP off a vein instead of fully clearing it —
  *  vein takes a meaningful bite but isn't trivialised. */
 export const VEIN_NOVA_DAMAGE = 25;
-export const VEIN_SPAWN_CHANCE = 0.25;
+export const VEIN_SPAWN_CHANCE = 0.20;
 export const VEIN_SPAWN_MIN_WAVE = 6;
 export const VEIN_SPAWN_MAX_WAVE = 24;
 /** ms after vein spawn before the UFO swarm arrives — player should
@@ -251,8 +254,9 @@ export const POWERUP_TTL_MS = 14_000;
 export const POWERUP_RADIUS = 14;
 /** Multiplier on FIRE_COOLDOWN_MS while rapid is active (lower = faster). */
 export const RAPID_COOLDOWN_MUL = 0.34;
-/** Multiplier on coin sat value while satboost is active. */
-export const SATBOOST_MUL = 2;
+/** Multiplier on coin sat value while satboost is active. Trimmed from 2×
+ *  to 1.5× so the powerup is still a real bump but can't 2× the run cap. */
+export const SATBOOST_MUL = 1.5;
 /** Trident fan: half-angle of the spread (radians). Outer bullets fire at
  *  ±TRIDENT_SPREAD from the ship's facing; centre bullet stays on heading. */
 export const TRIDENT_SPREAD = 0.18;
@@ -634,10 +638,17 @@ export const POINTS_PER_SIZE: Record<AsteroidSize, number> = {
   small: 100,
 };
 
+/** Sat-coin base value per asteroid size. Large and medium drop zero — the
+ *  player has to follow the chain through to smalls to earn sats. This keeps
+ *  rewards visible (lots of small drops) without ballooning the total: the
+ *  server-side anti-cheat cap is `sqrt(score) × tier_multiplier`, so client
+ *  accrual ≫ that just evaporates at claim. Smalls dropping 1 sat (scaled
+ *  by type satMul + trick-shot bonusMul) lands a typical full-clear run in
+ *  ~1500-2000 base sats, within the verified-tier cap for a strong score. */
 export const SATS_PER_SIZE: Record<AsteroidSize, number> = {
-  large: 1,
-  medium: 2,
-  small: 4,
+  large: 0,
+  medium: 0,
+  small: 1,
 };
 
 export const RADIUS_PER_SIZE: Record<AsteroidSize, number> = {
@@ -772,9 +783,10 @@ export const UFO_ZIG_INTERVAL_MS = 1100;
 export const UFO_POINTS: Record<UfoType, number> = {
   cruiser: 200, elite: 1000, tank: 500, sniper: 1500, boss: 25_000,
 };
-/** Sats coins dropped on UFO kill. */
+/** Sats coins dropped on UFO kill. Halved from the original drop schedule
+ *  to bring whole-run accrual within the server-side anti-cheat cap. */
 export const UFO_SATS: Record<UfoType, number> = {
-  cruiser: 5, elite: 15, tank: 8, sniper: 12, boss: 100,
+  cruiser: 2, elite: 6, tank: 4, sniper: 6, boss: 50,
 };
 export const UFO_FIRST_SPAWN_MS = 12_000;
 export const UFO_RESPAWN_BASE_MS = 18_000;
@@ -822,7 +834,7 @@ export const MINE_GRAVITY_RANGE = 150;
 /** Peak inward acceleration in px/s² when ship is at the edge of range. Smaller = escapable. */
 export const MINE_GRAVITY_STRENGTH = 180;
 export const MINE_POINTS = 250;
-export const MINE_SATS_DROP = 3;
+export const MINE_SATS_DROP = 1;
 /** Wave at which mines start appearing. */
 export const MINE_FIRST_WAVE = 8;
 
