@@ -7,6 +7,7 @@ on:
     paths:
       - 'src/**'
       - 'public/**'
+      - 'controller-ws/**'
       - 'index.html'
       - 'vite.config.ts'
       - 'tsconfig.json'
@@ -48,6 +49,21 @@ jobs:
           echo "$HETZNER_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H <deploy-host> >> ~/.ssh/known_hosts
+          # Static SPA — the existing pallasite/watch/mobile vhosts.
           rsync -avz --delete \
             -e "ssh -i ~/.ssh/deploy_key" \
             dist/ deploy@<deploy-host>:<pallasite-static-root>/
+          # Controller WebSocket relay — Node service that pairs phone
+          # controllers with the big screen on controller.pallasite.app.
+          # Excludes node_modules so we don't push the local install;
+          # `npm ci` runs server-side only if package-lock changed.
+          rsync -avz --delete \
+            --exclude=node_modules \
+            --exclude=package-lock.json \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            controller-ws/ deploy@<deploy-host>:<controller-ws-deploy-root>/
+          # Install + restart. systemctl restart is a no-op if the unit
+          # isn't installed yet; first-time install is documented in
+          # controller-ws/README.md and runs once by hand.
+          ssh -i ~/.ssh/deploy_key deploy@<deploy-host> \
+            'cd <controller-ws-deploy-root> && npm install --omit=dev --no-audit --no-fund && sudo systemctl restart pallasite-controller-ws.service 2>&1 || true'

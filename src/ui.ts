@@ -3381,14 +3381,17 @@ export function renderControllerHostPairing(state: GameState, onClose: () => voi
     }
     const host = activeControllerHost;
     void renderQRInto(qrSlot, host.pairingUrl);
-    codeP.textContent = host.sessionPubkey.slice(0, 4).toUpperCase() + '·' + host.sessionPubkey.slice(4, 8).toUpperCase();
-    if (paired) {
+    codeP.textContent = host.sessionId.slice(0, 4).toUpperCase() + '·' + host.sessionId.slice(4, 8).toUpperCase();
+    const renderPairedState = (): void => {
       status.textContent = 'Phone connected.';
       status.style.color = 'rgba(91,255,140,0.95)';
       hint.textContent = 'Close this dialog and IGNITE — your phone will keep driving the ship.';
       primaryBtn.textContent = 'KEEP CONNECTED · ESC';
       secondaryBtn.textContent = 'DISCONNECT';
       secondaryBtn.style.display = '';
+    };
+    if (paired) {
+      renderPairedState();
     } else {
       status.textContent = 'Waiting for phone to scan…';
       hint.textContent = `Or visit ${host.pairingUrl} on your phone.`;
@@ -3396,12 +3399,18 @@ export function renderControllerHostPairing(state: GameState, onClose: () => voi
     host.onStatus((s) => {
       if (s.kind === 'paired') {
         paired = true;
-        status.textContent = `Phone connected (${s.pairPubkey.slice(0, 8)})`;
-        status.style.color = 'rgba(91,255,140,0.95)';
-        hint.textContent = 'Close this dialog and IGNITE — your phone will keep driving the ship.';
-        primaryBtn.textContent = 'KEEP CONNECTED · ESC';
-        secondaryBtn.textContent = 'DISCONNECT';
-        secondaryBtn.style.display = '';
+        renderPairedState();
+      } else if (s.kind === 'waiting') {
+        // Either the initial waiting state or the phone disconnected
+        // after a successful pair. If we'd previously latched paired,
+        // surface it so the dialog reflects the dropped peer.
+        if (paired) {
+          paired = false;
+          status.textContent = 'Phone disconnected — re-scan to reconnect.';
+          status.style.color = 'rgba(255,216,74,0.85)';
+          primaryBtn.textContent = 'CANCEL';
+          secondaryBtn.style.display = 'none';
+        }
       } else if (s.kind === 'closed') {
         status.textContent = 'Disconnected.';
         primaryBtn.textContent = 'BACK';

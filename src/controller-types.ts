@@ -1,30 +1,23 @@
 /**
- * Phone-as-controller — shared types + Nostr event kinds.
+ * Phone-as-controller — shared types + transport endpoint.
  *
- * Architecture: the big-screen browser generates an ephemeral
- * `sessionPubkey` and displays a QR code carrying it + a relay URL.
- * The mobile browser opens that URL, generates its own ephemeral
- * `pairPubkey`, and publishes a single CONTROLLER_CLAIM event addressed
- * to the session. Once the big screen accepts that claim, all later
- * input events from that pairPubkey are translated into game state.
+ * v2 transport: raw WebSocket relay at controller.pallasite.app. Pair
+ * by sessionId — both sides connect with the same id, one as
+ * `role=host`, the other as `role=phone`, and the relay forwards bytes
+ * between them. No signing, no Nostr semantics on the input stream;
+ * the sessionId in the QR code is the only auth (32-bit random,
+ * displayed for a brief pairing window).
  *
- * This mirrors the streamkey delegation pattern (NIP draft #1) in the
- * opposite direction: instead of "master authorises a sub-key to
- * publish on its behalf", here the big-screen "host" authorises a
- * mobile sub-key to drive its game. Both sides discard the ephemeral
- * keys at session end.
- *
- * Wire kinds (Nostr ephemeral range, 20000-29999):
- *   22770  CONTROLLER_INPUT — discrete input events (thrust, fire,
- *          rotate, hyperspace, shield, pause).
- *   22771  CONTROLLER_CLAIM — one-shot "I am your phone, here is my
- *          pairPubkey". The host either accepts (first valid claim per
- *          session wins) or rejects (multiple claims, host already
- *          paired).
+ * The earlier v1 transport used Nostr ephemeral events (kind 22770 +
+ * 22771) on relay.trotters.cc. We retain the v1 module shape (claim →
+ * input events) at the API level so the UI is unchanged; only the
+ * underlying transport swapped.
  */
 
-export const CONTROLLER_INPUT_KIND = 22770;
-export const CONTROLLER_CLAIM_KIND = 22771;
+/** Default WS endpoint in production. Overridable per-host via the
+ *  `relay` field on the pairing token so dev / staging builds can
+ *  point at a local controller-ws server. */
+export const CONTROLLER_WS_ENDPOINT_DEFAULT = 'wss://controller.pallasite.app/';
 
 /** Input kinds the host understands. The mobile controller is a
  *  thumb-driven virtual joystick (matches the in-game touch joystick
@@ -32,31 +25,28 @@ export const CONTROLLER_CLAIM_KIND = 22771;
  *  Action buttons stay discrete one-shots. */
 export type ControllerInputKind =
   | 'heading'      // value: angle * 1000 (rad → integer 0..6283)
-  | 'heading-end'  // value: '1' — joystick released, clear targetHeading
+  | 'heading-end'  // joystick released, clear targetHeading
   | 'thrust'       // value: 0|1 — joystick past deflection threshold
   | 'fire'         // value: 0|1 — hold-to-fire
   | 'hyperspace'   // one-shot
   | 'shield'       // one-shot
   | 'pause';       // one-shot toggle
 
-export interface ControllerInputEvent {
-  kind: ControllerInputKind;
-  /** Value-as-string for wire-portability. Booleans encode as '0'/'1',
-   *  angle for heading encodes as Math.round(angle * 1000). */
-  value: string;
+/** Frame the controller sends over the WS data channel. Stringified
+ *  JSON; the relay forwards it byte-for-byte to the host. */
+export interface ControllerInputFrame {
+  k: ControllerInputKind;
+  /** Value string. Booleans are '0'/'1'; heading is the angle * 1000
+   *  as a base-10 integer (positive, 0..6283). */
+  v: string;
 }
 
-/** Pairing token — encoded into the QR-code URL. Mobile reads these
- *  params, builds its claim event accordingly. */
+/** Pairing token — encoded into the QR-code URL. */
 export interface PairingToken {
-  /** Session pubkey (hex) — host's ephemeral, regenerated each pair. */
-  hostPubkey: string;
-  /** Random short id so multiple QR codes from the same host don't
-   *  collide if a stale tab is still listening. Six lowercase alphanum
-   *  chars. */
+  /** Session id (4-32 alphanumeric chars). Shared secret between
+   *  host and phone during the pairing window; the WS relay matches
+   *  the two sides on it. */
   sessionId: string;
-  /** Relay URL. Defaults to relay.trotters.cc in the encoder. */
-  relay: string;
+  /** WS endpoint. Defaults to CONTROLLER_WS_ENDPOINT_DEFAULT. */
+  ws: string;
 }
-
-export const CONTROLLER_TAG = 'pallasite-controller';

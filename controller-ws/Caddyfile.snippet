@@ -1,0 +1,10 @@
+# controller.pallasite.app — pass-through WS relay for the
+# phone-as-controller transport. The block is intentionally minimal:
+# Caddy handles TLS + HTTP→WSS upgrade, the service does the rest.
+#
+# Drop this block into /etc/caddy/Caddyfile (alongside the existing
+# pallasite.app + watch.pallasite.app entries) and reload Caddy.
+controller.pallasite.app {
+	encode gzip
+	reverse_proxy 127.0.0.1:8788
+}

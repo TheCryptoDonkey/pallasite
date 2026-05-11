@@ -1,0 +1,33 @@
+[Unit]
+Description=Pallasite controller WebSocket relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=<controller-ws-deploy-root>
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=2s
+Environment=NODE_ENV=production
+Environment=PORT=8788
+Environment=HOST=127.0.0.1
+
+# Light sandboxing — the relay needs almost nothing.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target
