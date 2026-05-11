@@ -215,13 +215,25 @@ export async function submitClaim(
 
   let signedAuth;
   try {
-    signedAuth = await session.signer.signEvent(authTemplate);
+    // Some NIP-07 extensions can hang if the host page is in a state where
+    // popup approval can't fire (no recent user gesture, popup blocker,
+    // service-worker restart). Wrap with a hard cap so the claim button
+    // doesn't sit disabled forever — 30s is generous for any real signer.
+    const SIGN_TIMEOUT_MS = 30_000;
+    signedAuth = await Promise.race([
+      session.signer.signEvent(authTemplate),
+      new Promise<never>((_, reject) => {
+        window.setTimeout(() => reject(new Error('signer-timeout')), SIGN_TIMEOUT_MS);
+      }),
+    ]);
   } catch (err) {
-    return {
-      ok: false,
-      error: 'sign_failed',
-      detail: err instanceof Error ? err.message : String(err),
-    };
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error('[claim] signEvent failed', {
+      method: session.method,
+      canSignEvents: session.signer.capabilities.canSignEvents,
+      error: err,
+    });
+    return { ok: false, error: 'sign_failed', detail };
   }
 
   const authToken = `Nostr ${utf8Base64(JSON.stringify(signedAuth))}`;
