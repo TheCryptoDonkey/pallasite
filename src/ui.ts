@@ -2813,38 +2813,125 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
         c2d.beginPath();
         c2d.arc(0, 0, r * 0.22, 0, Math.PI * 2);
         c2d.fill();
+      } else if (uNext.type === 'e') {
+        // Elite — fast stealth saucer with twin engine pods. Distinct
+        // silhouette from cruiser: lower, sleeker, twin nacelles.
+        // Ported from render.ts drawUfo's elite branch.
+        const w = r * 2.6;
+        const h = r * 1.05;
+        c2d.scale(facing, 1);
+        // Lower hull
+        const hullGrad = c2d.createRadialGradient(0, h * 0.3, h * 0.15, 0, 0, w * 0.55);
+        hullGrad.addColorStop(0, col.accent);
+        hullGrad.addColorStop(0.55, col.primary);
+        hullGrad.addColorStop(1, col.shadow);
+        c2d.beginPath();
+        c2d.ellipse(0, h * 0.05, w * 0.5, h * 0.42, 0, 0, Math.PI * 2);
+        c2d.fillStyle = hullGrad;
+        c2d.fill();
+        c2d.stroke();
+        // Forward swept canopy
+        const canopyGrad = c2d.createLinearGradient(0, -h * 0.5, 0, 0);
+        canopyGrad.addColorStop(0, col.cockpit);
+        canopyGrad.addColorStop(1, col.shadow);
+        c2d.fillStyle = canopyGrad;
+        c2d.shadowColor = col.cockpit;
+        c2d.shadowBlur = 10 * dpr;
+        c2d.beginPath();
+        c2d.moveTo(w * 0.42, 0);
+        c2d.bezierCurveTo(w * 0.42, -h * 0.55, -w * 0.25, -h * 0.55, -w * 0.25, 0);
+        c2d.closePath();
+        c2d.fill();
+        c2d.stroke();
+        // Canopy reflection
+        c2d.shadowBlur = 0;
+        c2d.strokeStyle = `${col.accent}cc`;
+        c2d.lineWidth = 1 * dpr;
+        c2d.beginPath();
+        c2d.moveTo(w * 0.34, -h * 0.18);
+        c2d.bezierCurveTo(w * 0.30, -h * 0.42, -w * 0.10, -h * 0.42, -w * 0.18, -h * 0.18);
+        c2d.stroke();
+        c2d.strokeStyle = col.primary;
+        c2d.lineWidth = 1.5 * dpr;
+        c2d.shadowColor = col.primary;
+        c2d.shadowBlur = 12 * dpr;
+        // Twin engine pods + glowing intakes
+        const ePulse = ufoBlink * 5;
+        for (const py of [-h * 0.2, h * 0.2]) {
+          c2d.fillStyle = col.shadow;
+          c2d.beginPath();
+          c2d.ellipse(-w * 0.42, py, w * 0.08, h * 0.18, 0, 0, Math.PI * 2);
+          c2d.fill();
+          c2d.stroke();
+          const intakePulse = 0.6 + 0.4 * Math.sin(ePulse * 2 + (py > 0 ? 0 : Math.PI));
+          c2d.fillStyle = col.cockpit;
+          c2d.shadowColor = col.cockpit;
+          c2d.shadowBlur = (8 + intakePulse * 6) * dpr;
+          c2d.globalAlpha = 0.7 + intakePulse * 0.3;
+          c2d.beginPath();
+          c2d.arc(-w * 0.36, py, 1.6 * dpr, 0, Math.PI * 2);
+          c2d.fill();
+          c2d.globalAlpha = 1;
+        }
+        c2d.shadowColor = col.primary;
+        c2d.shadowBlur = 12 * dpr;
+        // Underside running lights
+        for (let i = 0; i < 3; i++) {
+          const x = -w * 0.18 + i * w * 0.18;
+          const phase = (Math.sin(ePulse + i * 1.6) + 1) / 2;
+          c2d.globalAlpha = 0.4 + phase * 0.5;
+          c2d.fillStyle = col.cockpit;
+          c2d.shadowColor = col.cockpit;
+          c2d.shadowBlur = 6 * dpr;
+          c2d.beginPath();
+          c2d.arc(x, h * 0.38, 1.6 * dpr, 0, Math.PI * 2);
+          c2d.fill();
+        }
+        c2d.globalAlpha = 1;
       } else {
-        // Saucer family — cruiser / elite / generic saucer. Disc body
-        // with cockpit dome on top + glowing rim lights at the bottom.
-        const w = r * 2.2;
+        // Cruiser ('c') and any unknown — classic saucer with chrome-
+        // belly hull, equator ridge, top dome, underside porthole
+        // lights. Ported from render.ts drawUfo's cruiser branch.
+        const w = r * 2.4;
         const h = r * 1.0;
-        const bodyGrad = c2d.createRadialGradient(0, -h * 0.15, h * 0.15, 0, 0, w * 0.55);
+        c2d.scale(facing, 1);
+        const bodyGrad = c2d.createRadialGradient(0, -h * 0.4, h * 0.1, 0, h * 0.2, w * 0.55);
         bodyGrad.addColorStop(0, col.accent);
-        bodyGrad.addColorStop(0.6, col.primary);
+        bodyGrad.addColorStop(0.5, col.primary);
         bodyGrad.addColorStop(1, col.shadow);
-        c2d.fillStyle = bodyGrad;
         c2d.beginPath();
         c2d.ellipse(0, 0, w * 0.5, h * 0.5, 0, 0, Math.PI * 2);
+        c2d.fillStyle = bodyGrad;
         c2d.fill();
         c2d.stroke();
-        // Cockpit dome — top half ellipse
-        c2d.fillStyle = col.cockpit;
-        c2d.globalAlpha = 0.85;
+        // Equator seam
+        c2d.lineWidth = 1 * dpr;
+        c2d.strokeStyle = col.shadow;
         c2d.beginPath();
-        c2d.ellipse(0, -h * 0.25, w * 0.22, h * 0.35, 0, Math.PI, 0);
-        c2d.fill();
-        c2d.globalAlpha = 1;
-        c2d.beginPath();
-        c2d.ellipse(0, -h * 0.25, w * 0.22, h * 0.35, 0, Math.PI, 0);
+        c2d.moveTo(-w * 0.48, 0); c2d.lineTo(w * 0.48, 0);
         c2d.stroke();
-        // Rim lights — three small glows underneath
-        const litPulse = 0.7 + 0.3 * Math.sin(ufoBlink * 4);
-        for (const gx of [-w * 0.25, 0, w * 0.25]) {
-          c2d.fillStyle = col.accent;
-          c2d.shadowColor = col.primary;
-          c2d.shadowBlur = (6 + litPulse * 4) * dpr;
+        c2d.strokeStyle = col.primary;
+        c2d.lineWidth = 1.5 * dpr;
+        // Top dome
+        const domeGrad = c2d.createRadialGradient(0, -h * 0.45, 0, 0, -h * 0.3, w * 0.2);
+        domeGrad.addColorStop(0, col.cockpit);
+        domeGrad.addColorStop(1, col.shadow);
+        c2d.fillStyle = domeGrad;
+        c2d.shadowColor = col.cockpit;
+        c2d.shadowBlur = 10 * dpr;
+        c2d.beginPath();
+        c2d.arc(0, -h * 0.3, w * 0.2, Math.PI, 0);
+        c2d.fill();
+        c2d.stroke();
+        // Underside porthole round-robin blink
+        c2d.shadowBlur = 8 * dpr;
+        const cPulse = ufoBlink * 4;
+        for (let i = 0; i < 5; i++) {
+          const x = -w * 0.35 + (i / 4) * w * 0.7;
+          const phase = Math.sin(cPulse + i * 1.4);
+          c2d.fillStyle = phase > 0 ? col.cockpit : col.shadow;
           c2d.beginPath();
-          c2d.arc(gx, h * 0.32, 2.2 * dpr, 0, Math.PI * 2);
+          c2d.arc(x, h * 0.32, 2.2 * dpr, 0, Math.PI * 2);
           c2d.fill();
         }
       }
