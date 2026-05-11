@@ -33,8 +33,9 @@ import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, hasWebLN, payViaWebLN } from './zap.js';
 import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, ghostPoseAt, ghostScoreAt, type GhostRun } from './ghost.js';
 import { savePersonalGhost } from './personal-ghost.js';
-import { canCaptureClip, captureClip, shareClip } from './clip.js';
+import { canCaptureClip, captureClip, shareClip, shareDailyStats } from './clip.js';
 import { REPLAY_TOTAL_WALL_MS, REPLAY_EXPLOSION_WALL_MS } from './types.js';
+import { getStreak, getBestStreak, markDailyCompleted, buildDailyShareText } from './streak.js';
 import { WORLD_W as PALL_WORLD_W, WORLD_H as PALL_WORLD_H } from './types.js';
 import {
   SKINS, getActiveSkinId, setActiveSkinId, isSkinUnlocked,
@@ -605,6 +606,11 @@ export function renderTitle(state: GameState): void {
   // Daily / Free toggle
   renderDailyRow(overlay);
 
+  // Streak chip — only renders when the player has completed at least
+  // one daily run. The number is the retention hook; once the player has
+  // a streak to protect, the daily run pulls them back tomorrow.
+  renderStreakChip(overlay);
+
   // Today's daily-seed leader — surfaces the standing top score on the
   // current daily seed so the title screen always has a visible "duel of
   // the day" hook. Empty state ("be the first") is itself motivating.
@@ -980,6 +986,33 @@ function renderDailyRow(parent: HTMLElement): void {
  *
  * Read-only -- the DAILY/FREE toggle directly above is the actual control.
  */
+/**
+ * Streak chip — small horizontal chip surfacing the player's current
+ * daily-completion streak and their best ever. Only renders when the
+ * player has completed at least one daily run; before that there's
+ * nothing to show. Streak number gets a yellow accent so the player
+ * sees it as a thing they're protecting.
+ */
+function renderStreakChip(parent: HTMLElement): void {
+  const current = getStreak();
+  if (current < 1) return;
+  const best = getBestStreak();
+  const wrap = el('div', { parent });
+  wrap.style.cssText = [
+    'display:inline-flex', 'gap:14px', 'align-items:center',
+    'padding:6px 14px', 'border-radius:999px',
+    'background:rgba(255,216,74,0.06)', 'border:1px solid rgba(255,216,74,0.35)',
+    'font-size:0.78rem', 'letter-spacing:0.16em',
+    'color:rgba(220,210,255,0.75)',
+  ].join(';');
+  const cur = el('span', { parent: wrap });
+  cur.innerHTML = `STREAK <span style="color:#ffd84a;font-weight:bold;">${current}</span>`;
+  if (best > current) {
+    const bst = el('span', { parent: wrap });
+    bst.innerHTML = `BEST <span style="color:rgba(255,216,74,0.6);">${best}</span>`;
+  }
+}
+
 function renderDailyLeaderChip(parent: HTMLElement): void {
   const wrap = el('div', { parent });
   wrap.style.cssText = [
@@ -3045,6 +3078,13 @@ function renderRunCredits(
       lastSavedAt: 0,  // overwritten by savePersonalGhost
     });
   }
+  // Mark today's daily run as completed for the streak counter. Cheated
+  // runs don't count — streak should reflect honest play. Free-mode
+  // runs (no seed) don't count either; only daily seeds drive the
+  // streak.
+  if (seed && !state.cheatedThisRun) {
+    markDailyCompleted(seed);
+  }
   if (state.session) {
     void publishGhost({
       session: state.session,
@@ -3200,6 +3240,31 @@ function renderRunCredits(
       shareBtn.style.opacity = '1';
     });
   });
+  // SHARE STATS — Wordle-style one-liner. Daily-mode only (the format
+  // depends on the daily ordinal); free runs would just be "Pallasite ·
+  // W12 · 8.4k" with no comparison hook so we hide the button there.
+  const dailySeed = getActiveSeed();
+  if (dailySeed) {
+    const statsBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'SHARE STATS' }) as HTMLButtonElement;
+    onTap(statsBtn, () => {
+      const text = buildDailyShareText({
+        seed: dailySeed,
+        score: state.score,
+        wave: state.wave,
+        bossDefeated: state.bossDefeated,
+        largestCombo: state.runStats.largestCombo,
+        veinsBroken: state.runStats.veinsBroken,
+        cleared: opts.isCompletion === true,
+      });
+      statsBtn.disabled = true;
+      statsBtn.style.opacity = '0.6';
+      void shareDailyStats(text).then((result) => {
+        statsBtn.disabled = false;
+        statsBtn.style.opacity = '1';
+        statsBtn.textContent = result === 'shared' ? 'SHARED ✓' : result === 'copied' ? 'COPIED ✓' : 'SHARE FAILED';
+      });
+    });
+  }
   const home = el('button', { className: 'menu-btn secondary', parent: row, text: 'SKIP TO TITLE' });
   onTap(home, goToTitle);
 
