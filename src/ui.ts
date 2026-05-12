@@ -46,8 +46,8 @@ import { followUser, shareCompletion, endorseSubject, rankFromWave } from './soc
 import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipient } from './zap.js';
 import { subscribeRecentRuns, timeAgo, dismissWatchEntry, getDismissedWatchEntries, LIVE_FRESHNESS_MS, type WatchEntry } from './watch.js';
-import { getReplayBuffer, type ReplayFrameRaw } from './stream-session.js';
-import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, findReplayByAuthor, fetchReplayByScoreEventId, fetchReplayByEventId, type GhostRun } from './ghost.js';
+import { getReplayBuffer, replayRunState, type ReplayFrameRaw } from './stream-session.js';
+import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, publishReplayWaveChunk, publishReplayManifest, findReplayByAuthor, fetchReplayByScoreEventId, fetchReplayByEventId, type GhostRun } from './ghost.js';
 import { preloadBackground } from './render.js';
 import { musicSetTrackForState } from './music.js';
 import { savePersonalGhost } from './personal-ghost.js';
@@ -8357,34 +8357,92 @@ function renderRunCredits(
       console.warn('[replay] skipping kind 30764 — run was cheated');
       setReplayBadge('skip', '⚠ REPLAY SKIPPED · cheated this run (sat-void on first cheat)');
     } else {
-      const replayFrames = getReplayBuffer();
-      console.log(`[replay] replay buffer size at game-over: ${replayFrames.length} frame(s)`);
-      if (replayFrames.length >= 2) {
-        // Keep the frames in scope so a RETRY button can re-attempt
-        // when the first try fails (signer extension was suspended,
-        // network glitch, all relays bounced).
+      // Per-wave publish during play has already shipped most of the
+      // chunks. At game-over we just need to: (1) drain remaining
+      // frames for any wave still in the buffer (the final wave the
+      // player was mid-way through), publish chunks for each; (2)
+      // publish a manifest tying every chunk together. This avoids
+      // the bark-rate-limit cliff we'd hit batching all 25+ wave
+      // chunks at game-over.
+      const remainingBuffer = getReplayBuffer();
+      const totalFrames = remainingBuffer.length + replayRunState.publishedChunks.length * 100;  // rough estimate
+      console.log(`[replay] game-over · ${replayRunState.publishedChunks.length} wave(s) already published · ${remainingBuffer.length} frame(s) in tail buffer`);
+      if (replayRunState.publishedChunks.length === 0 && remainingBuffer.length < 2) {
+        setReplayBadge('fail', `✗ REPLAY EMPTY · no chunks published during play & only ${remainingBuffer.length} frame(s) in tail buffer`);
+      } else {
         const session = state.session;
         const score = state.score;
-        const wave = state.wave;
+        const finalWave = state.wave;
         const durationMs = Math.max(0, Math.floor(state.runTimeMs));
+        const runId = replayRunState.runId;
+        // Group tail-buffer frames by wave so each final-wave chunk
+        // is its own kind 30764, matching the per-wave publish pattern.
+        const tailByWave = new Map<number, ReplayFrameRaw[]>();
+        for (const f of remainingBuffer) {
+          const list = tailByWave.get(f.wave);
+          if (list) list.push(f);
+          else tailByWave.set(f.wave, [f]);
+        }
+        // Don't re-publish a wave whose chunk already exists from the
+        // mid-play hook.
+        const alreadyPublished = new Set(replayRunState.publishedChunks.map((c) => c.wave));
+        const tailWavesToPublish: Array<{ wave: number; frames: ReplayFrameRaw[] }> = [];
+        for (const [w, frames] of tailByWave) {
+          if (alreadyPublished.has(w)) continue;
+          if (frames.length < 2) continue;
+          tailWavesToPublish.push({ wave: w, frames });
+        }
         const tryPublish = (): void => {
-          setReplayBadge('pending', `📼 REPLAY · publishing ${replayFrames.length} frames across ${new Set(replayFrames.map((f) => f.wave)).size} wave(s)…`);
-          void publishReplay({
-            session,
-            finalScore: score,
-            finalWave: wave,
-            durationMs,
-            frames: replayFrames,
-          }).then((signed) => {
-            if (signed) {
-              setReplayBadge('ok', `✓ REPLAY PUBLISHED · manifest ${signed.id.slice(0, 8)}…`);
-            } else {
+          if (!runId) {
+            // No mid-play state — fall back to the legacy single-shot
+            // publishReplay path which handles its own runId + chunking.
+            setReplayBadge('pending', `📼 REPLAY · publishing ${remainingBuffer.length} frames…`);
+            void publishReplay({
+              session,
+              finalScore: score,
+              finalWave,
+              durationMs,
+              frames: remainingBuffer,
+            }).then((signed) => {
+              if (signed) setReplayBadge('ok', `✓ REPLAY PUBLISHED · manifest ${signed.id.slice(0, 8)}…`);
+              else renderRetryBadge();
+            }, (err) => {
+              setReplayBadge('fail', `✗ REPLAY THREW · ${err instanceof Error ? err.message : String(err)}`);
+              renderRetryBadge();
+            });
+            return;
+          }
+          setReplayBadge('pending', `📼 REPLAY · publishing ${tailWavesToPublish.length} tail wave(s) + manifest (${replayRunState.publishedChunks.length} already on relays)…`);
+          void (async () => {
+            try {
+              // Publish any tail-wave chunks (the wave the player died on
+              // never reached the wave-clear hook).
+              for (const tw of tailWavesToPublish) {
+                const chunk = await publishReplayWaveChunk(session, runId, tw.wave, tw.frames);
+                if (chunk) replayRunState.publishedChunks.push({ wave: tw.wave, eventId: chunk.id });
+              }
+              if (replayRunState.publishedChunks.length === 0) {
+                renderRetryBadge();
+                return;
+              }
+              // Sort chunks by wave for the manifest's e-tag order.
+              const sortedChunks = [...replayRunState.publishedChunks].sort((a, b) => a.wave - b.wave);
+              const manifest = await publishReplayManifest(session, runId, {
+                finalScore: score,
+                finalWave,
+                durationMs,
+                totalFrames,
+              }, sortedChunks);
+              if (manifest) {
+                setReplayBadge('ok', `✓ REPLAY PUBLISHED · manifest ${manifest.id.slice(0, 8)}… · ${sortedChunks.length} wave chunk(s)`);
+              } else {
+                renderRetryBadge();
+              }
+            } catch (err) {
+              setReplayBadge('fail', `✗ REPLAY THREW · ${err instanceof Error ? err.message : String(err)}`);
               renderRetryBadge();
             }
-          }, (err) => {
-            setReplayBadge('fail', `✗ REPLAY THREW · ${err instanceof Error ? err.message : String(err)}`);
-            renderRetryBadge();
-          });
+          })();
         };
         const renderRetryBadge = (): void => {
           // Replace badge content with a clickable retry. The frames
@@ -8403,9 +8461,6 @@ function renderRunCredits(
           hint.style.cssText = 'font-size:0.7rem;margin-top:4px;color:rgba(220,210,255,0.65);letter-spacing:0.04em;';
         };
         tryPublish();
-      } else {
-        console.warn('[replay] skipping kind 30764 — fewer than 2 frames buffered.');
-        setReplayBadge('fail', `✗ REPLAY EMPTY · only ${replayFrames.length} frame(s) captured · NIP-53 likely failed; check [stream] console`);
       }
     }
   } else {
