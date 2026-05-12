@@ -15,6 +15,7 @@
 import type { ConsumeCallbackResult, SignetSession } from 'signet-login';
 import { getActiveRelays } from './relays.js';
 import { serialiseSigner } from './sign-queue.js';
+import { getGuestRecord, loadOrCreateGuest } from './guest.js';
 
 /**
  * Wrap a freshly-resolved session's signer so every signEvent goes through
@@ -182,17 +183,34 @@ export function sweepSignetArtefacts(): void {
 }
 
 export async function tryRestore(): Promise<SignetSession | null> {
-  if (!window.Signet) return null;
+  // Signet-restored session wins if one exists — a returning user who
+  // previously upgraded their guest identity to a real NIP-07 / bunker
+  // account should land back on that real identity, not regress to the
+  // shadow guest record we may have kept around from before the
+  // upgrade.
+  if (window.Signet) {
+    try {
+      const session = await withTimeout(
+        window.Signet.restoreSession(),
+        RESTORE_TIMEOUT_MS,
+        () => new Error('restore-timeout'),
+      );
+      if (session) return wrapSession(session);
+    } catch {
+      // Restore is best-effort on boot — silently fall through to the
+      // guest path if the signer doesn't respond in time.
+    }
+  }
+  // No Signet session — fall back to the seamless guest identity if
+  // we've created one previously. First-time visitors get null and the
+  // title screen prompts them for a name before creating their guest
+  // keypair.
+  const guest = getGuestRecord();
+  if (!guest) return null;
   try {
-    const session = await withTimeout(
-      window.Signet.restoreSession(),
-      RESTORE_TIMEOUT_MS,
-      () => new Error('restore-timeout'),
-    );
+    const session = await loadOrCreateGuest({ name: guest.name });
     return wrapSession(session);
   } catch {
-    // Restore is best-effort on boot — silently fall back to guest mode if
-    // the signer doesn't respond in time. User can sign in manually after.
     return null;
   }
 }
@@ -200,4 +218,18 @@ export async function tryRestore(): Promise<SignetSession | null> {
 export async function signOut(currentSession: SignetSession | null): Promise<void> {
   if (!window.Signet) return;
   await window.Signet.logout(currentSession ?? undefined);
+}
+
+/**
+ * Create or restore a seamless guest identity and return it as a
+ * SignetSession with the standard sign-queue wrap applied. The title
+ * screen uses this to provision a local keypair the first time a
+ * visitor types their name and ignites — subsequent visits land in
+ * tryRestore which reads the same localStorage record.
+ */
+export async function createGuestSession(name: string): Promise<SignetSession> {
+  const session = await loadOrCreateGuest({ name });
+  const wrapped = wrapSession(session);
+  if (!wrapped) throw new Error('guest-session-wrap-failed');
+  return wrapped;
 }
