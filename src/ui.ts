@@ -46,6 +46,7 @@ import { followUser, shareCompletion, endorseSubject, rankFromWave } from './soc
 import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipient } from './zap.js';
 import { subscribeRecentRuns, timeAgo, dismissWatchEntry, getDismissedWatchEntries, LIVE_FRESHNESS_MS, type WatchEntry } from './watch.js';
+import { decodeNpub } from './bech32.js';
 import { getReplayBuffer, type ReplayFrameRaw } from './stream-session.js';
 import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, findReplayByAuthor, fetchReplayByScoreEventId, fetchReplayByEventId, type GhostRun } from './ghost.js';
 import { preloadBackground } from './render.js';
@@ -1886,6 +1887,14 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
 
+  // Opening the theatre counts as a user gesture (came from a click on
+  // a watch-grid card or mini-tile), so we can safely unlock the audio
+  // context here. Without this, a viewer who landed straight on the
+  // watch page never hit the title-screen audio unlock and replay/live
+  // SFX + music get silently dropped by the browser's autoplay policy.
+  void audio.unlockAudio().catch(() => undefined);
+  audio.resumePlayback();
+
   // Replay mode (kind 30764 full-world bundle) reuses this theatre but
   // skips the WS subscription, pre-seeds the frame buffer with the whole
   // run, and advances playbackT linearly across the whole timeline.
@@ -2215,14 +2224,13 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   let currentWaveAsset = 0;
   const bgImage = new Image();
   bgImage.decoding = 'async';
-  // Wave banner — when frame.wave increments (or on the very first
-  // frame), we flash a "WAVE N · NAME · subtitle" banner over the
-  // canvas for a few seconds so the spectator gets the same wave-intro
-  // beat the player gets.
-  let waveBannerShownAt = 0;
-  let waveBannerWave = 0;
-  const WAVE_BANNER_MS = 3500;
-  const applyWaveAssets = (wave: number, isInitial = false): void => {
+  // Wave assets — switch the background image and music track when the
+  // player crosses a wave boundary. The mid-screen INCOMING banner
+  // (rendered above, during 'warp' phase) is the only wave-intro cue
+  // the spectator gets; the previous duplicate top-banner that fired on
+  // wave-increment was redundant and read as visual noise after the
+  // INCOMING bookend.
+  const applyWaveAssets = (wave: number): void => {
     if (wave === currentWaveAsset || wave < 1) return;
     currentWaveAsset = wave;
     preloadBackground(wave);
@@ -2233,15 +2241,8 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     try {
       musicSetTrackForState({ phase: 'playing', wave } as unknown as GameState);
     } catch { /* ignore */ }
-    // Trigger the banner — skip on the very first call so the spectator
-    // doesn't see a banner the moment they open the theatre. The first
-    // real wave-change after that gets a banner.
-    if (!isInitial) {
-      waveBannerShownAt = performance.now();
-      waveBannerWave = wave;
-    }
   };
-  applyWaveAssets(Math.max(1, input.initialWave), true);
+  applyWaveAssets(Math.max(1, input.initialWave));
 
   // Stable starfield — generated once. Used as a layer ABOVE the
   // wave background image so the canvas still has motion-cues when
@@ -2561,7 +2562,7 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     const first = frames[0];
     if (first) {
       liveScore.textContent = `WAVE ${first.wave} · ${first.score.toLocaleString()}`;
-      if (first.wave > 0) applyWaveAssets(first.wave, true);
+      if (first.wave > 0) applyWaveAssets(first.wave);
     }
     // Scan for the latest 'sh' (ship-hit) SFX event — wire up the
     // JUMP TO DEATH button if one exists. Lead-in 2s before the
@@ -3850,55 +3851,6 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
         c2d.textAlign = 'start';
         c2d.textBaseline = 'alphabetic';
         c2d.restore();
-      }
-    }
-
-    // 3b. Wave-change banner — fires on each frame.wave increment.
-    // Shows for WAVE_BANNER_MS (~3.5s) with fade-in/out. Mirrors the
-    // game's wave-start banner so spectators see "WAVE N · NAME · lore"
-    // when the player crosses a wave boundary on their canvas.
-    if (waveBannerShownAt > 0 && waveBannerWave > 0) {
-      const ageMs = nowPerf - waveBannerShownAt;
-      if (ageMs < WAVE_BANNER_MS) {
-        const lore = WAVE_LORE[waveBannerWave - 1];
-        if (lore) {
-          // Fade in over first 200ms, hold, fade out over last 600ms.
-          const fadeIn = Math.min(1, ageMs / 200);
-          const fadeOut = Math.min(1, Math.max(0, WAVE_BANNER_MS - ageMs) / 600);
-          const alpha = Math.min(fadeIn, fadeOut);
-          const bannerY = CANVAS_H * 0.22;
-          c2d.save();
-          c2d.globalAlpha = alpha * 0.75;
-          c2d.fillStyle = '#02050d';
-          c2d.fillRect(0, bannerY - 40 * dpr, CANVAS_W, 110 * dpr);
-          c2d.globalAlpha = alpha;
-          c2d.textAlign = 'center';
-          c2d.textBaseline = 'middle';
-          // WAVE n
-          c2d.fillStyle = 'rgba(140,255,180,0.85)';
-          c2d.font = `${Math.round(14 * dpr)}px ui-monospace, monospace`;
-          c2d.fillText(`WAVE ${waveBannerWave}`, CANVAS_W / 2, bannerY - 18 * dpr);
-          // NAME (large gold)
-          c2d.fillStyle = '#ffd84a';
-          c2d.shadowColor = 'rgba(255,216,74,0.6)';
-          c2d.shadowBlur = 14 * dpr;
-          c2d.font = `bold ${Math.round(28 * dpr)}px ui-monospace, monospace`;
-          c2d.fillText(lore.name, CANVAS_W / 2, bannerY + 8 * dpr);
-          c2d.shadowBlur = 0;
-          // Subtitle
-          c2d.fillStyle = 'rgba(220,210,255,0.75)';
-          c2d.font = `${Math.round(11 * dpr)}px ui-monospace, monospace`;
-          c2d.fillText(lore.subtitle, CANVAS_W / 2, bannerY + 32 * dpr);
-          // Tagline
-          c2d.fillStyle = 'rgba(140,255,180,0.7)';
-          c2d.font = `${Math.round(10 * dpr)}px ui-monospace, monospace`;
-          c2d.fillText(lore.tagline, CANVAS_W / 2, bannerY + 50 * dpr);
-          c2d.textAlign = 'start';
-          c2d.textBaseline = 'alphabetic';
-          c2d.restore();
-        }
-      } else {
-        waveBannerShownAt = 0;
       }
     }
 
@@ -5657,15 +5609,17 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
     }
   };
 
+  // Tighter intro — the hero tiles now sit directly under the header so
+  // the explanation can shrink to a single line. The verbose
+  // "Every claimed run lands here as a kind 30762…" copy moved to a
+  // <title> tooltip on the page header for the curious.
   const intro = el('p', { parent: overlay });
-  intro.style.cssText = 'margin:4px auto 18px;font-size:0.85rem;color:rgba(220,210,255,0.75);max-width:680px;line-height:1.5;text-align:center;';
-  intro.innerHTML =
-    'Every claimed run lands here as a kind 30762 score event signed by the faucet. ' +
-    'Click <strong>WATCH</strong> to play back the kind 30763 ghost in the replay theatre. ' +
-    'Click <strong>⚡ ZAP</strong> to send sats straight to the player\'s lightning address.';
+  intro.style.cssText = 'margin:4px auto 12px;font-size:0.78rem;color:rgba(220,210,255,0.6);max-width:680px;line-height:1.4;text-align:center;letter-spacing:0.04em;';
+  intro.innerHTML = 'Click a tile to <strong>WATCH</strong>. ⚡ ZAP the player from any card below.';
+  header.title = 'Every claimed run lands as a kind 30762 score event signed by the faucet. Ghosts (kind 30763) and full-world replays (kind 30764) are fetched per-card.';
 
   const status = el('p', { parent: overlay });
-  status.style.cssText = 'margin:0 0 12px;font-size:0.88rem;color:rgba(255,216,74,0.75);letter-spacing:0.08em;min-height:1.2em;text-align:center;';
+  status.style.cssText = 'margin:0 0 8px;font-size:0.78rem;color:rgba(255,216,74,0.65);letter-spacing:0.08em;min-height:1.2em;text-align:center;';
   status.textContent = 'Connecting to relays…';
 
   // Per-relay status pills — one chip per relay we tried, coloured by
@@ -5726,17 +5680,81 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
     btn.addEventListener('click', () => setFilter(def.k));
     filterBtns[def.k] = btn;
   }
+
+  // PERSON filter — narrows the visible cards to a single pubkey (or
+  // matching prefix). Accepts:
+  //   • a full npub1... bech32 string (decoded to 64-char hex)
+  //   • a hex pubkey (full 64 chars or shorter prefix substring)
+  // Lives alongside the LIVE/TODAY/MINE/ALL tabs as an orthogonal axis:
+  // tabs still gate visibility, person narrows within. Empty input
+  // clears the constraint. The clear (✕) chip nulls it without
+  // requiring the user to manually empty the field.
+  let personFilter = '';  // lowercase hex prefix, possibly empty
+  const personRow = el('div', { parent: overlay });
+  personRow.style.cssText = 'display:flex;justify-content:center;align-items:center;gap:6px;margin:0 auto 12px;max-width:760px;width:100%;flex-wrap:wrap;';
+  const personInput = el('input', { parent: personRow }) as HTMLInputElement;
+  personInput.type = 'text';
+  personInput.placeholder = 'FILTER BY NPUB OR HEX PUBKEY…';
+  personInput.autocomplete = 'off';
+  personInput.spellcheck = false;
+  personInput.style.cssText = 'flex:1 1 320px;max-width:520px;padding:6px 10px;border:1px solid rgba(220,210,255,0.25);border-radius:4px;background:rgba(2,5,13,0.6);color:rgba(220,210,255,0.92);font-family:monospace;font-size:0.82rem;letter-spacing:0.04em;';
+  const personHint = el('span', { parent: personRow, text: '' });
+  personHint.style.cssText = 'font-family:monospace;font-size:0.7rem;letter-spacing:0.08em;color:rgba(220,210,255,0.55);min-width:6em;';
+  const personClear = el('button', { className: 'menu-btn secondary', parent: personRow, text: '✕' }) as HTMLButtonElement;
+  personClear.style.cssText += 'flex:0 0 auto;padding:4px 10px;font-size:0.78rem;display:none;';
+  personClear.title = 'Clear person filter';
+  const setPersonFilter = (raw: string): void => {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      personFilter = '';
+      personHint.textContent = '';
+      personClear.style.display = 'none';
+      applyFilter();
+      return;
+    }
+    const npub = decodeNpub(trimmed);
+    if (npub) {
+      personFilter = npub;
+      personHint.textContent = `→ ${npub.slice(0, 8)}…`;
+      personHint.style.color = '#8cffb4';
+    } else {
+      // Hex prefix — accept anything that's plausibly the start of a
+      // 64-char hex pubkey. Sanitise to lowercase hex only so a paste of
+      // "0xAB..." or a stray space doesn't break the prefix match.
+      const hex = trimmed.toLowerCase().replace(/[^0-9a-f]/g, '');
+      personFilter = hex;
+      if (hex.length === 0) {
+        personHint.textContent = 'INVALID';
+        personHint.style.color = 'rgba(255,120,120,0.85)';
+      } else if (hex.length === 64) {
+        personHint.textContent = 'EXACT';
+        personHint.style.color = '#8cffb4';
+      } else {
+        personHint.textContent = `PREFIX ${hex.length}/64`;
+        personHint.style.color = 'rgba(255,216,74,0.85)';
+      }
+    }
+    personClear.style.display = '';
+    applyFilter();
+  };
+  personInput.addEventListener('input', () => setPersonFilter(personInput.value));
+  personClear.addEventListener('click', () => {
+    personInput.value = '';
+    setPersonFilter('');
+    personInput.focus();
+  });
+
   // Top live tiles — up to 3 mini canvases of currently-live players,
   // one per row of the grid below. Click expands into the full live
   // theatre via makeMiniLiveTile's own click handler. Kept above the
   // grid so a glance at the watch page surfaces who's actually playing
   // right now without having to scan the score list.
   const liveTiles = el('div', { parent: overlay });
-  // Wider gap + a centred vertical-rule pseudo-divider via column-gap
-  // 'overlay' (using a SVG-style separator on each tile after the first
-  // via the ':not(:first-child)::before' selector below). Keeps the
-  // three tiles visually distinct rather than reading as one row.
-  liveTiles.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:18px;max-width:760px;width:100%;margin:0 auto 14px;position:relative;';
+  // Hero row — wider tiles (min 320px) so the canvas reads as a real
+  // game view, not a thumbnail. Bigger gap. Sits high in the page DOM
+  // (moved above the relay/filter clutter via insertBefore below) so
+  // a fresh visitor sees actual play before any chrome.
+  liveTiles.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit, minmax(320px, 1fr));gap:22px;max-width:1100px;width:100%;margin:6px auto 22px;position:relative;';
   liveTiles.style.display = 'none';  // shown once at least one live tile lands
   // Per-pubkey tracker so we can keep stable tiles across update emits
   // (rebuilding from scratch every emit would flicker the canvas and
@@ -5746,6 +5764,11 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
     for (const t of miniTiles.values()) t.unsubscribe();
     miniTiles.clear();
   };
+  // Move the hero row up to sit directly below the page header. The
+  // intro / status / relay pills / filter rows are all chrome around
+  // the actual live play; pulling the tiles above them makes the page
+  // read as "here's who's playing right now" first.
+  overlay.insertBefore(liveTiles, intro);
 
   const grid = el('div', { parent: overlay });
   grid.style.cssText = 'display:flex;flex-direction:column;gap:10px;max-width:760px;width:100%;margin:0 auto;';
@@ -5785,7 +5808,7 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
     applyFilter();
   };
   const applyFilter = (): void => {
-    for (const card of cardByPubkey.values()) {
+    for (const [pubkey, card] of cardByPubkey) {
       const isLive = card.dataset.live === '1';
       const isMine = card.dataset.mine === '1';
       const at = parseInt(card.dataset.createdAt ?? '0', 10);
@@ -5794,6 +5817,10 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
       if (activeFilter === 'live') show = isLive;
       else if (activeFilter === 'today') show = isToday;
       else if (activeFilter === 'mine') show = isMine;
+      // Person filter — prefix match against the card's pubkey. Empty
+      // filter means "no constraint". A short prefix matches several
+      // cards; the 64-char form pins it to exactly one.
+      if (show && personFilter) show = pubkey.startsWith(personFilter);
       card.style.display = show ? '' : 'none';
     }
   };
@@ -6015,61 +6042,85 @@ function makeMiniLiveTile(
   state: GameState,
   rank: 1 | 2 | 3,
 ): { el: HTMLElement; unsubscribe: () => void } {
+  // Hero treatment — these are the *only* thing on the page actually
+  // showing live play, so they take centre stage: thick border, strong
+  // glow, two-line HUD with avatar + name on top, score/wave row below.
+  // Rank colour tints the border so 1ST/2ND/3RD reads at a glance.
+  const rankColours: Record<1 | 2 | 3, string> = { 1: '#ffd84a', 2: '#cbd5e0', 3: '#cd7f32' };
+  const rankGlows: Record<1 | 2 | 3, string> = {
+    1: '0 0 22px rgba(255,216,74,0.45)',
+    2: '0 0 18px rgba(203,213,224,0.32)',
+    3: '0 0 18px rgba(205,127,50,0.32)',
+  };
+  const rankLabels: Record<1 | 2 | 3, string> = { 1: '1ST', 2: '2ND', 3: '3RD' };
+  const tint = rankColours[rank];
   const card = el('div');
   card.style.cssText = [
     'position:relative',
-    'border:1px solid rgba(140,255,180,0.55)',
-    'border-radius:8px',
+    `border:2px solid ${tint}88`,
+    'border-radius:10px',
     'background:#02050d',
-    'box-shadow:0 0 14px rgba(140,255,180,0.18)',
+    `box-shadow:${rankGlows[rank]}`,
     'overflow:hidden',
     'cursor:pointer',
     '-webkit-tap-highlight-color:transparent',
     'display:flex',
     'flex-direction:column',
+    'transition:transform 120ms ease, box-shadow 120ms ease',
   ].join(';');
-  const MINI_W_CSS = 200;
+  card.addEventListener('mouseenter', () => {
+    card.style.transform = 'translateY(-2px)';
+    card.style.boxShadow = rankGlows[rank].replace(/0\.\d+/g, (m) => String(Math.min(0.9, parseFloat(m) + 0.18)));
+  });
+  card.addEventListener('mouseleave', () => {
+    card.style.transform = '';
+    card.style.boxShadow = rankGlows[rank];
+  });
+  // Canvas sized to fill the grid cell — let the CSS dictate the box and
+  // size the internal buffer to DPR for crispness. The grid template uses
+  // minmax(320px, 1fr) so a single-column phone layout still works.
+  const MINI_W_CSS = 340;
   const MINI_H_CSS = Math.round(MINI_W_CSS * PALL_WORLD_H / PALL_WORLD_W);
   const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
   const canvas = el('canvas', { parent: card, attrs: { width: String(MINI_W_CSS * dpr), height: String(MINI_H_CSS * dpr) } }) as HTMLCanvasElement;
-  canvas.style.cssText = `display:block;width:${MINI_W_CSS}px;height:${MINI_H_CSS}px;`;
+  canvas.style.cssText = `display:block;width:100%;height:auto;aspect-ratio:${PALL_WORLD_W} / ${PALL_WORLD_H};`;
   const ctx = canvas.getContext('2d');
 
-  // Rank pip — visual division between the three tiles. 1ST = gold,
-  // 2ND = silver, 3RD = bronze. Sits top-left.
-  const rankColours: Record<1 | 2 | 3, string> = { 1: '#ffd84a', 2: '#cbd5e0', 3: '#cd7f32' };
-  const rankLabels: Record<1 | 2 | 3, string> = { 1: '1ST', 2: '2ND', 3: '3RD' };
+  // Rank chip — top-left, bolder than before so the podium reads first.
   const rankChip = el('span', { parent: card, text: rankLabels[rank] });
-  rankChip.style.cssText = `position:absolute;top:6px;left:6px;font-size:0.6rem;letter-spacing:0.16em;color:${rankColours[rank]};border:1px solid ${rankColours[rank]}88;padding:1px 6px;border-radius:3px;font-family:monospace;background:rgba(2,5,13,0.75);`;
+  rankChip.style.cssText = `position:absolute;top:8px;left:8px;font-size:0.72rem;font-weight:bold;letter-spacing:0.2em;color:${tint};border:1.5px solid ${tint};padding:3px 9px;border-radius:4px;font-family:monospace;background:rgba(2,5,13,0.82);text-shadow:0 0 8px ${tint}88;`;
 
-  // Live pulse pill — confirms a stream is connected even before the
-  // first frame lands. Sits top-right.
-  const pill = el('span', { parent: card, text: 'LIVE' });
-  pill.style.cssText = 'position:absolute;top:6px;right:6px;font-size:0.6rem;letter-spacing:0.16em;color:#8cffb4;border:1px solid rgba(140,255,180,0.55);padding:1px 6px;border-radius:3px;font-family:monospace;background:rgba(2,5,13,0.7);animation:pallasite-live-pulse 1.6s ease-in-out infinite;';
+  // Live pulse pill — top-right.
+  const pill = el('span', { parent: card, text: '● LIVE' });
+  pill.style.cssText = 'position:absolute;top:8px;right:8px;font-size:0.68rem;font-weight:bold;letter-spacing:0.16em;color:#8cffb4;border:1.5px solid rgba(140,255,180,0.7);padding:3px 9px;border-radius:4px;font-family:monospace;background:rgba(2,5,13,0.82);animation:pallasite-live-pulse 1.6s ease-in-out infinite;';
 
-  // Mode badge — RETRO / MODERN, surfaces once a frame arrives so
-  // spectators see at a glance which viewport the player picked.
-  // Sits bottom-left over the HUD strip.
+  // Mode badge — RETRO / MODERN, bottom-left over the HUD strip.
   const modeChip = el('span', { parent: card, text: '' });
-  modeChip.style.cssText = 'position:absolute;bottom:34px;left:6px;font-size:0.55rem;letter-spacing:0.14em;font-family:monospace;background:rgba(2,5,13,0.75);padding:1px 5px;border-radius:3px;display:none;';
+  modeChip.style.cssText = 'position:absolute;bottom:60px;left:8px;font-size:0.6rem;letter-spacing:0.14em;font-family:monospace;background:rgba(2,5,13,0.78);padding:2px 7px;border-radius:3px;display:none;';
 
-  // HUD strip at the bottom — name + score + wave. Compact, readable
-  // at a glance.
+  // HUD — two-line: avatar + name on top, score / wave on bottom.
   const hud = el('div', { parent: card });
-  hud.style.cssText = 'display:flex;align-items:baseline;justify-content:space-between;padding:6px 8px;background:rgba(2,5,13,0.85);font-family:monospace;font-size:0.72rem;color:rgba(220,210,255,0.9);gap:6px;';
-  const nameEl = el('span', { parent: hud, text: displayName });
-  nameEl.style.cssText = 'color:#fff5d8;letter-spacing:0.08em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;';
-  const scoreEl = el('span', { parent: hud, text: initialScore.toLocaleString() });
-  scoreEl.style.cssText = 'color:#ffd84a;letter-spacing:0.06em;';
-  const waveEl = el('span', { parent: hud, text: `W${initialWave}` });
-  waveEl.style.cssText = 'color:#8cffb4;letter-spacing:0.06em;font-size:0.66rem;';
+  hud.style.cssText = 'display:flex;flex-direction:column;gap:4px;padding:8px 10px;background:rgba(2,5,13,0.92);border-top:1px solid rgba(220,210,255,0.08);';
+  const hudTop = el('div', { parent: hud });
+  hudTop.style.cssText = 'display:flex;align-items:center;gap:8px;';
+  const avatarEl = el('div', { parent: hudTop });
+  avatarEl.style.cssText = `flex:0 0 28px;width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg, ${tint}33, rgba(140,255,180,0.18));border:1px solid ${tint}66;background-size:cover;background-position:center;`;
+  const nameEl = el('span', { parent: hudTop, text: displayName });
+  nameEl.style.cssText = 'flex:1;color:#fff5d8;letter-spacing:0.08em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace;font-size:0.88rem;';
+  const hudBot = el('div', { parent: hud });
+  hudBot.style.cssText = 'display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-family:monospace;';
+  const scoreEl = el('span', { parent: hudBot, text: initialScore.toLocaleString() });
+  scoreEl.style.cssText = 'color:#ffd84a;letter-spacing:0.06em;font-size:1.1rem;font-weight:bold;text-shadow:0 0 8px rgba(255,216,74,0.45);';
+  const waveEl = el('span', { parent: hudBot, text: `WAVE ${initialWave}` });
+  waveEl.style.cssText = 'color:#8cffb4;letter-spacing:0.12em;font-size:0.78rem;';
 
-  // Asynchronously resolve a profile name (replaces displayName if found).
+  // Asynchronously resolve a profile name + avatar.
   void (async () => {
     try {
       const profile = await fetchProfile(pubkey);
       const display = bestName(profile, pubkey);
       if (display && display !== pubkey) nameEl.textContent = display;
+      if (profile?.picture) avatarEl.style.backgroundImage = `url('${profile.picture.replace(/'/g, '%27')}')`;
     } catch { /* ignore */ }
   })();
 
