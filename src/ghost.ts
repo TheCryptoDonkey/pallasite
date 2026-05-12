@@ -294,13 +294,44 @@ export async function publishReplay(input: PublishReplayInput): Promise<NostrEve
     return null;
   }
 
-  console.log(`[replay] encoding ${frames.length} frames…`);
-  const content = await encodeReplay(frames);
+  // NIP-46 signers (bark, nsec.app, signet bunker) wrap signEvent
+  // requests in NIP-44 encryption with a 65535-byte plaintext cap.
+  // Our encoded replay content can run >1MB for a 3-min run, so the
+  // signer rejects with 'invalid plaintext size: must be between 1
+  // and 65535 bytes'. Decimate frames at publish time until we fit
+  // under ~58KB (leaving ~7KB for tags + event envelope).
+  const MAX_CONTENT_BYTES = 58_000;
+  let candidate = frames.slice();
+  let content = await encodeReplay(candidate);
   if (!content) {
     console.error('[replay] encodeReplay returned null — CompressionStream unsupported?');
     return null;
   }
-  console.log(`[replay] encoded ${content.length} bytes of base64 (kind ${REPLAY_KIND})`);
+  let decimations = 0;
+  while (content.length > MAX_CONTENT_BYTES && candidate.length > 80) {
+    // Keep every other frame, preserving start/end. Halves count per pass.
+    const next: ReplayFrameRaw[] = [];
+    for (let i = 0; i < candidate.length; i += 2) next.push(candidate[i]);
+    // Always include the very last frame so the run-end snapshot
+    // survives the decimation.
+    if (next[next.length - 1] !== candidate[candidate.length - 1]) {
+      next.push(candidate[candidate.length - 1]);
+    }
+    candidate = next;
+    decimations += 1;
+    content = await encodeReplay(candidate);
+    if (!content) {
+      console.error('[replay] re-encode after decimation returned null');
+      return null;
+    }
+    console.log(`[replay] decimation pass ${decimations}: ${candidate.length} frames → ${content.length} bytes`);
+  }
+  if (content.length > MAX_CONTENT_BYTES) {
+    console.error(`[replay] still ${content.length} bytes after ${decimations} decimations — giving up`);
+    return null;
+  }
+  const publishedFrameCount = candidate.length;
+  console.log(`[replay] encoded ${content.length} bytes (kind ${REPLAY_KIND}) · ${publishedFrameCount}/${frames.length} frames retained · ${decimations} decimation(s)`);
 
   const dTag = scoreEventId
     ? `${GAME_ID}:replay:${scoreEventId}`
@@ -312,7 +343,7 @@ export async function publishReplay(input: PublishReplayInput): Promise<NostrEve
     ['score', finalScore.toString()],
     ['wave', finalWave.toString()],
     ['duration', durationMs.toString()],
-    ['frames', String(frames.length)],
+    ['frames', String(publishedFrameCount)],
     ['enc', 'replay-gzip-b64'],
   ];
   if (scoreEventId) tags.push(['e', scoreEventId]);
