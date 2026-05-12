@@ -2352,7 +2352,15 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       const visRightW = (renderMode.vw - renderMode.tx) / renderMode.scale;
       const visTopW = -renderMode.ty / renderMode.scale;
       const visBotW = (renderMode.vh - renderMode.ty) / renderMode.scale;
-      const M = 50;  // margin; larger than any asteroid radius
+      // Margin chosen for *visual lead time*, not entity radius. With
+      // M=50 the previous build gave the player ~160ms warning before an
+      // asteroid popped at the wrap edge (max asteroid speed ~315 px/s),
+      // which read as "that hit came out of nowhere" and "my bullet
+      // disappeared". M=150 gives ~480ms of visible wrap-ghost — well
+      // above human reaction time — so the wrap looks continuous instead
+      // of teleporty. Cheap: probe stays O(entities), and the 3-pass cost
+      // only kicks in when something is actually within the buffer.
+      const M = 150;
       let needX = false, needY = false;
       const probe = (x: number, y: number): void => {
         if (cropX && !needX && (x < visLeftW + M || x > visRightW - M)) needX = true;
@@ -2364,6 +2372,16 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       }
       if (!(needX && needY)) {
         for (const m of state.mines) { probe(m.pos.x, m.pos.y); if (needX && needY) break; }
+      }
+      // Bullets too — player shots and UFO shots BOTH wrap on collide
+      // (game.ts circlesHit uses wrap-aware delta), so the visual must
+      // wrap too or a bullet appears to vanish into the edge and an
+      // incoming enemy shot pops in with no telegraph.
+      if (!(needX && needY)) {
+        for (const b of state.bullets) { probe(b.pos.x, b.pos.y); if (needX && needY) break; }
+      }
+      if (!(needX && needY)) {
+        for (const b of state.enemyBullets) { probe(b.pos.x, b.pos.y); if (needX && needY) break; }
       }
       // Ship near edge counts too — its ghost is visible to the player.
       if (!(needX && needY)) probe(state.ship.pos.x, state.ship.pos.y);
