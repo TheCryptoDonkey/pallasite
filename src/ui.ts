@@ -48,6 +48,7 @@ import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipie
 import { subscribeRecentRuns, timeAgo, dismissWatchEntry, getDismissedWatchEntries, LIVE_FRESHNESS_MS, type WatchEntry } from './watch.js';
 import { decodeNpub } from './bech32.js';
 import { subscribeZapTotals, type ZapTotalsByPubkey } from './zaps.js';
+import { isGuestSession, setGuestName, clearGuestIdentity } from './guest.js';
 import { getReplayBuffer, type ReplayFrameRaw } from './stream-session.js';
 import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, findReplayByAuthor, fetchReplayByScoreEventId, fetchReplayByEventId, type GhostRun } from './ghost.js';
 import { preloadBackground } from './render.js';
@@ -6743,6 +6744,81 @@ function renderTierBadge(parent: HTMLElement, pubkey: string): void {
 
 function renderSessionPanel(parent: HTMLElement, state: GameState): void {
   parent.innerHTML = '';
+  if (state.session && isGuestSession(state.session)) {
+    // Subtle disclosure path — the player is on a locally-generated
+    // Nostr identity. We surface the name (editable) and a quiet
+    // npub line + upgrade affordance, but skip the "locked to X via
+    // bunker" copy that's appropriate for "real" signers. Goal:
+    // feels like a normal name display, not a crypto-key panel.
+    const session = state.session;
+    const guestName = session.displayName ?? 'Anonymous';
+    const identity = el('div', { parent });
+    identity.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:6px;';
+    const nameLine = el('div', { parent: identity });
+    nameLine.style.cssText = 'display:flex;align-items:center;gap:8px;';
+    el('span', { parent: nameLine, text: 'Playing as' }).style.cssText = 'color:rgba(220,210,255,0.7);letter-spacing:0.08em;';
+    const nameBtn = el('button', { parent: nameLine, text: guestName }) as HTMLButtonElement;
+    nameBtn.style.cssText = 'background:transparent;border:none;color:var(--hud-yellow);font-weight:bold;font-size:1.05rem;letter-spacing:0.06em;cursor:pointer;padding:2px 6px;border-bottom:1px dashed rgba(255,216,74,0.4);';
+    nameBtn.title = 'Tap to rename';
+    nameBtn.addEventListener('click', () => {
+      const next = window.prompt('What should we call you?', guestName);
+      if (next === null) return;
+      const result = setGuestName(next);
+      if (result.ok && result.name && state.session) {
+        // Mutate displayName in place so subsequent reads of state.session
+        // see the new name without rebuilding the whole SignetSession.
+        (state.session as { displayName: string }).displayName = result.name;
+        renderSessionPanel(parent, state);
+      }
+    });
+    // Identity disclosure — small "your Nostr identity" line with the
+    // truncated npub. Click-to-copy so a curious user can paste it
+    // into another Nostr client and confirm it's a real key.
+    const idLine = el('div', { parent: identity });
+    idLine.style.cssText = 'font-size:0.7rem;color:rgba(180,140,255,0.65);letter-spacing:0.06em;font-family:monospace;cursor:pointer;';
+    const shortPk = shortPubkey(session.pubkey);
+    idLine.textContent = `local identity · ${shortPk} · tap to copy`;
+    idLine.addEventListener('click', () => {
+      void navigator.clipboard?.writeText(session.pubkey).then(
+        () => { idLine.textContent = `copied! · ${shortPk}`; window.setTimeout(() => { idLine.textContent = `local identity · ${shortPk} · tap to copy`; }, 1400); },
+        () => { /* clipboard refused — silent, the user can find it again on the settings panel */ },
+      );
+    });
+    renderTierBadge(parent, session.pubkey);
+    const row = el('div', { className: 'menu-row', parent });
+    const upgrade = el('button', { className: 'menu-btn secondary', parent: row, text: 'UPGRADE TO NOSTR' }) as HTMLButtonElement;
+    upgrade.style.cssText += 'font-size:0.72rem;padding:4px 12px;letter-spacing:0.14em;';
+    upgrade.title = 'Sign in with a NIP-07 extension or bunker URI. Replaces this local identity with a portable Nostr account that works across devices.';
+    upgrade.addEventListener('click', () => {
+      void (async () => {
+        try { void audio.unlockAudio(); } catch { /* ignore */ }
+        try {
+          const signedIn = await auth.signIn();
+          if (signedIn) {
+            // Real Nostr signer wins over the guest. Don't wipe the
+            // guest record here — leave it on disk so an EJECT
+            // returns the player to their guest identity rather than
+            // a blank "what's your name?" prompt. Settings has a
+            // separate "clear local identity" affordance for hard
+            // wipe.
+            state.session = signedIn;
+            renderSessionPanel(parent, state);
+          }
+        } catch { /* errors already surfaced by the SDK modal */ }
+      })();
+    });
+    const wipe = el('button', { className: 'menu-btn secondary', parent: row, text: 'CLEAR' }) as HTMLButtonElement;
+    wipe.style.cssText += 'font-size:0.72rem;padding:4px 12px;letter-spacing:0.14em;color:rgba(255,120,120,0.85);border-color:rgba(255,120,120,0.4);';
+    wipe.title = 'Forget this local identity. You\'ll be asked for your name again next time you visit.';
+    wipe.addEventListener('click', () => {
+      if (!window.confirm('Forget this local identity? Your scores stay on relays but this device will create a new keypair next time.')) return;
+      clearGuestIdentity();
+      state.session = null;
+      state.profile = null;
+      renderSessionPanel(parent, state);
+    });
+    return;
+  }
   if (state.session) {
     const pubkey = state.session.pubkey;
     const method = state.session.method;
@@ -6836,21 +6912,67 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
       if (e.pointerType !== 'mouse') void doEject();
     });
   } else {
-    el('p', { parent, text: 'Sign in with Nostr. Stake your name.' });
-    const row = el('div', { className: 'menu-row', parent });
-    const inBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'SIGN IN WITH NOSTR' });
+    // Seamless guest identity — every visitor gets a local Nostr
+    // keypair the first time they ignite. The user-visible primitive is
+    // a name field, not "create an account": we ask "what's your name?"
+    // and silently provision the keypair behind it. Returning visitors
+    // skip this branch entirely because auth.tryRestore resurrects the
+    // stored guest record into a SignetSession on boot.
+    const greet = el('p', { parent, text: 'WHAT\'S YOUR NAME?' });
+    greet.style.cssText = 'font-size:0.95rem;color:#ffd84a;letter-spacing:0.16em;margin:0 0 6px;';
+    const nameRow = el('div', { parent });
+    nameRow.style.cssText = 'display:flex;justify-content:center;align-items:center;gap:8px;margin:0 auto 6px;width:100%;max-width:360px;';
+    const nameInput = el('input', { parent: nameRow }) as HTMLInputElement;
+    nameInput.type = 'text';
+    nameInput.placeholder = 'Anonymous';
+    nameInput.maxLength = 64;
+    nameInput.setAttribute('autocomplete', 'nickname');
+    nameInput.spellcheck = false;
+    nameInput.style.cssText = 'flex:1;padding:6px 12px;border:1px solid rgba(220,210,255,0.3);border-radius:4px;background:rgba(2,5,13,0.6);color:#fff5d8;font-family:monospace;font-size:0.95rem;letter-spacing:0.04em;text-align:center;';
+    const playBtn = el('button', { className: 'menu-btn', parent: nameRow, text: 'PLAY ▶' }) as HTMLButtonElement;
+    playBtn.style.cssText += 'flex:0 0 auto;';
     const status = el('p', { parent });
     status.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.85);min-height:1em;margin:0;letter-spacing:0.04em;';
+    let creating = false;
+    const doCreateGuest = async (): Promise<void> => {
+      if (creating) return;
+      creating = true;
+      playBtn.disabled = true;
+      status.textContent = '';
+      // Audio unlock under the click gesture — same reason as the watch
+      // page card-click handler: any audio play() after an async hop
+      // gets rejected by iOS Safari.
+      try { void audio.unlockAudio(); } catch { /* ignore */ }
+      try {
+        const name = nameInput.value.trim() || 'Anonymous';
+        const session = await auth.createGuestSession(name);
+        state.session = session;
+        renderSessionPanel(parent, state);
+      } catch (err) {
+        status.textContent = `Couldn\'t create local identity: ${err instanceof Error ? err.message : String(err)}`;
+        status.style.color = '#ff8a3a';
+        playBtn.disabled = false;
+        creating = false;
+      }
+    };
+    playBtn.addEventListener('click', () => { void doCreateGuest(); });
+    nameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); void doCreateGuest(); }
+    });
+    // "I have a Nostr account already" — fold the existing Signet flow
+    // into a smaller secondary path so the primary action stays "type
+    // name and play". A user with NIP-07 / bunker / signet QR just
+    // taps this to skip the guest path entirely.
+    const advRow = el('div', { parent });
+    advRow.style.cssText = 'display:flex;justify-content:center;margin-top:4px;';
+    const inBtn = el('button', { className: 'menu-btn secondary', parent: advRow, text: 'I HAVE A NOSTR ACCOUNT' }) as HTMLButtonElement;
+    inBtn.style.cssText += 'font-size:0.72rem;padding:4px 12px;letter-spacing:0.14em;';
     let signing = false;
     const doSignIn = async (): Promise<void> => {
       if (signing) return;
       signing = true;
-      // Set visible feedback FIRST so the player sees their tap registered
-      // even if audio unlock or the signer call hangs or throws downstream.
       status.textContent = 'Connecting…';
       status.style.color = 'rgba(180,140,255,0.85)';
-      // Audio unlock is fire-and-forget — a thrown error from a half-blocked
-      // AudioContext on iOS PWA mode must not kill the sign-in path.
       try { void audio.unlockAudio(); } catch { /* ignore */ }
       let elapsed = 0;
       const ticker = window.setInterval(() => {
@@ -6886,12 +7008,12 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
     inBtn.addEventListener('pointerup', e => {
       if (e.pointerType !== 'mouse') void doSignIn();
     });
-    // Pressing IGNITE without signing in IS the guest path — no separate
-    // GUEST DRIFT button needed. The session-status hint covers it.
-    const hint = el('p', { parent, text: 'Or ignite as a guest — score-only, no sats.' });
-    hint.style.fontSize = '0.85rem';
-    hint.style.color = 'rgba(180,140,255,0.7)';
-    hint.style.marginTop = '6px';
+    // Autofocus the name field so a fresh visitor can start typing
+    // straight away. Skip on mobile keyboards to avoid the OSK popping
+    // open over the title art before the user has decided to play.
+    if (!matchMedia('(pointer: coarse)').matches) {
+      window.setTimeout(() => { try { nameInput.focus(); } catch { /* ignore */ } }, 60);
+    }
   }
 }
 
