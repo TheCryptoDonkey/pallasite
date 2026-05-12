@@ -146,6 +146,11 @@ export interface StreamFrame {
    *  'h' halo. Lets the watcher render the same cosmetic the player
    *  picked. Omitted = default. */
   skin?: 'd' | 'i' | 'h';
+  /** Player's render mode — 'r' retro 4:3, 'm' modern fill. Surfaces
+   *  as a small badge on the watcher's mini tiles so spectators see at
+   *  a glance which viewport the player is using. World coords on the
+   *  wire are always 960×720 (4:3) regardless. */
+  mode?: 'r' | 'm';
   /** World-state snapshot of non-ship entities at frame time. Each
    *  entity is a fixed-shape tuple keyed by `id` (the first field)
    *  so the viewer can match the same entity across frames and
@@ -207,6 +212,8 @@ interface WireWorld {
   nw?: number;
   /** Ship skin code (d/i/h). Omitted = default. */
   sk?: 'd' | 'i' | 'h';
+  /** Render-mode code ('r' retro 4:3 / 'm' modern fill). Omitted = retro. */
+  md?: 'r' | 'm';
 }
 
 export interface ActiveStreamSession {
@@ -460,6 +467,7 @@ function buildWireWorld(frame: StreamFrame): WireWorld {
   if (frame.phase) world.ph = frame.phase;
   if (typeof frame.nextWave === 'number') world.nw = frame.nextWave;
   if (frame.skin) world.sk = frame.skin;
+  if (frame.mode) world.md = frame.mode;
   return world;
 }
 

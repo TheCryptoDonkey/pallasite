@@ -5722,7 +5722,11 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
   // grid so a glance at the watch page surfaces who's actually playing
   // right now without having to scan the score list.
   const liveTiles = el('div', { parent: overlay });
-  liveTiles.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit, minmax(190px, 1fr));gap:10px;max-width:760px;width:100%;margin:0 auto 14px;';
+  // Wider gap + a centred vertical-rule pseudo-divider via column-gap
+  // 'overlay' (using a SVG-style separator on each tile after the first
+  // via the ':not(:first-child)::before' selector below). Keeps the
+  // three tiles visually distinct rather than reading as one row.
+  liveTiles.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:18px;max-width:760px;width:100%;margin:0 auto 14px;position:relative;';
   liveTiles.style.display = 'none';  // shown once at least one live tile lands
   // Per-pubkey tracker so we can keep stable tiles across update emits
   // (rebuilding from scratch every emit would flicker the canvas and
@@ -5869,7 +5873,8 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
       for (const [pk, t] of miniTiles) {
         if (!wanted.has(pk)) { t.unsubscribe(); t.el.remove(); miniTiles.delete(pk); }
       }
-      for (const e of liveTop) {
+      for (let i = 0; i < liveTop.length; i++) {
+        const e = liveTop[i];
         if (miniTiles.has(e.pubkey)) continue;
         const t = makeMiniLiveTile(
           e.pubkey,
@@ -5878,6 +5883,7 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
           e.wave,
           e.createdAt * 1000,
           state,
+          (i + 1) as 1 | 2 | 3,
         );
         liveTiles.appendChild(t.el);
         miniTiles.set(e.pubkey, t);
@@ -5997,6 +6003,7 @@ function makeMiniLiveTile(
   initialWave: number,
   runStartedAtMs: number,
   state: GameState,
+  rank: 1 | 2 | 3,
 ): { el: HTMLElement; unsubscribe: () => void } {
   const card = el('div');
   card.style.cssText = [
@@ -6018,10 +6025,23 @@ function makeMiniLiveTile(
   canvas.style.cssText = `display:block;width:${MINI_W_CSS}px;height:${MINI_H_CSS}px;`;
   const ctx = canvas.getContext('2d');
 
+  // Rank pip — visual division between the three tiles. 1ST = gold,
+  // 2ND = silver, 3RD = bronze. Sits top-left.
+  const rankColours: Record<1 | 2 | 3, string> = { 1: '#ffd84a', 2: '#cbd5e0', 3: '#cd7f32' };
+  const rankLabels: Record<1 | 2 | 3, string> = { 1: '1ST', 2: '2ND', 3: '3RD' };
+  const rankChip = el('span', { parent: card, text: rankLabels[rank] });
+  rankChip.style.cssText = `position:absolute;top:6px;left:6px;font-size:0.6rem;letter-spacing:0.16em;color:${rankColours[rank]};border:1px solid ${rankColours[rank]}88;padding:1px 6px;border-radius:3px;font-family:monospace;background:rgba(2,5,13,0.75);`;
+
   // Live pulse pill — confirms a stream is connected even before the
-  // first frame lands.
+  // first frame lands. Sits top-right.
   const pill = el('span', { parent: card, text: 'LIVE' });
-  pill.style.cssText = 'position:absolute;top:6px;left:6px;font-size:0.6rem;letter-spacing:0.16em;color:#8cffb4;border:1px solid rgba(140,255,180,0.55);padding:1px 6px;border-radius:3px;font-family:monospace;background:rgba(2,5,13,0.7);animation:pallasite-live-pulse 1.6s ease-in-out infinite;';
+  pill.style.cssText = 'position:absolute;top:6px;right:6px;font-size:0.6rem;letter-spacing:0.16em;color:#8cffb4;border:1px solid rgba(140,255,180,0.55);padding:1px 6px;border-radius:3px;font-family:monospace;background:rgba(2,5,13,0.7);animation:pallasite-live-pulse 1.6s ease-in-out infinite;';
+
+  // Mode badge — RETRO / MODERN, surfaces once a frame arrives so
+  // spectators see at a glance which viewport the player picked.
+  // Sits bottom-left over the HUD strip.
+  const modeChip = el('span', { parent: card, text: '' });
+  modeChip.style.cssText = 'position:absolute;bottom:34px;left:6px;font-size:0.55rem;letter-spacing:0.14em;font-family:monospace;background:rgba(2,5,13,0.75);padding:1px 5px;border-radius:3px;display:none;';
 
   // HUD strip at the bottom — name + score + wave. Compact, readable
   // at a glance.
@@ -6059,7 +6079,7 @@ function makeMiniLiveTile(
   // WS subscription — minimal frame parse, render ship pose + entity
   // dots. Don't bother with interpolation / extrapolation at this
   // size; a 60fps slam-cut reads fine.
-  let lastFrame: { x: number; y: number; r: number; asteroids: unknown[][]; ufos: unknown[][]; score: number; wave: number } | null = null;
+  let lastFrame: { x: number; y: number; r: number; asteroids: unknown[][]; ufos: unknown[][]; score: number; wave: number; mode: 'r' | 'm' } | null = null;
   let ws: WebSocket | null = null;
   let closed = false;
   let lastActivity = Date.now();
@@ -6073,6 +6093,7 @@ function makeMiniLiveTile(
         const obj = JSON.parse(typeof ev.data === 'string' ? ev.data : '');
         if (!obj || typeof obj.type === 'string') return;  // ignore peer-up/down
         const world = (typeof obj.world === 'object' && obj.world) ? obj.world : {};
+        const md = world.md === 'm' ? 'm' : 'r';
         lastFrame = {
           x: typeof obj.x === 'number' ? obj.x : 0,
           y: typeof obj.y === 'number' ? obj.y : 0,
@@ -6081,10 +6102,21 @@ function makeMiniLiveTile(
           ufos: Array.isArray(world.u) ? world.u as unknown[][] : [],
           score: typeof obj.score === 'number' ? obj.score : 0,
           wave: typeof obj.wave === 'number' ? obj.wave : 0,
+          mode: md,
         };
         lastActivity = Date.now();
         scoreEl.textContent = lastFrame.score.toLocaleString();
         waveEl.textContent = `W${lastFrame.wave}`;
+        modeChip.style.display = 'inline-block';
+        if (md === 'm') {
+          modeChip.textContent = 'MODERN';
+          modeChip.style.color = '#b48cff';
+          modeChip.style.border = '1px solid rgba(180,140,255,0.55)';
+        } else {
+          modeChip.textContent = 'RETRO 4:3';
+          modeChip.style.color = '#ffd84a';
+          modeChip.style.border = '1px solid rgba(255,216,74,0.55)';
+        }
       } catch { /* ignore */ }
     };
     ws.onclose = () => { if (!closed) window.setTimeout(open, 1500); };
