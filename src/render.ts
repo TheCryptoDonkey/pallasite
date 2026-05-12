@@ -210,6 +210,7 @@ export interface RenderModeInfo {
 }
 let renderMode: RenderModeInfo = { kind: 'retro', vw: 960, vh: 720, dpr: 1, scale: 1, tx: 0, ty: 0, insets: ZERO_INSETS };
 export function setRenderMode(info: RenderModeInfo): void { renderMode = info; }
+export function getRenderModeKind(): 'retro' | 'modern' { return renderMode.kind; }
 
 /**
  * Effective wrap distance for collisions. In modern portrait mode the canvas

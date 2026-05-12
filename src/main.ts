@@ -8,7 +8,7 @@
 import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHyperspace, tryActivateShield, cheatJumpToWave, cheatJumpToBonus, skipDeathReplay, skipWaveStart, skipWarp } from './game.js';
 import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
-import { render, preloadBackground, setRenderMode } from './render.js';
+import { render, preloadBackground, setRenderMode, getRenderModeKind } from './render.js';
 import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderJuryPage, renderWatchPage, renderControllerPage } from './ui.js';
 import { postHeartbeat } from './faucet.js';
 import {
@@ -914,6 +914,7 @@ async function boot(): Promise<void> {
           const id = getActiveSkinId();
           return id === 'ironclad' ? 'i' : id === 'halo' ? 'h' : 'd';
         })(),
+        mode: (getRenderModeKind() === 'modern' ? 'm' : 'r') as 'r' | 'm',
         asteroids,
         ufos,
         mines,
