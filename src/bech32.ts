@@ -68,3 +68,44 @@ export function encodeLNURL(url: string): string {
   for (const v of combined) result += CHARSET[v];
   return result.toUpperCase();
 }
+
+function verifyChecksum(hrp: string, data: number[]): boolean {
+  return polymod(hrpExpand(hrp).concat(data)) === 1;
+}
+
+/**
+ * Decode an npub (NIP-19) into a 64-char hex pubkey. Returns null for any
+ * malformed input — caller should treat null as "not a valid npub". The
+ * watch page's PERSON filter uses this to accept either an npub or raw hex.
+ */
+export function decodeNpub(npub: string): string | null {
+  const lower = npub.trim().toLowerCase();
+  if (!lower.startsWith('npub1')) return null;
+  if (lower.length < 8 || lower.length > 90) return null;
+  const sepPos = lower.lastIndexOf('1');
+  const hrp = lower.slice(0, sepPos);
+  if (hrp !== 'npub') return null;
+  const dataStr = lower.slice(sepPos + 1);
+  const data: number[] = [];
+  for (const ch of dataStr) {
+    const idx = CHARSET.indexOf(ch);
+    if (idx === -1) return null;
+    data.push(idx);
+  }
+  if (data.length < 6) return null;
+  if (!verifyChecksum(hrp, data)) return null;
+  const payload = data.slice(0, -6);
+  // 5-bit groups → 8-bit bytes, no pad. NIP-19 npub payload is exactly 32 bytes.
+  let acc = 0, bits = 0;
+  const out: number[] = [];
+  for (const v of payload) {
+    acc = (acc << 5) | v;
+    bits += 5;
+    while (bits >= 8) {
+      bits -= 8;
+      out.push((acc >> bits) & 0xff);
+    }
+  }
+  if (out.length !== 32) return null;
+  return out.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
