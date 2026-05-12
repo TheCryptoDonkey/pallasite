@@ -1894,19 +1894,29 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   el('h2', { parent: overlay, text: headerLabel });
 
   const nameEl = el('p', { parent: overlay, text: input.displayName.toUpperCase() });
-  nameEl.style.cssText = 'margin:6px 0 4px;font-size:1.2rem;letter-spacing:0.18em;color:#8cffb4;text-shadow:0 0 10px rgba(140,255,180,0.5);';
-
-  const stat = el('p', { parent: overlay });
-  stat.style.cssText = 'margin:0 0 14px;font-size:0.92rem;color:rgba(220,210,255,0.8);letter-spacing:0.1em;';
-  // Show "Connecting…" until the first real frame lands — initialScore
-  // and initialWave can be 0 for a player who has just clicked IGNITE
-  // (their first heartbeat is wave=0, score=0), which used to surface
-  // a misleading "WAVE 0 · 0 SCORE" line.
-  if (input.initialWave > 0 || input.initialScore > 0) {
-    stat.textContent = `WAVE ${input.initialWave} · ${input.initialScore.toLocaleString()} SCORE`;
-  } else {
-    stat.textContent = 'Tuning in…';
+  nameEl.style.cssText = 'margin:6px 0 14px;font-size:1.2rem;letter-spacing:0.18em;color:#8cffb4;text-shadow:0 0 10px rgba(140,255,180,0.5);';
+  // Profile-resolve the name asynchronously — the caller may have
+  // passed in a shortPubkey fallback (e.g. when the theatre opens
+  // before the watch card's own fetchProfile resolved). Replace with
+  // the kind 0 display name once available so the header reads e.g.
+  // 'THE CRYPTO DONKEY' instead of 'DA19F1CD…E5BD'.
+  if (/^[0-9a-f]{64}$/i.test(input.masterPubkey)) {
+    void (async () => {
+      try {
+        const profile = await fetchProfile(input.masterPubkey);
+        const resolved = bestName(profile, input.masterPubkey);
+        if (resolved && resolved !== input.masterPubkey) {
+          nameEl.textContent = resolved.toUpperCase();
+        }
+      } catch { /* keep the shortPubkey fallback */ }
+    })();
   }
+  // The previous 'stat' line duplicated liveScore below — initialScore
+  // was sticky from the entry's kind 30762 heartbeat (often wave=1
+  // score=0 for a freshly-started run) while liveScore updates from
+  // the frame stream. They'd disagree once the frames started arriving
+  // (header shows '0' while the canvas HUD shows 11,705) which was
+  // confusing. Removed; liveScore is canonical.
 
   // Sized to viewport. We pick the larger of "stay within the viewport
   // padding" and a min width so the canvas feels like a real watch
