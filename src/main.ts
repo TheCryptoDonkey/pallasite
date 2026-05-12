@@ -726,6 +726,14 @@ async function boot(): Promise<void> {
   let activeStream: ActiveStreamSession | null = null;
   let streamingRunId: string | null = null;
   let streamStartInFlight = false;
+  /** Runs whose startStreamSession returned null (signer rejected the
+   *  NIP-53 kind 30311, all relays bounced it, etc). Tracked so the
+   *  tickStream loop doesn't retry every 16ms forever — each retry
+   *  hits clearReplayBuffer at the top of startStreamSession and wipes
+   *  the frames captured between the prior retry's resolve and the
+   *  current tick, leaving the kind 30764 publish with only a handful
+   *  of frames at game-over. */
+  const streamFailedRunIds = new Set<string>();
   /** Wall-ms of the most recent frame captured via captureReplayFrame
    *  on the no-activeStream fallback path. Used to throttle the
    *  fallback at the same cadence as activeStream.lastFramePublishedAt
@@ -756,8 +764,13 @@ async function boot(): Promise<void> {
 
     // New run — generate the session key, get the master to sign the
     // NIP-53 event. Guarded by streamStartInFlight so a slow signer
-    // doesn't fire-multiple times across consecutive ticks.
-    if (inRun && !activeStream && streamingRunId !== runId && !streamStartInFlight) {
+    // doesn't fire-multiple times across consecutive ticks. Skipped
+    // entirely once a run has been marked failed — the capture
+    // fallback path below still runs so kind 30764 fills.
+    if (
+      inRun && !activeStream && streamingRunId !== runId && !streamStartInFlight
+      && !streamFailedRunIds.has(runId)
+    ) {
       streamStartInFlight = true;
       void (async () => {
         if (!state.session) { streamStartInFlight = false; return; }
@@ -767,10 +780,18 @@ async function boot(): Promise<void> {
         if (started) {
           activeStream = started;
           streamingRunId = runId;
+        } else {
+          // Permanent fail for this run — capture-only mode from here.
+          streamFailedRunIds.add(runId);
+          console.warn(`[stream] startStreamSession permanently failed for run ${runId} — replay buffer will still fill via captureReplayFrame, but no live WS spectators`);
         }
         streamStartInFlight = false;
       })();
-      return;
+      // Don't return early here — fall through to the capture path so
+      // frames from the in-flight window AND the subsequent failure
+      // case still land in the replay buffer. The capture path is
+      // idempotent (subsample throttled) so a same-tick double-fire
+      // is harmless.
     }
 
     // Mid-run frame — sign locally with the session key, push to the
