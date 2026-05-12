@@ -47,6 +47,7 @@ import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipient } from './zap.js';
 import { subscribeRecentRuns, timeAgo, dismissWatchEntry, getDismissedWatchEntries, LIVE_FRESHNESS_MS, type WatchEntry } from './watch.js';
 import { decodeNpub } from './bech32.js';
+import { subscribeZapTotals, type ZapTotalsByPubkey } from './zaps.js';
 import { getReplayBuffer, type ReplayFrameRaw } from './stream-session.js';
 import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, findReplayByAuthor, fetchReplayByScoreEventId, fetchReplayByEventId, type GhostRun } from './ghost.js';
 import { preloadBackground } from './render.js';
@@ -5490,6 +5491,11 @@ let watchActiveUnsubscribe: (() => void) | null = null;
  *  connections — otherwise each renderWatchPage call would leak 3+
  *  sockets per visit. */
 let watchActiveMiniTeardown: (() => void) | null = null;
+/** Module-scoped teardown for the kind 9735 zap aggregator. Same
+ *  rationale as watchActiveMiniTeardown — separate so the page can
+ *  re-open the zap subscription with a refreshed pubkey set without
+ *  tearing down the score-event subscription. */
+let watchActiveZapTeardown: (() => void) | null = null;
 
 export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean } = {}): void {
   clearOverlay();
@@ -5499,6 +5505,8 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
   watchActiveUnsubscribe = null;
   watchActiveMiniTeardown?.();
   watchActiveMiniTeardown = null;
+  watchActiveZapTeardown?.();
+  watchActiveZapTeardown = null;
 
   // Deep-link router: two URL forms
   //   /#replay=<kind-30764-event-id>  → fetch the rich replay directly
@@ -5644,25 +5652,28 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
     }
   };
 
-  // Filter tabs — LIVE / TODAY / ALL (+ MINE if signed in). Toggles
-  // card visibility client-side based on data-* attributes set in
-  // renderEntry. Tabs always render so the user knows the dimension
-  // exists; counts update when entries land.
-  type FilterKind = 'live' | 'today' | 'mine' | 'all';
+  // Filter tabs — LIVE / TODAY / ZAPPED / ALL (+ MINE if signed in).
+  // Toggles card visibility client-side based on data-* attributes set
+  // in renderEntry. Tabs always render so the user knows the dimension
+  // exists; counts update when entries land. ZAPPED also re-sorts the
+  // grid by aggregate sats received instead of newest-first.
+  type FilterKind = 'live' | 'today' | 'mine' | 'zapped' | 'all';
   let activeFilter: FilterKind = 'all';
   const filterRow = el('div', { parent: overlay });
   filterRow.style.cssText = 'display:flex;justify-content:center;gap:6px;margin:0 auto 12px;max-width:760px;width:100%;flex-wrap:wrap;';
-  const filterCounts: Record<FilterKind, HTMLSpanElement> = { live: el('span'), today: el('span'), mine: el('span'), all: el('span') };
+  const filterCounts: Record<FilterKind, HTMLSpanElement> = { live: el('span'), today: el('span'), mine: el('span'), zapped: el('span'), all: el('span') };
   const filterBtns: Record<FilterKind, HTMLButtonElement> = {} as Record<FilterKind, HTMLButtonElement>;
   const FILTER_DEFS: Array<{ k: FilterKind; label: string; visible: boolean }> = [
     { k: 'live', label: 'LIVE', visible: true },
     { k: 'today', label: 'TODAY', visible: true },
+    { k: 'zapped', label: '⚡ ZAPPED', visible: true },
     { k: 'mine', label: 'MINE', visible: !!state.session },
     { k: 'all', label: 'ALL', visible: true },
   ];
   const FILTER_COLOUR: Record<FilterKind, string> = {
     live: '#8cffb4',
     today: '#ffd84a',
+    zapped: '#ff8a3a',
     mine: '#cbb6ff',
     all: 'rgba(220,210,255,0.85)',
   };
@@ -5778,6 +5789,8 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
   backBtn.addEventListener('click', () => {
     watchActiveUnsubscribe?.();
     watchActiveUnsubscribe = null;
+    watchActiveZapTeardown?.();
+    watchActiveZapTeardown = null;
     for (const t of miniTiles.values()) t.unsubscribe();
     miniTiles.clear();
     try { window.location.assign('https://pallasite.app/'); }
@@ -5813,15 +5826,31 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
       const isMine = card.dataset.mine === '1';
       const at = parseInt(card.dataset.createdAt ?? '0', 10);
       const isToday = at > 0 && (Date.now() - at * 1000) < 24 * 60 * 60_000;
+      const zapSats = parseInt(card.dataset.zapSats ?? '0', 10) || 0;
       let show = true;
       if (activeFilter === 'live') show = isLive;
       else if (activeFilter === 'today') show = isToday;
       else if (activeFilter === 'mine') show = isMine;
+      else if (activeFilter === 'zapped') show = zapSats > 0;
       // Person filter — prefix match against the card's pubkey. Empty
       // filter means "no constraint". A short prefix matches several
       // cards; the 64-char form pins it to exactly one.
       if (show && personFilter) show = pubkey.startsWith(personFilter);
       card.style.display = show ? '' : 'none';
+    }
+    // ZAPPED tab re-orders cards by aggregate sats descending — playing
+    // a "leaderboard of generosity" angle rather than chronology. Cards
+    // with zero zaps drop out via the show=false branch above, so the
+    // sort only touches the survivors.
+    if (activeFilter === 'zapped') {
+      const visible: Array<[number, HTMLElement]> = [];
+      for (const card of cardByPubkey.values()) {
+        if (card.style.display === 'none') continue;
+        const zapSats = parseInt(card.dataset.zapSats ?? '0', 10) || 0;
+        visible.push([zapSats, card]);
+      }
+      visible.sort((a, b) => b[0] - a[0]);
+      for (const [, card] of visible) grid.appendChild(card);
     }
   };
   setFilter('all');
@@ -5858,17 +5887,20 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
   };
 
   const refreshFilterCounts = (): void => {
-    let live = 0, today = 0, mine = 0;
+    let live = 0, today = 0, mine = 0, zapped = 0;
     const now = Date.now();
     for (const card of cardByPubkey.values()) {
       if (card.dataset.live === '1') live += 1;
       if (card.dataset.mine === '1') mine += 1;
       const at = parseInt(card.dataset.createdAt ?? '0', 10);
       if (at > 0 && (now - at * 1000) < 24 * 60 * 60_000) today += 1;
+      const zapSats = parseInt(card.dataset.zapSats ?? '0', 10) || 0;
+      if (zapSats > 0) zapped += 1;
     }
     filterCounts.live.textContent = String(live);
     filterCounts.today.textContent = String(today);
     filterCounts.mine.textContent = String(mine);
+    filterCounts.zapped.textContent = String(zapped);
     filterCounts.all.textContent = String(cardByPubkey.size);
   };
 
@@ -5883,6 +5915,61 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
       const card = cardByPubkey.get(e.pubkey);
       if (card) grid.appendChild(card);
     }
+  };
+
+  // Zap-total state — apply to cards on every entries OR zap emit, so a
+  // card that arrives AFTER the zap aggregator already saw its receipts
+  // still gets decorated, and a late-arriving zap on a known card
+  // updates the chip without re-rendering. Keyed by lowercase hex.
+  const zapTotalsByPubkey = new Map<string, { sats: number; count: number }>();
+  // The pubkey set the zap subscription was opened with — used to know
+  // when the set has grown enough that re-subscribing is worth the
+  // socket churn. We tolerate stale subscriptions for a few new players
+  // before re-opening: each re-subscribe drops the historical totals
+  // we've accumulated client-side and re-fetches them.
+  let lastSubscribedPubkeys: ReadonlySet<string> = new Set();
+  const applyZapToCard = (card: HTMLElement, pubkey: string): void => {
+    const totals = zapTotalsByPubkey.get(pubkey);
+    const chip = card.querySelector('[data-watch-zap]') as HTMLElement | null;
+    if (!chip) return;
+    if (!totals || totals.sats <= 0) {
+      chip.style.display = 'none';
+      card.dataset.zapSats = '0';
+      return;
+    }
+    card.dataset.zapSats = String(totals.sats);
+    chip.style.display = '';
+    chip.textContent = `⚡ ${totals.sats.toLocaleString()} sat${totals.sats === 1 ? '' : 's'}`;
+    chip.title = `${totals.count} zap${totals.count === 1 ? '' : 's'} totalling ${totals.sats} sat${totals.sats === 1 ? '' : 's'} via kind 9735 receipts`;
+  };
+  const onZapTotals = (totals: ZapTotalsByPubkey): void => {
+    // Copy into the local map — totals is a ReadonlyMap that may be the
+    // aggregator's internal store, and we keep a stable reference here
+    // so a card rendered after this emit can still look up its totals.
+    zapTotalsByPubkey.clear();
+    for (const [pk, t] of totals) zapTotalsByPubkey.set(pk, { sats: t.sats, count: t.count });
+    for (const [pk, card] of cardByPubkey) applyZapToCard(card, pk);
+    refreshFilterCounts();
+    if (activeFilter === 'zapped') applyFilter();
+  };
+  const refreshZapSubscription = (pubkeys: ReadonlySet<string>): void => {
+    // Only re-open the subscription when at least 4 new pubkeys appear
+    // (or the set shrinks). Each re-subscribe drops the accumulated
+    // client-side totals + reopens 6 WebSockets, so we want to batch.
+    if (pubkeys.size === lastSubscribedPubkeys.size) {
+      let identical = true;
+      for (const pk of pubkeys) if (!lastSubscribedPubkeys.has(pk)) { identical = false; break; }
+      if (identical) return;
+    }
+    const grown = pubkeys.size - lastSubscribedPubkeys.size;
+    if (lastSubscribedPubkeys.size > 0 && grown < 4) return;
+    watchActiveZapTeardown?.();
+    lastSubscribedPubkeys = new Set(pubkeys);
+    if (pubkeys.size === 0) { watchActiveZapTeardown = null; return; }
+    watchActiveZapTeardown = subscribeZapTotals(
+      Array.from(pubkeys),
+      onZapTotals,
+    );
   };
 
   watchActiveUnsubscribe = subscribeRecentRuns(
@@ -5900,8 +5987,14 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
       grid.querySelector('[data-watch-empty-cta]')?.remove();
       for (const e of visible) renderEntry(e);
       reorderGrid(visible);
+      // Decorate any freshly-rendered card with whatever totals we
+      // already know about — covers the "zap aggregator saw the receipt
+      // before the score event arrived" case.
+      for (const [pk, card] of cardByPubkey) applyZapToCard(card, pk);
       refreshFilterCounts();
       applyFilter();
+      // Refresh the zap subscription against the latest pubkey set.
+      refreshZapSubscription(new Set(visible.map((e) => e.pubkey)));
       // Sync top-3 live mini-canvas tiles. Live entries with the most
       // recent heartbeat win the slots. Add new ones, remove tiles whose
       // entry dropped out of the live set, leave matching ones in place.
@@ -6314,6 +6407,13 @@ function renderWatchCard(entry: WatchEntry, state: GameState): HTMLElement {
     .style.cssText = 'color:#ffd84a;';
   if (entry.seed) el('span', { parent: stats, text: `SEED ${entry.seed}` })
     .style.cssText = 'color:rgba(180,140,255,0.7);font-family:monospace;';
+  // Zap-total chip — kept invisible until the kind 9735 aggregator
+  // reports >0 sats for this pubkey. The orange ⚡ visually separates
+  // it from the ₿ daily-claim sats already on the card, and reads as a
+  // "this player got zapped" signal at a glance.
+  const zapChip = el('span', { parent: stats, text: '' });
+  zapChip.setAttribute('data-watch-zap', '1');
+  zapChip.style.cssText = 'display:none;color:#ff8a3a;font-family:monospace;letter-spacing:0.06em;';
 
   const actions = el('div', { parent: card });
   actions.style.cssText = 'display:flex;gap:8px;margin-top:4px;flex-wrap:wrap;';
