@@ -206,6 +206,19 @@ async function sha256Hex(input: string): Promise<string> {
     .join('');
 }
 
+async function sha256HexBytes(bytes: Uint8Array): Promise<string> {
+  // Slice into a fresh ArrayBuffer so crypto.subtle never sees a
+  // SharedArrayBuffer-backed view (typescript lib bundles widen
+  // Uint8Array.buffer to ArrayBuffer | SharedArrayBuffer in newer
+  // configs; SubtleCrypto rejects SharedArrayBuffer).
+  const ab = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(ab).set(bytes);
+  const hash = await crypto.subtle.digest('SHA-256', ab);
+  return Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 function utf8Base64(s: string): string {
   const bytes = new TextEncoder().encode(s);
   let binary = '';
@@ -617,5 +630,103 @@ export async function requestDeleteFlag(
     };
   } catch {
     return { ok: false, error: 'bad_response', status: res.status };
+  }
+}
+
+export interface ReplayUploadResult {
+  ok: true;
+  sha256: string;
+  size: number;
+  url: string;
+}
+
+export type ReplayUploadError =
+  | { ok: false; error: 'no_signer' }
+  | { ok: false; error: 'sign_failed'; detail: string }
+  | { ok: false; error: 'network_error'; detail: string }
+  | { ok: false; error: 'server_error'; status: number; detail?: string };
+
+/**
+ * PUT /api/replay/{sha256} — content-addressed replay blob upload.
+ *
+ * Replaces the legacy per-wave chunking publish path. The whole gzipped
+ * frame buffer goes up in ONE HTTP PUT, authenticated by a single NIP-98
+ * sign. The server verifies sha256(body) matches the URL path before
+ * accepting the bytes, so the URL alone commits to the contents — the
+ * kind 30764 pointer event published after this returns can safely
+ * reference the URL + hash.
+ *
+ * Why this exists: NIP-46 caps signEvent plaintext at 65535 bytes,
+ * which forced replays to be chunked into 25+ events per run and signed
+ * one-by-one. Bunker-backed signers (bark → upstream relay) ate ~30s of
+ * round-trips per game and frequently wedged. Single PUT collapses
+ * those 25 signs into 1.
+ */
+export async function uploadReplay(
+  session: SignetSession,
+  gzippedBytes: Uint8Array,
+): Promise<ReplayUploadResult | ReplayUploadError> {
+  if (!session.signer.capabilities.canSignEvents) {
+    return { ok: false, error: 'no_signer' };
+  }
+  const sha256 = await sha256HexBytes(gzippedBytes);
+  const url = `${location.origin}${API_BASE}/replay/${sha256}`;
+
+  // NIP-98 auth — kind 27235 with u + method tags. We don't include a
+  // `payload` tag: the URL path already commits to sha256(body), the URL
+  // is in the signed `u` tag, so payload-tag verification would be
+  // redundant. The server-side replay handler skips it.
+  const authTemplate = {
+    kind: 27235,
+    created_at: Math.floor(Date.now() / 1000),
+    content: '',
+    tags: [
+      ['u', url],
+      ['method', 'PUT'],
+    ],
+  };
+  let signedAuth;
+  try {
+    const SIGN_TIMEOUT_MS = 30_000;
+    signedAuth = await Promise.race([
+      session.signer.signEvent(authTemplate),
+      new Promise<never>((_, reject) => {
+        window.setTimeout(() => reject(new Error('signer-timeout')), SIGN_TIMEOUT_MS);
+      }),
+    ]);
+  } catch (err) {
+    return { ok: false, error: 'sign_failed', detail: err instanceof Error ? err.message : String(err) };
+  }
+  const authToken = `Nostr ${utf8Base64(JSON.stringify(signedAuth))}`;
+
+  // Cast to ArrayBufferView keeps fetch's BodyInit type happy across
+  // recent TS lib bundles that have started narrowing BodyInit away
+  // from Uint8Array-with-SharedArrayBuffer-backing-store.
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'PUT',
+      headers: {
+        authorization: authToken,
+        'content-type': 'application/octet-stream',
+      },
+      body: gzippedBytes as BodyInit,
+    });
+  } catch (err) {
+    return { ok: false, error: 'network_error', detail: err instanceof Error ? err.message : String(err) };
+  }
+  if (!res.ok) {
+    let detail: string | undefined;
+    try { detail = (await res.json() as { error?: string }).error; } catch { /* ignore */ }
+    return { ok: false, error: 'server_error', status: res.status, detail };
+  }
+  try {
+    const data = await res.json() as { ok?: boolean; sha256?: string; size?: number; url?: string };
+    if (!data.ok || !data.sha256 || typeof data.size !== 'number' || !data.url) {
+      return { ok: false, error: 'server_error', status: res.status, detail: 'bad_response' };
+    }
+    return { ok: true, sha256: data.sha256, size: data.size, url: data.url };
+  } catch {
+    return { ok: false, error: 'server_error', status: res.status, detail: 'bad_response' };
   }
 }
