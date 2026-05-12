@@ -649,18 +649,11 @@ async function boot(): Promise<void> {
   // First, consume an in-flight signet redirect callback if one's on the URL —
   // returning from signet with auth params persists a session and strips them
   // from the URL. Then fall back to restoring a stored session for normal loads.
+  // auth.ts wraps every returned session's signer through the global
+  // serialised signEvent queue, so heartbeat + replay chunks + ghost
+  // publishes + claim signs are gated one-at-a-time through bark/bunker
+  // instead of racing. No extra wrapping needed here.
   state.session = (await handleAuthCallback()) ?? (await tryRestore());
-  // Serialise every signEvent call through a global queue so the
-  // NIP-46 / NIP-07 signer never gets concurrent requests. bark in
-  // particular times out when hit with multiple parallel signs
-  // (heartbeat + replay chunks + ghost publishes all racing); the
-  // queue gates them through one at a time with a small post-sign
-  // gap. Wrapping at session-set means every downstream call site
-  // benefits without changes.
-  if (state.session) {
-    const { serialiseSigner } = await import('./sign-queue.js');
-    state.session = { ...state.session, signer: serialiseSigner(state.session.signer) };
-  }
   // Kick off profile fetch in the background — UI updates when it lands
   if (state.session) {
     void import('./profile.js').then(({ fetchProfile, getCachedProfile }) => {
@@ -1127,10 +1120,8 @@ function watchForSignerUpgrade(): void {
       const upgraded = await tryRestore();
       if (upgraded?.signer.capabilities.canSignEvents
           && upgraded.pubkey === sess.pubkey) {
-        // Wrap with the sign-queue here too — restore paths bypass
-        // the boot-time wrap otherwise.
-        const { serialiseSigner } = await import('./sign-queue.js');
-        state.session = { ...upgraded, signer: serialiseSigner(upgraded.signer) };
+        // tryRestore already wraps the signer through the global sign queue.
+        state.session = upgraded;
         // Profile was tied to the stub session; refetch under the new
         // signer just in case kind 0 caching differs (cheap, returns
         // immediately if already cached).

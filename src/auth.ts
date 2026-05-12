@@ -14,6 +14,20 @@
 
 import type { ConsumeCallbackResult, SignetSession } from 'signet-login';
 import { getActiveRelays } from './relays.js';
+import { serialiseSigner } from './sign-queue.js';
+
+/**
+ * Wrap a freshly-resolved session's signer so every signEvent goes through
+ * the global serialised queue. Centralised here so every login path —
+ * signIn, tryRestore, handleAuthCallback — returns a wrapped signer and
+ * downstream call sites in main.ts / ui.ts don't need to remember to wrap.
+ * Without this, heartbeat + replay chunk publishes + claim signs race and
+ * jam the underlying NIP-46 / NIP-07 extension.
+ */
+function wrapSession(session: SignetSession | null): SignetSession | null {
+  if (!session) return null;
+  return { ...session, signer: serialiseSigner(session.signer) };
+}
 
 /**
  * Result shape from signet-verify's verifyAge() — vendored to keep the
@@ -99,7 +113,7 @@ export async function signIn(): Promise<SignetSession | null> {
   // We don't pass `mode` or `preferredMethod`, so the user picks; the
   // same-tab Signet button calls startRedirect inside the modal and
   // navigates this tab away.
-  return withTimeout(
+  const session = await withTimeout(
     window.Signet.login({
       appName: APP_NAME,
       theme: 'dark',
@@ -108,6 +122,7 @@ export async function signIn(): Promise<SignetSession | null> {
     SIGN_IN_TIMEOUT_MS,
     () => new SignInTimeoutError(),
   );
+  return wrapSession(session);
 }
 
 /**
@@ -128,7 +143,7 @@ export async function handleAuthCallback(): Promise<SignetSession | null> {
     // covering the title screen — belt-and-braces sweep here keeps the
     // title interactive even if the SDK leaves something behind.
     if (result.kind !== 'no-callback') sweepSignetArtefacts();
-    return result.kind === 'session' ? result.session : null;
+    return result.kind === 'session' ? wrapSession(result.session) : null;
   } catch (err) {
     // The SDK already logs invalid-callback diagnostics. Sweep artefacts
     // and swallow so a stray bookmark with stale params can't strand the UI.
@@ -169,11 +184,12 @@ export function sweepSignetArtefacts(): void {
 export async function tryRestore(): Promise<SignetSession | null> {
   if (!window.Signet) return null;
   try {
-    return await withTimeout(
+    const session = await withTimeout(
       window.Signet.restoreSession(),
       RESTORE_TIMEOUT_MS,
       () => new Error('restore-timeout'),
     );
+    return wrapSession(session);
   } catch {
     // Restore is best-effort on boot — silently fall back to guest mode if
     // the signer doesn't respond in time. User can sign in manually after.
