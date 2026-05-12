@@ -18,10 +18,14 @@ import {
   endStreamSession,
   publishStreamEnded,
   drainStreamEvents,
+  beginReplayRun,
+  takeFramesForWave,
+  replayRunState,
   STREAM_FRAME_INTERVAL_MS,
   STREAM_FRAME_INTERVAL_PAUSED_MS,
   type ActiveStreamSession,
 } from './stream-session.js';
+import { publishReplayWaveChunk } from './ghost.js';
 import { getActiveSkinId } from './skins.js';
 import { handleAuthCallback, tryRestore, sweepSignetArtefacts } from './auth.js';
 import * as audio from './audio.js';
@@ -739,6 +743,12 @@ async function boot(): Promise<void> {
    *  fallback at the same cadence as activeStream.lastFramePublishedAt
    *  does for the WS publish path. */
   let lastFrameCapturedAt = 0;
+  /** Tracks the wave the player was on last tick so we can detect
+   *  wave-clear transitions and publish that wave's replay chunk
+   *  ASAP — keeps each wave's frames on relays before the in-memory
+   *  buffer wraps on long runs. */
+  let lastObservedWave = 0;
+  let lastObservedRunId: string | null = null;
   const STREAM_PHASES: ReadonlySet<string> = new Set([
     'playing', 'wavestart', 'warp', 'bonus', 'paused', 'deathreplay',
   ]);
@@ -748,6 +758,38 @@ async function boot(): Promise<void> {
     if (state.runStartedAt <= 0) return;
     const inRun = STREAM_PHASES.has(state.phase);
     const runId = String(state.runStartedAt);
+
+    // New run — reset the per-wave chunk tracker so a previous run's
+    // chunks don't bleed into this run's manifest.
+    if (runId !== lastObservedRunId) {
+      lastObservedRunId = runId;
+      lastObservedWave = 0;
+      beginReplayRun(runId);
+    }
+
+    // Wave-clear transition — when state.wave increments mid-run,
+    // drain the just-finished wave's frames from the buffer and
+    // publish them as their own kind 30764 chunk. The chunk's event
+    // id is tracked in replayRunState.publishedChunks for the
+    // game-over manifest. Spreading the publishes across the run
+    // keeps each individual signEvent payload small (≤58KB) AND
+    // avoids the bark-rate-limit cliff we'd otherwise hit at
+    // game-over trying to sign 25+ chunks in one batch.
+    if (inRun && state.session && state.wave > lastObservedWave && lastObservedWave > 0) {
+      const justFinishedWave = lastObservedWave;
+      const session = state.session;
+      const currentRunId = replayRunState.runId;
+      if (currentRunId) {
+        const frames = takeFramesForWave(justFinishedWave);
+        if (frames.length >= 2) {
+          void (async () => {
+            const chunk = await publishReplayWaveChunk(session, currentRunId, justFinishedWave, frames);
+            if (chunk) replayRunState.publishedChunks.push({ wave: justFinishedWave, eventId: chunk.id });
+          })();
+        }
+      }
+    }
+    lastObservedWave = state.wave;
 
     // Game over for the prior run — tear down the stream key + flag
     // the NIP-53 event as ended. The session privkey is wiped from

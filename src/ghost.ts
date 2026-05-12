@@ -323,7 +323,63 @@ async function signWithRetry(
 }
 
 /** Per-wave chunk: encode + decimate to fit, sign, publish. Returns
- *  the signed event or null on failure. */
+ *  the signed event or null on failure. Exported so the wave-clear
+ *  hook in main.ts can publish chunks DURING play instead of waiting
+ *  for game-over — that way the in-memory replay buffer (capped at
+ *  6000 frames ≈ 200s of 30Hz capture) doesn't wrap and lose early
+ *  waves on long runs. */
+export async function publishReplayWaveChunk(
+  session: SignetSession,
+  runId: string,
+  wave: number,
+  waveFrames: ReplayFrameRaw[],
+  optRelays?: readonly string[],
+): Promise<NostrEvent | null> {
+  return publishWaveChunk(session, runId, wave, waveFrames, ghostRelaySet(optRelays));
+}
+
+/** Publish just a manifest event linking pre-existing chunk event ids
+ *  (built up by per-wave publishes during play). Called at game-over
+ *  after the final wave's chunk has been published. */
+export async function publishReplayManifest(
+  session: SignetSession,
+  runId: string,
+  summary: { finalScore: number; finalWave: number; durationMs: number; totalFrames: number; scoreEventId?: string },
+  chunks: ReadonlyArray<{ wave: number; eventId: string }>,
+  optRelays?: readonly string[],
+): Promise<NostrEvent | null> {
+  if (!session.signer.capabilities.canSignEvents) return null;
+  if (chunks.length === 0) {
+    console.warn('[replay] manifest skipped — zero chunks');
+    return null;
+  }
+  const relays = ghostRelaySet(optRelays);
+  const manifestTags: string[][] = [
+    ['d', `${GAME_ID}:replay:manifest:${runId}`],
+    ['t', 'pallasite'],
+    ['game', GAME_ID],
+    ['chunk', 'm'],
+    ['enc', 'replay-manifest-v1'],
+    ['score', summary.finalScore.toString()],
+    ['wave', summary.finalWave.toString()],
+    ['duration', summary.durationMs.toString()],
+    ['frames', String(summary.totalFrames)],
+    ['runid', runId],
+  ];
+  if (summary.scoreEventId) manifestTags.push(['e', summary.scoreEventId, '', 'score']);
+  for (const c of chunks) manifestTags.push(['e', c.eventId, '', `wave-${c.wave}`]);
+  const manifest = await signWithRetry(
+    session,
+    { kind: REPLAY_KIND, content: '', tags: manifestTags },
+    'manifest',
+  );
+  if (!manifest) return null;
+  const results = await Promise.allSettled(relays.map((u) => publishToRelay(u, manifest)));
+  const ok = results.filter((r) => r.status === 'fulfilled').length;
+  console.log(`[replay] manifest ${manifest.id.slice(0, 8)}… published to ${ok}/${relays.length} relays · ${chunks.length} chunks linked`);
+  return manifest;
+}
+
 async function publishWaveChunk(
   session: SignetSession,
   runId: string,

@@ -433,6 +433,39 @@ export function clearReplayBuffer(): void {
   replayBuffer = [];
 }
 
+/** Wave-chunk publishing state — tracks which waves have already been
+ *  published as kind 30764 chunks during play so the game-over manifest
+ *  can list them all without re-publishing. Resets per run.
+ *
+ *  Per-wave publish during play solves the buffer-wrap problem: the
+ *  in-memory buffer is capped at 6000 frames ≈ 200s of 30Hz capture.
+ *  Long runs (9+ waves at ~25s each) overflow and lose the earliest
+ *  waves. Publishing each wave as it ends keeps the relays as the
+ *  source of truth instead of the bounded local buffer. */
+export const replayRunState: {
+  runId: string | null;
+  publishedChunks: Array<{ wave: number; eventId: string }>;
+} = { runId: null, publishedChunks: [] };
+
+export function beginReplayRun(runId: string): void {
+  replayRunState.runId = runId;
+  replayRunState.publishedChunks = [];
+  clearReplayBuffer();
+}
+
+/** Drain frames for a specific wave out of the in-memory buffer.
+ *  Caller passes the result to publishReplayWaveChunk. */
+export function takeFramesForWave(wave: number): ReplayFrameRaw[] {
+  const matching: ReplayFrameRaw[] = [];
+  const remaining: ReplayFrameRaw[] = [];
+  for (const f of replayBuffer) {
+    if (f.wave === wave) matching.push(f);
+    else remaining.push(f);
+  }
+  replayBuffer = remaining;
+  return matching;
+}
+
 /** Build the on-wire world payload from a StreamFrame. Shared between
  *  captureReplayFrame (buffer-only path) and publishStreamFrame
  *  (buffer + WS path) so both produce identical content. */
