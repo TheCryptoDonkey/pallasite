@@ -654,9 +654,24 @@ export function renderTitle(state: GameState): void {
   const row = el('div', { className: 'menu-row', parent: overlay });
   const startBtn = el('button', { className: 'menu-btn', parent: row, text: 'IGNITE · PRESS ENTER' });
   startBtn.addEventListener('click', () => {
-    void audio.unlockAudio();
-    lockInDifficulty(getStoredDifficulty());
-    gateBehindOnboarding(() => onStartCb?.());
+    void (async () => {
+      void audio.unlockAudio();
+      // Fallback path for IGNITE without first typing a name: rather
+      // than starting a session-less run that can't publish scores or
+      // earn anything, provision an Anonymous guest identity inline.
+      // The user can rename later from the title session panel.
+      if (!state.session) {
+        try {
+          const namedInput = sessionPanel.querySelector<HTMLInputElement>('input');
+          const typed = namedInput?.value.trim() ?? '';
+          state.session = await auth.createGuestSession(typed || 'Anonymous');
+        } catch (err) {
+          console.warn('[guest] inline create on IGNITE failed:', err);
+        }
+      }
+      lockInDifficulty(getStoredDifficulty());
+      gateBehindOnboarding(() => onStartCb?.());
+    })();
   });
   const howBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'HOW TO PLAY' });
   howBtn.addEventListener('click', () => renderHowToPlay(() => renderTitle(state)));
