@@ -1066,18 +1066,25 @@ function watchForSignerUpgrade(): void {
     if (sess.signer.capabilities.canSignEvents) return;  // already upgraded — stop polling
     if (upgrading) { reschedule(); return; }
 
-    // NIP-07 needs window.nostr to be present before tryRestore can do
-    // anything useful; skip the call until the extension wakes up.
-    if (sess.method === 'nip07' && !(window as { nostr?: unknown }).nostr) {
+    // 'redirect' here can be either a genuine same-tab-redirect-only login
+    // (can't be upgraded without a fresh user-initiated sign-in) OR a
+    // signet-login soft-downgrade of a 'nip07' session whose underlying
+    // window.nostr wasn't injected yet at boot. The SDK keeps the original
+    // method in localStorage across the runtime downgrade, so a retry
+    // tryRestore() once window.nostr appears will recreate a real Nip07Signer.
+    // Bunker sessions get re-upgraded the same way — SDK reconnects to the
+    // bunker URI. Try restore for all three; the genuine-redirect case is
+    // a cheap no-op.
+    if (sess.method !== 'nip07' && sess.method !== 'bunker' && sess.method !== 'redirect') {
       reschedule();
       return;
     }
 
-    // Method must be one of the upgradeable kinds — redirect sessions are
-    // already at their final shape (they don't carry a live signer beyond
-    // the auth event). NIP-07 + bunker can both be upgraded by re-calling
-    // restoreSession after the underlying signer is reachable.
-    if (sess.method !== 'nip07' && sess.method !== 'bunker') {
+    // nip07 + downgraded-redirect both need window.nostr to be present
+    // before tryRestore() can produce a signing signer. Skip until the
+    // extension wakes up.
+    const needsNostr = sess.method === 'nip07' || sess.method === 'redirect';
+    if (needsNostr && !(window as { nostr?: unknown }).nostr) {
       reschedule();
       return;
     }
