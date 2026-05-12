@@ -506,6 +506,238 @@ function renderArcadeInitials(
 }
 
 /**
+ * Variable-length name picker. Same arcade ▲▼ + ←→ + BKSP grammar as
+ * renderArcadeInitials but designed for up to 25 characters by showing
+ * a single big editor slot for the currently-active position above a
+ * preview line of the full name. The fixed-slot picker was right for
+ * 4-char high-score initials; this surface is right for guest-mode
+ * display names where players want their handle ("MORG OF ALDEBARAN")
+ * rather than initials.
+ *
+ * The controls are *all* native <button> elements so the controller
+ * PWA in d-pad mode (which emits ArrowUp/Down/Left/Right via the
+ * gamepad bridge) can navigate through them via setupOverlayArrowNav,
+ * land on ▲ / ▼ / ◀ / ▶ / BKSP / DONE, and activate with Enter
+ * (the PWA's A button). Keyboard users get the same buttons via Tab,
+ * plus typing a letter / digit directly types into the active slot
+ * and auto-advances the cursor.
+ *
+ * Returns a `getCurrentName()` accessor so callers (the IGNITE
+ * fallback path) can read the in-progress value without waiting for
+ * onSubmit.
+ */
+function renderArcadeName(
+  parent: HTMLElement,
+  opts: {
+    onSubmit?: (name: string) => void;
+    initialValue?: string;
+    maxLen?: number;
+  },
+): { getCurrentName: () => string } {
+  const MAX_LEN = opts.maxLen ?? 25;
+  // A-Z + 0-9 + space — the classic arcade charset the user picked.
+  // Order: A first so a freshly empty slot starts at A on first ▲.
+  // Space last so a cursor that "overflowed" reads as blank.
+  const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ';
+  const SPACE_IDX = CHARS.length - 1;
+
+  // Initial value: pad to MAX_LEN with spaces. Cursor lands on the
+  // first space so typing a fresh name doesn't require manual cursor
+  // navigation. If a returning guest is renaming, cursor lands at
+  // end-of-name + 1 (or last slot if full).
+  const initial = (opts.initialValue ?? '').toUpperCase().slice(0, MAX_LEN);
+  const slots: number[] = [];
+  for (let i = 0; i < MAX_LEN; i++) {
+    const ch = i < initial.length ? initial[i] : ' ';
+    const idx = CHARS.indexOf(ch);
+    slots.push(idx === -1 ? SPACE_IDX : idx);
+  }
+  let cursor = Math.min(initial.length, MAX_LEN - 1);
+  let submitted = false;
+
+  const wrap = el('div', { parent });
+  wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:6px;margin:4px 0;width:100%;';
+  // Same opt-out marker the global Enter-restarts-game handler in
+  // main.ts already checks for — keeps Enter from re-triggering the
+  // game while the player is mid-name.
+  wrap.dataset.arcadeInitials = 'open';
+
+  // Preview line — the whole 25-char name with the cursor position
+  // visually highlighted as an underline. Reads at a glance ("you've
+  // typed MORG, cursor is on slot 5") without needing to look at the
+  // big editor below.
+  const preview = el('div', { parent: wrap });
+  preview.style.cssText = 'display:flex;flex-wrap:wrap;justify-content:center;gap:2px;font-family:monospace;font-size:1rem;letter-spacing:0.04em;padding:6px 8px;background:rgba(2,5,13,0.4);border:1px solid rgba(140,255,180,0.2);border-radius:4px;min-height:1.6em;max-width:480px;width:100%;';
+  const previewChars: HTMLSpanElement[] = [];
+  for (let i = 0; i < MAX_LEN; i++) {
+    const span = el('span', { parent: preview, text: '_' });
+    span.style.cssText = 'display:inline-block;min-width:0.65em;text-align:center;color:rgba(220,210,255,0.55);border-bottom:1px solid transparent;transition:color 80ms, border-color 80ms;';
+    previewChars.push(span);
+  }
+
+  // Big editor — current character, ▲ above, ▼ below, ◀ ▶ left/right.
+  // Sized so it's tap-friendly on mobile and reads at TV-distance for
+  // controller PWA users.
+  const editor = el('div', { parent: wrap });
+  editor.style.cssText = 'display:grid;grid-template-columns:auto auto auto;grid-template-rows:auto auto auto;gap:6px;align-items:center;justify-items:center;margin:4px 0;';
+  // Row 1: empty, ▲, empty
+  const upBtn = el('button', { parent: editor, text: '▲' }) as HTMLButtonElement;
+  upBtn.type = 'button';
+  upBtn.style.cssText = 'grid-column:2;grid-row:1;width:56px;height:40px;background:rgba(88,255,88,0.12);border:2px solid rgba(88,255,88,0.4);color:#58ff58;font-size:1.1rem;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;user-select:none;';
+  // Row 2: ◀, big slot, ▶
+  const leftBtn = el('button', { parent: editor, text: '◀' }) as HTMLButtonElement;
+  leftBtn.type = 'button';
+  leftBtn.style.cssText = 'grid-column:1;grid-row:2;width:48px;height:54px;background:rgba(140,140,255,0.10);border:2px solid rgba(140,140,255,0.35);color:#9b9bff;font-size:1.1rem;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;user-select:none;';
+  const slotBox = el('div', { parent: editor }) as HTMLDivElement;
+  slotBox.style.cssText = 'grid-column:2;grid-row:2;width:64px;height:64px;display:flex;align-items:center;justify-content:center;background:rgba(2,5,13,0.6);border:2px solid #ffd84a;color:#ffd84a;font-family:inherit;font-size:2rem;font-weight:bold;letter-spacing:0;text-shadow:0 0 10px rgba(255,216,74,0.5);';
+  const rightBtn = el('button', { parent: editor, text: '▶' }) as HTMLButtonElement;
+  rightBtn.type = 'button';
+  rightBtn.style.cssText = 'grid-column:3;grid-row:2;width:48px;height:54px;background:rgba(140,140,255,0.10);border:2px solid rgba(140,140,255,0.35);color:#9b9bff;font-size:1.1rem;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;user-select:none;';
+  // Row 3: empty, ▼, empty
+  const downBtn = el('button', { parent: editor, text: '▼' }) as HTMLButtonElement;
+  downBtn.type = 'button';
+  downBtn.style.cssText = 'grid-column:2;grid-row:3;width:56px;height:40px;background:rgba(88,255,88,0.12);border:2px solid rgba(88,255,88,0.4);color:#58ff58;font-size:1.1rem;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;user-select:none;';
+
+  // Actions row — backspace + done
+  const actions = el('div', { parent: wrap });
+  actions.style.cssText = 'display:flex;gap:8px;margin-top:4px;';
+  const bkspBtn = el('button', { parent: actions, text: 'BKSP' }) as HTMLButtonElement;
+  bkspBtn.type = 'button';
+  bkspBtn.style.cssText = 'padding:8px 16px;background:rgba(255,120,120,0.12);border:2px solid rgba(255,120,120,0.4);color:#ff8a8a;font-family:inherit;letter-spacing:0.16em;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;';
+  const doneBtn = el('button', { parent: actions, text: 'DONE' }) as HTMLButtonElement;
+  doneBtn.type = 'button';
+  doneBtn.style.cssText = 'padding:8px 24px;background:rgba(255,216,74,0.18);border:2px solid #ffd84a;color:#ffd84a;font-family:inherit;letter-spacing:0.16em;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;';
+
+  const hint = el('p', { parent: wrap, text: '▲▼ CYCLE · ◀▶ CURSOR · BKSP · DONE' });
+  hint.style.cssText = 'font-size:0.65rem;color:rgba(180,140,255,0.55);letter-spacing:0.16em;margin:0;';
+
+  const getCurrentName = (): string => {
+    let out = '';
+    for (let i = 0; i < MAX_LEN; i++) out += CHARS[slots[i]];
+    return out.trimEnd();
+  };
+
+  const render = (): void => {
+    for (let i = 0; i < MAX_LEN; i++) {
+      const ch = CHARS[slots[i]];
+      previewChars[i].textContent = ch === ' ' ? '_' : ch;
+      const isActive = i === cursor;
+      previewChars[i].style.color = isActive ? '#ffd84a' : (ch === ' ' ? 'rgba(220,210,255,0.35)' : '#fff5d8');
+      previewChars[i].style.borderBottomColor = isActive ? '#ffd84a' : 'transparent';
+    }
+    const ch = CHARS[slots[cursor]];
+    slotBox.textContent = ch === ' ' ? '_' : ch;
+  };
+  render();
+
+  const cycle = (dir: 1 | -1): void => {
+    slots[cursor] = (slots[cursor] + dir + CHARS.length) % CHARS.length;
+    render();
+    try { audio.initialCycle(); } catch { /* ignore */ }
+  };
+  const move = (dir: 1 | -1): void => {
+    const next = cursor + dir;
+    if (next < 0 || next >= MAX_LEN) return;
+    cursor = next;
+    render();
+    try { audio.initialMove(); } catch { /* ignore */ }
+  };
+  const bksp = (): void => {
+    if (slots[cursor] !== SPACE_IDX) {
+      slots[cursor] = SPACE_IDX;
+    } else if (cursor > 0) {
+      cursor -= 1;
+      slots[cursor] = SPACE_IDX;
+    }
+    render();
+    try { audio.initialBackspace(); } catch { /* ignore */ }
+  };
+  const commit = (): void => {
+    if (submitted) return;
+    submitted = true;
+    window.removeEventListener('keydown', keyHandler, true);
+    const name = getCurrentName();
+    opts.onSubmit?.(name);
+  };
+
+  // Bind buttons (pointerdown + click + Enter on focused button).
+  // pointerdown is touch-friendly (avoids the iOS 300ms delay), click
+  // covers mouse + keyboard activation (Enter / Space on focused
+  // button fires synthetic click).
+  const bindTap = (btn: HTMLElement, fn: () => void): void => {
+    btn.addEventListener('pointerdown', (e) => { e.preventDefault(); fn(); });
+    btn.addEventListener('click', (e) => { e.preventDefault(); });
+  };
+  bindTap(upBtn,    () => cycle(1));
+  bindTap(downBtn,  () => cycle(-1));
+  bindTap(leftBtn,  () => move(-1));
+  bindTap(rightBtn, () => move(1));
+  bindTap(bkspBtn,  () => bksp());
+  bindTap(doneBtn,  () => commit());
+
+  // Keyboard fast path — typing a letter / digit replaces the active
+  // slot and advances the cursor. Avoids forcing kb users through the
+  // arcade ▲▼ dance when they can just type.
+  //
+  // Capture phase + stopImmediatePropagation on consumed keys so the
+  // global IGNITE-on-Enter handler in main.ts doesn't fire mid-edit,
+  // and the overlay arrow-key button-cycle handler doesn't fight us
+  // for ↑↓←→ when focus is inside this widget.
+  const keyHandler = (e: KeyboardEvent): void => {
+    if (submitted) return;
+    if (!document.body.contains(wrap)) {
+      window.removeEventListener('keydown', keyHandler, true);
+      return;
+    }
+    // Only intercept arrow keys when focus is on one of OUR buttons
+    // or the wrap itself — otherwise the user is trying to navigate
+    // the surrounding overlay and we shouldn't steal arrows.
+    const active = document.activeElement as Element | null;
+    const focusInside = active === wrap || wrap.contains(active);
+    if (e.code === 'ArrowUp' || e.code === 'ArrowDown' || e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
+      if (!focusInside) return;
+    }
+    let consumed = true;
+    switch (e.code) {
+      case 'ArrowUp': cycle(1); break;
+      case 'ArrowDown': cycle(-1); break;
+      case 'ArrowRight': move(1); break;
+      case 'ArrowLeft': move(-1); break;
+      case 'Backspace': bksp(); break;
+      case 'Enter':
+        // Enter on DONE submits; Enter elsewhere advances cursor and,
+        // if at end, commits. Lets a kb user "type then press Enter"
+        // without hunting for the DONE button.
+        if (document.activeElement === doneBtn) { commit(); }
+        else if (cursor < MAX_LEN - 1) { move(1); }
+        else { commit(); }
+        break;
+      default: {
+        // Letter / digit / space — type into the current slot. Match
+        // is case-insensitive (we normalise to upper for CHARS).
+        const ch = e.key.toUpperCase();
+        if (ch.length === 1 && CHARS.indexOf(ch) !== -1) {
+          slots[cursor] = CHARS.indexOf(ch);
+          render();
+          if (cursor < MAX_LEN - 1) cursor += 1;
+          render();
+        } else {
+          consumed = false;
+        }
+        break;
+      }
+    }
+    if (consumed) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  };
+  window.addEventListener('keydown', keyHandler, true);
+
+  return { getCurrentName };
+}
+
+/**
  * Floating banner that appears when the service worker has a new version
  * waiting. Tap RELOAD → posts SKIP_WAITING to the worker → controllerchange
  * triggers a clean reload into the new build.
@@ -662,8 +894,10 @@ export function renderTitle(state: GameState): void {
       // The user can rename later from the title session panel.
       if (!state.session) {
         try {
-          const namedInput = sessionPanel.querySelector<HTMLInputElement>('input');
-          const typed = namedInput?.value.trim() ?? '';
+          // Read whatever the title-screen arcade name picker has
+          // currently typed. Falls back to 'Anonymous' for a freshly-
+          // mounted picker the user hasn't touched.
+          const typed = titleNamePickerGetName?.().trim() ?? '';
           state.session = await auth.createGuestSession(typed || 'Anonymous');
         } catch (err) {
           console.warn('[guest] inline create on IGNITE failed:', err);
@@ -6757,8 +6991,20 @@ function renderTierBadge(parent: HTMLElement, pubkey: string): void {
   });
 }
 
+/** Accessor for the live in-progress name in the title-screen arcade
+ *  picker. Set by renderSessionPanel when the no-session branch mounts
+ *  the picker; cleared when the panel re-renders into the signed-in
+ *  branch. The IGNITE button on the title reads this so a player who
+ *  hammers IGNITE without pressing DONE still gets whatever they
+ *  cycled in, falling back to 'Anonymous' for an untouched picker. */
+let titleNamePickerGetName: (() => string) | null = null;
+
 function renderSessionPanel(parent: HTMLElement, state: GameState): void {
   parent.innerHTML = '';
+  // Reset the title-screen name-picker accessor on every panel render —
+  // a re-render usually means the picker is being unmounted, so a stale
+  // closure would point at a detached DOM widget.
+  titleNamePickerGetName = null;
   if (state.session && isGuestSession(state.session)) {
     // Subtle disclosure path — the player is on a locally-generated
     // Nostr identity. We surface the name (editable) and a quiet
@@ -6935,45 +7181,43 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
     // stored guest record into a SignetSession on boot.
     const greet = el('p', { parent, text: 'WHAT\'S YOUR NAME?' });
     greet.style.cssText = 'font-size:0.95rem;color:#ffd84a;letter-spacing:0.16em;margin:0 0 6px;';
-    const nameRow = el('div', { parent });
-    nameRow.style.cssText = 'display:flex;justify-content:center;align-items:center;gap:8px;margin:0 auto 6px;width:100%;max-width:360px;';
-    const nameInput = el('input', { parent: nameRow }) as HTMLInputElement;
-    nameInput.type = 'text';
-    nameInput.placeholder = 'Anonymous';
-    nameInput.maxLength = 64;
-    nameInput.setAttribute('autocomplete', 'nickname');
-    nameInput.spellcheck = false;
-    nameInput.style.cssText = 'flex:1;padding:6px 12px;border:1px solid rgba(220,210,255,0.3);border-radius:4px;background:rgba(2,5,13,0.6);color:#fff5d8;font-family:monospace;font-size:0.95rem;letter-spacing:0.04em;text-align:center;';
-    const playBtn = el('button', { className: 'menu-btn', parent: nameRow, text: 'PLAY ▶' }) as HTMLButtonElement;
-    playBtn.style.cssText += 'flex:0 0 auto;';
     const status = el('p', { parent });
     status.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.85);min-height:1em;margin:0;letter-spacing:0.04em;';
     let creating = false;
-    const doCreateGuest = async (): Promise<void> => {
+    const submitWithName = (raw: string): void => {
       if (creating) return;
       creating = true;
-      playBtn.disabled = true;
       status.textContent = '';
-      // Audio unlock under the click gesture — same reason as the watch
-      // page card-click handler: any audio play() after an async hop
-      // gets rejected by iOS Safari.
+      // Audio unlock under the click gesture — same reason as the
+      // watch page WATCH-button handler: any audio play() after an
+      // async hop gets rejected by iOS Safari.
       try { void audio.unlockAudio(); } catch { /* ignore */ }
-      try {
-        const name = nameInput.value.trim() || 'Anonymous';
-        const session = await auth.createGuestSession(name);
-        state.session = session;
-        renderSessionPanel(parent, state);
-      } catch (err) {
-        status.textContent = `Couldn\'t create local identity: ${err instanceof Error ? err.message : String(err)}`;
-        status.style.color = '#ff8a3a';
-        playBtn.disabled = false;
-        creating = false;
-      }
+      void (async () => {
+        try {
+          const name = raw.trim() || 'Anonymous';
+          const session = await auth.createGuestSession(name);
+          state.session = session;
+          renderSessionPanel(parent, state);
+        } catch (err) {
+          status.textContent = `Couldn\'t create local identity: ${err instanceof Error ? err.message : String(err)}`;
+          status.style.color = '#ff8a3a';
+          creating = false;
+        }
+      })();
     };
-    playBtn.addEventListener('click', () => { void doCreateGuest(); });
-    nameInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); void doCreateGuest(); }
+    // Arcade-style 25-char name picker. Three input modes all work:
+    //   • Desktop kb: ▲▼ arrows or type letters directly.
+    //   • Mobile touch: tap ▲▼/◀▶/BKSP/DONE buttons.
+    //   • Controller PWA in d-pad mode: setupOverlayArrowNav cycles
+    //     focus through the picker's <button> elements; ENTER (A) on
+    //     ▲ cycles char, on ◀▶ moves cursor, on DONE submits.
+    // The plain <input> the panel had before was unusable on the
+    // controller PWA — d-pad emits arrow keys, not alphanumerics.
+    const picker = renderArcadeName(parent, {
+      maxLen: 25,
+      onSubmit: (name) => { submitWithName(name); },
     });
+    titleNamePickerGetName = picker.getCurrentName;
     // "I have a Nostr account already" — fold the existing Signet flow
     // into a smaller secondary path so the primary action stays "type
     // name and play". A user with NIP-07 / bunker / signet QR just
@@ -7023,11 +7267,17 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
     inBtn.addEventListener('pointerup', e => {
       if (e.pointerType !== 'mouse') void doSignIn();
     });
-    // Autofocus the name field so a fresh visitor can start typing
-    // straight away. Skip on mobile keyboards to avoid the OSK popping
-    // open over the title art before the user has decided to play.
+    // Autofocus the first interactive control inside the arcade name
+    // picker on desktop so a kb user can start typing letters straight
+    // away (the picker has a keydown shortcut for letter / digit keys
+    // that types into the active slot). Skip on coarse-pointer devices
+    // since we don't want focus jumping into a hidden control before
+    // the user has decided to play.
     if (!matchMedia('(pointer: coarse)').matches) {
-      window.setTimeout(() => { try { nameInput.focus(); } catch { /* ignore */ } }, 60);
+      window.setTimeout(() => {
+        const firstBtn = parent.querySelector<HTMLButtonElement>('[data-arcade-initials="open"] button');
+        try { firstBtn?.focus(); } catch { /* ignore */ }
+      }, 60);
     }
   }
 }
