@@ -8306,6 +8306,26 @@ function renderRunCredits(
     if (s >= 30) markAchievement(state, 'streak-30');
     if (s >= 5)  markAchievement(state, 'streak-5');
   }
+  // Replay-publish status badge — visible to the player on the
+  // game-over screen so they don't need to open dev tools. Inserted
+  // after the score/sats summary; replaced once publishReplay's
+  // promise resolves.
+  const replayStatus = el('div', { parent: overlay });
+  replayStatus.style.cssText = 'margin:8px auto;padding:6px 12px;border-radius:6px;font-family:monospace;font-size:0.78rem;letter-spacing:0.08em;max-width:520px;text-align:center;';
+  const setReplayBadge = (kind: 'pending' | 'ok' | 'skip' | 'fail', text: string): void => {
+    const COLOURS: Record<typeof kind, [string, string]> = {
+      pending: ['rgba(255,216,74,0.85)', 'rgba(255,216,74,0.18)'],
+      ok:      ['#8cffb4',              'rgba(140,255,180,0.18)'],
+      skip:    ['rgba(220,210,255,0.7)', 'rgba(180,140,255,0.10)'],
+      fail:    ['rgba(255,120,120,0.95)', 'rgba(255,120,120,0.15)'],
+    };
+    const [fg, bg] = COLOURS[kind];
+    replayStatus.style.color = fg;
+    replayStatus.style.background = bg;
+    replayStatus.style.border = `1px solid ${fg}55`;
+    replayStatus.textContent = text;
+  };
+
   if (state.session) {
     console.log(`[replay] game-over · session=${state.session.pubkey.slice(0, 8)}… cheated=${state.cheatedThisRun} score=${state.score} wave=${state.wave}`);
     void publishGhost({
@@ -8325,23 +8345,37 @@ function renderRunCredits(
     // replay even when they don't claim, same policy as the ghost.
     if (state.cheatedThisRun) {
       console.warn('[replay] skipping kind 30764 — run was cheated');
+      setReplayBadge('skip', '⚠ REPLAY SKIPPED · cheated this run (sat-void on first cheat)');
     } else {
       const replayFrames = getReplayBuffer();
       console.log(`[replay] replay buffer size at game-over: ${replayFrames.length} frame(s)`);
       if (replayFrames.length >= 2) {
+        setReplayBadge('pending', `📼 REPLAY · publishing ${replayFrames.length} frames…`);
         void publishReplay({
           session: state.session,
           finalScore: state.score,
           finalWave: state.wave,
           durationMs: Math.max(0, Math.floor(state.runTimeMs)),
           frames: replayFrames,
+        }).then((signed) => {
+          if (signed) {
+            setReplayBadge('ok', `✓ REPLAY PUBLISHED · ${signed.id.slice(0, 8)}… · ${replayFrames.length} frames`);
+          } else {
+            // publishReplay returned null — encode/sign/relay-publish
+            // failure. The [replay] console line has the specifics.
+            setReplayBadge('fail', '✗ REPLAY FAILED · check console [replay] logs (sign rejected? CompressionStream? all relays bounced?)');
+          }
+        }, (err) => {
+          setReplayBadge('fail', `✗ REPLAY THREW · ${err instanceof Error ? err.message : String(err)}`);
         });
       } else {
-        console.warn('[replay] skipping kind 30764 — fewer than 2 frames buffered. Likely cause: NIP-53 startStreamSession never completed (signer rejected? popup blocked?). Check earlier [stream] logs.');
+        console.warn('[replay] skipping kind 30764 — fewer than 2 frames buffered.');
+        setReplayBadge('fail', `✗ REPLAY EMPTY · only ${replayFrames.length} frame(s) captured · NIP-53 likely failed; check [stream] console`);
       }
     }
   } else {
     console.warn('[replay] no kind 30763/30764 published — guest run (state.session is null). Sign in to enable replays.');
+    setReplayBadge('skip', '— REPLAY OFF · guest mode (sign in to publish replays)');
   }
 
   // Prominent zap CTA — the entire reason this stage exists per the user
