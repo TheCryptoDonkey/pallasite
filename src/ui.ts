@@ -7022,15 +7022,35 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
     nameBtn.style.cssText = 'background:transparent;border:none;color:var(--hud-yellow);font-weight:bold;font-size:1.05rem;letter-spacing:0.06em;cursor:pointer;padding:2px 6px;border-bottom:1px dashed rgba(255,216,74,0.4);';
     nameBtn.title = 'Tap to rename';
     nameBtn.addEventListener('click', () => {
-      const next = window.prompt('What should we call you?', guestName);
-      if (next === null) return;
-      const result = setGuestName(next);
-      if (result.ok && result.name && state.session) {
-        // Mutate displayName in place so subsequent reads of state.session
-        // see the new name without rebuilding the whole SignetSession.
-        (state.session as { displayName: string }).displayName = result.name;
+      // Inline-swap the panel into rename mode using the same arcade
+      // picker the first-time signup uses. window.prompt was a quick
+      // start but is unreachable from the controller PWA d-pad (no
+      // alphanumerics on the joystick) and breaks the seamless feel
+      // on mobile (modal blocks the page).
+      parent.innerHTML = '';
+      titleNamePickerGetName = null;
+      const banner = el('p', { parent, text: 'RENAME' });
+      banner.style.cssText = 'font-size:0.95rem;color:#ffd84a;letter-spacing:0.16em;margin:0 0 6px;';
+      const commit = (raw: string): void => {
+        const result = setGuestName(raw);
+        if (result.ok && result.name && state.session) {
+          // Mutate displayName in place so subsequent reads of
+          // state.session see the new name without rebuilding the
+          // whole SignetSession object.
+          (state.session as { displayName: string }).displayName = result.name;
+        }
         renderSessionPanel(parent, state);
-      }
+      };
+      renderArcadeName(parent, {
+        maxLen: 25,
+        initialValue: guestName,
+        onSubmit: (name) => commit(name.trim() || guestName),
+      });
+      const cancelRow = el('div', { parent });
+      cancelRow.style.cssText = 'display:flex;justify-content:center;margin-top:6px;';
+      const cancel = el('button', { className: 'menu-btn secondary', parent: cancelRow, text: 'CANCEL' }) as HTMLButtonElement;
+      cancel.style.cssText += 'font-size:0.72rem;padding:4px 12px;letter-spacing:0.14em;';
+      cancel.addEventListener('click', () => renderSessionPanel(parent, state));
     });
     // Identity disclosure — small "your Nostr identity" line with the
     // truncated npub. Click-to-copy so a curious user can paste it
