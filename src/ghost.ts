@@ -20,6 +20,7 @@ import { GAME_ID } from './auth.js';
 import { WORLD_W, WORLD_H, type GhostSample, type GhostPoseSample } from './types.js';
 import { getActiveRelays } from './relays.js';
 import { EXPERIMENTAL_RELAYS } from './credits.js';
+import { uploadReplay } from './faucet.js';
 
 /** Publish + fetch share the same relay set so a watcher always queries
  *  the same URLs the player published to. Without this union, the
@@ -278,168 +279,51 @@ export interface PublishReplayInput {
   relays?: readonly string[];
 }
 
-/** NIP-46 plaintext-payload cap. The signer (bark, nsec.app, any
- *  bunker) wraps signEvent requests in NIP-44 encryption with this
- *  cap on the plaintext. Our event content must fit. Leave 7KB head-
- *  room for tags + event envelope. */
-const MAX_CONTENT_BYTES = 58_000;
-
-/** Sign an event with one retry on transient signer failure.
- *  bark / nsec.app are Chrome extensions whose background page suspends
- *  after a few minutes of inactivity. The first signEvent after wake-up
- *  often fails with 'Receiving end does not exist' / signer-timeout —
- *  the act of calling it wakes the script, the SECOND call succeeds.
- *  Wait 600ms between attempts to let the extension's service worker
- *  finish booting. */
-async function signWithRetry(
-  session: SignetSession,
-  template: { kind: number; content: string; tags: string[][] },
-  label: string,
-): Promise<NostrEvent | null> {
-  const isTransient = (err: unknown): boolean => {
-    const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
-    return msg.includes('timeout')
-      || msg.includes('timed out')
-      || msg.includes('receiving end')
-      || msg.includes('not connected')
-      || msg.includes('disconnected');
-  };
+/** Gzip a JSON-serialisable frame array to raw bytes. The Blossom-style
+ *  upload path PUTs these bytes directly to /api/replay/{sha256} — no
+ *  base64 envelope, no chunking. */
+async function gzipFrames(frames: ReadonlyArray<ReplayFrameRaw>): Promise<Uint8Array | null> {
   try {
-    return await session.signer.signEvent(template);
-  } catch (err) {
-    if (!isTransient(err)) {
-      console.error(`[replay]   ${label} signEvent rejected: ${err instanceof Error ? err.message : String(err)}`);
-      return null;
-    }
-    console.warn(`[replay]   ${label} signEvent transient fail (${err instanceof Error ? err.message : String(err)}) — retrying in 600ms`);
-    await new Promise((r) => setTimeout(r, 600));
-    try {
-      return await session.signer.signEvent(template);
-    } catch (err2) {
-      console.error(`[replay]   ${label} signEvent rejected on retry: ${err2 instanceof Error ? err2.message : String(err2)}`);
-      return null;
-    }
-  }
-}
-
-/** Per-wave chunk: encode + decimate to fit, sign, publish. Returns
- *  the signed event or null on failure. Exported so the wave-clear
- *  hook in main.ts can publish chunks DURING play instead of waiting
- *  for game-over — that way the in-memory replay buffer (capped at
- *  6000 frames ≈ 200s of 30Hz capture) doesn't wrap and lose early
- *  waves on long runs. */
-export async function publishReplayWaveChunk(
-  session: SignetSession,
-  runId: string,
-  wave: number,
-  waveFrames: ReplayFrameRaw[],
-  optRelays?: readonly string[],
-): Promise<NostrEvent | null> {
-  return publishWaveChunk(session, runId, wave, waveFrames, ghostRelaySet(optRelays));
-}
-
-/** Publish just a manifest event linking pre-existing chunk event ids
- *  (built up by per-wave publishes during play). Called at game-over
- *  after the final wave's chunk has been published. */
-export async function publishReplayManifest(
-  session: SignetSession,
-  runId: string,
-  summary: { finalScore: number; finalWave: number; durationMs: number; totalFrames: number; scoreEventId?: string },
-  chunks: ReadonlyArray<{ wave: number; eventId: string }>,
-  optRelays?: readonly string[],
-): Promise<NostrEvent | null> {
-  if (!session.signer.capabilities.canSignEvents) return null;
-  if (chunks.length === 0) {
-    console.warn('[replay] manifest skipped — zero chunks');
+    const json = JSON.stringify(frames);
+    const blob = new Blob([json]);
+    const cs = new (window as unknown as { CompressionStream: new (fmt: string) => GenericTransformStream }).CompressionStream('gzip');
+    const compressed = await new Response(blob.stream().pipeThrough(cs)).blob();
+    const buf = await compressed.arrayBuffer();
+    return new Uint8Array(buf);
+  } catch {
     return null;
   }
-  const relays = ghostRelaySet(optRelays);
-  const manifestTags: string[][] = [
-    ['d', `${GAME_ID}:replay:manifest:${runId}`],
-    ['t', 'pallasite'],
-    ['game', GAME_ID],
-    ['chunk', 'm'],
-    ['enc', 'replay-manifest-v1'],
-    ['score', summary.finalScore.toString()],
-    ['wave', summary.finalWave.toString()],
-    ['duration', summary.durationMs.toString()],
-    ['frames', String(summary.totalFrames)],
-    ['runid', runId],
-  ];
-  if (summary.scoreEventId) manifestTags.push(['e', summary.scoreEventId, '', 'score']);
-  for (const c of chunks) manifestTags.push(['e', c.eventId, '', `wave-${c.wave}`]);
-  const manifest = await signWithRetry(
-    session,
-    { kind: REPLAY_KIND, content: '', tags: manifestTags },
-    'manifest',
-  );
-  if (!manifest) return null;
-  const results = await Promise.allSettled(relays.map((u) => publishToRelay(u, manifest)));
-  const ok = results.filter((r) => r.status === 'fulfilled').length;
-  console.log(`[replay] manifest ${manifest.id.slice(0, 8)}… published to ${ok}/${relays.length} relays · ${chunks.length} chunks linked`);
-  return manifest;
 }
 
-async function publishWaveChunk(
-  session: SignetSession,
-  runId: string,
-  wave: number,
-  waveFrames: ReplayFrameRaw[],
-  relays: readonly string[],
-): Promise<NostrEvent | null> {
-  if (waveFrames.length < 1) return null;
-  let candidate = waveFrames.slice();
-  let content = await encodeReplay(candidate);
-  if (!content) {
-    console.error(`[replay]   wave ${wave} encode failed — skipping`);
+/** Reverse of gzipFrames — gunzip a Uint8Array back into ReplayFrameRaw[]. */
+async function gunzipFrames(bytes: Uint8Array): Promise<ReplayFrameRaw[] | null> {
+  try {
+    const ab = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(ab).set(bytes);
+    const blob = new Blob([ab]);
+    const ds = new (window as unknown as { DecompressionStream: new (fmt: string) => GenericTransformStream }).DecompressionStream('gzip');
+    const text = await new Response(blob.stream().pipeThrough(ds)).text();
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) return null;
+    return parsed as ReplayFrameRaw[];
+  } catch {
     return null;
   }
-  let decimations = 0;
-  while (content.length > MAX_CONTENT_BYTES && candidate.length > 20) {
-    const next: ReplayFrameRaw[] = [];
-    for (let i = 0; i < candidate.length; i += 2) next.push(candidate[i]);
-    if (next[next.length - 1] !== candidate[candidate.length - 1]) {
-      next.push(candidate[candidate.length - 1]);
-    }
-    candidate = next;
-    decimations += 1;
-    content = await encodeReplay(candidate);
-    if (!content) return null;
-  }
-  if (content.length > MAX_CONTENT_BYTES) {
-    console.error(`[replay]   wave ${wave} still ${content.length} bytes after ${decimations} decimations — skipping`);
-    return null;
-  }
-  const tags: string[][] = [
-    ['d', `${GAME_ID}:replay:chunk:${runId}:w${wave}`],
-    ['t', 'pallasite'],
-    ['game', GAME_ID],
-    ['chunk', String(wave)],
-    ['enc', 'replay-gzip-b64'],
-    ['wave', wave.toString()],
-    ['frames', String(candidate.length)],
-    ['runid', runId],
-  ];
-  const signed = await signWithRetry(session, { kind: REPLAY_KIND, content, tags }, `wave ${wave}`);
-  if (!signed) return null;
-  const results = await Promise.allSettled(relays.map((u) => publishToRelay(u, signed)));
-  const ok = results.filter((r) => r.status === 'fulfilled').length;
-  console.log(`[replay]   wave ${wave}: ${candidate.length}/${waveFrames.length} frames · ${content.length}B · ${ok}/${relays.length} relays · ${signed.id.slice(0, 8)}…`);
-  return signed;
 }
 
-/** Publish a full-run replay as per-wave chunked kind 30764 events
- *  + a manifest event linking them. Each chunk fits inside the
- *  NIP-46 64KB cap; the manifest is what the watcher discovers first
- *  via findReplayByAuthor, then concatenates the chunks by wave order
- *  to reconstruct the full frame timeline.
+/** Publish a full-run replay: gzip every frame into a single blob,
+ *  upload to /api/replay/{sha256} via NIP-98, then sign ONE kind 30764
+ *  pointer event tagging the URL + hash. Replaces the previous per-wave
+ *  chunked publish path — that pattern required 25+ sequential signs
+ *  per run and was the proximate cause of bark-extension overload
+ *  blocking claims and ghost publishes.
  *
- *  Returns the MANIFEST event on success (callers use its .id as the
- *  shareable replay link). Null if no wave chunks could be published.
+ *  Returns the pointer event on success. Null on upload failure,
+ *  signer failure, or relay-publish failure. The pointer event's id
+ *  is the shareable replay link.
  *
- *  Legacy callers that only need a single-event publish for a tiny
- *  replay still work — the chunked flow gracefully degrades to one
- *  chunk + one manifest in that case. */
+ *  Sign count for the entire replay flow: 2 (the NIP-98 auth for the
+ *  upload + the pointer event). Prior path: 1 + N waves. */
 export async function publishReplay(input: PublishReplayInput): Promise<NostrEvent | null> {
   const { session, scoreEventId, finalScore, finalWave, durationMs, frames } = input;
   if (!session.signer.capabilities.canSignEvents) {
@@ -451,67 +335,103 @@ export async function publishReplay(input: PublishReplayInput): Promise<NostrEve
     return null;
   }
 
-  // Group frames by wave so each kind 30764 chunk covers exactly one
-  // wave's gameplay. NIP-46's 65535-byte signEvent cap forces this
-  // shape — a full 25-wave run encoded as a single event would be
-  // ~5MB before any cap, far past anything a NIP-46 signer accepts.
-  const byWave = new Map<number, ReplayFrameRaw[]>();
-  for (const f of frames) {
-    const list = byWave.get(f.wave);
-    if (list) list.push(f);
-    else byWave.set(f.wave, [f]);
+  const gzipped = await gzipFrames(frames);
+  if (!gzipped) {
+    console.error('[replay] gzip failed');
+    return null;
   }
-  const waves = [...byWave.keys()].sort((a, b) => a - b);
-  console.log(`[replay] chunking ${frames.length} frames across ${waves.length} wave(s)`);
+  console.log(`[replay] gzipped ${frames.length} frames → ${gzipped.byteLength}B`);
+
+  const uploaded = await uploadReplay(session, gzipped);
+  if (!uploaded.ok) {
+    const detail = 'detail' in uploaded ? uploaded.detail ?? '' : '';
+    console.error(`[replay] upload failed: ${uploaded.error}${detail ? ` (${detail})` : ''}`);
+    return null;
+  }
+  console.log(`[replay] uploaded ${uploaded.size}B blob, sha256=${uploaded.sha256.slice(0, 8)}…`);
 
   const runId = `${session.pubkey.slice(0, 16)}:${Date.now()}`;
   const relays = ghostRelaySet(input.relays);
-  const chunkEvents: Array<{ wave: number; eventId: string }> = [];
-  for (const wave of waves) {
-    const waveFrames = byWave.get(wave)!;
-    const chunkEvent = await publishWaveChunk(session, runId, wave, waveFrames, relays);
-    if (chunkEvent) chunkEvents.push({ wave, eventId: chunkEvent.id });
-  }
-  if (chunkEvents.length === 0) {
-    console.error('[replay] zero chunks published — manifest skipped');
-    return null;
-  }
-  console.log(`[replay] ${chunkEvents.length}/${waves.length} wave chunk(s) on relays; publishing manifest…`);
 
-  // Manifest event — empty content; metadata + e-tags to chunks.
-  // chunk='m' so the watcher's findReplayByAuthor recognises it.
-  const manifestTags: string[][] = [
-    ['d', `${GAME_ID}:replay:manifest:${runId}`],
+  // Pointer event — content stays empty; the bytes live at the URL.
+  // `enc=replay-blob-v1` tells the watcher to follow `url` rather than
+  // try to decode content directly. `x` carries the sha256 so the
+  // watcher can verify the bytes after fetching (defence against
+  // server compromise or transit corruption).
+  const tags: string[][] = [
+    ['d', `${GAME_ID}:replay:${runId}`],
     ['t', 'pallasite'],
     ['game', GAME_ID],
-    ['chunk', 'm'],
-    ['enc', 'replay-manifest-v1'],
+    ['enc', 'replay-blob-v1'],
+    ['url', uploaded.url],
+    ['x', uploaded.sha256],
+    ['size', String(uploaded.size)],
     ['score', finalScore.toString()],
     ['wave', finalWave.toString()],
     ['duration', durationMs.toString()],
     ['frames', String(frames.length)],
     ['runid', runId],
   ];
-  if (scoreEventId) manifestTags.push(['e', scoreEventId, '', 'score']);
-  for (const c of chunkEvents) {
-    manifestTags.push(['e', c.eventId, '', `wave-${c.wave}`]);
-  }
+  if (scoreEventId) tags.push(['e', scoreEventId, '', 'score']);
 
-  const manifest = await signWithRetry(
-    session,
-    { kind: REPLAY_KIND, content: '', tags: manifestTags },
-    'manifest',
-  );
-  if (!manifest) return null;
-  const results = await Promise.allSettled(relays.map((u) => publishToRelay(u, manifest)));
+  let signed: NostrEvent;
+  try {
+    signed = await session.signer.signEvent({
+      kind: REPLAY_KIND,
+      content: '',
+      tags,
+    });
+  } catch (err) {
+    console.error(`[replay] pointer-event sign failed: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+  const results = await Promise.allSettled(relays.map((u) => publishToRelay(u, signed)));
   const ok = results.filter((r) => r.status === 'fulfilled').length;
   for (let i = 0; i < relays.length; i++) {
     const r = results[i];
     if (r.status === 'fulfilled') console.log(`[replay]   ✓ ${relays[i]}`);
     else console.warn(`[replay]   ✗ ${relays[i]} — ${(r.reason as Error)?.message ?? 'error'}`);
   }
-  console.log(`[replay] manifest ${manifest.id.slice(0, 8)}… published to ${ok}/${relays.length} relays · ${chunkEvents.length} chunks linked`);
-  return manifest;
+  console.log(`[replay] pointer ${signed.id.slice(0, 8)}… published to ${ok}/${relays.length} relays`);
+  return signed;
+}
+
+/** Fetch + verify + decompress the blob at the pointer event's `url`.
+ *  Returns null if the URL is unreachable or the sha256 doesn't match
+ *  the `x` tag.
+ *
+ *  Server sends raw gzipped bytes as Content-Type: application/gzip
+ *  (no Content-Encoding header) so the browser doesn't auto-decompress
+ *  — we need to see the raw bytes to hash them. We hash, verify against
+ *  the pointer event's commitment, then gunzip in JS. */
+async function fetchBlobReplay(url: string, expectedSha256: string): Promise<ReplayFrameRaw[] | null> {
+  try {
+    const res = await fetch(url, { cache: 'force-cache' });
+    if (!res.ok) {
+      console.warn(`[replay] blob fetch failed HTTP ${res.status}: ${url}`);
+      return null;
+    }
+    const ab = await res.arrayBuffer();
+    const bytes = new Uint8Array(ab);
+    const actualSha = await sha256HexUint8(bytes);
+    if (actualSha !== expectedSha256) {
+      console.warn(`[replay] sha256 mismatch — expected ${expectedSha256.slice(0, 8)}… got ${actualSha.slice(0, 8)}… — refusing`);
+      return null;
+    }
+    return await gunzipFrames(bytes);
+  } catch (err) {
+    console.warn(`[replay] blob fetch threw: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+async function sha256HexUint8(bytes: Uint8Array): Promise<string> {
+  const ab = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(ab).set(bytes);
+  const hash = await crypto.subtle.digest('SHA-256', ab);
+  return Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 /** Find the most recent kind 30764 replay from `pubkey`. Used by the
@@ -580,12 +500,35 @@ export async function findReplayByAuthor(
   events.sort((a, b) => b.created_at - a.created_at);
   console.log(`[replay] findReplayByAuthor got ${events.length} candidate event(s)`);
 
-  // ── Manifest path (per-wave chunked, current publish format) ────
+  // ── Blossom blob path (current publish format) ──────────────────
+  // A blob-pointer event is `enc=replay-blob-v1` with a `url` + `x`
+  // tag. Fetch the URL, verify sha256, gunzip, return frames.
+  for (const e of events) {
+    if (tagValue(e.tags, 'enc') !== 'replay-blob-v1') continue;
+    if (!hasTagValue(e.tags, 'game', GAME_ID)) continue;
+    const url = tagValue(e.tags, 'url');
+    const sha = tagValue(e.tags, 'x');
+    if (!url || !sha) continue;
+    console.log(`[replay] blob pointer ${e.id.slice(0, 8)}… → ${url.slice(0, 50)}…`);
+    const frames = await fetchBlobReplay(url, sha);
+    if (frames && frames.length >= 2) {
+      return {
+        eventId: e.id,
+        pubkey: e.pubkey,
+        score: parseInt(tagValue(e.tags, 'score') ?? '0', 10) || 0,
+        wave: parseInt(tagValue(e.tags, 'wave') ?? '0', 10) || 0,
+        durationMs: parseInt(tagValue(e.tags, 'duration') ?? '0', 10) || 0,
+        frames,
+      };
+    }
+    console.warn('[replay] blob fetch failed — falling back to legacy paths');
+  }
+
+  // ── Legacy manifest path (per-wave chunked publish format) ───────
   // A manifest is a kind 30764 event with a `chunk` tag value of 'm'.
   // Its content is empty; its e-tags list the chunk events (one per
-  // wave). Watcher fetches each chunk, decodes, concatenates frames
-  // in wave order. Each chunk fits the NIP-46 signer's 64KB cap; the
-  // overall replay can run as long as the run lasted.
+  // wave). Kept for backwards compatibility with replays already
+  // published before the Blossom migration.
   const manifests = events.filter((e) =>
     hasTagValue(e.tags, 'game', GAME_ID) && tagValue(e.tags, 'chunk') === 'm'
   );
@@ -833,8 +776,28 @@ export async function fetchReplayByEventId(
       console.warn(`[replay]   skip ${e.id.slice(0, 8)}… — game tag is "${gameTag ?? '<none>'}" not "${GAME_ID}"`);
       continue;
     }
+    // New Blossom-blob format: follow the URL + verify hash.
+    if (encTag === 'replay-blob-v1') {
+      const url = tagValue(e.tags, 'url');
+      const sha = tagValue(e.tags, 'x');
+      if (!url || !sha) {
+        console.warn(`[replay]   skip ${e.id.slice(0, 8)}… — replay-blob-v1 missing url/x tag`);
+        continue;
+      }
+      const frames = await fetchBlobReplay(url, sha);
+      if (!frames) continue;
+      return {
+        eventId: e.id,
+        pubkey: e.pubkey,
+        score: parseInt(tagValue(e.tags, 'score') ?? '0', 10) || 0,
+        wave: parseInt(tagValue(e.tags, 'wave') ?? '0', 10) || 0,
+        durationMs: parseInt(tagValue(e.tags, 'duration') ?? '0', 10) || 0,
+        frames,
+      };
+    }
+    // Legacy single-event format kept for older replays still on relays.
     if (encTag !== 'replay-gzip-b64') {
-      console.warn(`[replay]   skip ${e.id.slice(0, 8)}… — enc tag is "${encTag ?? '<none>'}" not "replay-gzip-b64"`);
+      console.warn(`[replay]   skip ${e.id.slice(0, 8)}… — enc tag is "${encTag ?? '<none>'}" (need replay-blob-v1 or replay-gzip-b64)`);
       continue;
     }
     const frames = await decodeReplay(e.content);
@@ -920,6 +883,24 @@ export async function fetchReplayByScoreEventId(
       console.warn(`[replay]   skip ${e.id.slice(0, 8)}… — game tag "${gameTag ?? '<none>'}"`);
       continue;
     }
+    if (encTag === 'replay-blob-v1') {
+      const url = tagValue(e.tags, 'url');
+      const sha = tagValue(e.tags, 'x');
+      if (!url || !sha) {
+        console.warn(`[replay]   skip ${e.id.slice(0, 8)}… — replay-blob-v1 missing url/x tag`);
+        continue;
+      }
+      const frames = await fetchBlobReplay(url, sha);
+      if (!frames) continue;
+      return {
+        eventId: e.id,
+        pubkey: e.pubkey,
+        score: parseInt(tagValue(e.tags, 'score') ?? '0', 10) || 0,
+        wave: parseInt(tagValue(e.tags, 'wave') ?? '0', 10) || 0,
+        durationMs: parseInt(tagValue(e.tags, 'duration') ?? '0', 10) || 0,
+        frames,
+      };
+    }
     if (encTag !== 'replay-gzip-b64') {
       console.warn(`[replay]   skip ${e.id.slice(0, 8)}… — enc "${encTag ?? '<none>'}"`);
       continue;
@@ -944,19 +925,6 @@ export async function fetchReplayByScoreEventId(
   return null;
 }
 
-async function encodeReplay(frames: ReadonlyArray<ReplayFrameRaw>): Promise<string | null> {
-  try {
-    const json = JSON.stringify(frames);
-    const blob = new Blob([json]);
-    const cs = new (window as unknown as { CompressionStream: new (fmt: string) => GenericTransformStream }).CompressionStream('gzip');
-    const compressed = await new Response(blob.stream().pipeThrough(cs)).blob();
-    const buf = await compressed.arrayBuffer();
-    return arrayBufferToBase64(buf);
-  } catch {
-    return null;
-  }
-}
-
 async function decodeReplay(b64: string): Promise<ReplayFrameRaw[] | null> {
   try {
     const bytes = base64ToBytes(b64);
@@ -974,17 +942,6 @@ async function decodeReplay(b64: string): Promise<ReplayFrameRaw[] | null> {
   } catch {
     return null;
   }
-}
-
-function arrayBufferToBase64(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
-  // chunked because String.fromCharCode.apply blows the stack at large sizes
-  const chunk = 0x4000;
-  let bin = '';
-  for (let i = 0; i < bytes.length; i += chunk) {
-    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(bin);
 }
 
 function base64ToBytes(b64: string): Uint8Array {

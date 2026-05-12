@@ -433,37 +433,17 @@ export function clearReplayBuffer(): void {
   replayBuffer = [];
 }
 
-/** Wave-chunk publishing state — tracks which waves have already been
- *  published as kind 30764 chunks during play so the game-over manifest
- *  can list them all without re-publishing. Resets per run.
- *
- *  Per-wave publish during play solves the buffer-wrap problem: the
- *  in-memory buffer is capped at 6000 frames ≈ 200s of 30Hz capture.
- *  Long runs (9+ waves at ~25s each) overflow and lose the earliest
- *  waves. Publishing each wave as it ends keeps the relays as the
- *  source of truth instead of the bounded local buffer. */
+/** Per-run replay state. With the Blossom-style single-blob upload
+ *  path, all frames stay in the in-memory buffer until game-over and
+ *  go up in one PUT, so this tracker is now just a runId marker that
+ *  callers use to gate "we're in a fresh run" semantics. */
 export const replayRunState: {
   runId: string | null;
-  publishedChunks: Array<{ wave: number; eventId: string }>;
-} = { runId: null, publishedChunks: [] };
+} = { runId: null };
 
 export function beginReplayRun(runId: string): void {
   replayRunState.runId = runId;
-  replayRunState.publishedChunks = [];
   clearReplayBuffer();
-}
-
-/** Drain frames for a specific wave out of the in-memory buffer.
- *  Caller passes the result to publishReplayWaveChunk. */
-export function takeFramesForWave(wave: number): ReplayFrameRaw[] {
-  const matching: ReplayFrameRaw[] = [];
-  const remaining: ReplayFrameRaw[] = [];
-  for (const f of replayBuffer) {
-    if (f.wave === wave) matching.push(f);
-    else remaining.push(f);
-  }
-  replayBuffer = remaining;
-  return matching;
 }
 
 /** Build the on-wire world payload from a StreamFrame. Shared between
@@ -509,7 +489,11 @@ function buildWireWorld(frame: StreamFrame): WireWorld {
  *  failed) so the kind 30764 publish at game-over still has frames.
  *  Subsampled to 30Hz regardless of wire rate. */
 export function captureReplayFrame(frame: StreamFrame): void {
-  const MAX_BUFFER = 6000;
+  // Soft cap on buffer length. With Blossom-style single-blob upload
+  // at game-over we hold the entire run in memory, but anything past
+  // ~16 minutes at 30Hz is almost certainly an idle tab or runaway
+  // bug — drop the head so we don't OOM.
+  const MAX_BUFFER = 30000;
   const REPLAY_SAMPLE_MS = 33;
   const last = replayBuffer[replayBuffer.length - 1];
   if (last && frame.t - last.t < REPLAY_SAMPLE_MS) return;
