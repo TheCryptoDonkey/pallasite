@@ -284,6 +284,44 @@ export interface PublishReplayInput {
  *  room for tags + event envelope. */
 const MAX_CONTENT_BYTES = 58_000;
 
+/** Sign an event with one retry on transient signer failure.
+ *  bark / nsec.app are Chrome extensions whose background page suspends
+ *  after a few minutes of inactivity. The first signEvent after wake-up
+ *  often fails with 'Receiving end does not exist' / signer-timeout —
+ *  the act of calling it wakes the script, the SECOND call succeeds.
+ *  Wait 600ms between attempts to let the extension's service worker
+ *  finish booting. */
+async function signWithRetry(
+  session: SignetSession,
+  template: { kind: number; content: string; tags: string[][] },
+  label: string,
+): Promise<NostrEvent | null> {
+  const isTransient = (err: unknown): boolean => {
+    const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+    return msg.includes('timeout')
+      || msg.includes('timed out')
+      || msg.includes('receiving end')
+      || msg.includes('not connected')
+      || msg.includes('disconnected');
+  };
+  try {
+    return await session.signer.signEvent(template);
+  } catch (err) {
+    if (!isTransient(err)) {
+      console.error(`[replay]   ${label} signEvent rejected: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+    console.warn(`[replay]   ${label} signEvent transient fail (${err instanceof Error ? err.message : String(err)}) — retrying in 600ms`);
+    await new Promise((r) => setTimeout(r, 600));
+    try {
+      return await session.signer.signEvent(template);
+    } catch (err2) {
+      console.error(`[replay]   ${label} signEvent rejected on retry: ${err2 instanceof Error ? err2.message : String(err2)}`);
+      return null;
+    }
+  }
+}
+
 /** Per-wave chunk: encode + decimate to fit, sign, publish. Returns
  *  the signed event or null on failure. */
 async function publishWaveChunk(
@@ -326,13 +364,8 @@ async function publishWaveChunk(
     ['frames', String(candidate.length)],
     ['runid', runId],
   ];
-  let signed: NostrEvent;
-  try {
-    signed = await session.signer.signEvent({ kind: REPLAY_KIND, content, tags });
-  } catch (err) {
-    console.error(`[replay]   wave ${wave} signEvent rejected: ${err instanceof Error ? err.message : String(err)}`);
-    return null;
-  }
+  const signed = await signWithRetry(session, { kind: REPLAY_KIND, content, tags }, `wave ${wave}`);
+  if (!signed) return null;
   const results = await Promise.allSettled(relays.map((u) => publishToRelay(u, signed)));
   const ok = results.filter((r) => r.status === 'fulfilled').length;
   console.log(`[replay]   wave ${wave}: ${candidate.length}/${waveFrames.length} frames · ${content.length}B · ${ok}/${relays.length} relays · ${signed.id.slice(0, 8)}…`);
@@ -408,17 +441,12 @@ export async function publishReplay(input: PublishReplayInput): Promise<NostrEve
     manifestTags.push(['e', c.eventId, '', `wave-${c.wave}`]);
   }
 
-  let manifest: NostrEvent;
-  try {
-    manifest = await session.signer.signEvent({
-      kind: REPLAY_KIND,
-      content: '',
-      tags: manifestTags,
-    });
-  } catch (err) {
-    console.error(`[replay] manifest signEvent rejected: ${err instanceof Error ? err.message : String(err)}`);
-    return null;
-  }
+  const manifest = await signWithRetry(
+    session,
+    { kind: REPLAY_KIND, content: '', tags: manifestTags },
+    'manifest',
+  );
+  if (!manifest) return null;
   const results = await Promise.allSettled(relays.map((u) => publishToRelay(u, manifest)));
   const ok = results.filter((r) => r.status === 'fulfilled').length;
   for (let i = 0; i < relays.length; i++) {

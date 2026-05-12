@@ -8350,24 +8350,49 @@ function renderRunCredits(
       const replayFrames = getReplayBuffer();
       console.log(`[replay] replay buffer size at game-over: ${replayFrames.length} frame(s)`);
       if (replayFrames.length >= 2) {
-        setReplayBadge('pending', `📼 REPLAY · publishing ${replayFrames.length} frames…`);
-        void publishReplay({
-          session: state.session,
-          finalScore: state.score,
-          finalWave: state.wave,
-          durationMs: Math.max(0, Math.floor(state.runTimeMs)),
-          frames: replayFrames,
-        }).then((signed) => {
-          if (signed) {
-            setReplayBadge('ok', `✓ REPLAY PUBLISHED · ${signed.id.slice(0, 8)}… · ${replayFrames.length} frames`);
-          } else {
-            // publishReplay returned null — encode/sign/relay-publish
-            // failure. The [replay] console line has the specifics.
-            setReplayBadge('fail', '✗ REPLAY FAILED · check console [replay] logs (sign rejected? CompressionStream? all relays bounced?)');
-          }
-        }, (err) => {
-          setReplayBadge('fail', `✗ REPLAY THREW · ${err instanceof Error ? err.message : String(err)}`);
-        });
+        // Keep the frames in scope so a RETRY button can re-attempt
+        // when the first try fails (signer extension was suspended,
+        // network glitch, all relays bounced).
+        const session = state.session;
+        const score = state.score;
+        const wave = state.wave;
+        const durationMs = Math.max(0, Math.floor(state.runTimeMs));
+        const tryPublish = (): void => {
+          setReplayBadge('pending', `📼 REPLAY · publishing ${replayFrames.length} frames across ${new Set(replayFrames.map((f) => f.wave)).size} wave(s)…`);
+          void publishReplay({
+            session,
+            finalScore: score,
+            finalWave: wave,
+            durationMs,
+            frames: replayFrames,
+          }).then((signed) => {
+            if (signed) {
+              setReplayBadge('ok', `✓ REPLAY PUBLISHED · manifest ${signed.id.slice(0, 8)}…`);
+            } else {
+              renderRetryBadge();
+            }
+          }, (err) => {
+            setReplayBadge('fail', `✗ REPLAY THREW · ${err instanceof Error ? err.message : String(err)}`);
+            renderRetryBadge();
+          });
+        };
+        const renderRetryBadge = (): void => {
+          // Replace badge content with a clickable retry. The frames
+          // closure is still in scope so re-clicking publishes the
+          // exact same buffer.
+          replayStatus.innerHTML = '';
+          replayStatus.style.color = 'rgba(255,120,120,0.95)';
+          replayStatus.style.background = 'rgba(255,120,120,0.15)';
+          replayStatus.style.border = '1px solid rgba(255,120,120,0.55)';
+          const msg = el('span', { parent: replayStatus, text: '✗ REPLAY FAILED · ' });
+          void msg;
+          const retry = el('button', { parent: replayStatus, text: 'RETRY' });
+          retry.style.cssText = 'background:rgba(255,255,255,0.08);border:1px solid rgba(255,120,120,0.7);color:#fff;padding:2px 10px;border-radius:4px;font-family:monospace;font-size:0.78rem;letter-spacing:0.1em;cursor:pointer;margin-left:6px;';
+          retry.addEventListener('click', tryPublish);
+          const hint = el('div', { parent: replayStatus, text: 'Signer may have been asleep. Wake the extension (open its popup) and retry. Check console [replay] for the specific failure.' });
+          hint.style.cssText = 'font-size:0.7rem;margin-top:4px;color:rgba(220,210,255,0.65);letter-spacing:0.04em;';
+        };
+        tryPublish();
       } else {
         console.warn('[replay] skipping kind 30764 — fewer than 2 frames buffered.');
         setReplayBadge('fail', `✗ REPLAY EMPTY · only ${replayFrames.length} frame(s) captured · NIP-53 likely failed; check [stream] console`);
