@@ -35,7 +35,7 @@ import {
 import { renderLegalFooter, openTermsModal } from './legal.js';
 import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow } from './game.js';
 import * as audio from './audio.js';
-import { listTracks, currentTrackId, musicPreviewPlay, musicForceRefresh, musicStop, musicNotifyClaimSuccess } from './music.js';
+import { listTracks, currentTrackId, musicPreviewPlay, musicForceRefresh, musicStop, musicNotifyClaimSuccess, musicWarmUpAll } from './music.js';
 import { getMusicAnalyser } from './audio.js';
 import { fetchProfile, getCachedProfile, bestName } from './profile.js';
 import { type Difficulty, getStoredDifficulty, setStoredDifficulty, lockInDifficulty } from './difficulty.js';
@@ -5497,7 +5497,7 @@ let watchActiveMiniTeardown: (() => void) | null = null;
  *  tearing down the score-event subscription. */
 let watchActiveZapTeardown: (() => void) | null = null;
 
-export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean } = {}): void {
+export function renderWatchPage(state: GameState): void {
   clearOverlay();
   // Tear down any prior subscription before we open a new one — re-entering
   // the page (e.g. via BACK from the theatre) would otherwise leak sockets.
@@ -5590,12 +5590,6 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
     return;
   }
   // When the user lands fresh on the watch page (initial navigation, not
-  // a BACK from the theatre), auto-jump into the live theatre if there's
-  // exactly one player live. Saves a click during testing and feels right
-  // when nobody else is around. Reset on user-initiated close so they
-  // don't get bounced back in.
-  let autoOpenPending = opts.autoOpenLive ?? false;
-
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
 
@@ -6019,27 +6013,6 @@ export function renderWatchPage(state: GameState, opts: { autoOpenLive?: boolean
         miniTiles.set(e.pubkey, t);
       }
       liveTiles.style.display = miniTiles.size > 0 ? 'grid' : 'none';
-      // Auto-open into the live theatre if exactly one entry is LIVE and
-      // we haven't already consumed the flag. Use a setTimeout so the
-      // current onUpdate finishes rendering before the live theatre
-      // tears the watch DOM down underneath us.
-      const liveOnly = visible.filter((e) => e.isLive);
-      if (autoOpenPending && liveOnly.length === 1) {
-        autoOpenPending = false;
-        const e = liveOnly[0];
-        window.setTimeout(() => {
-          watchActiveUnsubscribe?.();
-          watchActiveUnsubscribe = null;
-          renderLiveTheatre({
-            masterPubkey: e.pubkey,
-            displayName: shortPubkey(e.pubkey),
-            initialScore: e.score,
-            initialWave: e.wave,
-            runStartedAtMs: e.createdAt * 1000,
-            onClose: () => renderWatchPage(state),
-          });
-        }, 60);
-      }
     },
     {
       onStatus: (s) => {
@@ -6447,6 +6420,17 @@ function renderWatchCard(entry: WatchEntry, state: GameState): HTMLElement {
   watch.setAttribute('data-watch-button', '1');
   watch.addEventListener('click', () => {
     if (watch.disabled) return;
+    // Audio prep MUST happen synchronously inside the click gesture.
+    // iOS Safari unlocks audio per-element on the first in-gesture
+    // .play(); musicWarmUpAll does that priming dance for every track,
+    // skipping whatever is currently playing so we don't bounce the
+    // title music. The async replay fetch below runs OUTSIDE the
+    // gesture window, so any element first-played there is permanently
+    // muted. resumePlayback also handles the post-pageshow case where
+    // the AudioContext was suspended by silenceAll().
+    void audio.unlockAudio().catch(() => undefined);
+    audio.resumePlayback();
+    musicWarmUpAll(currentTrackId() ?? undefined);
     if (entry.isLive) {
       renderLiveTheatre({
         masterPubkey: entry.pubkey,

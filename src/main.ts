@@ -453,17 +453,24 @@ const firstUnlock = (): void => {
   // musicSetTrackForState is about to play it normally.
   musicWarmUpAll('pallasite-idle');
   musicSetTrackForState(state);
-  window.removeEventListener('pointerup', firstUnlock);
-  window.removeEventListener('click', firstUnlock);
-  window.removeEventListener('keyup', firstUnlock);
+  window.removeEventListener('pointerup', firstUnlock, true);
+  window.removeEventListener('click', firstUnlock, true);
+  window.removeEventListener('keyup', firstUnlock, true);
 };
 // IMPORTANT: bind on RELEASE events (pointerup / click / keyup), not press.
 // iOS Safari only treats a gesture as "activated" for audio purposes on the
 // release. Calls to ctx.resume() / element.play() inside a pointerdown
 // handler are silently rejected and the elements stay locked.
-window.addEventListener('pointerup', firstUnlock);
-window.addEventListener('click', firstUnlock);
-window.addEventListener('keyup', firstUnlock);
+//
+// Capture phase: target-level handlers (e.g. the watch-page hero tile
+// click → renderLiveTheatre → crossfadeTo → el.play()) must see an
+// already-unlocked AudioContext, so firstUnlock has to run BEFORE the
+// target handler. Default (bubble) order would fire firstUnlock last,
+// after the failed play() attempt — leaving the element permanently
+// silent on iOS for that page session.
+window.addEventListener('pointerup', firstUnlock, true);
+window.addEventListener('click', firstUnlock, true);
+window.addEventListener('keyup', firstUnlock, true);
 
 // Lose focus → release keys & pause
 window.addEventListener('blur', () => {
@@ -959,11 +966,13 @@ async function boot(): Promise<void> {
   if (isAdmin) {
     renderAdminPanel();
   } else if (window.location.hostname.startsWith('watch.')) {
-    // Auto-open into the live theatre on initial nav when only one
-    // game is live — feels right for solo testing and small audiences.
-    // Closing the theatre returns to the full watch page (no flag) so
-    // the user can browse other entries from there.
-    renderWatchPage(state, { autoOpenLive: true });
+    // Auto-open used to fire here when exactly one player was live;
+    // dropped because the path bypassed every user gesture and iOS
+    // Safari then locked out audio for the rest of the page. With the
+    // hero-tile layout the spectator now lands on a page that shows
+    // who's live + a one-tap path into the full theatre, so auto-open
+    // costs sound for no real ergonomic win.
+    renderWatchPage(state);
   } else if (window.location.hostname.startsWith('mobile.')) {
     // mobile.pallasite.app — bookmarkable controller. Same render as
     // /controller but lives on its own subdomain so it can install as
