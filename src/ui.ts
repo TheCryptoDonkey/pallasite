@@ -8433,10 +8433,13 @@ export function renderPause(state?: GameState): void {
   const row = el('div', { className: 'menu-row', parent: overlay });
   const resume = el('button', { className: 'menu-btn', parent: row, text: 'RESUME' });
   resume.addEventListener('click', () => onResumeCb?.());
-  // Focus RESUME so a single Enter press un-pauses without arrow-key navigation.
-  // setTimeout(0) defers past the keydown that opened the pause menu — otherwise
-  // the focus call races the same event and the button doesn't take focus.
-  setTimeout(() => resume.focus(), 0);
+  // Focus RESUME so a single Enter press (or controller-pad A) un-pauses
+  // without first hunting via the d-pad. setTimeout(0) defers past the
+  // keydown that opened the pause menu — otherwise the focus call races
+  // the same event and the button doesn't take focus. tryFocusVisible
+  // makes the focus ring light up loudly so the player sees what's
+  // about to fire.
+  setTimeout(() => tryFocusVisible(resume), 0);
   const settings = el('button', { className: 'menu-btn secondary', parent: row, text: 'SETTINGS' });
   settings.addEventListener('click', () => renderSettings(() => renderPause(state)));
   if (state) {
@@ -9417,6 +9420,19 @@ async function maybePublishScore(
     'rgba(255,216,74,0.55)',
   );
 
+  // Focus the primary destination button on render so a single Enter
+  // press (or controller-pad A) fires the claim without first hunting
+  // for it via d-pad. Priority order matches the picker layout:
+  // address (pre-fill or kb) → QR → balance. On a coarse-pointer
+  // surface with no pre-fill, address is null and QR becomes the
+  // default. Below-threshold runs only have balance, so it's the
+  // default there. Deferred via setTimeout to let the recap layout
+  // settle before grabbing focus.
+  const primaryBtn = addressBtn ?? qrBtn ?? balanceBtn;
+  if (primaryBtn && hasAgeAttestation(sessionPubkey)) {
+    setTimeout(() => tryFocusVisible(primaryBtn), 0);
+  }
+
   // Inline expansion slot — when a destination is picked, its own
   // sub-form (lud16 input, QR canvas, etc.) renders here.
   const flowSlot = el('div', { parent: compactView });
@@ -9434,6 +9450,9 @@ async function maybePublishScore(
     setAgeAttestation(sessionPubkey);
     setEnabled(true);
     ageWrap.remove();
+    // Now that the picker is live, drop focus on the primary so the
+    // player can press A immediately after ticking the 18+ box.
+    if (primaryBtn) setTimeout(() => tryFocusVisible(primaryBtn), 0);
   };
   if (hasAgeAttestation(sessionPubkey)) {
     ageWrap.remove();
