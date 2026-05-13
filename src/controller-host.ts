@@ -14,9 +14,21 @@ import {
   CONTROLLER_WS_ENDPOINT_DEFAULT,
   type ControllerSpec,
   type PairingToken,
+  type SignerAnnounceFrame,
 } from './controller-types.js';
 import type { GameState } from './types.js';
 import { tryHyperspace, tryActivateShield } from './game.js';
+
+/** Identity the host has been told the controller is carrying. Mirror
+ *  of AnnouncedSigner from controller-mobile, re-declared here so the
+ *  host side doesn't depend on the mobile module. */
+export interface AnnouncedSigner {
+  pubkey: string;
+  npub?: string;
+  name?: string;
+  method?: SignerAnnounceFrame['method'];
+  caps?: SignerAnnounceFrame['caps'];
+}
 
 /** Pallasite slot map — which standard slot maps to which game action.
  *  The host's spec advertises icons/labels for these slots; the PWA
@@ -84,8 +96,12 @@ export interface ControllerHost {
   pairingUrl: string;
   paired: boolean;
   lastInputAt: number;
+  /** Latest identity the phone has announced. null = no signer / revoked. */
+  signer: AnnouncedSigner | null;
   close: () => void;
   onStatus: (cb: (s: ControllerHostStatus) => void) => void;
+  /** Fires when the phone announces a signer (or revokes it via null). */
+  onSigner: (cb: (signer: AnnouncedSigner | null) => void) => void;
 }
 
 export type ControllerHostStatus =
@@ -100,8 +116,11 @@ export function startControllerHost(state: GameState, opts: { ws?: string } = {}
 
   let paired = false;
   let lastInputAt = 0;
+  let signer: AnnouncedSigner | null = null;
   let statusCb: ((s: ControllerHostStatus) => void) | null = null;
+  let signerCb: ((s: AnnouncedSigner | null) => void) | null = null;
   const fireStatus = (s: ControllerHostStatus): void => { try { statusCb?.(s); } catch { /* ignore */ } };
+  const fireSigner = (s: AnnouncedSigner | null): void => { try { signerCb?.(s); } catch { /* ignore */ } };
 
   let ws: WebSocket | null = null;
   let closed = false;
@@ -170,6 +189,34 @@ export function startControllerHost(state: GameState, opts: { ws?: string } = {}
             state.targetHeading = null;
             state.thrustOverride = false;
             fireStatus({ kind: 'waiting' });
+            // Pair lost — drop the remote identity. The phone will
+            // re-announce on reconnect if it still has a session.
+            if (signer) {
+              signer = null;
+              fireSigner(null);
+            }
+          }
+        } else if (obj.type === 'signer-announce') {
+          const pubkey = typeof obj.pubkey === 'string' ? obj.pubkey : '';
+          if (/^[0-9a-f]{64}$/i.test(pubkey)) {
+            const next: AnnouncedSigner = {
+              pubkey: pubkey.toLowerCase(),
+              ...(typeof obj.npub === 'string' ? { npub: obj.npub } : {}),
+              ...(typeof obj.name === 'string' ? { name: obj.name } : {}),
+              ...(typeof obj.method === 'string' ? { method: obj.method as AnnouncedSigner['method'] } : {}),
+              ...(obj.caps && typeof obj.caps === 'object'
+                ? { caps: obj.caps as AnnouncedSigner['caps'] }
+                : {}),
+            };
+            const changed = !signer || signer.pubkey !== next.pubkey
+              || signer.name !== next.name || signer.method !== next.method;
+            signer = next;
+            if (changed) fireSigner(next);
+          }
+        } else if (obj.type === 'signer-revoke') {
+          if (signer) {
+            signer = null;
+            fireSigner(null);
           }
         }
         return;
@@ -200,8 +247,16 @@ export function startControllerHost(state: GameState, opts: { ws?: string } = {}
     sessionId, ws: wsUrl, pairingUrl,
     get paired() { return paired; },
     get lastInputAt() { return lastInputAt; },
+    get signer() { return signer; },
     close: cleanup,
     onStatus: (cb) => { statusCb = cb; },
+    onSigner: (cb) => {
+      signerCb = cb;
+      // Fire immediately with the current state — late subscribers
+      // (the pairing dialog mounts after the host starts) shouldn't
+      // miss an announce that already arrived.
+      if (signer) fireSigner(signer);
+    },
   };
 }
 

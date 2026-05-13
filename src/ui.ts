@@ -4452,6 +4452,14 @@ export function renderControllerHostPairing(state: GameState, onClose: () => voi
   status.style.cssText = 'margin:8px 0 4px;font-size:0.95rem;color:rgba(140,255,180,0.85);min-height:1.4em;letter-spacing:0.08em;';
   status.textContent = 'Generating session key…';
 
+  // Identity banner — populates when the phone announces a
+  // SignerAnnounceFrame on pair. Step 2 of phone-as-signer is
+  // cosmetic: the host still signs with its local session. Step 3
+  // swaps the host's session for a RemoteControllerSigner backed by
+  // this announce.
+  const signerLine = el('p', { parent: overlay });
+  signerLine.style.cssText = 'margin:2px 0 4px;font-size:0.85rem;color:rgba(184,144,255,0.9);min-height:1.2em;letter-spacing:0.1em;display:none;';
+
   const hint = el('p', { parent: overlay });
   hint.style.cssText = 'margin:6px 0 18px;font-size:0.8rem;color:rgba(180,140,255,0.7);max-width:520px;line-height:1.4em;';
   hint.textContent = '';
@@ -4507,11 +4515,33 @@ export function renderControllerHostPairing(state: GameState, onClose: () => voi
           primaryBtn.textContent = 'CANCEL';
           secondaryBtn.style.display = 'none';
         }
+        signerLine.style.display = 'none';
       } else if (s.kind === 'closed') {
         status.textContent = 'Disconnected.';
         primaryBtn.textContent = 'BACK';
         secondaryBtn.style.display = 'none';
+        signerLine.style.display = 'none';
       }
+    });
+    host.onSigner((signer) => {
+      if (!signer) {
+        signerLine.style.display = 'none';
+        return;
+      }
+      // Shorten npub for the banner — full bech32 is 63 chars which
+      // wraps awkwardly in this dialog. First 12 + last 6 is the
+      // standard "npub1abc…xyz" form most clients use.
+      let npubShort: string;
+      if (signer.npub && signer.npub.length > 18) {
+        npubShort = `${signer.npub.slice(0, 12)}…${signer.npub.slice(-6)}`;
+      } else if (signer.npub) {
+        npubShort = signer.npub;
+      } else {
+        npubShort = `${signer.pubkey.slice(0, 8)}…${signer.pubkey.slice(-4)}`;
+      }
+      const displayName = signer.name ?? npubShort;
+      signerLine.textContent = `🔐 Phone signing as ${displayName}`;
+      signerLine.style.display = '';
     });
   };
   void startOrReuseHost();
@@ -4746,6 +4776,44 @@ function renderControllerIdentityCardInner(
     sub.style.cssText = 'font-size:0.7rem;color:rgba(220,210,255,0.6);letter-spacing:0.06em;font-weight:normal;';
     btn.addEventListener('click', spec.onClick);
   }
+}
+
+/**
+ * Build the AnnouncedSigner payload the controller PWA sends on pair.
+ * Sources the pubkey from state.session, the name from the cached
+ * profile or the guest record, the npub via bech32, and the method
+ * from the wrapped signer (mapped to the protocol's enum).
+ */
+function buildAnnouncedSigner(state: GameState): import('./controller-mobile.js').AnnouncedSigner | null {
+  const session = state.session;
+  if (!session) return null;
+  const guest = getGuestRecord();
+  const isGuest = guest?.pubkey === session.pubkey;
+  const profile = getCachedProfile(session.pubkey);
+  const rawName = isGuest && guest ? guest.name : bestName(profile, session.pubkey);
+  const name = rawName.length > 64 ? rawName.slice(0, 64) : rawName;
+  let npub: string | undefined;
+  try { npub = encodeNpub(session.pubkey); } catch { /* leave undefined */ }
+  const signerMethod = (session.signer as { method?: string } | null)?.method;
+  const method: import('./controller-mobile.js').AnnouncedSigner['method'] =
+    isGuest ? 'guest'
+    : signerMethod === 'nip07'    ? 'nip07'
+    : signerMethod === 'bunker'   ? 'bunker'
+    : signerMethod === 'nsec'     ? 'nsec'
+    : signerMethod === 'amber'    ? 'amber'
+    : signerMethod === 'redirect' || signerMethod === 'signet' ? 'redirect'
+    : 'unknown';
+  const caps = {
+    canSignEvents: true,
+    hasNip44: Boolean((session.signer as { nip44?: unknown } | null)?.nip44),
+  };
+  return {
+    pubkey: session.pubkey,
+    ...(npub ? { npub } : {}),
+    ...(name ? { name } : {}),
+    method,
+    caps,
+  };
 }
 
 /** Describe a SignetSession's signing method for the IDENTITY card. */
@@ -5514,6 +5582,14 @@ export function renderControllerPage(state: GameState): void {
     }
     statusChip.textContent = 'CONNECTING…';
     client = m.startControllerClient(token);
+    // Announce the local identity (if any) to the host on pair. The
+    // host's onSigner callback receives this and can show a banner
+    // ("signing as @name"). Step 2 of phone-as-signer — actual signer
+    // swap on the host ships in step 3. announceSigner queues until
+    // the relay reports peer-up, so order with onStatus doesn't matter.
+    if (state.session) {
+      client.announceSigner(buildAnnouncedSigner(state));
+    }
     client.onStatus((s) => {
       switch (s.kind) {
         case 'connecting':    statusChip.textContent = 'CONNECTING…'; statusChip.style.color = 'rgba(255,216,74,0.85)'; break;

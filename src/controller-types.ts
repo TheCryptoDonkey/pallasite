@@ -79,6 +79,45 @@ export interface ControllerInputFrame {
   v: string;
 }
 
+/**
+ * Paired Companion Protocol — identity layer.
+ *
+ * The controller PWA can carry its own Nostr identity (NIP-46 bunker,
+ * NIP-07 extension, Amber, Signet, pasted nsec, or a local guest
+ * keypair). On pair, the phone tells the host who it is so the host
+ * can show a banner ("signing as @name") and, later, route signEvent
+ * requests through the phone instead of the host's local signer.
+ *
+ * Step 2 ships announce + revoke only. Step 3 adds sign-request /
+ * sign-response frames that turn this into a full remote signer.
+ *
+ * Caps describe what the signer can do (NIP-44 encrypt/decrypt, age
+ * verification, etc.) so the host doesn't have to probe.
+ */
+export interface SignerCaps {
+  canSignEvents: boolean;
+  hasNip44?: boolean;
+  hasAgeVerify?: boolean;
+}
+
+export interface SignerAnnounceFrame {
+  type: 'signer-announce';
+  /** 64-char hex secp256k1 public key. */
+  pubkey: string;
+  /** Optional NIP-19 npub — host can derive from pubkey if absent. */
+  npub?: string;
+  /** Optional display name pulled from kind 0 / guest record. */
+  name?: string;
+  /** Which signing method the phone is using. */
+  method?: 'nip07' | 'redirect' | 'bunker' | 'nsec' | 'amber' | 'guest' | 'unknown';
+  /** Signer capabilities. */
+  caps?: SignerCaps;
+}
+
+export interface SignerRevokeFrame {
+  type: 'signer-revoke';
+}
+
 /** Pairing token — encoded into the QR-code URL. */
 export interface PairingToken {
   sessionId: string;
