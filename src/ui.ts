@@ -266,35 +266,147 @@ export function gateBehindOnboarding(onReady: () => void): void {
 
 /**
  * Wire arrow-key navigation across the focusable buttons in an overlay.
- * ↑/← cycles to previous, ↓/→ to next, Enter/Space activates (browser default).
- * No autofocus — user must Tab once or press an arrow to enter the cycle —
- * which avoids fighting the global Enter-to-start handler in main.ts.
+ *
+ * Geometric, not DOM-order: ↑ / ↓ moves between visual rows (different
+ * top coordinates), ← / → moves between buttons on the SAME row
+ * (close top, different left). The mode picker / difficulty picker /
+ * daily toggle on the mission-select screen each live on their own
+ * row, so ↑ ↓ skips between those rows cleanly and ← → cycles values
+ * within whichever row is focused. Buttons that are alone on a row
+ * (IGNITE, HOW TO PLAY, SETTINGS) get visited by ↑ ↓ too.
+ *
+ * Falls back to a linear FIFO cycle if no geometric neighbour exists
+ * in the requested direction — keeps simple two-button dialogs
+ * (BACK / CONFIRM) navigable without needing explicit row grouping.
+ *
+ * Also explicitly fires .click() on the focused button for Enter /
+ * Space. The browser is supposed to synthesise this from a focused
+ * button's default action, but the synthesis varies across mobile
+ * browsers and the controller-PWA-over-WS keyboard-event path —
+ * being explicit means SELECT (A → Enter) ALWAYS activates the
+ * focused button, regardless of browser quirks.
+ *
+ * Focus is applied with {focusVisible: true} where supported, so the
+ * loud :focus-visible CSS treatment kicks in even though the focus
+ * arrived programmatically rather than via Tab.
  */
 function setupOverlayArrowNav(overlay: HTMLElement): void {
   const handler = (e: KeyboardEvent): void => {
-    // Detach when the overlay leaves the DOM (next render replaces it).
     if (!document.body.contains(overlay)) {
       window.removeEventListener('keydown', handler);
       return;
     }
-    if (e.code !== 'ArrowUp' && e.code !== 'ArrowDown'
-     && e.code !== 'ArrowLeft' && e.code !== 'ArrowRight') return;
-    const buttons = Array.from(overlay.querySelectorAll<HTMLButtonElement>('button:not([disabled])'))
-      .filter(b => b.offsetParent !== null);  // skip hidden ones (e.g. joystick-mode buttons)
-    if (buttons.length === 0) return;
+    // Skip when an input/textarea is focused — the form field owns
+    // its own keys (typing names, code entry).
     const active = document.activeElement as HTMLElement | null;
-    const idx = active ? buttons.indexOf(active as HTMLButtonElement) : -1;
-    if (idx === -1) {
-      // No button focused yet — first arrow keypress focuses the first button.
-      buttons[0].focus();
-    } else {
-      const dir = e.code === 'ArrowDown' || e.code === 'ArrowRight' ? 1 : -1;
-      const next = (idx + dir + buttons.length) % buttons.length;
-      buttons[next].focus();
+    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
+
+    const isArrow = e.code === 'ArrowUp' || e.code === 'ArrowDown'
+                 || e.code === 'ArrowLeft' || e.code === 'ArrowRight';
+    const isActivate = e.code === 'Enter' || e.code === 'Space';
+    if (!isArrow && !isActivate) return;
+
+    const buttons = Array.from(overlay.querySelectorAll<HTMLButtonElement>('button:not([disabled])'))
+      .filter((b) => b.offsetParent !== null);
+    if (buttons.length === 0) return;
+
+    if (isActivate) {
+      // Defensive activation. Browsers normally synthesise click()
+      // when Enter / Space is pressed on a focused button, but the
+      // synthesis is unreliable across the controller-PWA-WS path on
+      // some Android Chromium builds. Explicit click here means
+      // SELECT always works on the focused button.
+      const focused = active instanceof HTMLButtonElement && buttons.includes(active) ? active : null;
+      if (focused) {
+        e.preventDefault();
+        focused.click();
+      }
+      return;
     }
-    e.preventDefault();
+
+    if (!active || !(active instanceof HTMLButtonElement) || !buttons.includes(active)) {
+      // No button focused yet — first arrow keypress focuses the
+      // first visible button. Pass focusVisible:true so the loud
+      // :focus-visible CSS treatment shows immediately.
+      tryFocusVisible(buttons[0]);
+      e.preventDefault();
+      return;
+    }
+
+    // Geometric neighbour search. Match "same row" by close top
+    // coordinate (within half the button height — generous for
+    // wrap-flex layouts where row-mates can be staggered a couple
+    // pixels). Pick the nearest centre-aligned neighbour in the
+    // requested direction.
+    const cur = active.getBoundingClientRect();
+    const curCx = cur.left + cur.width / 2;
+    const curCy = cur.top + cur.height / 2;
+    const SAME_ROW = Math.max(cur.height / 2, 8);
+
+    interface Cand { btn: HTMLButtonElement; dx: number; dy: number; absDx: number; absDy: number; }
+    const cands: Cand[] = [];
+    for (const btn of buttons) {
+      if (btn === active) continue;
+      const r = btn.getBoundingClientRect();
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      cands.push({ btn, dx: cx - curCx, dy: cy - curCy, absDx: Math.abs(cx - curCx), absDy: Math.abs(cy - curCy) });
+    }
+
+    const horizontal = e.code === 'ArrowLeft' || e.code === 'ArrowRight';
+    const positive = e.code === 'ArrowDown' || e.code === 'ArrowRight';
+
+    let pick: Cand | null = null;
+    if (horizontal) {
+      // Prefer same-row neighbours in the requested left/right
+      // direction. Pick the one with smallest horizontal distance.
+      const sameRow = cands.filter((c) => c.absDy <= SAME_ROW && (positive ? c.dx > 0 : c.dx < 0));
+      sameRow.sort((a, b) => a.absDx - b.absDx);
+      pick = sameRow[0] ?? null;
+    } else {
+      // Vertical: pick a different-row neighbour in the requested
+      // up/down direction. Weight horizontal distance into the
+      // sort so the visually-nearest column wins ties.
+      const otherRow = cands.filter((c) => positive ? c.dy > SAME_ROW : c.dy < -SAME_ROW);
+      otherRow.sort((a, b) => (a.absDy + a.absDx * 0.25) - (b.absDy + b.absDx * 0.25));
+      pick = otherRow[0] ?? null;
+    }
+
+    // Fallback: no geometric neighbour exists in that direction.
+    // Wrap to the opposite end so a small dialog with two buttons in
+    // a row still cycles cleanly when the user presses ← past the
+    // first button. This also covers single-column overlays where
+    // ↑ at the top wraps to the bottom.
+    if (!pick) {
+      const all = cands.slice();
+      if (horizontal) {
+        all.sort((a, b) => a.dx - b.dx);
+        pick = positive ? all[0] : all[all.length - 1];
+      } else {
+        all.sort((a, b) => a.dy - b.dy);
+        pick = positive ? all[0] : all[all.length - 1];
+      }
+    }
+
+    if (pick) {
+      tryFocusVisible(pick.btn);
+      e.preventDefault();
+    }
   };
   window.addEventListener('keydown', handler);
+}
+
+/** Programmatically focus a button so the :focus-visible CSS treatment
+ *  fires. Chrome/Edge support {focusVisible: true}; Safari/Firefox fall
+ *  through to plain .focus() and the heuristic decides — usually they
+ *  treat programmatic focus during a keydown handler as "keyboard-
+ *  caused" and apply :focus-visible anyway. */
+function tryFocusVisible(btn: HTMLButtonElement): void {
+  try {
+    (btn as HTMLButtonElement & { focus(opts?: { focusVisible?: boolean }): void }).focus({ focusVisible: true });
+  } catch {
+    btn.focus();
+  }
 }
 
 

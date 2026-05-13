@@ -252,21 +252,23 @@ body[data-display="modern"] #game {
   z-index: 1;
 }
 
-.overlay .menu-btn:hover,
-.overlay .menu-btn:focus,
-.overlay .menu-btn:focus-visible {
+/* Hover (mouse) — softer treatment. Keyboard / d-pad / Tab focus uses
+   the louder :focus rule below so the couch-play user can read the
+   focused button from across the room. We merged :focus and
+   :focus-visible because programmatic .focus() from
+   setupOverlayArrowNav doesn't reliably trigger :focus-visible on
+   Safari / Firefox, so splitting them left d-pad-driven focus
+   invisible on those browsers. */
+.overlay .menu-btn:hover {
   background: rgba(88, 255, 88, 0.18);
   box-shadow:
     0 0 24px rgba(88, 255, 88, 0.65),
     0 0 0 3px rgba(88, 255, 88, 0.55) inset;
   transform: translateY(-1px);
-  outline: none;
 }
-/* Keyboard / d-pad focus deserves an *even louder* signal than mouse-
-   hover so a couch-play user can see which action the joystick is
-   pointing at from across the room. Strong inset glow + a 3px outline
-   in green leaves no ambiguity. */
+.overlay .menu-btn:focus,
 .overlay .menu-btn:focus-visible {
+  outline: none;
   box-shadow:
     0 0 32px rgba(88, 255, 88, 0.85),
     0 0 0 4px rgba(88, 255, 88, 0.85) inset;
@@ -281,17 +283,15 @@ body[data-display="modern"] #game {
   text-shadow: 0 0 6px rgba(180, 140, 255, 0.6);
   box-shadow: 0 0 12px rgba(180, 140, 255, 0.2);
 }
-
-.overlay .menu-btn.secondary:hover,
-.overlay .menu-btn.secondary:focus,
-.overlay .menu-btn.secondary:focus-visible {
+.overlay .menu-btn.secondary:hover {
   background: rgba(180, 140, 255, 0.18);
   box-shadow:
     0 0 24px rgba(180, 140, 255, 0.6),
     0 0 0 3px rgba(180, 140, 255, 0.55) inset;
-  outline: none;
 }
+.overlay .menu-btn.secondary:focus,
 .overlay .menu-btn.secondary:focus-visible {
+  outline: none;
   box-shadow:
     0 0 32px rgba(180, 140, 255, 0.85),
     0 0 0 4px rgba(180, 140, 255, 0.85) inset;
