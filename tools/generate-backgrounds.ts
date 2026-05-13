@@ -31,9 +31,20 @@ const args = process.argv.slice(2);
 const force = args.includes('--force');
 const waveArgIdx = args.indexOf('--wave');
 const onlyWave = waveArgIdx >= 0 ? parseInt(args[waveArgIdx + 1], 10) : null;
+/** --sanctum generates the 600bn Sanctum background (Madeira volcanic
+ *  cliffs, storm light, ember palette) instead of any wave. Off-axis
+ *  from the wave-N flow so the file lands at originals/sanctum.png. */
+const onlySanctum = args.includes('--sanctum');
 
 interface WavePrompt {
   wave: number;
+  prompt: string;
+}
+
+/** Named (non-wave) background target — same gpt-image-2 pipeline,
+ *  custom output filename. Currently just the 600bn Sanctum. */
+interface NamedPrompt {
+  name: string;
   prompt: string;
 }
 
@@ -145,6 +156,16 @@ const WAVES: WavePrompt[] = [
   },
 ];
 
+/** 600bn Sanctum bed — Madeira volcanic cliffs at storm-light hour.
+ *  Per 600bn world canon: orange/gold/ember palette, storm charge,
+ *  mythic register, no buildings/figures, no sacred stones IN the
+ *  background (the stone lives in-game). Lower-centre stays dark so
+ *  the council asteroids + ship + Stone read on top. */
+const SANCTUM_PROMPT: NamedPrompt = {
+  name: 'sanctum',
+  prompt: `Photorealistic dramatic landscape, ultra-high resolution, cinematic mythic register. Madeira volcanic basalt cliffs viewed from a high vantage at storm-light golden hour. Towering jagged black basalt headlands silhouetted in the lower-left and lower-right thirds, weathered and ancient. Vast tempestuous Atlantic sky fills the upper two-thirds — a cathedral of layered ember orange, burnished gold, deep amber, and storm-charged crimson, with massive crepuscular rays piercing through ragged stratus clouds. Distant ocean horizon catching the molten light. Faint sparks and embers drifting upward from the cliffs as if the rock itself is alive. The lower-centre is a darker quiet void where the ocean lies in deep shadow. No text, no graphics, no UI, no spaceships, no asteroids, no boats, no characters, no buildings, no figures, no logos. Cinematic, mythic, scripture-like, awe-inspiring, painterly. Aspect 1536x1024.`,
+};
+
 mkdirSync(OUT_DIR, { recursive: true });
 
 async function generateOne(wp: WavePrompt): Promise<void> {
@@ -212,7 +233,84 @@ async function generateOne(wp: WavePrompt): Promise<void> {
   }
 }
 
+async function generateNamed(np: NamedPrompt): Promise<void> {
+  const target = join(OUT_DIR, `${np.name}.png`);
+  if (!force && existsSync(target)) {
+    console.log(`  ${np.name}.png exists, skipping (use --force to regenerate)`);
+    return;
+  }
+
+  process.stdout.write(`  generating ${np.name} … `);
+
+  const res = await fetch('https://api.openai.com/v1/images/generations', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      prompt: np.prompt,
+      n: 1,
+      size: SIZE,
+      quality: QUALITY,
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    console.log(`✗ ${res.status}`);
+    console.error(`     ${errText.slice(0, 400)}`);
+    return;
+  }
+
+  const json = (await res.json()) as {
+    model?: string;
+    data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
+  };
+  const item = json.data?.[0];
+  if (!item) {
+    console.log('✗ empty response');
+    return;
+  }
+
+  let bytes: Uint8Array;
+  if (item.b64_json) {
+    bytes = Buffer.from(item.b64_json, 'base64');
+  } else if (item.url) {
+    const imgRes = await fetch(item.url);
+    if (!imgRes.ok) {
+      console.log(`✗ download failed: ${imgRes.status}`);
+      return;
+    }
+    bytes = new Uint8Array(await imgRes.arrayBuffer());
+  } else {
+    console.log('✗ no b64_json or url in response');
+    return;
+  }
+
+  writeFileSync(target, bytes);
+  const kb = (bytes.length / 1024).toFixed(1);
+  const modelTag = json.model ? ` [model=${json.model}]` : '';
+  console.log(`✓ ${kb} KB${modelTag}`);
+  if (item.revised_prompt && process.env.VERBOSE) {
+    console.log(`     revised: ${item.revised_prompt.slice(0, 200)}…`);
+  }
+}
+
 async function main(): Promise<void> {
+  // --sanctum is exclusive with --wave / no-flag (which iterate the
+  // wave roster). When set, only the named Sanctum target generates.
+  if (onlySanctum) {
+    console.log(`Generating 1 named background (sanctum) via ${MODEL} (${SIZE}, quality=${QUALITY})…`);
+    console.log(`Output dir: ${OUT_DIR}`);
+    console.log('');
+    await generateNamed(SANCTUM_PROMPT);
+    console.log('');
+    console.log('Done. Run `npm run optimise-backgrounds` to refresh the runtime WebP.');
+    return;
+  }
+
   const targets = onlyWave !== null ? WAVES.filter(w => w.wave === onlyWave) : WAVES;
   if (targets.length === 0) {
     console.error(`No wave matches --wave ${onlyWave}`);
