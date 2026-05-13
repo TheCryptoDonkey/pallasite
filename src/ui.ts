@@ -70,6 +70,7 @@ import {
   dustPreview, satCoinPreview,
 } from './previews.js';
 import QRCode from 'qrcode';
+import { getFlavour } from './flavour.js';
 
 const root = document.getElementById('ui-root')!;
 
@@ -886,6 +887,13 @@ export function renderTitle(state: GameState): void {
 // commits. This commit is scaffolding only — visual redesign comes later.
 
 export function renderAttract(state: GameState): void {
+  // 600bn flavour gets its own bespoke attract screen — sacred number
+  // wordmark, single PLAY to drop straight into the Sanctum, no auth
+  // step in the way (claim flow at game-over handles sign-in if needed).
+  if (getFlavour() === '600bn') {
+    renderSanctumAttract(state);
+    return;
+  }
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
@@ -9838,6 +9846,59 @@ async function maybePublishScore(
  *   COMPLETIONIST) — gameovers don't earn the COMPLETIONIST badge so
  *   the strip is mostly empty there anyway
  */
+/** 600bn attract screen — sacred number wordmark, terse mission brief,
+ *  single PLAY. Bypasses the standard renderAttract → renderAuth →
+ *  renderTitle chain because the Sanctum is a one-level teaser; the
+ *  full mission-select / leaderboard rotation reads wrong here.
+ *  Guest path: PLAY → startGame() (startSanctumRun fires inside),
+ *  claim flow at game-over surfaces the sign-in option if needed. */
+function renderSanctumAttract(state: GameState): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+
+  // 4-line sacred number wordmark — same canon as game-over card.
+  const number = el('div', { parent: overlay });
+  number.style.cssText = 'font:bold 56px ui-monospace,monospace;color:#ffd84a;letter-spacing:0.18em;line-height:1.05;text-align:center;text-shadow:0 0 24px rgba(255,138,58,0.65);margin-top:20px;';
+  number.innerHTML = '600<br>000<br>000<br>000';
+
+  const banner = el('div', { parent: overlay, text: 'THE SANCTUM' });
+  banner.style.cssText = 'font:bold 22px ui-monospace,monospace;color:#fff5d8;letter-spacing:0.28em;margin-top:24px;text-shadow:0 0 12px rgba(255,138,58,0.5);';
+
+  const brief = el('div', { parent: overlay });
+  brief.style.cssText = 'display:flex;flex-direction:column;gap:4px;margin:16px 0;text-align:center;';
+  const line1 = el('p', { parent: brief, text: '240 SECONDS · 11 COUNCIL · 1 STONE' });
+  line1.style.cssText = 'font:bold 13px ui-monospace,monospace;color:#ffd84a;letter-spacing:0.2em;margin:0;';
+  const line2 = el('p', { parent: brief, text: 'racooDNI at 04:20 · Bullbear at the horizon' });
+  line2.style.cssText = 'font:11px ui-monospace,monospace;color:rgba(255,245,216,0.75);letter-spacing:0.14em;margin:0;';
+  const line3 = el('p', { parent: brief, text: 'Stack sats. Find the signal.' });
+  line3.style.cssText = 'font:11px ui-monospace,monospace;color:rgba(255,245,216,0.55);letter-spacing:0.12em;margin:0;font-style:italic;';
+
+  // Big PLAY button — triggers startGame via the shared bindings.
+  const playRow = el('div', { className: 'menu-row', parent: overlay });
+  playRow.style.cssText = 'margin-top:20px;';
+  const playBtn = el('button', { className: 'menu-btn', parent: playRow, text: 'ENTER ▶' }) as HTMLButtonElement;
+  playBtn.style.cssText += 'font-size:1.4rem;padding:14px 48px;letter-spacing:0.28em;background:rgba(255,138,58,0.18);border-color:#ff8a3a;color:#ffd84a;text-shadow:0 0 12px rgba(255,138,58,0.6);';
+  playBtn.addEventListener('click', () => {
+    void audio.unlockAudio();
+    onStartCb?.();
+  });
+
+  // Footer — party promo links straight to 600.wtf.
+  const footer = el('div', { parent: overlay });
+  footer.style.cssText = 'margin-top:28px;display:flex;flex-direction:column;align-items:center;gap:4px;';
+  const partyLink = el('a', { parent: footer, text: 'PRAGUE PARTY · 11 JUNE · FUCHS2 ↗' }) as HTMLAnchorElement;
+  partyLink.href = 'https://600.wtf';
+  partyLink.target = '_blank';
+  partyLink.rel = 'noopener noreferrer';
+  partyLink.style.cssText = 'font:11px ui-monospace,monospace;color:#ffd84a;letter-spacing:0.18em;text-decoration:none;border:1px solid rgba(255,216,74,0.35);padding:6px 14px;border-radius:3px;background:rgba(255,216,74,0.06);';
+
+  const credit = el('p', { parent: footer, text: 'Pallasite × 600bn' });
+  credit.style.cssText = 'font:10px ui-monospace,monospace;color:rgba(255,245,216,0.45);letter-spacing:0.16em;margin:6px 0 0;';
+
+  void state;
+}
+
 /** FUCHS2 · 11 JUNE party card — appears above the claim picker on
  *  every Sanctum game-over. Sacred-number wordmark + party details +
  *  QR code to 600.wtf so phone players can tap-or-scan their way to
