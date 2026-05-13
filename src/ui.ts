@@ -4479,6 +4479,15 @@ export function renderControllerHostPairing(state: GameState, onClose: () => voi
     // re-roll and lets the user re-open the QR mid-session.
     if (!activeControllerHost) {
       activeControllerHost = mod.startControllerHost(state);
+      // Phone-as-signer step 3: as soon as the host exists, wire it
+      // up so any signer-announce frame swaps state.session for a
+      // RemoteControllerSigner. attachRemoteSession is idempotent
+      // (won't double-swap on re-announce) and unwires itself when
+      // the host closes. Only attach for fresh hosts — re-opening
+      // the dialog mustn't double-subscribe.
+      void import('./remote-signer.js').then(({ attachRemoteSession }) => {
+        if (activeControllerHost) attachRemoteSession(state, activeControllerHost);
+      });
     } else {
       // Already paired, jump to the paired view.
       paired = true;
@@ -4662,15 +4671,14 @@ function renderControllerIdentityCardInner(
       })();
     });
 
-    // Clarify the current limitation. Step 2 only announces the
-    // identity to the host on pair — the host still signs with its
-    // own local session. Step 3 (RemoteControllerSigner) is what
-    // makes the host actually route signEvent through the phone.
-    // Until then, the game's title screen will show its own session
-    // (likely a local guest) and the pad-side identity is informational.
+    // Once paired, the host swaps its local session for a remote
+    // signer backed by this phone. Every game-side signEvent
+    // (heartbeat, score, replay, claim) round-trips back here and
+    // the phone's local signer fulfils it. The big screen never
+    // sees your nsec.
     const gap = el('p', { parent: card });
-    gap.style.cssText = 'margin:8px 0 0;font-size:0.68rem;color:rgba(220,210,255,0.45);text-align:center;letter-spacing:0.04em;line-height:1.5;';
-    gap.textContent = 'Pair-time announce only — the big screen still signs locally for now. Remote signing arrives in the next update.';
+    gap.style.cssText = 'margin:8px 0 0;font-size:0.68rem;color:rgba(140,255,180,0.55);text-align:center;letter-spacing:0.04em;line-height:1.5;';
+    gap.textContent = 'Pair with a game — the big screen will sign through this phone. Your key never leaves the device.';
     return;
   }
 
@@ -5593,13 +5601,31 @@ export function renderControllerPage(state: GameState): void {
     statusChip.textContent = 'CONNECTING…';
     client = m.startControllerClient(token);
     // Announce the local identity (if any) to the host on pair. The
-    // host's onSigner callback receives this and can show a banner
-    // ("signing as @name"). Step 2 of phone-as-signer — actual signer
-    // swap on the host ships in step 3. announceSigner queues until
-    // the relay reports peer-up, so order with onStatus doesn't matter.
+    // host's onSigner callback receives this and uses the announce to
+    // build a RemoteControllerSigner — every host signEvent then
+    // round-trips back here via onSignRequest.
     if (state.session) {
       client.announceSigner(buildAnnouncedSigner(state));
     }
+    // Fulfil host sign-requests via the phone's local session signer.
+    // The phone's signer is already wrapped through the global sign-
+    // queue (auth.ts wrapSession) so concurrent requests from the host
+    // serialise here, not on the bunker / extension. signRequestHandler
+    // returns the signed event the host marshals as a sign-response.
+    // If state.session goes away (user signs out on the pad mid-pair),
+    // the handler resolves to a 'no-signer' error which the host
+    // surfaces as sign-failed.
+    client.onSignRequest(async (template) => {
+      const sess = state.session;
+      if (!sess) throw new Error('no-signer');
+      const signed = await sess.signer.signEvent({
+        kind: template.kind,
+        content: template.content,
+        ...(template.tags ? { tags: template.tags } : {}),
+        ...(template.created_at !== undefined ? { created_at: template.created_at } : {}),
+      });
+      return signed as unknown as import('./controller-types.js').RemoteSignedEvent;
+    });
     client.onStatus((s) => {
       switch (s.kind) {
         case 'connecting':    statusChip.textContent = 'CONNECTING…'; statusChip.style.color = 'rgba(255,216,74,0.85)'; break;

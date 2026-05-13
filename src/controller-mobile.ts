@@ -16,8 +16,11 @@ import {
   type ControllerInputFrame,
   type ControllerSpec,
   type PairingToken,
+  type RemoteEventTemplate,
+  type RemoteSignedEvent,
   type SignerAnnounceFrame,
   type SignerRevokeFrame,
+  type SignResponseFrame,
 } from './controller-types.js';
 
 /** Identity payload the phone announces to the host on pair. Built
@@ -29,6 +32,12 @@ export interface AnnouncedSigner {
   method?: SignerAnnounceFrame['method'];
   caps?: SignerAnnounceFrame['caps'];
 }
+
+/** Handler the caller installs to fulfil host sign-requests. Receives
+ *  the event template; resolves with the signed event or throws. The
+ *  client serialises the WS response so multiple in-flight requests
+ *  don't get tangled. */
+export type SignRequestHandler = (template: RemoteEventTemplate) => Promise<RemoteSignedEvent>;
 
 export interface ControllerClient {
   /** True once the relay reports the host is also connected. */
@@ -44,6 +53,13 @@ export interface ControllerClient {
    * cheap.
    */
   announceSigner: (signer: AnnouncedSigner | null) => void;
+  /**
+   * Install the sign-request handler. The phone's local signer is the
+   * source of truth; the handler awaits a signed event and the client
+   * frames it back to the host. Pass null to refuse all requests
+   * (responds with 'no-signer'). One handler at a time.
+   */
+  onSignRequest: (handler: SignRequestHandler | null) => void;
   /** Force-close the WS. */
   close: () => void;
   /** Status callback. */
@@ -133,6 +149,32 @@ export function startControllerClient(token: PairingToken): ControllerClient {
           spec = incoming;
           fireSpec(incoming);
         }
+      } else if (obj.type === 'sign-request') {
+        // Host wants us to sign an event with the locally-held key.
+        // Dispatch to the installed handler; respond with the signed
+        // event or an error code. Concurrency is the handler's
+        // problem — Pallasite wraps via serialiseSigner so multiple
+        // sign-requests funnel through the global sign queue serially.
+        const id = typeof obj.id === 'string' ? obj.id : '';
+        const template = obj.template as RemoteEventTemplate | undefined;
+        if (!id || !template || typeof template !== 'object' || typeof template.kind !== 'number') {
+          // Bad frame — surface an error if we have an id, otherwise drop.
+          if (id) respondToSignRequest(id, { ok: false, error: 'bad-request' });
+          return;
+        }
+        const handler = signRequestHandler;
+        if (!handler) {
+          respondToSignRequest(id, { ok: false, error: 'no-signer' });
+          return;
+        }
+        void (async () => {
+          try {
+            const event = await handler(template);
+            respondToSignRequest(id, { ok: true, event });
+          } catch (err) {
+            respondToSignRequest(id, { ok: false, error: err instanceof Error ? err.message : String(err) });
+          }
+        })();
       }
     };
     ws.onerror = () => { /* close handler will reconnect */ };
@@ -167,11 +209,24 @@ export function startControllerClient(token: PairingToken): ControllerClient {
     if (paired) sendSignerFrame();
   };
 
+  let signRequestHandler: SignRequestHandler | null = null;
+  const respondToSignRequest = (id: string, result: { ok: true; event: RemoteSignedEvent } | { ok: false; error: string }): void => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const frame: SignResponseFrame = result.ok
+      ? { type: 'sign-response', id, ok: true, event: result.event }
+      : { type: 'sign-response', id, ok: false, error: result.error };
+    try { ws.send(JSON.stringify(frame)); } catch { /* host will time out */ }
+  };
+  const onSignRequest = (handler: SignRequestHandler | null): void => {
+    signRequestHandler = handler;
+  };
+
   return {
     get paired() { return paired; },
     get spec() { return spec; },
     sendInput,
     announceSigner,
+    onSignRequest,
     close,
     onStatus: (cb) => { statusCb = cb; },
     onSpec: (cb) => { specCb = cb; },
