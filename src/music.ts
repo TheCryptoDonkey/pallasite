@@ -263,6 +263,11 @@ function trackForState(state: GameState): string | null {
       // looping vs not doesn't actually matter — the track plays for
       // the bonus duration and crossfades out when wave 10 starts).
       return 'hyperspace';
+    case 'sanctum':
+      // 600bn Sanctum bed — the-cult plays through the full 240s
+      // four-phase arc. Lazy-preloaded when getFlavour()==='600bn'
+      // via preloadAllTracks (see music.ts FLAVOUR_CRITICAL).
+      return 'the-cult';
     case 'wavestart':
     case 'playing': {
       const w = state.wave;

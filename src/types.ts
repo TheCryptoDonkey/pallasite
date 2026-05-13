@@ -319,7 +319,7 @@ export interface Debris {
   colour: string;
 }
 
-export type GamePhase = 'title' | 'playing' | 'paused' | 'gameover' | 'wavestart' | 'warp' | 'bonus' | 'completed' | 'deathreplay';
+export type GamePhase = 'title' | 'playing' | 'paused' | 'gameover' | 'wavestart' | 'warp' | 'bonus' | 'completed' | 'deathreplay' | 'sanctum';
 
 /** Snapshot of motion-relevant state, captured at ~30Hz during play and used
  *  to drive the death replay. Reuses the live entity types so the existing
@@ -354,6 +354,13 @@ export interface DeathReplay {
   /** Guard so the impact-frame spawn fires once per replay loop. */
   explosionSpawned: boolean;
 }
+
+/** Type-only forward import so GameState can carry the Sanctum state
+ *  with proper typing while staying tree-shake-clean. `import type` is
+ *  erased at build time so the main bundle never pulls in sanctum.ts
+ *  unless code actually references its runtime symbols (which only
+ *  happens when getFlavour() === '600bn'). */
+import type { SanctumState } from './sanctum.js';
 
 export interface GameState {
   phase: GamePhase;
@@ -410,6 +417,10 @@ export interface GameState {
   /** Count of pallasite mini-bosses already spawned in the bonus
    *  prelude window. Caps at 5. */
   bonusPreludeSpawned: number;
+
+  /** 600bn Sanctum state (when phase === 'sanctum'). Undefined on the
+   *  'main' flavour and during any non-sanctum phase. */
+  sanctum?: SanctumState;
 
   /** Total run time in ms (excluding pauses) — for completion screen */
   runTimeMs: number;
