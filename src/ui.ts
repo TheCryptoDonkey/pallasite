@@ -790,15 +790,94 @@ export function renderAttract(state: GameState): void {
   tagline.style.cssText = 'font-size:1.2rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin-top:-12px;';
   el('p', { parent: overlay, text: 'Cosmic arcade · Lightning sats · Nostr leaderboards' });
 
-  // Placeholder slot for the rotating attract panels (high scores /
-  // autoplay replay / credits). Empty for the scaffolding commit;
-  // task #126 fills it in. Reserves layout so the visual jump when
-  // rotation lands is small.
+  // Rotating attract panel — three contents cycle every few seconds:
+  //   GLOBAL HIGH SCORES TOP 5   (8s)  — live-updating leaderboard
+  //   TOP RUN HIGHLIGHT           (8s) — placeholder for replay
+  //                                      autoplay; full live render is
+  //                                      a follow-up. Static "top run"
+  //                                      stat panel for now.
+  //   CREDITS                     (5s) — handcrafted by + zaps tip
+  // 300ms crossfade between panels via opacity transition.
+  //
+  // Each render is fire-and-forget: it mounts a subtree into the panel
+  // and tears down on next rotation tick (innerHTML='' is enough since
+  // none of the panels open network sockets except the high-scores
+  // panel, which checks container.isConnected for self-teardown).
   const attractPanel = el('div', { parent: overlay });
-  attractPanel.style.cssText = 'min-height:200px;margin:24px auto;max-width:680px;width:100%;display:flex;align-items:center;justify-content:center;';
+  attractPanel.style.cssText = 'min-height:240px;margin:24px auto;max-width:760px;width:100%;display:flex;align-items:center;justify-content:center;transition:opacity 300ms ease;';
   attractPanel.dataset.attractPanel = '1';
-  const attractPlaceholder = el('p', { parent: attractPanel, text: '⟂ INSERT COIN ⟂' });
-  attractPlaceholder.style.cssText = 'font-size:1rem;color:rgba(140,255,180,0.45);letter-spacing:0.3em;font-family:monospace;animation:pallasite-live-pulse 1.8s ease-in-out infinite;';
+
+  type AttractPhase = 'scores' | 'replay' | 'credits';
+  const PHASE_DURATIONS: Record<AttractPhase, number> = {
+    scores: 8000,
+    replay: 8000,
+    credits: 5000,
+  };
+  const PHASE_ORDER: readonly AttractPhase[] = ['scores', 'replay', 'credits'];
+  let phaseIdx = 0;
+  let phaseTimer: number | null = null;
+
+  const mountPhase = (phase: AttractPhase): void => {
+    attractPanel.innerHTML = '';
+    if (phase === 'scores') {
+      // Wrap renderGlobalLeaderboard so we can scope the title to a
+      // shorter ATTRACT-style label rather than the full "GLOBAL HIGH
+      // SCORES" the mission-select uses.
+      const wrap = el('div', { parent: attractPanel });
+      wrap.style.cssText = 'width:100%;max-width:560px;text-align:center;';
+      renderGlobalLeaderboard(wrap, state);
+    } else if (phase === 'replay') {
+      // v1 placeholder — full live-frame autoplay of a top-zapped run
+      // is the next commit. For now show a tasteful "highlight reel
+      // loading" stand-in that doesn't promise more than we deliver.
+      const wrap = el('div', { parent: attractPanel });
+      wrap.style.cssText = 'width:100%;max-width:560px;text-align:center;display:flex;flex-direction:column;gap:8px;align-items:center;';
+      const head = el('p', { parent: wrap, text: '⚡ TOP RUN HIGHLIGHTS' });
+      head.style.cssText = 'font-size:0.95rem;color:#ffd84a;letter-spacing:0.18em;margin:0;';
+      const body = el('p', { parent: wrap, text: 'Autoplay coming soon — open the WATCH page to see live runs and replay-worthy clips from across the relay set.' });
+      body.style.cssText = 'font-size:0.82rem;color:rgba(220,210,255,0.65);max-width:480px;line-height:1.5;margin:0;';
+      const watchBtn = el('a', { parent: wrap, text: 'OPEN WATCH PAGE ▶' }) as HTMLAnchorElement;
+      watchBtn.href = 'https://watch.pallasite.app/';
+      watchBtn.target = '_blank';
+      watchBtn.rel = 'noopener';
+      watchBtn.style.cssText = 'font-size:0.78rem;letter-spacing:0.16em;color:#8cffb4;text-decoration:none;border:1px solid rgba(140,255,180,0.55);padding:4px 14px;border-radius:3px;background:rgba(140,255,180,0.06);margin-top:4px;';
+    } else {
+      // Credits — minimal. Names + zap pointer; sources from
+      // existing credits.ts module if there's more later, but for
+      // attract a tight three-line block reads better.
+      const wrap = el('div', { parent: attractPanel });
+      wrap.style.cssText = 'width:100%;max-width:560px;text-align:center;display:flex;flex-direction:column;gap:6px;';
+      el('p', { parent: wrap, text: '— CREDITS —' }).style.cssText = 'font-size:0.85rem;color:#ffd84a;letter-spacing:0.22em;margin:0 0 6px;';
+      const line = el('p', { parent: wrap, text: 'Handcrafted by The Crypto Donkey' });
+      line.style.cssText = 'font-size:0.92rem;color:#fff5d8;letter-spacing:0.06em;margin:0;';
+      const tip = el('p', { parent: wrap, text: 'Built on Nostr · Lightning · open relays' });
+      tip.style.cssText = 'font-size:0.74rem;color:rgba(220,210,255,0.6);letter-spacing:0.06em;margin:0;';
+      const npub = el('p', { parent: wrap, text: 'npub1mgvlrnf5hm9yf0n5mf9nqmvarhvxkc6remu5ec3vf8r0txqkuk7su0e7q2' });
+      npub.style.cssText = 'font-size:0.66rem;color:rgba(180,140,255,0.55);font-family:monospace;letter-spacing:0.04em;margin:4px 0 0;word-break:break-all;';
+    }
+  };
+
+  const rotate = (): void => {
+    if (!attractPanel.isConnected) {
+      if (phaseTimer !== null) { window.clearTimeout(phaseTimer); phaseTimer = null; }
+      return;
+    }
+    // Fade out, swap, fade in. setTimeout chain keeps the crossfade
+    // visible without needing CSS @keyframes.
+    attractPanel.style.opacity = '0';
+    window.setTimeout(() => {
+      if (!attractPanel.isConnected) return;
+      phaseIdx = (phaseIdx + 1) % PHASE_ORDER.length;
+      const next = PHASE_ORDER[phaseIdx];
+      mountPhase(next);
+      attractPanel.style.opacity = '1';
+      phaseTimer = window.setTimeout(rotate, PHASE_DURATIONS[next]);
+    }, 300);
+  };
+  // First panel — render immediately, no fade-in.
+  mountPhase(PHASE_ORDER[0]);
+  attractPanel.style.opacity = '1';
+  phaseTimer = window.setTimeout(rotate, PHASE_DURATIONS[PHASE_ORDER[0]]);
 
   // The ONE thing on this screen — big PLAY button.
   const playRow = el('div', { className: 'menu-row', parent: overlay });
