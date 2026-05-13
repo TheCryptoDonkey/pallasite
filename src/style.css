@@ -252,6 +252,21 @@ body[data-display="modern"] #game {
   z-index: 1;
 }
 
+/* Universal focus ring for any button inside an overlay. .menu-btn
+   gets the rich treatment further down, but mode / difficulty / daily
+   picker buttons style themselves inline via btn.style.cssText, which
+   beats CSS-rule background/box-shadow in specificity. Outline doesn't
+   suffer from that race (almost nothing sets outline inline) so a
+   thick yellow ring tells the player "this is the focused control"
+   regardless of what custom styles the row applied. !important keeps
+   it loud even on rows that try to clear outline themselves. */
+.overlay button:focus,
+.overlay button:focus-visible {
+  outline: 3px solid #ffd84a !important;
+  outline-offset: 3px !important;
+  box-shadow: 0 0 18px rgba(255, 216, 74, 0.55) !important;
+}
+
 /* Hover (mouse) — softer treatment. Keyboard / d-pad / Tab focus uses
    the louder :focus rule below so the couch-play user can read the
    focused button from across the room. We merged :focus and
