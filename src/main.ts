@@ -30,7 +30,7 @@ import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicResetElem
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, setDisplayMode } from './display.js';
-import { checkForUpdate } from './version.js';
+import { checkForUpdate, querySwVersion } from './version.js';
 import type { GameState } from './types.js';
 import { DOWN_DOUBLE_TAP_WINDOW_MS } from './types.js';
 
@@ -1069,6 +1069,14 @@ async function boot(): Promise<void> {
   // chip on the title screen.
   void checkForUpdate();
 
+  // Ask the running SW (if one is controlling this page) what
+  // SW_VERSION it shipped under. Lands on the title chip next to the
+  // git short SHA so a stale-SW suspicion ("did the new worker take?")
+  // is answered at a glance. Skipped silently on first cold-load when
+  // no controller exists yet; the controllerchange handler below will
+  // ask again once the new worker takes over.
+  void querySwVersion();
+
   requestAnimationFrame(loop);
 }
 
@@ -1220,6 +1228,7 @@ function setupServiceWorker(): void {
     setInterval(() => {
       reg.update().catch(() => { /* ignore */ });
       void checkForUpdate();
+      void querySwVersion();
     }, 60 * 1000);
 
     // Re-check on PWA foreground — iOS suspends background tabs for hours,
@@ -1229,6 +1238,7 @@ function setupServiceWorker(): void {
       if (document.visibilityState !== 'visible') return;
       reg.update().catch(() => { /* ignore */ });
       void checkForUpdate();
+      void querySwVersion();
     });
   }).catch(() => { /* registration failures are non-fatal */ });
 }
