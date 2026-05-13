@@ -18,7 +18,7 @@ import {
 import { getHapticsEnabled, setHapticsEnabled, hapticsSupported } from './haptics.js';
 import * as auth from './auth.js';
 import { addLocalHighScore, getLocalHighScores, isHighScore, subscribeGlobalHighScores, clearLocalHighScores, type GlobalHighScore } from './score.js';
-import { submitClaim, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, fetchFlagged, requestDeleteFlag, type PlayerTier, type FlaggedEntry } from './faucet.js';
+import { submitClaim, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, fetchFlagged, requestDeleteFlag, requestLnurlWithdraw, pollLnurlWithdrawStatus, type PlayerTier, type FlaggedEntry } from './faucet.js';
 import {
   fetchReviewCases,
   generateJuryIdentity,
@@ -9191,23 +9191,70 @@ async function maybePublishScore(
     verifyBtn.style.cssText = 'padding:4px 10px;font-size:0.72rem;cursor:pointer';
   }
 
-  const claimBtn = el('button', { className: 'menu-btn', parent: compactView, text: 'CLAIM' });
-  claimBtn.style.cssText = 'padding:8px 16px;cursor:pointer;font-size:0.95rem';
-
-  // Gate the claim button on the attestation. If already attested for this
-  // pubkey, drop the row entirely so the recap stays compact.
+  // ── Destination picker — replaces the single CLAIM button ──────────
+  // BTC Prague flow: a walk-up guest scores well and wants the sats now.
+  // Three options, every time (no muscle-memory default):
+  //   • Send to Lightning Address  — paste a lud16, server pays it
+  //   • Scan with Wallet           — LNURL-w QR, wallet pulls the sats
+  //   • Add to Balance             — bank for later (legacy single-tap)
+  // Direct payouts are gated at ≥100 sats (invoice fees would eat
+  // smaller payouts); below the threshold only the balance path
+  // appears, with a one-liner explaining why.
   const sessionPubkey = state.session.pubkey;
+  const sats = state.sats;
+  const canDirectPayout = sats >= WITHDRAW_THRESHOLD_SATS;
+
+  const heading = el('p', { parent: compactView });
+  heading.style.cssText = 'margin:6px 0 4px;font-size:0.72rem;letter-spacing:0.18em;color:rgba(255,216,74,0.85);text-align:center';
+  heading.textContent = sats > 0 ? `CLAIM ${sats} SATS — WHERE?` : 'CLAIM';
+
+  const picker = el('div', { parent: compactView });
+  picker.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin-top:2px';
+
+  const mkBtn = (label: string, sub: string, accent: string): HTMLButtonElement => {
+    const btn = el('button', { className: 'menu-btn', parent: picker }) as HTMLButtonElement;
+    btn.style.cssText = `display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 14px;border:1.5px solid ${accent};background:rgba(2,5,13,0.4);cursor:pointer;font-size:0.92rem;letter-spacing:0.1em;text-align:center`;
+    const top = el('div', { parent: btn, text: label });
+    top.style.cssText = 'font-weight:bold;';
+    const subEl = el('div', { parent: btn, text: sub });
+    subEl.style.cssText = 'font-size:0.68rem;color:rgba(220,210,255,0.65);font-weight:normal;letter-spacing:0.06em';
+    return btn;
+  };
+
+  const addressBtn = canDirectPayout
+    ? mkBtn('⚡ SEND TO LIGHTNING ADDRESS', 'Pay an address like donkey@strike.me', 'rgba(140,255,180,0.55)')
+    : null;
+  const qrBtn = canDirectPayout
+    ? mkBtn('📱 SCAN WITH WALLET', 'LNURL-w QR — your wallet pulls the sats', 'rgba(184,144,255,0.55)')
+    : null;
+  const balanceBtn = mkBtn(
+    '💰 ADD TO BALANCE',
+    canDirectPayout ? 'Save up — withdraw later from the title screen' : `Direct payout unlocks at ${WITHDRAW_THRESHOLD_SATS} sats`,
+    'rgba(255,216,74,0.55)',
+  );
+
+  // Inline expansion slot — when a destination is picked, its own
+  // sub-form (lud16 input, QR canvas, etc.) renders here.
+  const flowSlot = el('div', { parent: compactView });
+  flowSlot.style.cssText = 'margin-top:8px;display:flex;flex-direction:column;gap:8px';
+
+  const allButtons = [addressBtn, qrBtn, balanceBtn].filter((b): b is HTMLButtonElement => b !== null);
+  const setEnabled = (on: boolean): void => {
+    for (const b of allButtons) {
+      b.disabled = !on;
+      b.style.opacity = on ? '1' : '0.55';
+    }
+  };
+
   const onAttested = (): void => {
     setAgeAttestation(sessionPubkey);
-    claimBtn.disabled = false;
-    claimBtn.style.opacity = '1';
+    setEnabled(true);
     ageWrap.remove();
   };
   if (hasAgeAttestation(sessionPubkey)) {
     ageWrap.remove();
   } else {
-    claimBtn.disabled = true;
-    claimBtn.style.opacity = '0.55';
+    setEnabled(false);
     ageCheckbox.addEventListener('change', () => {
       if (ageCheckbox.checked) onAttested();
     });
@@ -9238,77 +9285,59 @@ async function maybePublishScore(
     }
   }
 
-  const subline = el('p', { parent: compactView });
-  subline.style.cssText = 'font-size:0.78rem;color:#888;margin:2px 0 0 0;text-align:center';
-  subline.textContent = state.sats > 0
-    ? `Adds to your balance · withdraw on title screen`
-    : '';
-
   const status = el('p', { parent: wrapper, text: '' });
   status.style.cssText = 'font-size:0.85rem;margin:4px 0 0 0;min-height:1.2em';
-
   const setStatus = (msg: string, color: string): void => {
     status.textContent = msg;
     status.style.color = color;
   };
 
-  claimBtn.textContent = state.sats > 0 ? `CLAIM ${state.sats} SATS` : 'CLAIM';
-
   const session = state.session;
 
-  const onClaim = async (): Promise<void> => {
-    claimBtn.disabled = true;
-    setStatus('Crediting balance…', '#5b9dff');
+  // Build the run payload once. Identical to the old single-button
+  // flow — every destination starts with the same submitClaim.
+  const buildPayload = (): {
+    payload: Parameters<typeof submitClaim>[1];
+  } => {
+    const finishedAt = Date.now();
+    const duration = Math.max(0, Math.floor(state.runTimeMs));
+    const startedAt =
+      state.runStartedAt > 0 ? state.runStartedAt : finishedAt - duration;
 
-    // Pause the auto-skip-to-title countdown for the duration of the claim.
-    // Bunker round-trip + relay publish can take a few seconds on a cold
-    // path; without the pause, the credits-screen idle timer could navigate
-    // the player back to title before they see the success line.
-    setIdlePaused?.(true);
-
-    try {
-      const finishedAt = Date.now();
-      const duration = Math.max(0, Math.floor(state.runTimeMs));
-      const startedAt =
-        state.runStartedAt > 0 ? state.runStartedAt : finishedAt - duration;
-
-      const seed = getActiveSeed();
-      const runAchievements = getRunAchievements();
-      const stats = state.runStats;
-      // Aggregate run telemetry — feeds the server-side heuristic cheat
-      // flagger (impossible hit ratios, sustained kill rates, score-per-
-      // kill outliers). Sent on every claim regardless of achievements so
-      // the server always has a fingerprint to compare against.
-      const durationSec = Math.max(1, duration / 1000);
-      const totalKills =
-        stats.asteroidsBroken +
-        stats.ufoKills.cruiser + stats.ufoKills.elite + stats.ufoKills.tank +
-        stats.ufoKills.sniper + stats.ufoKills.boss +
-        stats.minesDestroyed;
-      const telemetry: Record<string, unknown> = {
-        asteroids_broken: stats.asteroidsBroken,
-        ufo_kills: stats.ufoKills,
-        mines_destroyed: stats.minesDestroyed,
-        veins_broken: stats.veinsBroken,
-        bullets_fired: stats.bulletsFired,
-        bullets_missed: stats.bulletsMissed,
-        hit_ratio: stats.bulletsFired > 0
-          ? Math.round(((stats.bulletsFired - stats.bulletsMissed) / stats.bulletsFired) * 1000) / 1000
-          : 0,
-        largest_combo: stats.largestCombo,
-        powerups_collected: stats.powerupsCollected,
-        hyperspaces_used: stats.hyperspacesUsed,
-        lives_lost: stats.livesLost,
-        kills_per_sec: Math.round((totalKills / durationSec) * 100) / 100,
-        score_per_kill: totalKills > 0
-          ? Math.round((state.score / totalKills) * 10) / 10
-          : 0,
-        score_per_sec: Math.round((state.score / durationSec) * 10) / 10,
-        ...(runAchievements.length > 0
-          ? { achievements_unlocked: runAchievements }
-          : {}),
-      };
-      const payload = {
+    const seed = getActiveSeed();
+    const runAchievements = getRunAchievements();
+    const stats = state.runStats;
+    const durationSec = Math.max(1, duration / 1000);
+    const totalKills =
+      stats.asteroidsBroken +
+      stats.ufoKills.cruiser + stats.ufoKills.elite + stats.ufoKills.tank +
+      stats.ufoKills.sniper + stats.ufoKills.boss +
+      stats.minesDestroyed;
+    const telemetry: Record<string, unknown> = {
+      asteroids_broken: stats.asteroidsBroken,
+      ufo_kills: stats.ufoKills,
+      mines_destroyed: stats.minesDestroyed,
+      veins_broken: stats.veinsBroken,
+      bullets_fired: stats.bulletsFired,
+      bullets_missed: stats.bulletsMissed,
+      hit_ratio: stats.bulletsFired > 0
+        ? Math.round(((stats.bulletsFired - stats.bulletsMissed) / stats.bulletsFired) * 1000) / 1000
+        : 0,
+      largest_combo: stats.largestCombo,
+      powerups_collected: stats.powerupsCollected,
+      hyperspaces_used: stats.hyperspacesUsed,
+      lives_lost: stats.livesLost,
+      kills_per_sec: Math.round((totalKills / durationSec) * 100) / 100,
+      score_per_kill: totalKills > 0
+        ? Math.round((state.score / totalKills) * 10) / 10
+        : 0,
+      score_per_sec: Math.round((state.score / durationSec) * 10) / 10,
+      ...(runAchievements.length > 0
+        ? { achievements_unlocked: runAchievements }
+        : {}),
+    };
+    return {
+      payload: {
         score: state.score,
         wave: state.wave,
         duration_ms: duration,
@@ -9318,40 +9347,186 @@ async function maybePublishScore(
         cheated: state.cheatedThisRun,
         ...(seed ? { daily_seed: seed } : {}),
         telemetry,
-      };
-      // Persist BEFORE submit so a tab close, idle-skip, or signer hang
-      // doesn't strand the sats. The server has a 5-min replay window for
-      // (pubkey, started_at, finished_at); RETRY banner on title surfaces
-      // it if this one doesn't land.
-      if (state.sats > 0 && !state.cheatedThisRun) {
-        savePendingClaim(session.pubkey, payload);
-      }
-      const result = await submitClaim(session, payload);
-
-      if (result.ok) {
-        clearPendingClaim();
-        // Override the next title-screen music pick with 'banked-coin'
-        // so the player returns to a celebratory bed. One-shot — the
-        // override clears after the next title visit, so subsequent
-        // returns resume the normal idle rotation.
-        musicNotifyClaimSuccess();
-        const pityTail = result.pity_bonus && result.pity_bonus > 0
-          ? ` (★ +${result.pity_bonus} pity bonus)`
-          : '';
-        setStatus(
-          `✓ Banked ${result.payout_sats} sats · balance: ${result.new_balance}${pityTail}`,
-          '#58ff58',
-        );
-      } else {
-        if (isTerminalClaimError(result.error)) clearPendingClaim();
-        setStatus(claimErrorMessage(result.error, result.detail), '#ff8050');
-        claimBtn.disabled = false;
-      }
-    } finally {
-      setIdlePaused?.(false);
-    }
+      },
+    };
   };
-  onTap(claimBtn, () => { void onClaim(); });
+
+  // Run submitClaim once. Returns the payout sats actually credited
+  // (the server may downgrade based on tier caps) so the chained
+  // payout step (lud16 / LNURL-w) knows how much to drain.
+  let claimRun = false;
+  let claimedAmount = 0;
+  const runClaim = async (): Promise<{ ok: true; amount: number } | { ok: false }> => {
+    if (claimRun) return { ok: true, amount: claimedAmount };
+    const { payload } = buildPayload();
+    if (state.sats > 0 && !state.cheatedThisRun) {
+      savePendingClaim(session.pubkey, payload);
+    }
+    const result = await submitClaim(session, payload);
+    if (!result.ok) {
+      if (isTerminalClaimError(result.error)) clearPendingClaim();
+      setStatus(claimErrorMessage(result.error, result.detail), '#ff8050');
+      setEnabled(true);
+      return { ok: false };
+    }
+    clearPendingClaim();
+    musicNotifyClaimSuccess();
+    claimRun = true;
+    claimedAmount = result.payout_sats;
+    return { ok: true, amount: claimedAmount };
+  };
+
+  const lockPicker = (chosen: HTMLButtonElement): void => {
+    setEnabled(false);
+    chosen.style.borderColor = '#ffd84a';
+    chosen.style.background = 'rgba(255,216,74,0.10)';
+  };
+
+  // ── Destination: Add to balance ─────────────────────────────────────
+  onTap(balanceBtn, () => {
+    void (async () => {
+      lockPicker(balanceBtn);
+      setStatus('Crediting balance…', '#5b9dff');
+      setIdlePaused?.(true);
+      try {
+        const r = await runClaim();
+        if (r.ok) {
+          setStatus(`✓ Banked ${r.amount} sats · withdraw from the title screen`, '#58ff58');
+        }
+      } finally {
+        setIdlePaused?.(false);
+      }
+    })();
+  });
+
+  // ── Destination: Lightning Address ──────────────────────────────────
+  if (addressBtn) {
+    onTap(addressBtn, () => {
+      lockPicker(addressBtn);
+      flowSlot.replaceChildren();
+      const card = el('div', { parent: flowSlot });
+      card.style.cssText = 'display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid rgba(140,255,180,0.3);border-radius:8px;background:rgba(60,200,140,0.05)';
+      const label = el('p', { parent: card, text: 'LIGHTNING ADDRESS' });
+      label.style.cssText = 'margin:0;font-size:0.72rem;color:rgba(140,255,180,0.85);letter-spacing:0.14em';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.spellcheck = false;
+      input.autocapitalize = 'off';
+      input.autocomplete = 'email';
+      input.placeholder = 'alice@yourwallet.com';
+      input.style.cssText = 'padding:10px 12px;font-family:inherit;font-size:0.95rem;background:#0a0a0a;color:#eee;border:1px solid #333;border-radius:4px';
+      input.value = state.profile?.lud16 ?? getStoredLnAddress() ?? '';
+      card.appendChild(input);
+      const sendBtn = el('button', { className: 'menu-btn', parent: card, text: `SEND ${sats} SATS →` }) as HTMLButtonElement;
+      sendBtn.style.cssText = 'padding:8px 14px;cursor:pointer;font-size:0.92rem';
+      const sendErr = el('p', { parent: card });
+      sendErr.style.cssText = 'margin:0;font-size:0.74rem;min-height:1em;color:#888';
+      onTap(sendBtn, () => {
+        void (async () => {
+          const addr = input.value.trim();
+          if (!LN_ADDRESS_RE.test(addr)) {
+            sendErr.textContent = 'Invalid lightning address.';
+            sendErr.style.color = '#ff5050';
+            return;
+          }
+          setStoredLnAddress(addr);
+          sendBtn.disabled = true;
+          input.disabled = true;
+          sendErr.textContent = '';
+          setStatus('Crediting balance…', '#5b9dff');
+          setIdlePaused?.(true);
+          try {
+            const claim = await runClaim();
+            if (!claim.ok) {
+              sendBtn.disabled = false;
+              input.disabled = false;
+              return;
+            }
+            setStatus(`Paying ${claim.amount} sats to ${addr}…`, '#5b9dff');
+            const w = await submitWithdraw(session, { amount_sats: claim.amount, lightning_address: addr });
+            if (w.ok) {
+              setStatus(`✓ Paid ${w.amount_sats} sats to ${addr}`, '#58ff58');
+            } else {
+              setStatus(`Banked ${claim.amount} sats · payout failed: ${withdrawErrorMessage(w.error, w.detail)}`, '#ff8050');
+              sendErr.textContent = 'Sats sit safely on your balance — retry withdraw on the title screen.';
+              sendErr.style.color = 'rgba(255,216,74,0.85)';
+            }
+          } finally {
+            setIdlePaused?.(false);
+          }
+        })();
+      });
+    });
+  }
+
+  // ── Destination: LNURL-withdraw QR ──────────────────────────────────
+  if (qrBtn) {
+    onTap(qrBtn, () => {
+      lockPicker(qrBtn);
+      flowSlot.replaceChildren();
+      const card = el('div', { parent: flowSlot });
+      card.style.cssText = 'display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid rgba(184,144,255,0.3);border-radius:8px;background:rgba(120,90,200,0.05);align-items:center';
+      const title = el('p', { parent: card, text: 'SCAN WITH YOUR WALLET' });
+      title.style.cssText = 'margin:0;font-size:0.72rem;color:rgba(184,144,255,0.9);letter-spacing:0.14em';
+      const qrSlot = el('div', { parent: card });
+      qrSlot.style.cssText = 'width:240px;height:240px;background:#fff;border-radius:8px;padding:10px;box-shadow:0 0 20px rgba(184,144,255,0.25)';
+      const sub = el('p', { parent: card });
+      sub.style.cssText = 'margin:0;font-size:0.74rem;color:rgba(220,210,255,0.7);text-align:center;line-height:1.45';
+      sub.textContent = 'Phoenix, Wallet of Satoshi, Mutiny, Zeus, Cash App — any wallet that supports LNURL withdraw.';
+
+      void (async () => {
+        setStatus('Crediting balance…', '#5b9dff');
+        setIdlePaused?.(true);
+        try {
+          const claim = await runClaim();
+          if (!claim.ok) {
+            flowSlot.replaceChildren();
+            setEnabled(true);
+            return;
+          }
+          setStatus(`Minting QR for ${claim.amount} sats…`, '#5b9dff');
+          const mint = await requestLnurlWithdraw(session, { amount_sats: claim.amount });
+          if (!mint.ok) {
+            setStatus(`Banked ${claim.amount} sats · QR mint failed: ${mint.error}`, '#ff8050');
+            const note = el('p', { parent: card });
+            note.style.cssText = 'margin:0;color:#ff8050;font-size:0.78rem';
+            note.textContent = 'Sats sit safely on your balance — try the Lightning Address option, or withdraw on the title screen.';
+            return;
+          }
+          // Render the bech32 LNURL as a QR. Upper-case keeps the QR
+          // smaller (alphanumeric mode vs byte mode).
+          void renderQRInto(qrSlot, mint.lnurl);
+          setStatus('Waiting for your wallet to pull…', 'rgba(184,144,255,0.9)');
+
+          // Poll for consumed/paid status every 2.5s, time out at the
+          // server's TTL (15 min). Stop polling on success or failure.
+          let polling = true;
+          const stopPolling = (): void => { polling = false; };
+          const tick = async (): Promise<void> => {
+            if (!polling) return;
+            const s = await pollLnurlWithdrawStatus(mint.k1);
+            if (!polling) return;
+            if (s.ok) {
+              if (s.status === 'paid' || s.consumed) {
+                setStatus(`✓ Paid ${claim.amount} sats — your wallet has them`, '#58ff58');
+                stopPolling();
+                return;
+              }
+              if (s.status === 'expired' || s.expires_at <= Date.now()) {
+                setStatus(`Banked ${claim.amount} sats · QR expired (sats refunded to balance)`, '#ff8050');
+                stopPolling();
+                return;
+              }
+            }
+            window.setTimeout(() => void tick(), 2500);
+          };
+          void tick();
+        } finally {
+          setIdlePaused?.(false);
+        }
+      })();
+    });
+  }
 }
 
 // ── Completion screen (wave 25 cleared) ──────────────────────────────────────
