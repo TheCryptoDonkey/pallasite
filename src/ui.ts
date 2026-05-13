@@ -11539,6 +11539,7 @@ export function renderAdminV2Panel(state: GameState): void {
     settingRow('ufo_respawn_min_ms',        'UFO respawn min (ms)');
     settingRow('asteroid_count_multiplier', 'Asteroid count multiplier',       true);
     settingRow('checkin_sats',              'Daily check-in stipend (sats)');
+    settingRow('daily_cap_600bn',           '600bn Sanctum daily cap (sats)');
     const saveSettingsBtn = el('button', { className: 'menu-btn', parent: settingsCard, text: 'SAVE ALL SETTINGS' }) as HTMLButtonElement;
     saveSettingsBtn.style.cssText = 'padding:10px 14px;font-size:0.85rem;cursor:pointer;letter-spacing:0.14em;align-self:flex-start';
     saveSettingsBtn.addEventListener('click', () => {
