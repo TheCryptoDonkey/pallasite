@@ -1093,7 +1093,12 @@ export function renderAuth(state: GameState, onDone: () => void): void {
     void (async () => {
       try {
         const name = raw.trim() || 'Anonymous';
-        state.session = await auth.createGuestSession(name);
+        // Read the opt-out checkbox state at submit time. Defaults
+        // to true (pre-checked) so a user who just types and submits
+        // gets the auto-follow.
+        const followCheckEl = overlay.querySelector<HTMLInputElement>('input[data-follow-pallasite]');
+        const followPallasite = followCheckEl?.checked ?? true;
+        state.session = await auth.createGuestSession(name, { followPallasite });
         onDone();
       } catch (err) {
         guestStatus.textContent = `Couldn't create local identity: ${err instanceof Error ? err.message : String(err)}`;

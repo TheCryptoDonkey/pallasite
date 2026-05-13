@@ -32,6 +32,7 @@ import type {
   SignetSession,
   SignetSigner,
 } from 'signet-login';
+import { fetchGameInfo } from './faucet.js';
 
 const STORAGE_KEY = 'pallasite:guest:v1';
 
@@ -186,6 +187,105 @@ class GuestSigner implements SignetSigner {
 
 // ── Session factory ─────────────────────────────────────────────────────────
 
+// ── Profile bootstrap ───────────────────────────────────────────────────────
+
+/**
+ * Open a one-shot WebSocket to a relay and publish a signed event.
+ * Resolves on OK from the relay; rejects on close/error/timeout. Same
+ * shape as publishToRelay in social.ts / jury.ts / ghost.ts but
+ * inlined here so guest.ts stays independent of those modules' wider
+ * surfaces.
+ */
+function publishToRelay(url: string, event: NostrEvent, timeoutMs = 5000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let ws: WebSocket;
+    try { ws = new WebSocket(url); } catch (err) { reject(err); return; }
+    const timer = setTimeout(() => {
+      try { ws.close(); } catch { /* ignore */ }
+      reject(new Error('relay-timeout'));
+    }, timeoutMs);
+    ws.onopen = () => ws.send(JSON.stringify(['EVENT', event]));
+    ws.onmessage = (ev) => {
+      try {
+        const msg: unknown = JSON.parse(typeof ev.data === 'string' ? ev.data : '');
+        if (Array.isArray(msg) && msg[0] === 'OK' && msg[1] === event.id) {
+          clearTimeout(timer);
+          try { ws.close(); } catch { /* ignore */ }
+          if (msg[2] === true) resolve();
+          else reject(new Error(typeof msg[3] === 'string' ? msg[3] : 'rejected'));
+        }
+      } catch { /* ignore parse errors */ }
+    };
+    ws.onerror = () => { clearTimeout(timer); reject(new Error('relay-error')); };
+  });
+}
+
+/**
+ * Publish the freshly-created guest's profile shape to relays:
+ *   - kind 0 metadata: name + "about" line marking them as a Pallasite
+ *     guest + a custom `client` field so any Nostr client surfacing
+ *     this profile can label them appropriately.
+ *   - kind 3 contact list: optional, follows the Pallasite game npub.
+ *     Resolved via /api/game-pubkey at publish time so we don't bake
+ *     the pubkey into the bundle.
+ *
+ * Fire-and-forget: a failed publish doesn't tear down the session.
+ * The keypair is already valid for local signing; profile fan-out
+ * landing across relays is a nice-to-have, not a precondition.
+ *
+ * `followPallasite=false` skips the kind 3 publish entirely (user
+ * unticked the opt-out checkbox on the auth screen).
+ */
+async function publishGuestProfile(signer: GuestSigner, name: string, followPallasite: boolean): Promise<void> {
+  // Profile metadata. NIP-01 only defines a handful of fields in the
+  // JSON content; we add `client: 'pallasite-guest'` so any indexer
+  // can group these identities, and an `about` line that's both
+  // human-readable and acts as marketing for the game.
+  const profile = {
+    name,
+    about: `Pallasite arcade guest. Shoot rocks, stack sats — pallasite.app`,
+    client: 'pallasite-guest',
+  };
+  const kind0 = await signer.signEvent({
+    kind: 0,
+    content: JSON.stringify(profile),
+    tags: [],
+    created_at: Math.floor(Date.now() / 1000),
+  });
+
+  // Resolve the game pubkey + relay set from the faucet. If the
+  // endpoint is unreachable we still publish kind 0 to the default
+  // relay set we know about; the kind 3 just gets skipped.
+  const info = await fetchGameInfo().catch(() => null);
+  // Relay set: prefer what /api/game-pubkey advertises. Defaults to a
+  // small public set if the endpoint is down at signup time.
+  const relays: readonly string[] = info && info.relays.length > 0
+    ? info.relays
+    : ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band'];
+
+  // Fire kind 0 to every relay in parallel. Don't await the promise
+  // chain on the caller side — guest.ts's loadOrCreateGuest treats
+  // this as fire-and-forget.
+  await Promise.allSettled(relays.map((url) => publishToRelay(url, kind0)));
+
+  if (!followPallasite || !info?.pubkey) return;
+
+  // Kind 3 contact list — single p-tag for the Pallasite game pubkey
+  // with relay hint + petname. NIP-02 says clients should append to
+  // existing kind 3 rather than overwrite; for a freshly-created
+  // keypair there's nothing to append to, so we publish a one-entry
+  // list which becomes the player's initial follow list.
+  const kind3 = await signer.signEvent({
+    kind: 3,
+    content: '',
+    tags: [
+      ['p', info.pubkey, relays[0] ?? '', 'Pallasite'],
+    ],
+    created_at: Math.floor(Date.now() / 1000),
+  });
+  await Promise.allSettled(relays.map((url) => publishToRelay(url, kind3)));
+}
+
 /**
  * Build a synthetic SignetAuthEvent (kind 21236) for the guest session.
  * signet-login uses this event in the standard path to prove the
@@ -218,9 +318,21 @@ async function buildGuestAuthEvent(signer: GuestSigner): Promise<SignetAuthEvent
  * `name` is required when creating fresh — the title screen prompts
  * for it. If a record already exists the stored name wins (the caller
  * can update it via setGuestName later).
+ *
+ * On a FRESH creation (no stored record yet), kicks off a fire-and-
+ * forget kind 0 + optional kind 3 publish so the player's npub becomes
+ * a real, resolvable Nostr profile from other clients' perspective.
+ * `followPallasite` toggles the kind 3 ("✓ Follow Pallasite" checkbox
+ * on the auth screen — pre-checked, opt-out). Profile publish never
+ * blocks the session return — caller gets the SignetSession back
+ * immediately and the network round-trips happen behind it.
  */
-export async function loadOrCreateGuest(opts: { name: string }): Promise<SignetSession> {
+export async function loadOrCreateGuest(opts: {
+  name: string;
+  followPallasite?: boolean;
+}): Promise<SignetSession> {
   let stored = readStored();
+  let isFreshlyCreated = false;
   if (!stored) {
     const sk = new Uint8Array(32);
     crypto.getRandomValues(sk);
@@ -236,9 +348,21 @@ export async function loadOrCreateGuest(opts: { name: string }): Promise<SignetS
       v: 1,
     };
     writeStored(stored);
+    isFreshlyCreated = true;
   }
   const signer = new GuestSigner(stored.nsecHex);
   const authEvent = await buildGuestAuthEvent(signer);
+  // Fire-and-forget profile bootstrap. A returning guest skips this
+  // path so the kind 3 follow list isn't repeatedly clobbered on
+  // every page-load, which would also strip any follows the user
+  // added later from another client.
+  if (isFreshlyCreated) {
+    void publishGuestProfile(
+      signer,
+      stored.name,
+      opts.followPallasite ?? true,
+    ).catch((err) => console.warn('[guest] profile publish failed:', err));
+  }
   return {
     pubkey: signer.pubkey,
     method: signer.method,

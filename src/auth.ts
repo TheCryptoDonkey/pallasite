@@ -226,9 +226,20 @@ export async function signOut(currentSession: SignetSession | null): Promise<voi
  * screen uses this to provision a local keypair the first time a
  * visitor types their name and ignites — subsequent visits land in
  * tryRestore which reads the same localStorage record.
+ *
+ * `followPallasite` controls whether the fire-and-forget kind 3
+ * contact-list publish includes the Pallasite game npub. Defaults to
+ * true (pre-checked opt-out checkbox on the auth screen); pass false
+ * for a guest who explicitly unticked it.
  */
-export async function createGuestSession(name: string): Promise<SignetSession> {
-  const session = await loadOrCreateGuest({ name });
+export async function createGuestSession(
+  name: string,
+  opts: { followPallasite?: boolean } = {},
+): Promise<SignetSession> {
+  const session = await loadOrCreateGuest({
+    name,
+    followPallasite: opts.followPallasite ?? true,
+  });
   const wrapped = wrapSession(session);
   if (!wrapped) throw new Error('guest-session-wrap-failed');
   return wrapped;
