@@ -14,12 +14,14 @@
 import {
   createSanctumState,
   tickSanctum,
-  drawSanctumChrome,
-  drawCouncilAsteroid,
-  drawSacredStone,
+  renderSanctum,
   SANCTUM_WORLD_W,
   SANCTUM_WORLD_H,
   applyMemberHit,
+  applyStoneHit,
+  applyRacooHit,
+  applyBullbearHit,
+  applyMeteorHit,
   type SanctumState,
 } from './sanctum.js';
 import { loadCouncil } from './sanctum-avatars.js';
@@ -90,6 +92,9 @@ function mountPreview(): HTMLCanvasElement {
 /** Bind click-to-hit so the preview can demo the hit-flash + role
  *  banner animation. Doesn't break anything (no sat plumbing), just
  *  flashes the appropriate member. */
+/** Click-to-hit dry-run for every entity type in the preview. Picks
+ *  the topmost entity under the cursor in z-order (Bullbear → racoo →
+ *  council → stone → meteors) so what you click is what you hit. */
 function bindClickHit(canvas: HTMLCanvasElement, state: SanctumState): void {
   canvas.addEventListener('click', (e) => {
     const rect = canvas.getBoundingClientRect();
@@ -97,25 +102,35 @@ function bindClickHit(canvas: HTMLCanvasElement, state: SanctumState): void {
     const sy = (e.clientY - rect.top) / rect.height;
     const x = sx * SANCTUM_WORLD_W;
     const y = sy * SANCTUM_WORLD_H;
+    const hit = (cx: number, cy: number, r: number): boolean => {
+      const dx = cx - x;
+      const dy = cy - y;
+      return dx * dx + dy * dy < r * r;
+    };
+    // Bullbear (top z) first.
+    if (state.bullbear && hit(state.bullbear.x, state.bullbear.y, state.bullbear.r)) {
+      applyBullbearHit(state.bullbear);
+      return;
+    }
+    if (state.racoo && hit(state.racoo.x, state.racoo.y, state.racoo.r)) {
+      applyRacooHit(state.racoo);
+      return;
+    }
     for (const m of state.council) {
       if (m.dead) continue;
-      const dx = m.x - x;
-      const dy = m.y - y;
-      if (dx * dx + dy * dy < m.r * m.r) {
+      if (hit(m.x, m.y, m.r)) {
         applyMemberHit(m);
         return;
       }
     }
-    // Click outside any member while stone is awake → hit the stone.
-    if (state.stone.awake) {
-      const dx = state.stone.x - x;
-      const dy = state.stone.y - y;
-      if (dx * dx + dy * dy < state.stone.r * state.stone.r) {
-        // Inline stone hit since applyStoneHit needs the awake check.
-        if (state.stone.hp > 0) {
-          state.stone.hp -= 1;
-          state.stone.hitFlash = 1;
-        }
+    if (state.stone && !state.stone.shattering && hit(state.stone.x, state.stone.y, state.stone.r)) {
+      applyStoneHit(state);
+      return;
+    }
+    for (const meteor of state.meteors) {
+      if (hit(meteor.x, meteor.y, meteor.r)) {
+        applyMeteorHit(meteor);
+        return;
       }
     }
   });
@@ -138,9 +153,7 @@ export async function renderSanctumPreview(): Promise<void> {
     last = now;
     tickSanctum(state, dt);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    drawSanctumChrome(ctx);
-    drawSacredStone(ctx, state.stone);
-    for (const m of state.council) drawCouncilAsteroid(ctx, m);
+    renderSanctum(ctx, state);
     requestAnimationFrame(loop);
   };
   requestAnimationFrame(loop);
