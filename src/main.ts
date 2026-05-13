@@ -703,6 +703,15 @@ async function boot(): Promise<void> {
   preloadBackground(1);
   preloadBackground(2);
 
+  // Fetch server-driven gameplay config (bonus_wave_chance etc.) in
+  // the background. Fire-and-forget — the cached default (1.0) keeps
+  // pre-config behaviour intact if the request fails or arrives after
+  // the player's first run. Skip on the controller surface; the pad
+  // never consults game-config.
+  if (!isControllerSurface()) {
+    void import('./faucet.js').then(({ fetchGameConfig }) => fetchGameConfig());
+  }
+
   // Prime music tracks so warp-transition (1.3s window) doesn't miss its
   // first cue waiting on a cold fetch. Skipped on the controller PWA —
   // no music will ever play there, so the ~3MB of opus track preloads
