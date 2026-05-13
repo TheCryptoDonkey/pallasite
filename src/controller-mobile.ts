@@ -16,7 +16,19 @@ import {
   type ControllerInputFrame,
   type ControllerSpec,
   type PairingToken,
+  type SignerAnnounceFrame,
+  type SignerRevokeFrame,
 } from './controller-types.js';
+
+/** Identity payload the phone announces to the host on pair. Built
+ *  from the locally-signed-in SignetSession + optional kind-0 profile. */
+export interface AnnouncedSigner {
+  pubkey: string;
+  npub?: string;
+  name?: string;
+  method?: SignerAnnounceFrame['method'];
+  caps?: SignerAnnounceFrame['caps'];
+}
 
 export interface ControllerClient {
   /** True once the relay reports the host is also connected. */
@@ -25,6 +37,13 @@ export interface ControllerClient {
   spec: ControllerSpec | null;
   /** Send one input event. Drops silently if the socket is closed. */
   sendInput: (slot: string, value: string) => void;
+  /**
+   * Update the announced signer. Pass null to revoke. The frame is
+   * sent immediately if paired, otherwise queued until pair. Re-sent
+   * on reconnect. Idempotent — re-announcing the same identity is
+   * cheap.
+   */
+  announceSigner: (signer: AnnouncedSigner | null) => void;
   /** Force-close the WS. */
   close: () => void;
   /** Status callback. */
@@ -48,9 +67,36 @@ export function startControllerClient(token: PairingToken): ControllerClient {
   let reconnectAttempt = 0;
   let statusCb: ((s: ControllerClientStatus) => void) | null = null;
   let specCb: ((s: ControllerSpec) => void) | null = null;
+  // Latest signer the caller has handed us. Re-sent on every pair-up
+  // (incl. reconnects) so the host always knows the current identity.
+  // null means the controller is signed out / never signed in.
+  let pendingSigner: AnnouncedSigner | null = null;
+  let lastAnnouncedPubkey: string | null = null;
   const fireStatus = (s: ControllerClientStatus): void => { try { statusCb?.(s); } catch { /* ignore */ } };
   const fireSpec = (s: ControllerSpec): void => { try { specCb?.(s); } catch { /* ignore */ } };
   const url = `${token.ws}?s=${encodeURIComponent(token.sessionId)}&r=phone`;
+
+  const sendSignerFrame = (): void => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (pendingSigner) {
+      const frame: SignerAnnounceFrame = {
+        type: 'signer-announce',
+        pubkey: pendingSigner.pubkey,
+        ...(pendingSigner.npub ? { npub: pendingSigner.npub } : {}),
+        ...(pendingSigner.name ? { name: pendingSigner.name } : {}),
+        ...(pendingSigner.method ? { method: pendingSigner.method } : {}),
+        ...(pendingSigner.caps ? { caps: pendingSigner.caps } : {}),
+      };
+      try { ws.send(JSON.stringify(frame)); lastAnnouncedPubkey = pendingSigner.pubkey; }
+      catch { /* ignore — next pair-up will retry */ }
+    } else if (lastAnnouncedPubkey) {
+      // We previously announced an identity; the user has signed out.
+      // Tell the host to drop the remote signer.
+      const frame: SignerRevokeFrame = { type: 'signer-revoke' };
+      try { ws.send(JSON.stringify(frame)); lastAnnouncedPubkey = null; }
+      catch { /* ignore */ }
+    }
+  };
 
   const connect = (): void => {
     if (closed) return;
@@ -59,6 +105,10 @@ export function startControllerClient(token: PairingToken): ControllerClient {
     ws.onopen = () => {
       reconnectAttempt = 0;
       fireStatus(paired ? { kind: 'paired' } : { kind: 'waiting' });
+      // Reconnect mid-session — if we were already paired, immediately
+      // re-announce so the host (which may have lost / replaced its
+      // state) sees the identity again.
+      if (paired) sendSignerFrame();
     };
     ws.onmessage = (ev) => {
       const data = typeof ev.data === 'string' ? ev.data : '';
@@ -68,7 +118,13 @@ export function startControllerClient(token: PairingToken): ControllerClient {
       if (!parsed || typeof parsed !== 'object') return;
       const obj = parsed as Record<string, unknown>;
       if (obj.type === 'peer-up') {
-        if (!paired) { paired = true; fireStatus({ kind: 'paired' }); }
+        if (!paired) {
+          paired = true;
+          fireStatus({ kind: 'paired' });
+          // Host just came up — announce identity (or revoke, if signed
+          // out). The host's onSigner callback fires from this frame.
+          sendSignerFrame();
+        }
       } else if (obj.type === 'peer-down') {
         if (paired) { paired = false; fireStatus({ kind: 'waiting' }); }
       } else if (obj.type === 'controller-spec') {
@@ -106,10 +162,16 @@ export function startControllerClient(token: PairingToken): ControllerClient {
     fireStatus({ kind: 'closed' });
   };
 
+  const announceSigner = (signer: AnnouncedSigner | null): void => {
+    pendingSigner = signer;
+    if (paired) sendSignerFrame();
+  };
+
   return {
     get paired() { return paired; },
     get spec() { return spec; },
     sendInput,
+    announceSigner,
     close,
     onStatus: (cb) => { statusCb = cb; },
     onSpec: (cb) => { specCb = cb; },
