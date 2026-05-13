@@ -8361,10 +8361,12 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
   const stop = el('button', { className: 'menu-btn secondary', parent: buttons, text: 'STOP' });
   const back = el('button', { className: 'menu-btn', parent: buttons, text: 'BACK' });
 
-  // Group tracks by section: stings (wave===null) and wave tracks.
+  // Group tracks by category — stings (system + cinematic), bonus levels
+  // (off-rail detours — W9→W10 hyperspace, 600bn the-cult), then wave tracks.
   const tracks = listTracks();
-  const stings = tracks.filter((t) => t.wave === null);
-  const waveTracks = tracks.filter((t) => t.wave !== null);
+  const stings = tracks.filter((t) => t.category === 'sting');
+  const bonusTracks = tracks.filter((t) => t.category === 'bonus');
+  const waveTracks = tracks.filter((t) => t.category === 'wave');
 
   const list = el('div', { parent: overlay });
   list.style.cssText = 'display:flex;flex-direction:column;gap:8px;width:100%;max-width:460px;';
@@ -8432,6 +8434,8 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
 
   renderHeader('STINGS · SYSTEM');
   for (const t of stings) addRow(t);
+  renderHeader('BONUS LEVELS');
+  for (const t of bonusTracks) addRow(t);
   renderHeader('WAVE TRACKS (1 → 25)');
   for (const t of waveTracks) addRow(t);
   paint();
