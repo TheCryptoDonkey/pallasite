@@ -74,6 +74,35 @@ function verifyChecksum(hrp: string, data: number[]): boolean {
 }
 
 /**
+ * Encode a 32-byte secp256k1 pubkey or privkey as a NIP-19 bech32
+ * string (npub1... or nsec1...). The bytes are passed as 64-char
+ * lowercase hex; output is the bech32 string with the given HRP.
+ *
+ * Shared helper for the guest-identity disclosure surface — the
+ * settings panel shows the player's npub (so they can paste it into
+ * other Nostr clients) and lets them reveal/copy the nsec (so they
+ * can back up the local-only identity to a real signer).
+ */
+function encodeBech32Pubkey(hrp: 'npub' | 'nsec', hex: string): string {
+  if (!/^[0-9a-f]{64}$/i.test(hex)) throw new Error('expected 64-char hex');
+  const bytes = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  const data = convertBits(bytes, 8, 5, true);
+  const checksum = createChecksum(hrp, data);
+  let result = `${hrp}1`;
+  for (const v of data.concat(checksum)) result += CHARSET[v];
+  return result;
+}
+
+export function encodeNpub(pubkeyHex: string): string {
+  return encodeBech32Pubkey('npub', pubkeyHex);
+}
+
+export function encodeNsec(privkeyHex: string): string {
+  return encodeBech32Pubkey('nsec', privkeyHex);
+}
+
+/**
  * Decode an npub (NIP-19) into a 64-char hex pubkey. Returns null for any
  * malformed input — caller should treat null as "not a valid npub". The
  * watch page's PERSON filter uses this to accept either an npub or raw hex.

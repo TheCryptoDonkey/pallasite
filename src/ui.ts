@@ -46,9 +46,9 @@ import { followUser, shareCompletion, endorseSubject, rankFromWave } from './soc
 import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipient } from './zap.js';
 import { subscribeRecentRuns, timeAgo, dismissWatchEntry, getDismissedWatchEntries, LIVE_FRESHNESS_MS, type WatchEntry } from './watch.js';
-import { decodeNpub } from './bech32.js';
+import { decodeNpub, encodeNpub, encodeNsec } from './bech32.js';
 import { subscribeZapTotals, type ZapTotalsByPubkey } from './zaps.js';
-import { isGuestSession, setGuestName, clearGuestIdentity } from './guest.js';
+import { isGuestSession, setGuestName, clearGuestIdentity, getGuestPrivkeyHex } from './guest.js';
 import { getReplayBuffer, type ReplayFrameRaw } from './stream-session.js';
 import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, gzipReplayFrames, findReplayByAuthor, fetchReplayByScoreEventId, fetchReplayByEventId, type GhostRun } from './ghost.js';
 import { preloadBackground } from './render.js';
@@ -4575,9 +4575,17 @@ function renderControllerHomePage(): void {
   const stopScan = (): void => {
     if (scanRaf !== null) { cancelAnimationFrame(scanRaf); scanRaf = null; }
     if (stream) { for (const t of stream.getTracks()) t.stop(); stream = null; }
+    // Belt-and-braces release the video element so iOS Safari doesn't
+    // keep the camera indicator hot — track.stop() is the contractual
+    // cure but iOS occasionally needs srcObject=null + pause() to
+    // actually drop the MediaStream reference.
+    try { video.pause(); } catch { /* ignore */ }
+    try { video.srcObject = null; } catch { /* ignore */ }
     scanHost.style.display = 'none';
     scanRow.style.display = 'flex';
     scanBtn.disabled = false;
+    scanStatus.textContent = 'Point at the QR on the big screen';
+    scanStatus.style.color = 'rgba(220,210,255,0.75)';
   };
 
   const handleResult = (raw: string): boolean => {
@@ -4619,20 +4627,50 @@ function renderControllerHomePage(): void {
     scanHost.style.display = 'flex';
     video.srcObject = stream;
     try { await video.play(); } catch { /* ignore */ }
+    // Downscale phone-camera frames to ~640px wide before running
+    // jsQR. Modern phones deliver 1080p+ video which decodes ~5x
+    // slower per frame than the 640px scale that gives reliable QR
+    // detection. Cuts per-tick CPU from ~80ms to ~16ms on a mid-range
+    // Android, which is the difference between "scans instantly" and
+    // "video is on but seems stuck".
+    const SCAN_TARGET_W = 640;
     const canvas = document.createElement('canvas');
-    const cctx = canvas.getContext('2d');
+    const cctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!cctx) return;
+    const scanStart = Date.now();
+    let lastStatusTick = scanStart;
     const tick = (): void => {
       if (!stream) return;
       if (video.readyState >= 2 && video.videoWidth > 0) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        cctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        // Maintain aspect ratio so QRs near the frame edge aren't
+        // squished. Scale to target width; height follows.
+        const aspect = video.videoHeight / video.videoWidth;
+        const w = Math.min(SCAN_TARGET_W, video.videoWidth);
+        const h = Math.round(w * aspect);
+        if (canvas.width !== w || canvas.height !== h) {
+          canvas.width = w;
+          canvas.height = h;
+        }
+        cctx.drawImage(video, 0, 0, w, h);
         try {
-          const data = cctx.getImageData(0, 0, canvas.width, canvas.height);
-          const found = jsQR(data.data, data.width, data.height, { inversionAttempts: 'dontInvert' });
+          const data = cctx.getImageData(0, 0, w, h);
+          // attemptBoth covers light-on-dark QRs (e.g. an inverted
+          // screen, a dark-mode browser rendering the QR) on top of
+          // the standard dark-on-light path. Roughly 2x per-frame
+          // cost vs dontInvert, but the downscale above absorbs it.
+          const found = jsQR(data.data, data.width, data.height, { inversionAttempts: 'attemptBoth' });
           if (found && handleResult(found.data)) return;
         } catch { /* keep scanning */ }
+      }
+      // After 8s of unsuccessful scanning, soften the status text to
+      // a hint pointing at the type-the-code fallback. Avoids the
+      // dead "Point at the QR" line lingering forever when the
+      // camera is on but the QR isn't readable.
+      const now = Date.now();
+      if (now - scanStart > 8_000 && now - lastStatusTick > 1_000) {
+        scanStatus.textContent = 'Still scanning… if it won\'t latch, tap CANCEL and type the 8-character code below.';
+        scanStatus.style.color = 'rgba(255,216,74,0.85)';
+        lastStatusTick = now;
       }
       scanRaf = requestAnimationFrame(tick);
     };
@@ -7142,6 +7180,14 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
           }
         } catch { /* errors already surfaced by the SDK modal */ }
       })();
+    });
+    const exportBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'EXPORT KEY' }) as HTMLButtonElement;
+    exportBtn.style.cssText += 'font-size:0.72rem;padding:4px 12px;letter-spacing:0.14em;';
+    exportBtn.title = 'Show your npub (public) and nsec (secret key) so you can back this identity up in a Nostr client.';
+    exportBtn.addEventListener('click', () => {
+      const privHex = getGuestPrivkeyHex();
+      if (!privHex) return;
+      openGuestKeyExport(session.pubkey, privHex);
     });
     const wipe = el('button', { className: 'menu-btn secondary', parent: row, text: 'CLEAR' }) as HTMLButtonElement;
     wipe.style.cssText += 'font-size:0.72rem;padding:4px 12px;letter-spacing:0.14em;color:rgba(255,120,120,0.85);border-color:rgba(255,120,120,0.4);';
@@ -9671,6 +9717,102 @@ async function renderQRInto(target: HTMLElement, text: string): Promise<void> {
     target.innerHTML = `<p style="color:#ff5050;font-size:0.8rem;">QR render failed</p>`;
     console.warn('[qr] render failed:', err);
   }
+}
+
+/**
+ * Modal that surfaces the player's guest identity in NIP-19 bech32
+ * form (npub for the public key, nsec for the secret key). Read-only
+ * — for backup / portability use only. The nsec is hidden behind a
+ * "Show secret key" toggle so a casual screenshot or a shoulder-surf
+ * doesn't leak it. Both fields have a one-tap copy button.
+ *
+ * Pasting the nsec into a Nostr client like Damus, Amethyst, nsec.app
+ * or a NIP-46 bunker recreates this identity there — useful when a
+ * player loved their guest profile and wants to keep it after
+ * upgrading device, OR when they want to bind it to a real bunker
+ * for cross-device portability.
+ */
+function openGuestKeyExport(pubkeyHex: string, privkeyHex: string): void {
+  document.querySelectorAll('.guest-key-modal').forEach((n) => n.remove());
+
+  const modal = el('div', { className: 'guest-key-modal', parent: root });
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(2,5,13,0.92);display:flex;align-items:center;justify-content:center;z-index:1000;padding:18px;';
+  const inner = el('div', { parent: modal });
+  inner.style.cssText = 'background:#02050d;border:1px solid rgba(140,255,180,0.45);border-radius:12px;padding:20px;max-width:520px;width:100%;display:flex;flex-direction:column;gap:12px;font-family:ui-monospace,monospace;box-shadow:0 0 30px rgba(140,255,180,0.18);max-height:90vh;overflow-y:auto;';
+
+  el('h2', { parent: inner, text: 'EXPORT IDENTITY' }).style.cssText = 'margin:0;font-size:1rem;letter-spacing:0.2em;color:#8cffb4;text-align:center;';
+  const sub = el('p', { parent: inner, text: 'Back this identity up by copying the nsec into another Nostr client (Damus, Amethyst, nsec.app, your bunker). Anyone with this nsec controls your account.' });
+  sub.style.cssText = 'font-size:0.78rem;color:rgba(220,210,255,0.7);line-height:1.5;margin:0;text-align:center;';
+
+  // ── npub block — always visible, identifying ────────────────────────
+  let npubBech: string;
+  try { npubBech = encodeNpub(pubkeyHex); }
+  catch { npubBech = `[failed to encode pubkey: ${pubkeyHex.slice(0, 8)}…]`; }
+  const npubBlock = el('div', { parent: inner });
+  npubBlock.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
+  el('span', { parent: npubBlock, text: '🔓 PUBLIC KEY (npub)' }).style.cssText = 'font-size:0.72rem;color:rgba(140,255,180,0.85);letter-spacing:0.18em;';
+  const npubRow = el('div', { parent: npubBlock });
+  npubRow.style.cssText = 'display:flex;align-items:stretch;gap:6px;';
+  const npubText = el('div', { parent: npubRow, text: npubBech });
+  npubText.style.cssText = 'flex:1;padding:8px 10px;background:rgba(2,5,13,0.6);border:1px solid rgba(140,255,180,0.25);border-radius:6px;font-size:0.78rem;color:#fff5d8;word-break:break-all;line-height:1.4;user-select:all;';
+  const npubCopy = el('button', { parent: npubRow, text: 'COPY' }) as HTMLButtonElement;
+  npubCopy.style.cssText = 'flex:0 0 auto;padding:8px 14px;background:rgba(140,255,180,0.12);border:1px solid rgba(140,255,180,0.55);border-radius:6px;color:#8cffb4;font-family:inherit;font-size:0.78rem;letter-spacing:0.14em;cursor:pointer;';
+  npubCopy.addEventListener('click', () => {
+    void navigator.clipboard?.writeText(npubBech).then(
+      () => { npubCopy.textContent = 'COPIED'; window.setTimeout(() => { npubCopy.textContent = 'COPY'; }, 1400); },
+      () => { npubCopy.textContent = 'FAIL'; },
+    );
+  });
+
+  // ── nsec block — hidden behind reveal toggle ────────────────────────
+  let nsecBech: string;
+  try { nsecBech = encodeNsec(privkeyHex); }
+  catch { nsecBech = `[failed to encode privkey]`; }
+  const nsecBlock = el('div', { parent: inner });
+  nsecBlock.style.cssText = 'display:flex;flex-direction:column;gap:4px;border-top:1px dashed rgba(255,120,120,0.3);padding-top:12px;';
+  el('span', { parent: nsecBlock, text: '🔐 SECRET KEY (nsec) — KEEP PRIVATE' }).style.cssText = 'font-size:0.72rem;color:rgba(255,120,120,0.95);letter-spacing:0.18em;';
+  const warning = el('p', { parent: nsecBlock, text: 'This is the master key for your identity. Anyone with it can post as you, send your sats, and delete your runs. Never share it. Never paste it into a website you don\'t trust.' });
+  warning.style.cssText = 'font-size:0.72rem;color:rgba(255,160,120,0.85);line-height:1.5;margin:0;';
+
+  const nsecRow = el('div', { parent: nsecBlock });
+  nsecRow.style.cssText = 'display:flex;align-items:stretch;gap:6px;';
+  // Hidden by default — replaced with a literal "REVEAL" placeholder
+  // so a casual screenshot or shoulder-surf can't leak the nsec.
+  const nsecText = el('div', { parent: nsecRow, text: '••••••••••••••••••••••••••••••••' });
+  nsecText.style.cssText = 'flex:1;padding:8px 10px;background:rgba(2,5,13,0.6);border:1px solid rgba(255,120,120,0.35);border-radius:6px;font-size:0.78rem;color:rgba(255,160,120,0.85);word-break:break-all;line-height:1.4;user-select:all;';
+  const revealBtn = el('button', { parent: nsecRow, text: 'REVEAL' }) as HTMLButtonElement;
+  revealBtn.style.cssText = 'flex:0 0 auto;padding:8px 14px;background:rgba(255,120,120,0.12);border:1px solid rgba(255,120,120,0.55);border-radius:6px;color:#ff8a8a;font-family:inherit;font-size:0.78rem;letter-spacing:0.14em;cursor:pointer;';
+  let revealed = false;
+  revealBtn.addEventListener('click', () => {
+    revealed = !revealed;
+    nsecText.textContent = revealed ? nsecBech : '••••••••••••••••••••••••••••••••';
+    nsecText.style.color = revealed ? '#fff5d8' : 'rgba(255,160,120,0.85)';
+    revealBtn.textContent = revealed ? 'HIDE' : 'REVEAL';
+  });
+  const nsecCopy = el('button', { parent: nsecRow, text: 'COPY' }) as HTMLButtonElement;
+  nsecCopy.style.cssText = 'flex:0 0 auto;padding:8px 14px;background:rgba(255,120,120,0.12);border:1px solid rgba(255,120,120,0.55);border-radius:6px;color:#ff8a8a;font-family:inherit;font-size:0.78rem;letter-spacing:0.14em;cursor:pointer;';
+  nsecCopy.addEventListener('click', () => {
+    void navigator.clipboard?.writeText(nsecBech).then(
+      () => { nsecCopy.textContent = 'COPIED'; window.setTimeout(() => { nsecCopy.textContent = 'COPY'; }, 1400); },
+      () => { nsecCopy.textContent = 'FAIL'; },
+    );
+  });
+
+  // ── How to restore — short instruction block ────────────────────────
+  const how = el('div', { parent: inner });
+  how.style.cssText = 'border-top:1px dashed rgba(220,210,255,0.15);padding-top:10px;font-size:0.74rem;color:rgba(220,210,255,0.6);line-height:1.5;';
+  how.innerHTML = 'To restore on another device: paste the nsec into any Nostr client that supports nsec import (Damus iOS, Amethyst Android, nsec.app web, your bunker). Or upgrade in-game by tapping <strong>UPGRADE TO NOSTR</strong> on the title screen.';
+
+  // ── Close button ────────────────────────────────────────────────────
+  const closeRow = el('div', { parent: inner });
+  closeRow.style.cssText = 'display:flex;justify-content:center;margin-top:6px;';
+  const closeBtn = el('button', { className: 'menu-btn', parent: closeRow, text: 'DONE' }) as HTMLButtonElement;
+  closeBtn.style.cssText += 'font-size:0.85rem;padding:8px 24px;letter-spacing:0.18em;';
+  const close = (): void => { modal.remove(); window.removeEventListener('keydown', onKey); };
+  closeBtn.addEventListener('click', close);
+  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+  const onKey = (e: KeyboardEvent): void => { if (e.code === 'Escape') close(); };
+  window.addEventListener('keydown', onKey);
 }
 
 function openZapModal(state: GameState): void {
