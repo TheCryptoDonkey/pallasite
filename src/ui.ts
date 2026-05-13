@@ -48,7 +48,7 @@ import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipie
 import { subscribeRecentRuns, timeAgo, dismissWatchEntry, getDismissedWatchEntries, LIVE_FRESHNESS_MS, type WatchEntry } from './watch.js';
 import { decodeNpub, encodeNpub, encodeNsec } from './bech32.js';
 import { subscribeZapTotals, type ZapTotalsByPubkey } from './zaps.js';
-import { isGuestSession, setGuestName, clearGuestIdentity, getGuestPrivkeyHex } from './guest.js';
+import { isGuestSession, setGuestName, clearGuestIdentity, getGuestPrivkeyHex, getGuestRecord } from './guest.js';
 import { getReplayBuffer, type ReplayFrameRaw } from './stream-session.js';
 import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, gzipReplayFrames, findReplayByAuthor, fetchReplayByScoreEventId, fetchReplayByEventId, type GhostRun } from './ghost.js';
 import { preloadBackground } from './render.js';
@@ -4545,13 +4545,291 @@ export function renderControllerHostPairing(state: GameState, onClose: () => voi
 // angle drives target heading, deflection past THRUST_THRESHOLD turns
 // thrust on. Quick tap-and-release fires one shot. Action buttons
 // (fire-hold, hyperspace, shield, pause) sit on the right thumb side.
+
+/**
+ * Identity card shown at the top of the controller PWA home page.
+ *
+ * Step 1 of the phone-as-signer plan: the controller is just an
+ * identity carrier here — pair frames don't yet propagate the signed-in
+ * pubkey to a host. That's step 2. For now this card lets a player
+ * sign in (or stay anonymous) on the pad itself, surfaces the pubkey,
+ * and offers SIGN OUT.
+ *
+ * Method ordering is deliberate: bunker / nsec / extension first, then
+ * Signet, then guest. Privacy-conscious nostr users at BTC Prague
+ * don't want a Signet redirect as the headline option, they want to
+ * paste their bunker URI from nsec.app or paste an nsec directly.
+ */
+function renderControllerIdentityCard(parent: HTMLElement, state: GameState): void {
+  const card = el('div', { parent });
+  card.style.cssText = 'border:1px solid rgba(255,216,74,0.32);border-radius:14px;padding:18px;background:rgba(255,216,74,0.05);display:flex;flex-direction:column;gap:12px;';
+
+  const refresh = (): void => {
+    card.replaceChildren();
+    renderControllerIdentityCardInner(card, state, refresh);
+  };
+  renderControllerIdentityCardInner(card, state, refresh);
+}
+
+function renderControllerIdentityCardInner(
+  card: HTMLElement,
+  state: GameState,
+  refresh: () => void,
+): void {
+  const label = el('div', { parent: card, text: 'IDENTITY' });
+  label.style.cssText = 'font-size:0.78rem;letter-spacing:0.22em;color:rgba(255,216,74,0.85);text-align:center;';
+
+  const session = state.session;
+  if (session) {
+    // Signed-in summary: name / npub / method / SIGN OUT.
+    const guest = getGuestRecord();
+    const isGuest = guest?.pubkey === session.pubkey;
+    const profile = getCachedProfile(session.pubkey);
+    const name = isGuest && guest
+      ? guest.name
+      : bestName(profile, session.pubkey);
+
+    const nameRow = el('div', { parent: card, text: name });
+    nameRow.style.cssText = 'font-size:1.05rem;color:#fff5d8;letter-spacing:0.08em;text-align:center;text-shadow:0 0 10px rgba(255,216,74,0.35);';
+
+    let npubShort: string;
+    try {
+      const full = encodeNpub(session.pubkey);
+      npubShort = full.length > 24 ? `${full.slice(0, 14)}…${full.slice(-6)}` : full;
+    } catch {
+      npubShort = `${session.pubkey.slice(0, 8)}…${session.pubkey.slice(-4)}`;
+    }
+    const npubRow = el('div', { parent: card, text: npubShort });
+    npubRow.style.cssText = 'font-size:0.72rem;color:rgba(220,210,255,0.6);text-align:center;letter-spacing:0.06em;word-break:break-all;';
+
+    const methodLabel = isGuest ? 'LOCAL GUEST' : describeMethod(session);
+    const methodRow = el('div', { parent: card, text: methodLabel });
+    methodRow.style.cssText = 'font-size:0.65rem;color:rgba(140,255,180,0.7);letter-spacing:0.22em;text-align:center;';
+
+    const actions = el('div', { parent: card });
+    actions.style.cssText = 'display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:4px;';
+
+    if (isGuest && guest) {
+      const exportBtn = el('button', { parent: actions, text: 'EXPORT KEYS' }) as HTMLButtonElement;
+      exportBtn.style.cssText = 'padding:10px 16px;background:rgba(140,255,180,0.14);border:1px solid rgba(140,255,180,0.55);border-radius:8px;color:#8cffb4;font-family:ui-monospace,monospace;font-size:0.78rem;letter-spacing:0.16em;cursor:pointer;';
+      exportBtn.addEventListener('click', () => {
+        const priv = getGuestPrivkeyHex();
+        if (priv) openGuestKeyExport(guest.pubkey, priv);
+      });
+    }
+
+    const signOutBtn = el('button', { parent: actions, text: 'SIGN OUT' }) as HTMLButtonElement;
+    signOutBtn.style.cssText = 'padding:10px 16px;background:rgba(255,120,120,0.14);border:1px solid rgba(255,120,120,0.55);border-radius:8px;color:#ff8a8a;font-family:ui-monospace,monospace;font-size:0.78rem;letter-spacing:0.16em;cursor:pointer;';
+    signOutBtn.addEventListener('click', () => {
+      void (async () => {
+        signOutBtn.disabled = true;
+        try { await auth.signOut(state.session); } catch { /* ignore */ }
+        // Guest identities live in our localStorage, not Signet's — wipe
+        // those too so SIGN OUT is a clean slate regardless of method.
+        if (isGuest) clearGuestIdentity();
+        state.session = null;
+        refresh();
+      })();
+    });
+    return;
+  }
+
+  // Anonymous: explain what signing in buys, list methods, BTC-Prague
+  // friendly order (bunker → nsec → extension → Signet → guest).
+  const blurb = el('p', { parent: card });
+  blurb.style.cssText = 'margin:0;font-size:0.78rem;color:rgba(220,210,255,0.65);line-height:1.5;text-align:center;';
+  blurb.textContent = 'Sign in on the pad so your phone holds your keys. Optional — you can pair as a plain joystick and let the host sign.';
+
+  const methods = el('div', { parent: card });
+  methods.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin-top:4px;';
+
+  type MethodSpec = {
+    label: string;
+    sub: string;
+    onClick: () => void;
+    accent: string;
+  };
+  const status = el('div', { parent: card });
+  status.style.cssText = 'min-height:1.2em;font-size:0.78rem;color:rgba(220,210,255,0.7);text-align:center;letter-spacing:0.04em;';
+
+  let busy = false;
+  const runSignIn = async (method: auth.SignInMethod, label: string): Promise<void> => {
+    if (busy) return;
+    busy = true;
+    status.textContent = `Opening ${label}…`;
+    status.style.color = 'rgba(180,140,255,0.85)';
+    try {
+      const sess = await auth.signInWith(method);
+      if (sess) {
+        state.session = sess;
+        // Profile lookup is fire-and-forget; the card renders from
+        // session.pubkey + cached profile so we don't gate on the fetch.
+        void import('./profile.js').then(({ fetchProfile }) => {
+          void fetchProfile(sess.pubkey).then(p => {
+            if (p && state.session?.pubkey === sess.pubkey) {
+              state.profile = p;
+              refresh();
+            }
+          });
+        });
+        refresh();
+      } else {
+        status.textContent = 'No signer attached.';
+        status.style.color = '#ff8a3a';
+        busy = false;
+      }
+    } catch (err) {
+      status.textContent = err instanceof auth.SignInTimeoutError
+        ? err.message
+        : `Failed: ${err instanceof Error ? err.message : String(err)}`;
+      status.style.color = '#ff5050';
+      busy = false;
+    }
+  };
+
+  // Ordered MOST secure → LEAST secure. The bunker path keeps your
+  // nsec on a separate device entirely; the extension/Amber paths
+  // keep it OS- or browser-isolated; Signet trusts an operator; nsec
+  // paste and guest both land an nsec in this device's localStorage
+  // (nsec paste is worse blast-radius because it's likely your main
+  // identity, vs. a guest that's a fresh sacrifice key).
+  const hasNip07 = typeof window !== 'undefined' && 'nostr' in window && Boolean((window as { nostr?: unknown }).nostr);
+  const isAndroid = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
+  const specs: MethodSpec[] = [];
+  specs.push({
+    label: '🔗 PASTE BUNKER URI',
+    sub: 'NIP-46 · key stays on your remote signer (nsec.app, Alby, your own bunker)',
+    accent: 'rgba(140,255,180,0.55)',
+    onClick: () => { void runSignIn('bunker', 'bunker'); },
+  });
+  if (hasNip07) {
+    specs.push({
+      label: '🔌 BROWSER EXTENSION',
+      sub: 'NIP-07 · key isolated in the browser extension',
+      accent: 'rgba(140,200,255,0.55)',
+      onClick: () => { void runSignIn('nip07', 'extension'); },
+    });
+  }
+  if (isAndroid) {
+    specs.push({
+      label: '🤖 SIGN VIA AMBER',
+      sub: 'Android-only · key stays in the Amber signing app',
+      accent: 'rgba(255,200,120,0.55)',
+      onClick: () => { void runSignIn('amber', 'Amber'); },
+    });
+  }
+  specs.push({
+    label: '📱 SIGN IN WITH SIGNET',
+    sub: 'Account-style sign-in via mysignet.app · trust the operator',
+    accent: 'rgba(255,216,74,0.55)',
+    onClick: () => { void runSignIn('redirect', 'Signet'); },
+  });
+  specs.push({
+    label: '🔑 PASTE NSEC',
+    sub: 'Raw key in this browser · only do this on a phone YOU control',
+    accent: 'rgba(184,144,255,0.55)',
+    onClick: () => { void runSignIn('nsec', 'nsec paste'); },
+  });
+  specs.push({
+    label: '🎮 PLAY AS GUEST',
+    sub: 'Fresh local keypair · stored in this browser, exportable later',
+    accent: 'rgba(255,140,200,0.55)',
+    onClick: () => { void startControllerGuestFlow(state, refresh); },
+  });
+
+  for (const spec of specs) {
+    const btn = el('button', { parent: methods }) as HTMLButtonElement;
+    btn.style.cssText = `display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:12px 14px;background:rgba(2,5,13,0.55);border:1.5px solid ${spec.accent};border-radius:10px;color:#fff5d8;font-family:ui-monospace,monospace;font-size:0.92rem;letter-spacing:0.12em;cursor:pointer;text-align:left;`;
+    const top = el('div', { parent: btn, text: spec.label });
+    top.style.cssText = 'font-weight:bold;';
+    const sub = el('div', { parent: btn, text: spec.sub });
+    sub.style.cssText = 'font-size:0.7rem;color:rgba(220,210,255,0.6);letter-spacing:0.06em;font-weight:normal;';
+    btn.addEventListener('click', spec.onClick);
+  }
+}
+
+/** Describe a SignetSession's signing method for the IDENTITY card. */
+function describeMethod(session: { signer?: { method?: string } | null } | null): string {
+  const m = session?.signer?.method;
+  if (!m) return 'NOSTR';
+  if (m === 'nip07') return 'BROWSER EXTENSION';
+  if (m === 'bunker') return 'BUNKER (NIP-46)';
+  if (m === 'nsec') return 'PASTED NSEC';
+  if (m === 'amber') return 'AMBER';
+  if (m === 'redirect' || m === 'signet') return 'SIGNET';
+  return m.toUpperCase();
+}
+
+/**
+ * Guest sign-in flow for the controller PWA: full-screen overlay with
+ * the arcade name picker. On submit, provisions a local keypair via
+ * loadOrCreateGuest and sets state.session. Pre-checked "follow
+ * Pallasite" stays as the default, mirroring the host flow.
+ */
+function startControllerGuestFlow(state: GameState, refresh: () => void): void {
+  const modal = el('div', { parent: root });
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(2,5,13,0.95);display:flex;align-items:center;justify-content:center;z-index:1000;padding:18px;overflow-y:auto;';
+  const inner = el('div', { parent: modal });
+  inner.style.cssText = 'background:#02050d;border:1px solid rgba(255,140,200,0.45);border-radius:14px;padding:22px;max-width:520px;width:100%;display:flex;flex-direction:column;gap:14px;font-family:ui-monospace,monospace;box-shadow:0 0 36px rgba(255,140,200,0.18);';
+
+  const title = el('h2', { parent: inner, text: 'PLAY AS GUEST' });
+  title.style.cssText = 'margin:0;font-size:1rem;letter-spacing:0.2em;color:#ffacd5;text-align:center;';
+  const sub = el('p', { parent: inner, text: 'A fresh local keypair lives only on this phone. Back it up later via EXPORT KEYS.' });
+  sub.style.cssText = 'margin:0;font-size:0.78rem;color:rgba(220,210,255,0.7);line-height:1.5;text-align:center;';
+
+  const close = (): void => { modal.remove(); window.removeEventListener('keydown', onKey); };
+  const onKey = (e: KeyboardEvent): void => { if (e.code === 'Escape') close(); };
+  window.addEventListener('keydown', onKey);
+  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+
+  const status = el('div', { parent: inner });
+  status.style.cssText = 'min-height:1.2em;font-size:0.78rem;color:rgba(220,210,255,0.7);text-align:center;';
+
+  let followPallasite = true;
+  const followRow = el('label', { parent: inner });
+  followRow.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:0.78rem;color:rgba(220,210,255,0.75);justify-content:center;cursor:pointer;';
+  const followBox = el('input', { parent: followRow, attrs: { type: 'checkbox' } }) as HTMLInputElement;
+  followBox.checked = true;
+  followBox.addEventListener('change', () => { followPallasite = followBox.checked; });
+  el('span', { parent: followRow, text: 'Follow Pallasite (kind 3) on signup' });
+
+  let creating = false;
+  const submit = async (name: string): Promise<void> => {
+    if (creating) return;
+    creating = true;
+    status.textContent = 'Creating your identity…';
+    status.style.color = 'rgba(180,140,255,0.85)';
+    try {
+      const sess = await auth.createGuestSession(name.trim() || 'Anonymous', { followPallasite });
+      state.session = sess;
+      close();
+      refresh();
+    } catch (err) {
+      status.textContent = `Failed: ${err instanceof Error ? err.message : String(err)}`;
+      status.style.color = '#ff5050';
+      creating = false;
+    }
+  };
+
+  renderArcadeName(inner, {
+    maxLen: 25,
+    onSubmit: (name) => { void submit(name); },
+  });
+
+  const cancelRow = el('div', { parent: inner });
+  cancelRow.style.cssText = 'display:flex;justify-content:center;margin-top:6px;';
+  const cancelBtn = el('button', { parent: cancelRow, text: 'CANCEL' }) as HTMLButtonElement;
+  cancelBtn.style.cssText = 'padding:8px 18px;background:transparent;border:1px solid rgba(220,210,255,0.3);color:rgba(220,210,255,0.75);border-radius:6px;font-family:ui-monospace,monospace;font-size:0.78rem;letter-spacing:0.14em;cursor:pointer;';
+  cancelBtn.addEventListener('click', close);
+}
+
 /** Home page shown on mobile.pallasite.app when there's no pairing
  *  token in the URL. Lets the user scan a QR (BarcodeDetector when
  *  available, falls back to manual code entry) or type the 8-character
  *  pairing code from the big screen. On success, navigates to
  *  /?s=<code> which the route handler bounces back into
  *  renderControllerPage as the gamepad. */
-function renderControllerHomePage(): void {
+function renderControllerHomePage(state: GameState): void {
   clearOverlay();
   // Portrait OR landscape — the home page is just a card; we don't
   // need the rotate-device lockdown here.
@@ -4585,6 +4863,14 @@ function renderControllerHomePage(): void {
   title.style.cssText = 'margin:0 0 6px;font-size:1.25rem;letter-spacing:0.18em;color:#8cffb4;text-shadow:0 0 12px rgba(140,255,180,0.4);';
   const subtitle = el('p', { parent: header, text: 'Pair with a game to start playing' });
   subtitle.style.cssText = 'margin:0;font-size:0.85rem;color:rgba(220,210,255,0.7);letter-spacing:0.08em;';
+
+  // ── Identity card ──────────────────────────────────────────────────
+  // Phone-as-signer step 1: surface a sign-in entry point on the
+  // controller home page so the pad can carry the user's identity
+  // independent of any specific game. Method-first ordering — BTC
+  // Prague-style nostr users see bunker / nsec / extension first;
+  // Signet sits as one option among others, not the headline.
+  renderControllerIdentityCard(overlay, state);
 
   // ── Code entry — single big license-plate input ────────────────────
   // Big, centred, uppercase via CSS. No mid-typing reformatting — that
@@ -4881,14 +5167,14 @@ function renderControllerHomePage(): void {
   }
 }
 
-export function renderControllerPage(): void {
+export function renderControllerPage(state: GameState): void {
   // If the URL doesn't carry a pairing token, render the home page
   // instead (scan QR / enter code). Once the user pairs we navigate
   // to ?s=<code> and re-enter this function, this time taking the
   // gamepad branch below.
   const url = new URL(window.location.href);
   if (!url.searchParams.get('s')) {
-    renderControllerHomePage();
+    renderControllerHomePage(state);
     return;
   }
   clearOverlay();
