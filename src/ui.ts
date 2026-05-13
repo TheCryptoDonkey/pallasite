@@ -1619,21 +1619,41 @@ function openWithdrawDialog(state: GameState, balanceSats: number): void {
   const session = state.session;
   if (!session) return;
 
-  // Backdrop + modal — uses the same z-stack as the recap overlays so
-  // settings + how-to-play don't fight for layer order.
-  const backdrop = el('div');
+  // Same picker pattern as the game-over destination chooser — keeps
+  // the title and recap consistent so a returning player who saved up
+  // gets the same options as a one-and-done venue guest. Three paths:
+  //   ⚡ Send to lud16 (pre-fill from profile / stored, hidden if
+  //      no pre-fill AND no kb available)
+  //   📱 Scan with wallet (LNURL-w QR — the d-pad-native option)
+  //   ✕ Cancel
+  //
+  // Amount = full balance by default. Kb users can override; d-pad
+  // users get the full amount (no numeric input to fight).
+
+  const preFilledLud16 = state.profile?.lud16 ?? getStoredLnAddress() ?? '';
+  const coarsePointer = matchMedia('(pointer: coarse)').matches;
+  const controllerPaired = activeControllerHost?.paired === true;
+  const kbAvailable = !coarsePointer && !controllerPaired;
+  const offerAddress = preFilledLud16 !== '' || kbAvailable;
+
+  const backdrop = el('div', { className: 'overlay' });
   backdrop.style.cssText = [
     'position:fixed', 'inset:0', 'background:rgba(0,0,0,0.78)',
     'display:flex', 'align-items:center', 'justify-content:center',
     'z-index:9000', 'padding:20px',
   ].join(';');
   document.body.appendChild(backdrop);
+  // setupOverlayArrowNav scans for buttons under the overlay on every
+  // keydown, so d-pad nav reaches the picker + sub-flow buttons even
+  // though they're built lazily after a destination is picked.
+  setupOverlayArrowNav(backdrop);
 
   const card = el('div', { parent: backdrop });
   card.style.cssText = [
     'background:#0a0a0a', 'border:1px solid #333', 'border-radius:10px',
-    'padding:18px 22px', 'max-width:360px', 'width:100%',
+    'padding:18px 22px', 'max-width:420px', 'width:100%',
     'display:flex', 'flex-direction:column', 'gap:10px',
+    'max-height:90vh', 'overflow-y:auto',
   ].join(';');
 
   const head = el('h3', { parent: card, text: 'WITHDRAW SATS' });
@@ -1643,95 +1663,242 @@ function openWithdrawDialog(state: GameState, balanceSats: number): void {
   balLine.style.cssText = 'margin:0;font-size:0.82rem;color:#cccccc';
   balLine.textContent = `Balance: ${balanceSats} sats`;
 
-  const label = el('p', { parent: card, text: 'Lightning address — where do you want sats sent?' });
-  label.style.cssText = 'margin:6px 0 0 0;font-size:0.8rem;color:#aaa';
+  const heading = el('p', { parent: card, text: 'WHERE TO SEND?' });
+  heading.style.cssText = 'margin:6px 0 0;font-size:0.72rem;letter-spacing:0.18em;color:rgba(255,216,74,0.85)';
 
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.placeholder = 'alice@yourwallet.com';
-  input.spellcheck = false;
-  input.autocapitalize = 'off';
-  input.autocomplete = 'off';
-  input.style.cssText =
-    'padding:8px 10px;font-family:inherit;font-size:0.9rem;' +
-    'background:#0a0a0a;color:#eee;border:1px solid #333;border-radius:4px';
-  const stored = getStoredLnAddress();
-  input.value = state.profile?.lud16 ?? stored ?? '';
-  card.appendChild(input);
+  const picker = el('div', { parent: card });
+  picker.style.cssText = 'display:flex;flex-direction:column;gap:8px';
 
-  const amountLabel = el('p', { parent: card, text: 'Amount (sats)' });
-  amountLabel.style.cssText = 'margin:6px 0 0 0;font-size:0.8rem;color:#aaa';
-  const amountInput = document.createElement('input');
-  amountInput.type = 'number';
-  amountInput.min = String(10);
-  amountInput.max = String(balanceSats);
-  amountInput.value = String(balanceSats);
-  amountInput.style.cssText =
-    'padding:8px 10px;font-family:inherit;font-size:0.9rem;' +
-    'background:#0a0a0a;color:#eee;border:1px solid #333;border-radius:4px';
-  card.appendChild(amountInput);
+  const mkBtn = (label: string, sub: string, accent: string): HTMLButtonElement => {
+    const btn = el('button', { className: 'menu-btn', parent: picker }) as HTMLButtonElement;
+    btn.style.cssText = `display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 14px;border:1.5px solid ${accent};background:rgba(2,5,13,0.4);cursor:pointer;font-size:0.92rem;letter-spacing:0.1em;text-align:center`;
+    const top = el('div', { parent: btn, text: label });
+    top.style.cssText = 'font-weight:bold;';
+    const subEl = el('div', { parent: btn, text: sub });
+    subEl.style.cssText = 'font-size:0.68rem;color:rgba(220,210,255,0.65);font-weight:normal;letter-spacing:0.06em';
+    return btn;
+  };
+
+  const addressBtn = offerAddress
+    ? mkBtn(
+        '⚡ SEND TO LIGHTNING ADDRESS',
+        preFilledLud16
+          ? `Pay ${preFilledLud16.slice(0, 32)}${preFilledLud16.length > 32 ? '…' : ''}`
+          : 'Pay an address like donkey@strike.me',
+        'rgba(140,255,180,0.55)',
+      )
+    : null;
+  const qrBtn = mkBtn('📱 SCAN WITH WALLET', 'LNURL-w QR — your wallet pulls the sats', 'rgba(184,144,255,0.55)');
+
+  const flowSlot = el('div', { parent: card });
+  flowSlot.style.cssText = 'display:flex;flex-direction:column;gap:8px';
 
   const status = el('p', { parent: card });
-  status.style.cssText = 'margin:4px 0 0 0;font-size:0.78rem;min-height:1.1em;color:#888';
+  status.style.cssText = 'margin:4px 0 0;font-size:0.82rem;min-height:1.1em;color:#888';
 
-  const buttonRow = el('div', { parent: card });
-  buttonRow.style.cssText = 'display:flex;gap:8px;margin-top:6px';
-  const cancelBtn = el('button', { className: 'menu-btn secondary', parent: buttonRow, text: 'CANCEL' }) as HTMLButtonElement;
+  const closeRow = el('div', { parent: card });
+  closeRow.style.cssText = 'display:flex;gap:8px;margin-top:6px';
+  const cancelBtn = el('button', { className: 'menu-btn secondary', parent: closeRow, text: 'CANCEL' }) as HTMLButtonElement;
   cancelBtn.style.cssText = 'flex:1;padding:8px;font-size:0.85rem;cursor:pointer';
-  const confirmBtn = el('button', { className: 'menu-btn', parent: buttonRow, text: 'WITHDRAW' }) as HTMLButtonElement;
-  confirmBtn.style.cssText = 'flex:1;padding:8px;font-size:0.85rem;cursor:pointer';
 
   const close = (): void => { try { backdrop.remove(); } catch { /* ignore */ } };
   onTap(cancelBtn, close);
   backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+  const onKey = (e: KeyboardEvent): void => { if (e.code === 'Escape') close(); };
+  window.addEventListener('keydown', onKey, { once: true });
 
-  onTap(confirmBtn, () => {
-    void (async () => {
-      const addr = input.value.trim();
-      if (!LN_ADDRESS_RE.test(addr)) {
-        status.textContent = 'Invalid lightning address.';
-        status.style.color = '#ff5050';
-        return;
-      }
-      const amount = Math.floor(Number(amountInput.value));
-      if (!Number.isFinite(amount) || amount < 10) {
-        status.textContent = 'Amount must be at least 10 sats.';
-        status.style.color = '#ff5050';
-        return;
-      }
-      if (amount > balanceSats) {
-        status.textContent = `Balance is only ${balanceSats} sats.`;
-        status.style.color = '#ff5050';
-        return;
-      }
-      setStoredLnAddress(addr);
-      confirmBtn.disabled = true;
-      cancelBtn.disabled = true;
-      status.textContent = 'Paying…';
-      status.style.color = '#5b9dff';
-      try {
-        const result = await submitWithdraw(session, {
-          amount_sats: amount,
-          lightning_address: addr,
+  const allButtons: HTMLButtonElement[] = [];
+  if (addressBtn) allButtons.push(addressBtn);
+  allButtons.push(qrBtn);
+  const setEnabled = (on: boolean): void => {
+    for (const b of allButtons) {
+      b.disabled = !on;
+      b.style.opacity = on ? '1' : '0.55';
+    }
+  };
+  const lockPicker = (chosen: HTMLButtonElement): void => {
+    setEnabled(false);
+    chosen.style.borderColor = '#ffd84a';
+    chosen.style.background = 'rgba(255,216,74,0.10)';
+  };
+  const unlockPicker = (): void => {
+    flowSlot.replaceChildren();
+    setEnabled(true);
+    for (const b of allButtons) {
+      b.style.background = 'rgba(2,5,13,0.4)';
+    }
+    status.textContent = '';
+  };
+
+  // ── Lightning Address destination ─────────────────────────────────
+  if (addressBtn) {
+    onTap(addressBtn, () => {
+      lockPicker(addressBtn);
+      flowSlot.replaceChildren();
+      const sub = el('div', { parent: flowSlot });
+      sub.style.cssText = 'display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid rgba(140,255,180,0.3);border-radius:8px;background:rgba(60,200,140,0.05)';
+      const lblA = el('p', { parent: sub, text: 'LIGHTNING ADDRESS' });
+      lblA.style.cssText = 'margin:0;font-size:0.72rem;color:rgba(140,255,180,0.85);letter-spacing:0.14em';
+      const addrInput = document.createElement('input');
+      addrInput.type = 'text';
+      addrInput.placeholder = 'alice@yourwallet.com';
+      addrInput.spellcheck = false;
+      addrInput.autocapitalize = 'off';
+      addrInput.autocomplete = 'email';
+      addrInput.style.cssText = 'padding:10px 12px;font-family:inherit;font-size:0.95rem;background:#0a0a0a;color:#eee;border:1px solid #333;border-radius:4px';
+      addrInput.value = preFilledLud16;
+      sub.appendChild(addrInput);
+
+      // Amount: default = balance. Numeric input is only useful with a
+      // keyboard, so hide it on coarse-pointer / paired-pad surfaces —
+      // those players get the whole balance.
+      let amount = balanceSats;
+      if (kbAvailable) {
+        const lblB = el('p', { parent: sub, text: 'AMOUNT (sats)' });
+        lblB.style.cssText = 'margin:0;font-size:0.72rem;color:rgba(140,255,180,0.85);letter-spacing:0.14em';
+        const amountInput = document.createElement('input');
+        amountInput.type = 'number';
+        amountInput.min = String(10);
+        amountInput.max = String(balanceSats);
+        amountInput.value = String(balanceSats);
+        amountInput.style.cssText = 'padding:10px 12px;font-family:inherit;font-size:0.95rem;background:#0a0a0a;color:#eee;border:1px solid #333;border-radius:4px';
+        sub.appendChild(amountInput);
+        amountInput.addEventListener('input', () => {
+          const v = Math.floor(Number(amountInput.value));
+          if (Number.isFinite(v)) amount = v;
         });
-        if (result.ok) {
-          status.textContent = `✓ Paid ${result.amount_sats} sats · balance: ${result.new_balance}`;
-          status.style.color = '#58ff58';
-          confirmBtn.textContent = 'CLOSE';
-          confirmBtn.disabled = false;
-          confirmBtn.onclick = () => { close(); renderTitle(state); };
-          cancelBtn.style.display = 'none';
-        } else {
-          status.textContent = withdrawErrorMessage(result.error, result.detail);
+      }
+
+      const sendBtn = el('button', { className: 'menu-btn', parent: sub }) as HTMLButtonElement;
+      sendBtn.style.cssText = 'padding:8px 14px;cursor:pointer;font-size:0.92rem';
+      sendBtn.textContent = `SEND ${balanceSats} SATS →`;
+      const backBtn = el('button', { className: 'menu-btn secondary', parent: sub, text: '← BACK' }) as HTMLButtonElement;
+      backBtn.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:0.78rem;align-self:flex-start';
+      onTap(backBtn, () => unlockPicker());
+
+      window.setTimeout(() => {
+        try {
+          if (preFilledLud16) tryFocusVisible(sendBtn);
+          else addrInput.focus();
+        } catch { /* ignore */ }
+      }, 50);
+
+      onTap(sendBtn, () => {
+        void (async () => {
+          const addr = addrInput.value.trim();
+          if (!LN_ADDRESS_RE.test(addr)) {
+            status.textContent = 'Invalid lightning address.';
+            status.style.color = '#ff5050';
+            return;
+          }
+          if (!Number.isFinite(amount) || amount < 10) {
+            status.textContent = 'Amount must be at least 10 sats.';
+            status.style.color = '#ff5050';
+            return;
+          }
+          if (amount > balanceSats) {
+            status.textContent = `Balance is only ${balanceSats} sats.`;
+            status.style.color = '#ff5050';
+            return;
+          }
+          setStoredLnAddress(addr);
+          sendBtn.disabled = true;
+          backBtn.disabled = true;
+          addrInput.disabled = true;
+          status.textContent = 'Paying…';
+          status.style.color = '#5b9dff';
+          try {
+            const result = await submitWithdraw(session, {
+              amount_sats: amount,
+              lightning_address: addr,
+            });
+            if (result.ok) {
+              status.textContent = `✓ Paid ${result.amount_sats} sats · balance: ${result.new_balance}`;
+              status.style.color = '#58ff58';
+              cancelBtn.textContent = 'CLOSE';
+            } else {
+              status.textContent = withdrawErrorMessage(result.error, result.detail);
+              status.style.color = '#ff8050';
+              sendBtn.disabled = false;
+              backBtn.disabled = false;
+              addrInput.disabled = false;
+            }
+          } catch (err) {
+            status.textContent = err instanceof Error ? err.message : 'Withdraw failed.';
+            status.style.color = '#ff8050';
+            sendBtn.disabled = false;
+            backBtn.disabled = false;
+            addrInput.disabled = false;
+          }
+        })();
+      });
+    });
+  }
+
+  // ── LNURL-w QR destination ────────────────────────────────────────
+  onTap(qrBtn, () => {
+    lockPicker(qrBtn);
+    flowSlot.replaceChildren();
+    const sub = el('div', { parent: flowSlot });
+    sub.style.cssText = 'display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid rgba(184,144,255,0.3);border-radius:8px;background:rgba(120,90,200,0.05);align-items:center';
+    const title = el('p', { parent: sub, text: 'SCAN WITH YOUR WALLET' });
+    title.style.cssText = 'margin:0;font-size:0.72rem;color:rgba(184,144,255,0.9);letter-spacing:0.14em';
+    const qrSlot = el('div', { parent: sub });
+    qrSlot.style.cssText = 'width:240px;height:240px;background:#fff;border-radius:8px;padding:10px;box-shadow:0 0 20px rgba(184,144,255,0.25)';
+    const note = el('p', { parent: sub });
+    note.style.cssText = 'margin:0;font-size:0.74rem;color:rgba(220,210,255,0.7);text-align:center;line-height:1.45';
+    note.textContent = 'Phoenix, Wallet of Satoshi, Mutiny, Zeus, Cash App — any wallet that supports LNURL withdraw.';
+    let claimFired = false;
+    const backBtn = el('button', { className: 'menu-btn secondary', parent: sub, text: '← BACK' }) as HTMLButtonElement;
+    backBtn.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:0.78rem;align-self:flex-start';
+    onTap(backBtn, () => {
+      if (claimFired) return;
+      unlockPicker();
+    });
+
+    void (async () => {
+      status.textContent = `Minting QR for ${balanceSats} sats…`;
+      status.style.color = '#5b9dff';
+      claimFired = true;
+      backBtn.disabled = true;
+      backBtn.style.opacity = '0.4';
+      try {
+        const mint = await requestLnurlWithdraw(session, { amount_sats: balanceSats });
+        if (!mint.ok) {
+          status.textContent = `QR mint failed: ${mint.error}`;
           status.style.color = '#ff8050';
-          confirmBtn.disabled = false;
-          cancelBtn.disabled = false;
+          return;
         }
+        void renderQRInto(qrSlot, mint.lnurl);
+        status.textContent = 'Waiting for your wallet to pull…';
+        status.style.color = 'rgba(184,144,255,0.9)';
+
+        let polling = true;
+        const tick = async (): Promise<void> => {
+          if (!polling) return;
+          const s = await pollLnurlWithdrawStatus(mint.k1);
+          if (!polling) return;
+          if (s.ok) {
+            if (s.status === 'paid' || s.consumed) {
+              status.textContent = `✓ Paid ${balanceSats} sats — your wallet has them`;
+              status.style.color = '#58ff58';
+              cancelBtn.textContent = 'CLOSE';
+              polling = false;
+              return;
+            }
+            if (s.status === 'expired' || s.expires_at <= Date.now()) {
+              status.textContent = 'QR expired — sats refunded to balance';
+              status.style.color = '#ff8050';
+              polling = false;
+              return;
+            }
+          }
+          window.setTimeout(() => void tick(), 2500);
+        };
+        void tick();
       } catch (err) {
-        status.textContent = err instanceof Error ? err.message : 'Withdraw failed.';
+        status.textContent = err instanceof Error ? err.message : 'Mint failed.';
         status.style.color = '#ff8050';
-        confirmBtn.disabled = false;
-        cancelBtn.disabled = false;
       }
     })();
   });
