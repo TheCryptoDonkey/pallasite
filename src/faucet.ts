@@ -442,6 +442,137 @@ export async function submitWithdraw(
   return data as WithdrawResult;
 }
 
+/** Input for /api/withdraw/lnurl — mint a single-use LNURL-w token
+ *  drawing from the player's balance. The bech32 LNURL the server
+ *  returns can be rendered as a QR and scanned by a wallet, which
+ *  then pulls the sats via the LUD-03 dance (callback + invoice).
+ *  Lets a guest cash out at a venue without typing a Lightning
+ *  Address on the big screen. */
+export interface LnurlWithdrawInput {
+  amount_sats: number;
+}
+
+export type LnurlWithdrawResult =
+  | {
+      ok: true;
+      lnurl: string;            // uppercase bech32, ready for QR rendering
+      url: string;              // plain http(s) URL the LNURL wraps
+      k1: string;               // 64-char hex correlation id (poll status)
+      amount_sats: number;
+      expires_at: number;       // unix ms
+    }
+  | { ok: false; error: string; detail?: string };
+
+/**
+ * POST /api/withdraw/lnurl — mint an LNURL-withdraw token tied to
+ * the player's balance. Same NIP-98 signing pattern as submitWithdraw.
+ * Server debits the balance synchronously so a concurrent
+ * /api/withdraw can't double-spend.
+ */
+export async function requestLnurlWithdraw(
+  session: SignetSession,
+  input: LnurlWithdrawInput,
+): Promise<LnurlWithdrawResult> {
+  if (!session.signer.capabilities.canSignEvents) {
+    return { ok: false, error: 'no_signer' };
+  }
+  const url = `${location.origin}${API_BASE}/withdraw/lnurl`;
+  const bodyJson = JSON.stringify(input);
+  const payloadHash = await sha256Hex(bodyJson);
+
+  const authTemplate = {
+    kind: 27235,
+    created_at: Math.floor(Date.now() / 1000),
+    content: '',
+    tags: [
+      ['u', url],
+      ['method', 'POST'],
+      ['payload', payloadHash],
+    ],
+  };
+
+  let signedAuth;
+  try {
+    const SIGN_TIMEOUT_MS = 30_000;
+    signedAuth = await Promise.race([
+      session.signer.signEvent(authTemplate),
+      new Promise<never>((_, reject) => {
+        window.setTimeout(() => reject(new Error('signer-timeout')), SIGN_TIMEOUT_MS);
+      }),
+    ]);
+  } catch (err) {
+    return {
+      ok: false,
+      error: 'sign_failed',
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  const authToken = `Nostr ${utf8Base64(JSON.stringify(signedAuth))}`;
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/withdraw/lnurl`, {
+      method: 'POST',
+      headers: {
+        authorization: authToken,
+        'content-type': 'application/json',
+      },
+      body: bodyJson,
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      error: 'network_error',
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch {
+    return { ok: false, error: 'bad_response', detail: `HTTP ${res.status}` };
+  }
+  if (typeof data !== 'object' || data === null) {
+    return { ok: false, error: 'bad_response' };
+  }
+  return data as LnurlWithdrawResult;
+}
+
+export type LnurlWithdrawStatus =
+  | {
+      ok: true;
+      status: 'open' | 'paid' | 'expired' | 'refunded';
+      consumed: boolean;
+      payment_hash: string | null;
+      amount_sats: number;
+      expires_at: number;
+    }
+  | { ok: false; error: string };
+
+/**
+ * GET /api/withdraw/lnurl/:k1/status — public poll endpoint used by
+ * the UI to detect when a wallet has actually pulled the sats. No
+ * auth: the k1 secret is the only credential needed; without it you
+ * can't even guess the token.
+ */
+export async function pollLnurlWithdrawStatus(k1: string): Promise<LnurlWithdrawStatus> {
+  if (!/^[0-9a-f]{64}$/i.test(k1)) {
+    return { ok: false, error: 'invalid_k1' };
+  }
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/withdraw/lnurl/${k1}/status`, { cache: 'no-store' });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'network_error' };
+  }
+  let data: unknown;
+  try { data = await res.json(); } catch { return { ok: false, error: 'bad_response' }; }
+  if (typeof data !== 'object' || data === null) return { ok: false, error: 'bad_response' };
+  return data as LnurlWithdrawStatus;
+}
+
 export type CheckinResult =
   | {
       ok: true;
