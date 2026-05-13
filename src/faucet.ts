@@ -19,6 +19,19 @@ export interface GameInfo {
   pubkey: string;
   npub: string | null;
   relays: readonly string[];
+  /** Pubkey allowed to access /admin. Null if not configured. */
+  admin_pubkey: string | null;
+}
+
+/** True iff the supplied session pubkey matches the server's
+ *  configured admin pubkey. Server still enforces the allowlist on
+ *  every action; this is purely for client-side UI gating (showing
+ *  the ADMIN button). */
+export function isAdminSession(sessionPubkey: string | undefined | null): boolean {
+  if (!sessionPubkey) return false;
+  const admin = cachedGameInfo?.admin_pubkey;
+  if (!admin) return false;
+  return admin.toLowerCase() === sessionPubkey.toLowerCase();
 }
 
 let cachedGameInfo: GameInfo | null = null;
@@ -122,6 +135,7 @@ export async function fetchGameInfo(): Promise<GameInfo | null> {
       pubkey?: string;
       npub?: string | null;
       relays?: string[];
+      admin_pubkey?: string | null;
     };
     if (!data.ok || typeof data.pubkey !== 'string' || !Array.isArray(data.relays)) {
       return null;
@@ -130,6 +144,7 @@ export async function fetchGameInfo(): Promise<GameInfo | null> {
       pubkey: data.pubkey,
       npub: data.npub ?? null,
       relays: data.relays,
+      admin_pubkey: typeof data.admin_pubkey === 'string' ? data.admin_pubkey : null,
     };
     return cachedGameInfo;
   } catch {
