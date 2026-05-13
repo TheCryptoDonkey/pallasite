@@ -955,6 +955,184 @@ export function renderTitle(state: GameState): void {
   // and the duplicate strip cramped the desktop layout against the high scores.
 }
 
+// ── Three-screen flow: attract → auth → mission select ──────────────────────
+//
+// Classic arcade structure. The title used to be a "settings dashboard"
+// (logo + tagline + session panel + modes + difficulty + daily + streak +
+// balance + pending claim + buttons + leaderboards all on one screen),
+// which served the dev fine but read busy for new players. The new flow:
+//
+//   ATTRACT    Just logo + tagline + rotating panel + huge PLAY + footer.
+//              Insert-coin energy — nothing to configure, nothing to learn,
+//              one obvious thing to tap. Returning users skip auth and go
+//              straight to mission select.
+//
+//   AUTH       Two-button chooser: SIGN IN WITH NOSTR (existing Signet flow)
+//              or PLAY AS GUEST (arcade name picker → local keypair + kind 0
+//              metadata + opt-out kind 3 follow of the Pallasite npub).
+//
+//   MISSION    renderTitle as it stands today — modes, difficulty, daily
+//   SELECT     toggle, balance, pending claim, IGNITE, phone pairing,
+//              leaderboards. Reached from attract via PLAY (after auth if
+//              needed), or directly from game-over via "PLAY AGAIN".
+//
+// Rotation panels, kind 0 + kind 3 publish, game-over initials drop, and
+// the universal claim destination flow are layered on top in follow-up
+// commits. This commit is scaffolding only — visual redesign comes later.
+
+export function renderAttract(state: GameState): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+
+  // Logo — same wordmark as the previous title.
+  const titleLogo = el('img', { parent: overlay });
+  titleLogo.className = 'title-logo';
+  (titleLogo as HTMLImageElement).src = '/logo.webp';
+  (titleLogo as HTMLImageElement).alt = 'PALLASITE';
+  (titleLogo as HTMLImageElement).decoding = 'async';
+  bindLogoLongPress(titleLogo, () => renderMusicPlayer(state, () => renderAttract(state)));
+
+  const tagline = el('p', { parent: overlay, text: 'SHOOT ROCKS · STACK SATS' });
+  tagline.style.cssText = 'font-size:1.2rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin-top:-12px;';
+  el('p', { parent: overlay, text: 'Cosmic arcade · Lightning sats · Nostr leaderboards' });
+
+  // Placeholder slot for the rotating attract panels (high scores /
+  // autoplay replay / credits). Empty for the scaffolding commit;
+  // task #126 fills it in. Reserves layout so the visual jump when
+  // rotation lands is small.
+  const attractPanel = el('div', { parent: overlay });
+  attractPanel.style.cssText = 'min-height:200px;margin:24px auto;max-width:680px;width:100%;display:flex;align-items:center;justify-content:center;';
+  attractPanel.dataset.attractPanel = '1';
+  const attractPlaceholder = el('p', { parent: attractPanel, text: '⟂ INSERT COIN ⟂' });
+  attractPlaceholder.style.cssText = 'font-size:1rem;color:rgba(140,255,180,0.45);letter-spacing:0.3em;font-family:monospace;animation:pallasite-live-pulse 1.8s ease-in-out infinite;';
+
+  // The ONE thing on this screen — big PLAY button.
+  const playRow = el('div', { className: 'menu-row', parent: overlay });
+  const playBtn = el('button', { className: 'menu-btn', parent: playRow, text: 'PLAY ▶' }) as HTMLButtonElement;
+  playBtn.style.cssText += 'font-size:1.4rem;padding:14px 48px;letter-spacing:0.28em;background:rgba(255,216,74,0.18);border-color:#ffd84a;color:#ffd84a;text-shadow:0 0 12px rgba(255,216,74,0.6);';
+  playBtn.addEventListener('click', () => {
+    void audio.unlockAudio();
+    if (state.session) {
+      // Returning visitor with an identity — go straight to mission
+      // select. The auth step is only for first-time visitors.
+      renderTitle(state);
+    } else {
+      renderAuth(state, () => renderTitle(state));
+    }
+  });
+
+  // Footer — terms, privacy, version. Always visible on attract so the
+  // legal surface is one tap away without cluttering the auth or
+  // mission screens.
+  renderLegalFooter(overlay);
+}
+
+export function renderAuth(state: GameState, onDone: () => void): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+
+  el('h2', { parent: overlay, text: 'WHO ARE YOU?' });
+
+  const sub = el('p', { parent: overlay, text: 'Sign in with Nostr to take your name, your zaps, and your replays everywhere — or play as a guest and we\'ll create a local identity for you.' });
+  sub.style.cssText = 'font-size:0.85rem;color:rgba(220,210,255,0.7);margin:6px auto 18px;max-width:560px;text-align:center;line-height:1.5;';
+
+  // Option 1 — sign in with Nostr (existing Signet flow). The
+  // SignInWithNostr button is the "advanced" path: NIP-07 extension,
+  // NIP-46 bunker, or the SDK's QR-over-relay flow. We hand off to
+  // auth.signIn() which manages the modal.
+  const signInBtn = el('button', { className: 'menu-btn', parent: overlay, text: '⚡ SIGN IN WITH NOSTR' }) as HTMLButtonElement;
+  signInBtn.style.cssText += 'font-size:1rem;padding:12px 32px;letter-spacing:0.18em;margin:6px auto;display:block;min-width:280px;';
+  const signInStatus = el('p', { parent: overlay });
+  signInStatus.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.85);min-height:1em;margin:0 0 12px;letter-spacing:0.04em;text-align:center;';
+  let signing = false;
+  signInBtn.addEventListener('click', () => {
+    if (signing) return;
+    signing = true;
+    signInStatus.textContent = 'Connecting…';
+    void (async () => {
+      try {
+        const session = await auth.signIn();
+        if (session) {
+          state.session = session;
+          onDone();
+          return;
+        }
+        signInStatus.textContent = 'No signer attached.';
+        signInStatus.style.color = '#ff8a3a';
+      } catch (err) {
+        signInStatus.textContent = err instanceof auth.SignInTimeoutError
+          ? `Timeout — ${err.message}`
+          : `Sign-in failed: ${err instanceof Error ? err.message : String(err)}`;
+        signInStatus.style.color = '#ff5050';
+      } finally {
+        signing = false;
+      }
+    })();
+  });
+
+  // Visual separator between the two paths.
+  const sep = el('div', { parent: overlay, text: '— OR —' });
+  sep.style.cssText = 'font-family:monospace;color:rgba(220,210,255,0.4);letter-spacing:0.3em;margin:14px 0;text-align:center;';
+
+  // Option 2 — guest. Arcade name picker + opt-out follow checkbox.
+  // The picker is the same renderArcadeName the title's session
+  // panel uses, so d-pad / touch / kb parity is automatic.
+  el('p', { parent: overlay, text: '🚀 PLAY AS GUEST' }).style.cssText = 'font-size:1rem;letter-spacing:0.18em;color:#8cffb4;margin:0 0 8px;text-align:center;';
+
+  const guestStatus = el('p', { parent: overlay });
+  guestStatus.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.85);min-height:1em;margin:0;letter-spacing:0.04em;text-align:center;';
+
+  let creating = false;
+  const submitGuest = (raw: string): void => {
+    if (creating) return;
+    creating = true;
+    guestStatus.textContent = '';
+    try { void audio.unlockAudio(); } catch { /* ignore */ }
+    void (async () => {
+      try {
+        const name = raw.trim() || 'Anonymous';
+        state.session = await auth.createGuestSession(name);
+        onDone();
+      } catch (err) {
+        guestStatus.textContent = `Couldn't create local identity: ${err instanceof Error ? err.message : String(err)}`;
+        guestStatus.style.color = '#ff8a3a';
+        creating = false;
+      }
+    })();
+  };
+
+  const picker = renderArcadeName(overlay, {
+    maxLen: 25,
+    onSubmit: (name) => submitGuest(name),
+  });
+  // Expose the in-progress name accessor in case a future PLAY-anywhere
+  // shortcut on this screen wants to read it (matches the title-screen
+  // pattern).
+  titleNamePickerGetName = picker.getCurrentName;
+
+  // Opt-out follow checkbox. Pre-checked so the default path publishes
+  // a kind 3 contact list following the Pallasite game npub when the
+  // guest identity is first created — disclosure is the point.
+  // The actual publish happens in the kind-0 / kind-3 wiring (task #123);
+  // this UI element reads its state at submit time.
+  const followRow = el('label', { parent: overlay });
+  followRow.style.cssText = 'display:flex;align-items:center;justify-content:center;gap:8px;font-size:0.78rem;color:rgba(220,210,255,0.7);margin:6px auto 0;cursor:pointer;letter-spacing:0.04em;max-width:480px;';
+  const followCheck = el('input', { parent: followRow }) as HTMLInputElement;
+  followCheck.type = 'checkbox';
+  followCheck.checked = true;
+  followCheck.dataset.followPallasite = '1';
+  followCheck.style.cssText = 'width:16px;height:16px;accent-color:#8cffb4;cursor:pointer;';
+  el('span', { parent: followRow, text: 'Follow Pallasite on Nostr for daily seeds + run highlights' });
+
+  // Back to attract.
+  const backRow = el('div', { className: 'menu-row', parent: overlay });
+  const backBtn = el('button', { className: 'menu-btn secondary', parent: backRow, text: '◀ BACK' }) as HTMLButtonElement;
+  backBtn.style.cssText += 'font-size:0.78rem;padding:6px 18px;letter-spacing:0.16em;';
+  backBtn.addEventListener('click', () => renderAttract(state));
+}
+
 /**
  * Faucet status chip. Shows a single live/paused signal plus the daily-cap
  * meter — never the absolute float or lifetime payout, since advertising
@@ -7096,7 +7274,10 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
       clearGuestIdentity();
       state.session = null;
       state.profile = null;
-      renderSessionPanel(parent, state);
+      // After wipe we're a fresh visitor — the attract screen is the
+      // right home, not the in-place no-session panel (which would
+      // show the arcade picker mid-mission-select-context).
+      renderAttract(state);
     });
     return;
   }
@@ -7186,7 +7367,10 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
       state.session = null;
       state.profile = null;
       ejecting = false;
-      renderSessionPanel(parent, state);
+      // EJECT returns to attract — a session-less mission select would
+      // surface the inline arcade picker (back-compat branch in
+      // renderSessionPanel) but that's confusing in the new flow.
+      renderAttract(state);
     };
     out.addEventListener('click', () => { void doEject(); });
     out.addEventListener('pointerup', e => {
