@@ -36,22 +36,49 @@ if (!existsSync(SRC_DIR)) {
 
 mkdirSync(OUT_DIR, { recursive: true });
 
-const files = readdirSync(SRC_DIR).filter(f => /^wave-\d+\.(png|jpg|jpeg|webp)$/i.test(f));
+const files = readdirSync(SRC_DIR).filter(f => /^(wave-\d+|sanctum)\.(png|jpg|jpeg|webp)$/i.test(f));
 if (files.length === 0) {
-  console.error('No wave-N.png originals found.');
+  console.error('No wave-N.png or sanctum.png originals found.');
   process.exit(1);
 }
 
-interface Job { wave: number; src: string; dst: string; }
+interface Job {
+  /** Display label for log lines — 'wave-7' or 'sanctum'. */
+  label: string;
+  /** Sort key — wave number for wave-N, Infinity for named targets so
+   *  they appear last in the log. */
+  order: number;
+  src: string;
+  dst: string;
+}
 const jobs: Job[] = [];
 for (const file of files) {
-  const m = file.match(/^wave-(\d+)\./i);
-  if (!m) continue;
-  const wave = parseInt(m[1], 10);
-  if (onlyWave !== null && wave !== onlyWave) continue;
-  jobs.push({ wave, src: join(SRC_DIR, file), dst: join(OUT_DIR, `wave-${wave}.webp`) });
+  const waveMatch = file.match(/^wave-(\d+)\./i);
+  if (waveMatch) {
+    const wave = parseInt(waveMatch[1], 10);
+    if (onlyWave !== null && wave !== onlyWave) continue;
+    jobs.push({
+      label: `wave-${wave}`,
+      order: wave,
+      src: join(SRC_DIR, file),
+      dst: join(OUT_DIR, `wave-${wave}.webp`),
+    });
+    continue;
+  }
+  if (/^sanctum\./i.test(file)) {
+    // --wave N is wave-only; sanctum only runs in the unfiltered pass
+    // so a `optimise-backgrounds -- --wave 7` doesn't accidentally
+    // touch the Sanctum file.
+    if (onlyWave !== null) continue;
+    jobs.push({
+      label: 'sanctum',
+      order: Infinity,
+      src: join(SRC_DIR, file),
+      dst: join(OUT_DIR, 'sanctum.webp'),
+    });
+  }
 }
-jobs.sort((a, b) => a.wave - b.wave);
+jobs.sort((a, b) => a.order - b.order);
 
 if (jobs.length === 0) {
   console.error(`No matching wave (${onlyWave ?? 'any'}).`);
@@ -71,13 +98,13 @@ for (const job of jobs) {
   if (!force && existsSync(job.dst)) {
     const dstStat = statSync(job.dst);
     if (dstStat.mtimeMs >= srcStat.mtimeMs) {
-      console.log(`  wave-${job.wave}: up to date (${(dstStat.size / 1024).toFixed(1)} KB)`);
+      console.log(`  ${job.label}: up to date (${(dstStat.size / 1024).toFixed(1)} KB)`);
       totalOut += dstStat.size;
       continue;
     }
   }
 
-  process.stdout.write(`  wave-${job.wave}: optimising… `);
+  process.stdout.write(`  ${job.label}: optimising… `);
   await sharp(job.src)
     .resize(TARGET_W, TARGET_H, { fit: 'cover', position: 'centre' })
     .webp({ quality: QUALITY, effort: 5 })

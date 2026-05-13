@@ -37,6 +37,23 @@ function hideMainChrome(): void {
   document.body.style.background = 'radial-gradient(ellipse at center, #2a1408 0%, #060201 70%)';
 }
 
+/** Try to load the Sanctum WebP background (Madeira volcanic / storm
+ *  light). Generated separately via `pnpm gen-backgrounds -- --sanctum`
+ *  + optimise-backgrounds. Until it lands, the gradient fallback in
+ *  hideMainChrome() remains. */
+function applySanctumBackgroundIfPresent(): void {
+  const img = new Image();
+  img.onload = () => {
+    document.body.style.backgroundImage = "url('/backgrounds/sanctum.webp')";
+    document.body.style.backgroundSize = 'cover';
+    document.body.style.backgroundPosition = 'center';
+    document.body.style.backgroundAttachment = 'fixed';
+  };
+  // 404 is the expected pre-generation state — leave the gradient.
+  img.onerror = () => { /* silent */ };
+  img.src = '/backgrounds/sanctum.webp';
+}
+
 /** Build the preview surface — canvas + footer caption. */
 function mountPreview(): HTMLCanvasElement {
   const wrap = document.createElement('div');
@@ -106,6 +123,7 @@ function bindClickHit(canvas: HTMLCanvasElement, state: SanctumState): void {
 
 export async function renderSanctumPreview(): Promise<void> {
   hideMainChrome();
+  applySanctumBackgroundIfPresent();
   const canvas = mountPreview();
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
