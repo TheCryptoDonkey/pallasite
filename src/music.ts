@@ -12,6 +12,7 @@
 
 import { getMusicDestination } from './audio.js';
 import type { GameState } from './types.js';
+import { getFlavour } from './flavour.js';
 
 interface Track {
   id: string;
@@ -49,6 +50,8 @@ const TRACKS: Record<string, Track> = {
   'tank-dive':       { src: '/music/tank-dive.opus',       id: 'tank-dive' },
   'tidal-locked':    { src: '/music/tidal-locked.opus',    id: 'tidal-locked' },
   'vacuum':          { src: '/music/vacuum.opus',          id: 'vacuum' },
+  // ── Bonus levels (single-room detours) ───────────────────────────
+  'the-cult':        { src: '/music/the-cult.opus',        id: 'the-cult' },  // 600bn Sanctum bed
 };
 
 interface FadeProfile {
@@ -327,8 +330,20 @@ const CRITICAL_TRACKS: readonly string[] = [
   'hull-breached',    // death sting, must land instantly
   'banked',           // victory sting, must land instantly
 ];
+/** Flavour-gated additions to the critical preload set. The 600bn Sanctum
+ *  has a single bed (the-cult) that needs to land instantly when the player
+ *  taps PLAY — no fallback track to fade in behind it. Only preloaded on
+ *  600b.pallasite.app so the main game doesn't ship the 3MB file. */
+const FLAVOUR_CRITICAL: Record<string, readonly string[]> = {
+  '600bn': ['the-cult'],
+};
 export function preloadAllTracks(): void {
   for (const id of CRITICAL_TRACKS) {
+    const track = TRACKS[id];
+    if (track) try { load(track); } catch { /* ignore */ }
+  }
+  const extra = FLAVOUR_CRITICAL[getFlavour()] ?? [];
+  for (const id of extra) {
     const track = TRACKS[id];
     if (track) try { load(track); } catch { /* ignore */ }
   }
@@ -399,42 +414,47 @@ export function musicWarmUpAll(skipId?: string): void {
 
 /** Display metadata for the music-player menu. `wave` lets the UI
  *  render a prominent wave-number tag for wave tracks; null for
- *  stings/title that aren't tied to a specific wave. */
+ *  stings/title that aren't tied to a specific wave. `category`
+ *  drives section grouping in renderMusicPlayer — 'sting' for the
+ *  STINGS · SYSTEM band, 'wave' for the main wave setlist (1 → 25),
+ *  'bonus' for off-rail level beds (W9→W10 hyperspace, 600bn the-cult). */
 export interface TrackInfo {
   id: string;
   label: string;
   hint: string;
-  /** Wave the track is the primary score for, or null for non-wave tracks. */
   wave: number | null;
+  category: 'sting' | 'wave' | 'bonus';
 }
 
 const TRACK_INFO: TrackInfo[] = [
   // ── Stings + system (no wave) ────────────────────────────────────
-  { id: 'pallasite-idle',  label: 'PALLASITE IDLE',  hint: 'Title theme',         wave: null },
-  { id: 'warp-transition', label: 'WARP TRANSITION', hint: 'Inter-wave riser',    wave: null },
-  { id: 'hyperspace',      label: 'HYPERSPACE',      hint: 'Jump sting',          wave: null },
-  { id: 'hull-breached',   label: 'HULL BREACHED',   hint: 'Death sting',         wave: null },
-  { id: 'banked',          label: 'BANKED',          hint: 'Victory sting',       wave: null },
-  { id: 'banked-coin',     label: 'BANKED COIN',     hint: 'Sat pickup sting',    wave: null },
+  { id: 'pallasite-idle',  label: 'PALLASITE IDLE',  hint: 'Title theme',         wave: null, category: 'sting' },
+  { id: 'warp-transition', label: 'WARP TRANSITION', hint: 'Inter-wave riser',    wave: null, category: 'sting' },
+  { id: 'hull-breached',   label: 'HULL BREACHED',   hint: 'Death sting',         wave: null, category: 'sting' },
+  { id: 'banked',          label: 'BANKED',          hint: 'Victory sting',       wave: null, category: 'sting' },
+  { id: 'banked-coin',     label: 'BANKED COIN',     hint: 'Sat pickup sting',    wave: null, category: 'sting' },
+  // ── Bonus levels (off-rail detours) ──────────────────────────────
+  { id: 'hyperspace',      label: 'HYPERSPACE',      hint: 'Bonus level · W9 → W10', wave: null, category: 'bonus' },
+  { id: 'the-cult',        label: 'THE CULT',        hint: '600bn Sanctum · single stone', wave: null, category: 'bonus' },
   // ── Wave tracks, in wave order so the menu reads like a setlist ──
-  { id: 'slow-orbit',      label: 'SLOW ORBIT',      hint: 'Krasnojarsk',         wave:  1 },
-  { id: 'slow-gravity',    label: 'SLOW GRAVITY',    hint: 'Brenham',             wave:  2 },
-  { id: '303-belt',        label: '303 BELT',        hint: 'Esquel',              wave:  3 },
-  { id: 'ion-stream',      label: 'ION STREAM',      hint: 'Fukang · elites',     wave:  4 },
-  { id: 'olivine',         label: 'OLIVINE',         hint: 'Imilac · bank',       wave:  5 },
-  { id: 'belt-drill',      label: 'BELT DRILL',      hint: 'Mineo · iron',        wave:  6 },
-  { id: 'tank-dive',       label: 'TANK DIVE',       hint: 'Zaisho · tanks',      wave:  7 },
-  { id: 'mine-field',      label: 'MINE FIELD',      hint: 'Marjalahti · mines',  wave:  8 },
-  { id: 'tighter-orbits',  label: 'TIGHTER ORBITS',  hint: 'Omolon',              wave:  9 },
-  { id: 'slipstream',      label: 'SLIPSTREAM',      hint: 'Springwater · snipers', wave: 10 },
-  { id: 'tidal-locked',    label: 'TIDAL LOCKED',    hint: 'Glorieta Mtn · wells', wave: 11 },
-  { id: 'tangent',         label: 'TANGENT',         hint: 'Seymchan',            wave: 12 },
-  { id: 'vacuum',          label: 'VACUUM',          hint: 'Albin · edges open',  wave: 13 },
-  { id: 'hull-plating',    label: 'HULL PLATING',    hint: 'Ahumada · defensive', wave: 15 },
-  { id: 'cascade',         label: 'CASCADE',         hint: 'Itzawisis · seam',    wave: 16 },
-  { id: 'perihelion',      label: 'PERIHELION',      hint: 'Newport · close to sun', wave: 18 },
-  { id: 'apophis',         label: 'APOPHIS',         hint: 'Admire · existential', wave: 23 },
-  { id: 'event-horizon',   label: 'EVENT HORIZON',   hint: 'Final arena · boss',  wave: 25 },
+  { id: 'slow-orbit',      label: 'SLOW ORBIT',      hint: 'Krasnojarsk',         wave:  1, category: 'wave' },
+  { id: 'slow-gravity',    label: 'SLOW GRAVITY',    hint: 'Brenham',             wave:  2, category: 'wave' },
+  { id: '303-belt',        label: '303 BELT',        hint: 'Esquel',              wave:  3, category: 'wave' },
+  { id: 'ion-stream',      label: 'ION STREAM',      hint: 'Fukang · elites',     wave:  4, category: 'wave' },
+  { id: 'olivine',         label: 'OLIVINE',         hint: 'Imilac · bank',       wave:  5, category: 'wave' },
+  { id: 'belt-drill',      label: 'BELT DRILL',      hint: 'Mineo · iron',        wave:  6, category: 'wave' },
+  { id: 'tank-dive',       label: 'TANK DIVE',       hint: 'Zaisho · tanks',      wave:  7, category: 'wave' },
+  { id: 'mine-field',      label: 'MINE FIELD',      hint: 'Marjalahti · mines',  wave:  8, category: 'wave' },
+  { id: 'tighter-orbits',  label: 'TIGHTER ORBITS',  hint: 'Omolon',              wave:  9, category: 'wave' },
+  { id: 'slipstream',      label: 'SLIPSTREAM',      hint: 'Springwater · snipers', wave: 10, category: 'wave' },
+  { id: 'tidal-locked',    label: 'TIDAL LOCKED',    hint: 'Glorieta Mtn · wells', wave: 11, category: 'wave' },
+  { id: 'tangent',         label: 'TANGENT',         hint: 'Seymchan',            wave: 12, category: 'wave' },
+  { id: 'vacuum',          label: 'VACUUM',          hint: 'Albin · edges open',  wave: 13, category: 'wave' },
+  { id: 'hull-plating',    label: 'HULL PLATING',    hint: 'Ahumada · defensive', wave: 15, category: 'wave' },
+  { id: 'cascade',         label: 'CASCADE',         hint: 'Itzawisis · seam',    wave: 16, category: 'wave' },
+  { id: 'perihelion',      label: 'PERIHELION',      hint: 'Newport · close to sun', wave: 18, category: 'wave' },
+  { id: 'apophis',         label: 'APOPHIS',         hint: 'Admire · existential', wave: 23, category: 'wave' },
+  { id: 'event-horizon',   label: 'EVENT HORIZON',   hint: 'Final arena · boss',  wave: 25, category: 'wave' },
 ];
 
 export function listTracks(): readonly TrackInfo[] { return TRACK_INFO; }
