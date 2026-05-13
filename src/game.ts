@@ -15,7 +15,7 @@ import {
   REPLAY_RECORD_INTERVAL_MS, REPLAY_BUFFER_FRAMES, REPLAY_TOTAL_WALL_MS, REPLAY_EXPLOSION_WALL_MS,
   REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS,
   LURK_CENTRE_RADIUS_PX, LURK_VEL_THRESHOLD, LURK_DURATION_MS, LURK_TOAST_MS,
-  SAT_DROP_CHANCE_DENOM, WARP_SKIP_AFTER_MS,
+  WARP_SKIP_AFTER_MS,
 } from './types.js';
 import type { PickupKind } from './types.js';
 import type { ReplaySnapshot, Debris } from './types.js';
@@ -37,13 +37,12 @@ import {
   UFO_RADIUS, UFO_SPEED, UFO_HP, UFO_SHOT_SPREAD, UFO_SHOOT_INTERVAL, UFO_BULLET_SPEED_MUL,
   UFO_BULLET_SPEED, UFO_BULLET_TTL_MS, UFO_LIFETIME_MS,
   UFO_ZIG_INTERVAL_MS, UFO_POINTS, UFO_SATS,
-  UFO_FIRST_SPAWN_MS, UFO_RESPAWN_BASE_MS, UFO_RESPAWN_PER_WAVE_MS, UFO_RESPAWN_MIN_MS,
   bossPhaseForHp,
   UFO_TYPE_BY_WAVE,
   MINE_RADIUS, MINE_GRAVITY_RANGE, MINE_GRAVITY_STRENGTH, MINE_POINTS, MINE_SATS_DROP, MINE_HP_BASE,
   MINE_CANDIDATE_POSITIONS, MINE_COUNT_BY_WAVE,
   COMBO_WINDOW_MS, COMBO_MAX,
-  POWERUP_CONFIG, POWERUP_DROP_CHANCE, POWERUP_TTL_MS, POWERUP_RADIUS,
+  POWERUP_CONFIG, POWERUP_TTL_MS, POWERUP_RADIUS,
   RAPID_COOLDOWN_MUL, SATBOOST_MUL,
   TRIDENT_SPREAD, MAGNET_MAX_ACCEL, MAGNET_RANGE,
 } from './types.js';
@@ -76,11 +75,14 @@ export function makeInitialState(): GameState {
     sats: 0,
     displaySats: 0,
     wave: 0,
+    // Sentinel value — startGame computes real lives from
+    // difficulty + the starting_lives override. createState only
+    // runs once at boot, well before the player picks difficulty.
     lives: 3,
     phaseStart: performance.now(),
     lastUpdate: performance.now(),
     elapsed: 0,
-    nextUfoSpawn: UFO_FIRST_SPAWN_MS,
+    nextUfoSpawn: getGameConfig().ufo_first_spawn_ms,
     nextMineSpawn: 0,
     warpTargetWave: 1,
     bonusStartedAt: 0,
@@ -209,7 +211,10 @@ export function startGame(s: GameState): void {
   s.sats = 0;
   s.displaySats = 0;
   s.wave = 0;
-  s.lives = mods.livesStart;
+  // Lives: admin override (starting_lives > 0) wins over the
+  // difficulty default. 0 = inherit (the common case).
+  const livesOverride = getGameConfig().starting_lives;
+  s.lives = livesOverride > 0 ? livesOverride : mods.livesStart;
   s.asteroids = [];
   s.bullets = [];
   s.enemyBullets = [];
@@ -220,7 +225,7 @@ export function startGame(s: GameState): void {
   s.particles = [];
   s.ship = makeShip();
   s.ship.invulnerableUntil = performance.now() + SHIP_INVULN_MS;
-  s.nextUfoSpawn = UFO_FIRST_SPAWN_MS;
+  s.nextUfoSpawn = getGameConfig().ufo_first_spawn_ms;
   s.nextMineSpawn = 0;
   s.runTimeMs = 0;
   s.runStartedAt = Date.now();
@@ -616,8 +621,12 @@ export function beginWave(s: GameState, wave: number): void {
       s.asteroids.push(spawnAsteroid('large', wave));
     }
   } else {
-    // Standard wave — count plateaus at 10 asteroids
-    const count = Math.min(10, 3 + wave);
+    // Standard wave — count plateaus at 10 asteroids, then scaled
+    // by the admin-tunable asteroid_count_multiplier. 1.0 keeps the
+    // pre-config behaviour; lower values thin the field for casual
+    // sessions, higher values cram more rocks per wave.
+    const multiplier = getGameConfig().asteroid_count_multiplier;
+    const count = Math.max(1, Math.round(Math.min(10, 3 + wave) * multiplier));
     for (let i = 0; i < count; i++) {
       s.asteroids.push(spawnAsteroid('large', wave));
     }
@@ -850,7 +859,7 @@ function maybeDropPowerUp(s: GameState, x: number, y: number, force?: PowerUpTyp
   if (force) {
     type = force;
   } else {
-    if (gameRng() >= POWERUP_DROP_CHANCE) return;
+    if (gameRng() >= getGameConfig().powerup_drop_chance) return;
     const pool = s.session ? POWERUP_TYPES_NOSTR : POWERUP_TYPES_GUEST;
     type = pool[Math.floor(gameRng() * pool.length)];
   }
@@ -1590,7 +1599,8 @@ function rollPickupKind(s: GameState, asteroidType?: AsteroidType, size?: Astero
   if (s.session === null) return 'dust';
   if (size !== undefined && size !== 'small') return 'dust';
   if (asteroidType === 'pallasite' && size === 'small') return 'sat';
-  return Math.random() < (1 / SAT_DROP_CHANCE_DENOM) ? 'sat' : 'dust';
+  const denom = Math.max(1, getGameConfig().sat_drop_denom);
+  return Math.random() < (1 / denom) ? 'sat' : 'dust';
 }
 
 /** Score awarded per dust shard, scaled to the source so a small asteroid
@@ -2253,7 +2263,11 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   s.nextUfoSpawn -= dt * 1000;
   if (!suppressSpawn && s.nextUfoSpawn <= 0 && minionCount === 0) {
     spawnUfo(s);
-    const baseInterval = Math.max(UFO_RESPAWN_MIN_MS, UFO_RESPAWN_BASE_MS - s.wave * UFO_RESPAWN_PER_WAVE_MS);
+    const cfg = getGameConfig();
+    const baseInterval = Math.max(
+      cfg.ufo_respawn_min_ms,
+      cfg.ufo_respawn_base_ms - s.wave * cfg.ufo_respawn_per_wave_ms,
+    );
     s.nextUfoSpawn = baseInterval * mods.ufoIntervalMul;
   }
   updateUfos(s, dt);

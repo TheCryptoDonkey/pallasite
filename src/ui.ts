@@ -11382,7 +11382,16 @@ export function renderAdminV2Panel(state: GameState): void {
     settingRow('tier_multiplier_verified', 'Verified multiplier', true);
     // Gameplay knobs — exposed via /api/game-config (no auth) so the
     // client can read them at boot. Add new ones here as they ship.
-    settingRow('bonus_wave_chance',        'Bonus wave chance (0-1)', true);
+    settingRow('bonus_wave_chance',         'Bonus wave chance (0-1)',         true);
+    settingRow('powerup_drop_chance',       'Powerup drop chance (0-1)',       true);
+    settingRow('sat_drop_denom',            'Sat drop 1-in-N');
+    settingRow('starting_lives',            'Starting lives (0=difficulty)');
+    settingRow('ufo_first_spawn_ms',        'UFO first spawn (ms)');
+    settingRow('ufo_respawn_base_ms',       'UFO respawn base (ms)');
+    settingRow('ufo_respawn_per_wave_ms',   'UFO respawn per-wave (ms)');
+    settingRow('ufo_respawn_min_ms',        'UFO respawn min (ms)');
+    settingRow('asteroid_count_multiplier', 'Asteroid count multiplier',       true);
+    settingRow('checkin_sats',              'Daily check-in stipend (sats)');
     const saveSettingsBtn = el('button', { className: 'menu-btn', parent: settingsCard, text: 'SAVE ALL SETTINGS' }) as HTMLButtonElement;
     saveSettingsBtn.style.cssText = 'padding:10px 14px;font-size:0.85rem;cursor:pointer;letter-spacing:0.14em;align-self:flex-start';
     saveSettingsBtn.addEventListener('click', () => {
