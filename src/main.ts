@@ -1055,6 +1055,14 @@ async function boot(): Promise<void> {
       // the GET /api/admin/v2/state response is. Non-admin lands on
       // a "not authorised" message and a back link.
       renderAdminV2Panel(state);
+    } else if (path === '/sanctum-preview') {
+      // 600bn Sanctum debug preview — static layout of the 11 council
+      // member-avatar asteroids + Sacred Stone centrepiece. Hides the
+      // main game's canvas + ui-root and runs its own render loop.
+      // Lazy-imported so the main bundle never pays the cost.
+      void import('./sanctum-preview.js').then(({ renderSanctumPreview }) => {
+        void renderSanctumPreview();
+      });
     }
   }
 
