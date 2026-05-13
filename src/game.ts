@@ -9,6 +9,7 @@ import type {
   GameState, Ship, Asteroid, AsteroidSize, AsteroidType, Ufo, UfoType, Mine, Vec2,
 } from './types.js';
 import { recordStreamEvent } from './stream-session.js';
+import { getGameConfig } from './faucet.js';
 import {
   waveName, FINAL_WAVE, ASTEROID_TYPE_CONFIG,
   REPLAY_RECORD_INTERVAL_MS, REPLAY_BUFFER_FRAMES, REPLAY_TOTAL_WALL_MS, REPLAY_EXPLOSION_WALL_MS,
@@ -2628,7 +2629,13 @@ export function updateGame(s: GameState, dt: number, now: number): void {
       // HYPER BLITZ (dense asteroid storm, removed hyperspace cooldown,
       // invuln) into EVENT HORIZON PRELUDE (5 pallasite mini-bosses).
       // Music swaps to hyperspace; ends warping into W10 normally.
-      if (s.wave === 9) {
+      //
+      // Gated on bonus_wave_chance from /api/game-config so the admin
+      // can dial bonus rarity from the panel (default 1.0 = every
+      // run). Uses gameRng so daily-seed runs are deterministic
+      // against the active seed — two players with the same daily
+      // seed see the bonus on the same runs.
+      if (s.wave === 9 && gameRng() < getGameConfig().bonus_wave_chance) {
         startBonus(s);
       } else {
         startWarp(s);

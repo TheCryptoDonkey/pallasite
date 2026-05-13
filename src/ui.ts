@@ -11380,6 +11380,9 @@ export function renderAdminV2Panel(state: GameState): void {
     settingRow('tier_multiplier_nip05',    'Nip05 multiplier',    true);
     settingRow('tier_multiplier_close',    'Close multiplier',    true);
     settingRow('tier_multiplier_verified', 'Verified multiplier', true);
+    // Gameplay knobs — exposed via /api/game-config (no auth) so the
+    // client can read them at boot. Add new ones here as they ship.
+    settingRow('bonus_wave_chance',        'Bonus wave chance (0-1)', true);
     const saveSettingsBtn = el('button', { className: 'menu-btn', parent: settingsCard, text: 'SAVE ALL SETTINGS' }) as HTMLButtonElement;
     saveSettingsBtn.style.cssText = 'padding:10px 14px;font-size:0.85rem;cursor:pointer;letter-spacing:0.14em;align-self:flex-start';
     saveSettingsBtn.addEventListener('click', () => {

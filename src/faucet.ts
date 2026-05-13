@@ -23,6 +23,56 @@ export interface GameInfo {
 
 let cachedGameInfo: GameInfo | null = null;
 
+/**
+ * Server-driven gameplay config. Client fetches at boot and caches.
+ * Read-only from the client's perspective; admin mutates via the
+ * /admin panel which goes through the NIP-98-authed settings API.
+ *
+ * Defaults match the server's SETTING_DEFAULTS so a fetch failure
+ * (offline / faucet down) doesn't change in-game behaviour from
+ * what a hardcoded build would have done.
+ */
+export interface GameConfig {
+  /** Probability (0-1) that the W9 → W10 bonus level fires on
+   *  wave-9 clear. 1.0 = always; default before the admin tunes it. */
+  bonus_wave_chance: number;
+}
+
+let cachedGameConfig: GameConfig = {
+  bonus_wave_chance: 1.0,
+};
+let gameConfigFetched = false;
+
+export function getGameConfig(): GameConfig {
+  return cachedGameConfig;
+}
+
+export async function fetchGameConfig(): Promise<GameConfig> {
+  try {
+    const res = await fetch(`${API_BASE}/game-config`, { cache: 'no-cache' });
+    if (!res.ok) return cachedGameConfig;
+    const data = (await res.json()) as { ok?: boolean; config?: Record<string, unknown> };
+    if (!data.ok || !data.config) return cachedGameConfig;
+    const next: GameConfig = { ...cachedGameConfig };
+    const bonus = data.config['bonus_wave_chance'];
+    if (typeof bonus === 'number' && Number.isFinite(bonus)) {
+      next.bonus_wave_chance = Math.max(0, Math.min(1, bonus));
+    }
+    cachedGameConfig = next;
+    gameConfigFetched = true;
+  } catch {
+    // Fall through with whatever cache we had.
+  }
+  return cachedGameConfig;
+}
+
+/** True if fetchGameConfig has resolved at least once (success or
+ *  fail-with-defaults). Lets the client decide whether to wait
+ *  briefly before kicking off a run that would consult the config. */
+export function isGameConfigReady(): boolean {
+  return gameConfigFetched;
+}
+
 export async function fetchGameInfo(): Promise<GameInfo | null> {
   if (cachedGameInfo) return cachedGameInfo;
   try {
