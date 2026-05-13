@@ -36,10 +36,33 @@ export interface GameConfig {
   /** Probability (0-1) that the W9 → W10 bonus level fires on
    *  wave-9 clear. 1.0 = always; default before the admin tunes it. */
   bonus_wave_chance: number;
+  /** Per-UFO-kill chance (0-1) that a power-up drops. */
+  powerup_drop_chance: number;
+  /** 1-in-N sat drop selector. Lower = more sats. */
+  sat_drop_denom: number;
+  /** Ship lives at run start. 0 = inherit from the chosen difficulty
+   *  (easy=5, normal=3, hard=2). >0 = global override, applied
+   *  regardless of difficulty pick. */
+  starting_lives: number;
+  /** UFO timing (ms). */
+  ufo_first_spawn_ms: number;
+  ufo_respawn_base_ms: number;
+  ufo_respawn_per_wave_ms: number;
+  ufo_respawn_min_ms: number;
+  /** Multiplier on per-wave asteroid count (base = min(10, 3+wave)). */
+  asteroid_count_multiplier: number;
 }
 
 let cachedGameConfig: GameConfig = {
   bonus_wave_chance: 1.0,
+  powerup_drop_chance: 0.30,
+  sat_drop_denom: 8,
+  starting_lives: 0,
+  ufo_first_spawn_ms: 12_000,
+  ufo_respawn_base_ms: 18_000,
+  ufo_respawn_per_wave_ms: 1_200,
+  ufo_respawn_min_ms: 6_500,
+  asteroid_count_multiplier: 1.0,
 };
 let gameConfigFetched = false;
 
@@ -53,11 +76,27 @@ export async function fetchGameConfig(): Promise<GameConfig> {
     if (!res.ok) return cachedGameConfig;
     const data = (await res.json()) as { ok?: boolean; config?: Record<string, unknown> };
     if (!data.ok || !data.config) return cachedGameConfig;
+    const cfg = data.config;
     const next: GameConfig = { ...cachedGameConfig };
-    const bonus = data.config['bonus_wave_chance'];
-    if (typeof bonus === 'number' && Number.isFinite(bonus)) {
-      next.bonus_wave_chance = Math.max(0, Math.min(1, bonus));
-    }
+    // Parse each known field. Type-check + clamp where it matters so
+    // a fat-finger setting can't break gameplay. Unknown fields are
+    // ignored (forward-compat).
+    const num = (key: string, lo: number, hi: number, fallback: number): number => {
+      const v = cfg[key];
+      if (typeof v !== 'number' || !Number.isFinite(v)) return fallback;
+      return Math.max(lo, Math.min(hi, v));
+    };
+    next.bonus_wave_chance         = num('bonus_wave_chance',         0,        1,          next.bonus_wave_chance);
+    next.powerup_drop_chance       = num('powerup_drop_chance',       0,        1,          next.powerup_drop_chance);
+    next.sat_drop_denom            = num('sat_drop_denom',            1,        1_000_000,  next.sat_drop_denom);
+    // starting_lives is a SENTINEL: 0 = inherit from difficulty,
+    // >0 = override. Clamp lo=0 so the sentinel survives.
+    next.starting_lives            = Math.floor(num('starting_lives', 0,        99,         next.starting_lives));
+    next.ufo_first_spawn_ms        = num('ufo_first_spawn_ms',        0,        600_000,    next.ufo_first_spawn_ms);
+    next.ufo_respawn_base_ms       = num('ufo_respawn_base_ms',       1_000,    600_000,    next.ufo_respawn_base_ms);
+    next.ufo_respawn_per_wave_ms   = num('ufo_respawn_per_wave_ms',   0,        60_000,     next.ufo_respawn_per_wave_ms);
+    next.ufo_respawn_min_ms        = num('ufo_respawn_min_ms',        1_000,    600_000,    next.ufo_respawn_min_ms);
+    next.asteroid_count_multiplier = num('asteroid_count_multiplier', 0.1,      10,         next.asteroid_count_multiplier);
     cachedGameConfig = next;
     gameConfigFetched = true;
   } catch {
