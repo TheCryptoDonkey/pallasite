@@ -18,7 +18,7 @@ import {
 import { getHapticsEnabled, setHapticsEnabled, hapticsSupported } from './haptics.js';
 import * as auth from './auth.js';
 import { addLocalHighScore, getLocalHighScores, isHighScore, subscribeGlobalHighScores, clearLocalHighScores, type GlobalHighScore } from './score.js';
-import { submitClaim, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, fetchFlagged, requestDeleteFlag, requestLnurlWithdraw, pollLnurlWithdrawStatus, fetchAdminState, setAdminCaps, setAdminPause, applyAdminPreset, saveAdminSettings, fetchAdminPlayer, setAdminPlayerFlag, adjustAdminPlayerBalance, setAdminPlayerTier, type PlayerTier, type FlaggedEntry, type AdminStateResult, type AdminPlayer } from './faucet.js';
+import { submitClaim, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, fetchFlagged, requestDeleteFlag, requestLnurlWithdraw, pollLnurlWithdrawStatus, fetchAdminState, setAdminCaps, setAdminPause, applyAdminPreset, saveAdminSettings, fetchAdminPlayer, setAdminPlayerFlag, adjustAdminPlayerBalance, setAdminPlayerTier, isAdminSession, type PlayerTier, type FlaggedEntry, type AdminStateResult, type AdminPlayer } from './faucet.js';
 import {
   fetchReviewCases,
   generateJuryIdentity,
@@ -7992,6 +7992,29 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
     }
     renderTierBadge(parent, pubkey);
     const row = el('div', { className: 'menu-row', parent });
+    // ADMIN button — only visible when the signed-in pubkey matches
+    // the server's ADMIN_PUBKEY_HEX. Server still enforces the
+    // allowlist on every action, so a tampered client that forced
+    // this button to appear would just bounce off the /api/admin/v2
+    // 403 wall. Useful so the admin doesn't have to remember the
+    // /admin URL.
+    if (isAdminSession(pubkey)) {
+      const adminBtn = el('button', { className: 'menu-btn', parent: row, text: '⚙ ADMIN' }) as HTMLButtonElement;
+      adminBtn.style.cssText += 'border-color:rgba(255,216,74,0.7);color:#ffd84a;letter-spacing:0.14em';
+      adminBtn.title = 'Operator panel — tune caps, presets, settings, player overrides.';
+      adminBtn.addEventListener('click', () => { window.location.assign('/admin'); });
+    } else {
+      // GameInfo (which carries admin_pubkey) is fetched lazily — if
+      // the cache hasn't landed yet, kick off the fetch and re-render
+      // when it resolves so the ADMIN button surfaces without
+      // requiring the user to navigate away and back.
+      void import('./faucet.js').then(async ({ fetchGameInfo, isAdminSession: isAdmin }) => {
+        await fetchGameInfo();
+        if (isAdmin(pubkey) && parent.isConnected) {
+          renderSessionPanel(parent, state);
+        }
+      });
+    }
     const out = el('button', { className: 'menu-btn secondary', parent: row, text: 'EJECT' });
     let ejecting = false;
     const doEject = async (): Promise<void> => {

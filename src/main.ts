@@ -709,7 +709,13 @@ async function boot(): Promise<void> {
   // the player's first run. Skip on the controller surface; the pad
   // never consults game-config.
   if (!isControllerSurface()) {
-    void import('./faucet.js').then(({ fetchGameConfig }) => fetchGameConfig());
+    void import('./faucet.js').then(({ fetchGameConfig, fetchGameInfo }) => {
+      void fetchGameConfig();
+      // Also prime GameInfo so the ADMIN button on the title's
+      // session panel knows whether to render. isAdminSession reads
+      // cachedGameInfo.admin_pubkey, which lands here.
+      void fetchGameInfo();
+    });
   }
 
   // Prime music tracks so warp-transition (1.3s window) doesn't miss its
