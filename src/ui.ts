@@ -9576,6 +9576,11 @@ async function maybePublishScore(
         sats_claimed: state.sats,
         cheated: state.cheatedThisRun,
         ...(seed ? { daily_seed: seed } : {}),
+        // Flag Sanctum runs so the faucet enforces the daily_cap_600bn
+        // budget + appends the ['t','600bn'] tag on the kind 30762
+        // score event. state.sanctum is set by startSanctumRun and
+        // survives through gameover; absent on every standard-game claim.
+        ...(state.sanctum ? { room: '600bn' as const } : {}),
         telemetry,
       },
     };
@@ -9833,6 +9838,53 @@ async function maybePublishScore(
  *   COMPLETIONIST) — gameovers don't earn the COMPLETIONIST badge so
  *   the strip is mostly empty there anyway
  */
+/** FUCHS2 · 11 JUNE party card — appears above the claim picker on
+ *  every Sanctum game-over. Sacred-number wordmark + party details +
+ *  QR code to 600.wtf so phone players can tap-or-scan their way to
+ *  the canonical site without typing a URL. */
+function renderFuchs2Card(overlay: HTMLElement): void {
+  const card = el('div', { parent: overlay });
+  card.style.cssText = [
+    'display:flex', 'flex-direction:column', 'align-items:center',
+    'gap:8px', 'padding:16px 20px', 'margin:8px 0',
+    'background:linear-gradient(180deg, rgba(255,138,58,0.12), rgba(40,16,8,0.85))',
+    'border:1px solid rgba(255,216,74,0.5)',
+    'border-radius:8px',
+    'max-width:420px', 'width:100%',
+    'box-shadow:0 0 30px rgba(255,138,58,0.25)',
+  ].join(';');
+
+  // 4-line sacred number wordmark — canon-formatted.
+  const number = el('div', { parent: card });
+  number.style.cssText = 'font:bold 18px ui-monospace,monospace;color:#ffd84a;letter-spacing:0.16em;line-height:1.1;text-align:center;text-shadow:0 0 10px rgba(255,138,58,0.5);';
+  number.innerHTML = '600<br>000<br>000<br>000';
+
+  // Party banner.
+  const banner = el('div', { parent: card, text: 'PRAGUE PARTY · 11 JUNE 2026' });
+  banner.style.cssText = 'font:bold 13px ui-monospace,monospace;color:#fff5d8;letter-spacing:0.22em;margin-top:6px;';
+
+  const venue = el('div', { parent: card, text: 'FUCHS2 · OSTROV ŠTVANICE' });
+  venue.style.cssText = 'font:11px ui-monospace,monospace;color:rgba(255,245,216,0.75);letter-spacing:0.16em;';
+
+  // QR code anchor — clickable so desktop users can just tap.
+  const link = el('a', { parent: card }) as HTMLAnchorElement;
+  link.href = 'https://600.wtf';
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:4px;margin-top:6px;text-decoration:none;';
+
+  const qrCanvas = el('canvas', { parent: link }) as HTMLCanvasElement;
+  qrCanvas.style.cssText = 'background:#fff5d8;padding:6px;border-radius:4px;';
+  void QRCode.toCanvas(qrCanvas, 'https://600.wtf', {
+    width: 140,
+    margin: 0,
+    color: { dark: '#0a0418', light: '#fff5d8' },
+  }).catch(() => undefined);
+
+  const url = el('div', { parent: link, text: '600.wtf · TAP' });
+  url.style.cssText = 'font:bold 12px ui-monospace,monospace;color:#ffd84a;letter-spacing:0.2em;margin-top:4px;';
+}
+
 function renderRunCredits(
   state: GameState,
   opts: { headerText: string; subText?: string; isCompletion?: boolean; idleSeconds?: number },
@@ -9857,6 +9909,13 @@ function renderRunCredits(
   if (opts.subText) {
     const sub = el('p', { parent: overlay, text: opts.subText });
     sub.style.cssText = 'font-size:1.1rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:-10px 0 4px;';
+  }
+
+  // 600bn Sanctum runs land here too — surface the FUCHS2 party card
+  // above the claim picker so every Sanctum game-over funnels traffic
+  // back to the canonical 600.wtf URL.
+  if (state.sanctum) {
+    renderFuchs2Card(overlay);
   }
 
   // Honours surface on completion runs only.
