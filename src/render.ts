@@ -2321,6 +2321,19 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     return;
   }
 
+  // 600bn Sanctum runs a separate render path — body background is the
+  // Madeira webp, the canvas draws the council ring + Stone + racoo +
+  // Bullbear + ship + bullets via sanctum-render. The wave-background /
+  // star-field / wrap-ghost passes would visually clash, so early-return.
+  if (state.phase === 'sanctum') {
+    // Lazy-imported chunk so the sanctum render module only loads when
+    // a sanctum run is actually being drawn (zero impact on main-flavour).
+    void import('./sanctum-render.js').then(({ renderSanctumScene }) => {
+      renderSanctumScene(ctx, state, now);
+    });
+    return;
+  }
+
   drawBackground(ctx, state, now);
   drawStars(ctx, now);
 

@@ -10,6 +10,8 @@ import type {
 } from './types.js';
 import { recordStreamEvent } from './stream-session.js';
 import { getGameConfig } from './faucet.js';
+import { getFlavour } from './flavour.js';
+import { startSanctumRun, updateSanctumLoop } from './sanctum-loop.js';
 import {
   waveName, FINAL_WAVE, ASTEROID_TYPE_CONFIG,
   REPLAY_RECORD_INTERVAL_MS, REPLAY_BUFFER_FRAMES, REPLAY_TOTAL_WALL_MS, REPLAY_EXPLOSION_WALL_MS,
@@ -197,6 +199,16 @@ function makeShip(): Ship {
 }
 
 export function startGame(s: GameState): void {
+  // 600bn Sanctum branch — on the 600b.pallasite.app flavour the
+  // entire campaign is replaced by a single 240s teaser. The Sanctum
+  // module owns full state setup (entities, ship reset, sat counters);
+  // we dispatch and early-return so none of the wave-1/UFO/difficulty
+  // wiring below runs. Main-flavour startGame is unchanged below.
+  if (getFlavour() === '600bn') {
+    startSanctumRun(s, performance.now());
+    return;
+  }
+
   // Defensive re-lock — the title-screen IGNITE path also locks, but the
   // gameover SPAWN AGAIN and completion IGNITE AGAIN buttons jump straight
   // here. Without this, switching difficulty between runs (via TO TITLE then
@@ -2047,6 +2059,15 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   // sees the moment land. dt is discarded -- next frame's natural dt picks
   // play back up; main.ts caps dt at 50ms so any drift is minor.
   if (now < s.hitStopUntil) return;
+
+  // 600bn Sanctum runs an entirely separate simulation loop — ship
+  // input + bullet motion + sanctum-entity collisions + end-of-run
+  // hand-off all live in sanctum-loop.ts. Early-return here so the
+  // wave/UFO/asteroid logic further down never touches a sanctum run.
+  if (s.phase === 'sanctum') {
+    updateSanctumLoop(s, dt, now);
+    return;
+  }
   s.elapsed += dt * 1000;
 
   // HUD ticker eases toward s.sats every frame regardless of phase, so the
