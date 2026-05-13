@@ -1,0 +1,34 @@
+# 600b.pallasite.app — serves the same dist as pallasite.app so the
+# 600bn Sanctum teaser (getFlavour() detects the subdomain at runtime)
+# lives at a memorable URL without a parallel build pipeline.
+#
+# Two ways to apply this — pick whichever fits the existing Caddyfile
+# on 95.217.39.110:/etc/caddy/Caddyfile better.
+#
+# Option A — fold into the existing pallasite.app block. Caddy lets
+# you list multiple hostnames before the brace. Cleanest because we
+# end up with ONE site definition, two TLS certs, same root + headers.
+#
+#   pallasite.app, 600b.pallasite.app {
+#       encode gzip
+#       root * /opt/pallasite
+#       file_server
+#       try_files {path} /index.html
+#   }
+#
+# Option B — separate block that mirrors the existing one. Use this
+# if pallasite.app has any unique directives you'd rather not share
+# (cache headers, auth, etc.).
+#
+#   600b.pallasite.app {
+#       encode gzip
+#       root * /opt/pallasite
+#       file_server
+#       try_files {path} /index.html
+#   }
+#
+# After editing:
+#   sudo systemctl reload caddy
+# Caddy auto-provisions a Let's Encrypt cert for 600b.pallasite.app
+# on first reload. Watch the logs to confirm:
+#   sudo journalctl -u caddy -f
