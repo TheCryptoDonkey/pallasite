@@ -9,7 +9,7 @@ import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHype
 import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadBackground, setRenderMode, getRenderModeKind } from './render.js';
-import { bindActions, renderTitle, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderJuryPage, renderWatchPage, renderControllerPage } from './ui.js';
+import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderJuryPage, renderWatchPage, renderControllerPage } from './ui.js';
 import { postHeartbeat } from './faucet.js';
 import {
   startStreamSession,
@@ -691,7 +691,14 @@ async function boot(): Promise<void> {
   // (the loop only writes this on phase change after the first frame).
   document.body.dataset.phase = state.phase;
 
-  renderTitle(state);
+  // Three-screen flow on the main game host:
+  //   • Fresh boot → renderAttract (logo + PLAY + footer)
+  //   • PLAY → renderAuth (if no session) or renderTitle (mission select)
+  //   • Game-over / post-claim → renderTitle (mission select, faster
+  //     iteration for returning players)
+  // Other route dispatches below (admin, watch, controller, mobile) bypass
+  // this — they have their own entry surfaces.
+  renderAttract(state);
 
   // Live-presence heartbeat — fires while a run is in progress so the
   // watch.pallasite.app surface renders LIVE cards. Ticks every 4s and
