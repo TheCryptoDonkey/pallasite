@@ -4325,8 +4325,13 @@ export function renderControllerHostPairing(state: GameState, onClose: () => voi
   desc.style.cssText = 'margin:8px 0 14px;font-size:0.95rem;color:rgba(220,210,255,0.85);max-width:520px;line-height:1.55;';
   desc.textContent = 'Open the QR on your phone to drive this screen. Pairing key is one-shot — it lives for this session only.';
 
+  // Bigger QR slot for cleaner phone-camera detection at desk distance.
+  // 200px was tight on a 1080p+ host monitor — a phone aimed from 30cm
+  // away saw the QR fill <5% of its frame, which most scanners struggle
+  // with. 280px nearly doubles the visual area and reliably latches
+  // even on mid-range phone cameras.
   const qrSlot = el('div', { parent: overlay });
-  qrSlot.style.cssText = 'width:200px;height:200px;background:#fff;border-radius:8px;padding:8px;margin:0 auto;box-shadow:0 0 20px rgba(140,255,180,0.25);';
+  qrSlot.style.cssText = 'width:280px;height:280px;background:#fff;border-radius:8px;padding:12px;margin:0 auto;box-shadow:0 0 20px rgba(140,255,180,0.25);';
 
   const codeP = el('p', { parent: overlay });
   codeP.style.cssText = 'margin:14px 0 6px;font-size:1.1rem;letter-spacing:0.2em;color:var(--hud-yellow);text-shadow:0 0 8px rgba(255,216,74,0.45);';
@@ -9703,9 +9708,19 @@ async function renderQRInto(target: HTMLElement, text: string): Promise<void> {
   try {
     const svg = await QRCode.toString(text, {
       type: 'svg',
-      margin: 0,
-      width: 184,
-      errorCorrectionLevel: 'L',
+      // Explicit quiet zone — 2 modules of white border baked into the
+      // SVG. Was margin: 0 previously, which relied on CSS padding for
+      // the quiet zone. Most camera scanners examine the rendered
+      // bitmap and want the quiet zone INSIDE the QR bounding box, so
+      // CSS padding around an external div is not always enough on a
+      // motion-blurred mobile capture.
+      margin: 2,
+      width: 256,
+      // 'M' instead of 'L' — same Version 2 (25 modules) for our ~40
+      // char pairing URL, but ~15% error correction so a partial
+      // occlusion / motion blur / camera glare doesn't kill the
+      // decode. Cheap insurance.
+      errorCorrectionLevel: 'M',
       color: { dark: '#000000', light: '#ffffff' },
     });
     target.innerHTML = svg;
