@@ -252,10 +252,27 @@ body[data-display="modern"] #game {
   z-index: 1;
 }
 
-.overlay .menu-btn:hover {
-  background: rgba(88, 255, 88, 0.1);
-  box-shadow: 0 0 24px rgba(88, 255, 88, 0.5);
+.overlay .menu-btn:hover,
+.overlay .menu-btn:focus,
+.overlay .menu-btn:focus-visible {
+  background: rgba(88, 255, 88, 0.18);
+  box-shadow:
+    0 0 24px rgba(88, 255, 88, 0.65),
+    0 0 0 3px rgba(88, 255, 88, 0.55) inset;
   transform: translateY(-1px);
+  outline: none;
+}
+/* Keyboard / d-pad focus deserves an *even louder* signal than mouse-
+   hover so a couch-play user can see which action the joystick is
+   pointing at from across the room. Strong inset glow + a 3px outline
+   in green leaves no ambiguity. */
+.overlay .menu-btn:focus-visible {
+  box-shadow:
+    0 0 32px rgba(88, 255, 88, 0.85),
+    0 0 0 4px rgba(88, 255, 88, 0.85) inset;
+  background: rgba(88, 255, 88, 0.28);
+  text-shadow: 0 0 10px rgba(88, 255, 88, 0.95);
+  transform: translateY(-2px);
 }
 
 .overlay .menu-btn.secondary {
@@ -265,9 +282,22 @@ body[data-display="modern"] #game {
   box-shadow: 0 0 12px rgba(180, 140, 255, 0.2);
 }
 
-.overlay .menu-btn.secondary:hover {
-  background: rgba(180, 140, 255, 0.1);
-  box-shadow: 0 0 24px rgba(180, 140, 255, 0.5);
+.overlay .menu-btn.secondary:hover,
+.overlay .menu-btn.secondary:focus,
+.overlay .menu-btn.secondary:focus-visible {
+  background: rgba(180, 140, 255, 0.18);
+  box-shadow:
+    0 0 24px rgba(180, 140, 255, 0.6),
+    0 0 0 3px rgba(180, 140, 255, 0.55) inset;
+  outline: none;
+}
+.overlay .menu-btn.secondary:focus-visible {
+  box-shadow:
+    0 0 32px rgba(180, 140, 255, 0.85),
+    0 0 0 4px rgba(180, 140, 255, 0.85) inset;
+  background: rgba(180, 140, 255, 0.28);
+  text-shadow: 0 0 10px rgba(180, 140, 255, 0.95);
+  transform: translateY(-2px);
 }
 
 .menu-row {

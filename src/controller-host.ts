@@ -47,6 +47,21 @@ const PALLASITE_SPEC_PLAY: ControllerSpec = {
   },
 };
 
+// Menu-mode face buttons. A and Y are the only two that do anything
+// useful when the host is on a menu screen (title, paused, gameover,
+// completed): A fires synthetic Enter to activate the focused button,
+// Y fires synthetic Escape to dismiss. B and X had no menu mapping
+// previously but kept their PLAY labels ("SHIELD", "WARP") which read
+// as broken to a player on the gameover screen looking for CLAIM.
+// Re-label them so the controller surface always tells the truth
+// about what each button does in the current context.
+const MENU_FACE_BUTTONS: ControllerSpec['slots'] = {
+  A: { icon: '✓',  label: 'SELECT', colour: '#58ff58' },  // south — confirm
+  B: { icon: '·',  label: '',       colour: 'rgba(255,255,255,0.18)' },  // east — no-op in menus
+  X: { icon: '·',  label: '',       colour: 'rgba(255,255,255,0.18)' },  // west — no-op in menus
+  Y: { icon: '↩',  label: 'BACK',   colour: '#ffd84a' },  // north — escape / dismiss
+};
+
 const PALLASITE_SPEC_MENU: ControllerSpec = {
   name: 'PALLASITE · MENU',
   version: 1,
@@ -57,7 +72,7 @@ const PALLASITE_SPEC_MENU: ControllerSpec = {
     dpadD: { icon: '▼', label: '', colour: '#8cffb4' },
     dpadL: { icon: '◀', label: '', colour: '#8cffb4' },
     dpadR: { icon: '▶', label: '', colour: '#8cffb4' },
-    ...FACE_BUTTONS,
+    ...MENU_FACE_BUTTONS,
   },
 };
 
