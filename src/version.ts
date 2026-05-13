@@ -31,9 +31,18 @@ export type VersionState =
 
 let state: VersionState = { kind: 'unknown' };
 const listeners = new Set<() => void>();
+/** Active service-worker SW_VERSION reported by the running worker.
+ *  Populated by querySwVersion() and shown next to BUILD_ID on the
+ *  title chip so "did the new SW take?" is answered at a glance.
+ *  null = haven't asked yet / no SW controlling this page. */
+let swVersion: string | null = null;
 
 export function getVersionState(): VersionState {
   return state;
+}
+
+export function getSwVersion(): string | null {
+  return swVersion;
 }
 
 export function subscribeVersionState(fn: () => void): () => void {
@@ -46,6 +55,57 @@ function setState(next: VersionState): void {
   for (const fn of listeners) {
     try { fn(); } catch { /* ignore listener errors */ }
   }
+}
+
+function notifyListeners(): void {
+  for (const fn of listeners) {
+    try { fn(); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Ask the controlling service worker which SW_VERSION it's running.
+ * Replies via a transferred MessageChannel so it works regardless of
+ * whether the worker has access to the page's window. Safe to call
+ * before the SW is controlling the page — short-circuits with a null
+ * stash that re-tries on the next page interaction.
+ *
+ * 1-second timeout. If the worker doesn't reply that quickly, we
+ * leave swVersion=null and the chip just shows BUILD_ID, which is
+ * the fall-back behaviour.
+ */
+export function querySwVersion(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (typeof navigator === 'undefined' || !navigator.serviceWorker?.controller) {
+      resolve();
+      return;
+    }
+    const channel = new MessageChannel();
+    const timer = window.setTimeout(() => {
+      try { channel.port1.close(); } catch { /* ignore */ }
+      resolve();
+    }, 1000);
+    channel.port1.onmessage = (e) => {
+      window.clearTimeout(timer);
+      const data = e.data as { type?: string; version?: string } | undefined;
+      if (data && data.type === 'SW_VERSION' && typeof data.version === 'string') {
+        swVersion = data.version;
+        notifyListeners();
+      }
+      try { channel.port1.close(); } catch { /* ignore */ }
+      resolve();
+    };
+    try {
+      navigator.serviceWorker.controller.postMessage(
+        { type: 'SW_VERSION_QUERY' },
+        [channel.port2],
+      );
+    } catch {
+      window.clearTimeout(timer);
+      try { channel.port1.close(); } catch { /* ignore */ }
+      resolve();
+    }
+  });
 }
 
 /**
@@ -87,20 +147,23 @@ export function checkForUpdate(): Promise<void> {
 }
 
 /** Friendly label for the title chip. Always shows the bundled ID first so
- *  the player can quote "I'm on abc123" regardless of network status. */
+ *  the player can quote "I'm on abc123" regardless of network status.
+ *  Includes the running SW_VERSION when known so a stale-SW suspicion
+ *  ("the bundle updated but did the worker?") is settled at a glance. */
 export function versionChipText(): string {
+  const sw = swVersion ? ` · sw ${swVersion}` : '';
   switch (state.kind) {
     case 'latest':
-      return `v ${BUILD_ID} · LATEST`;
+      return `v ${BUILD_ID}${sw} · LATEST`;
     case 'stale':
-      return `v ${BUILD_ID} · UPDATE READY`;
+      return `v ${BUILD_ID}${sw} · UPDATE READY`;
     case 'offline':
-      return `v ${BUILD_ID} · OFFLINE`;
+      return `v ${BUILD_ID}${sw} · OFFLINE`;
     case 'checking':
-      return `v ${BUILD_ID} · CHECKING…`;
+      return `v ${BUILD_ID}${sw} · CHECKING…`;
     case 'unknown':
     default:
-      return `v ${BUILD_ID}`;
+      return `v ${BUILD_ID}${sw}`;
   }
 }
 

@@ -11,7 +11,7 @@
  * Bump SW_VERSION below to invalidate all caches on the next visit.
  */
 
-const SW_VERSION = 'v70';
+const SW_VERSION = 'v71';
 const CACHE_HTML = `pallasite-html-${SW_VERSION}`;
 const CACHE_ASSET = `pallasite-asset-${SW_VERSION}`;
 
@@ -28,6 +28,21 @@ self.addEventListener('install', () => {
 self.addEventListener('message', event => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
+  }
+  // Lets the page chip surface which SW is actually running, so a
+  // stale-cache "I bumped the version but did it take?" suspicion can
+  // be settled by glancing at the title rather than DevTools. The page
+  // posts { type: 'SW_VERSION_QUERY' } either via the standard channel
+  // (we reply on event.source) or with a MessageChannel transferred in
+  // event.ports[0] (we reply on the port).
+  if (event.data && event.data.type === 'SW_VERSION_QUERY') {
+    const reply = { type: 'SW_VERSION', version: SW_VERSION };
+    const port = event.ports && event.ports[0];
+    if (port) {
+      try { port.postMessage(reply); } catch { /* ignore */ }
+    } else if (event.source && typeof event.source.postMessage === 'function') {
+      try { event.source.postMessage(reply); } catch { /* ignore */ }
+    }
   }
 });
 
