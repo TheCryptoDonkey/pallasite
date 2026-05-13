@@ -1027,13 +1027,13 @@ async function boot(): Promise<void> {
     // screens (Chromium PWA installs honour the manifest icons).
     const atIcon = document.querySelector('link[rel="apple-touch-icon"]');
     if (atIcon) atIcon.setAttribute('href', '/kempston-apple-touch.png');
-    renderControllerPage();
+    renderControllerPage(state);
   } else {
     const path = window.location.pathname.replace(/\/+$/, '');
     if (path === '/jury') {
       renderJuryPage(state);
     } else if (path === '/controller') {
-      renderControllerPage();
+      renderControllerPage(state);
     }
   }
 

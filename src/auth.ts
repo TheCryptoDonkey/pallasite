@@ -54,6 +54,8 @@ export interface SignetVerifyOptions {
   acceptUnconfirmed?: boolean;
 }
 
+export type SignInMethod = 'nip07' | 'redirect' | 'bunker' | 'nsec' | 'amber';
+
 declare global {
   interface Window {
     Signet?: {
@@ -63,6 +65,7 @@ declare global {
         relayUrl?: string;
         mode?: 'relay' | 'redirect';
         redirectCallback?: string;
+        preferredMethod?: SignInMethod;
       }) => Promise<SignetSession | null>;
       restoreSession: () => Promise<SignetSession | null>;
       logout: (s?: SignetSession) => Promise<void>;
@@ -118,6 +121,30 @@ export async function signIn(): Promise<SignetSession | null> {
     window.Signet.login({
       appName: APP_NAME,
       theme: 'dark',
+      ...(relayUrl ? { relayUrl } : {}),
+    }),
+    SIGN_IN_TIMEOUT_MS,
+    () => new SignInTimeoutError(),
+  );
+  return wrapSession(session);
+}
+
+/**
+ * Open the SDK login flow but skip its picker by forcing a specific
+ * method. Used by the controller PWA to surface method-first buttons
+ * (bunker / nsec / extension / Signet) without leading with Signet
+ * branding — a BTC Prague crowd of privacy-conscious nostr users sees
+ * "paste bunker URI" as the headline, not "Sign in with Signet".
+ */
+export async function signInWith(method: SignInMethod): Promise<SignetSession | null> {
+  if (!window.Signet) return null;
+  const active = getActiveRelays();
+  const relayUrl = active[0];
+  const session = await withTimeout(
+    window.Signet.login({
+      appName: APP_NAME,
+      theme: 'dark',
+      preferredMethod: method,
       ...(relayUrl ? { relayUrl } : {}),
     }),
     SIGN_IN_TIMEOUT_MS,
