@@ -434,25 +434,38 @@ window.addEventListener('pointerdown', () => {
 // context, that specific element stays silent. We force-refresh the music
 // memo and trigger a fresh musicSetTrackForState pass *inside* this gesture
 // so the title track's .play() is re-issued under the gesture.
+// The controller PWA (mobile.pallasite.app + /controller path) is a
+// remote — it doesn't play game music or SFX, it just produces input
+// events for the host. Skipping all the music-init work on the
+// controller PWA path keeps the joystick screen silent (per user
+// brief) and avoids loading every track's HTMLAudioElement on a
+// device that will never play them.
+const isControllerSurface = (): boolean =>
+  window.location.hostname.startsWith('mobile.')
+  || window.location.pathname.replace(/\/+$/, '') === '/controller';
+
 const firstUnlock = (): void => {
   void audio.unlockAudio();
-  // Dispose every audio element created during the loop's pre-gesture
-  // ticks. iOS Safari refuses to ever output sound through a
-  // MediaElementSourceNode whose underlying <audio> had its first .play()
-  // rejected without a gesture — even after the AudioContext has
-  // resumed. Resetting the cache forces the next load() to construct
-  // fresh DOM elements + source nodes inside this gesture, which unlock
-  // cleanly.
-  musicResetElements();
-  // Prime every non-title track under THIS gesture too — iOS activation
-  // is per-element. Without this, later phase changes (wavestart →
-  // slow-orbit, warp → warp-transition, gameover → hull-breached, etc.)
-  // load fresh elements outside any gesture and their first .play() is
-  // rejected. musicWarmUpAll() does a muted in-gesture play + pause on
-  // each so they're left unlocked-and-ready. Skip pallasite-idle since
-  // musicSetTrackForState is about to play it normally.
-  musicWarmUpAll('pallasite-idle');
-  musicSetTrackForState(state);
+  if (!isControllerSurface()) {
+    // Dispose every audio element created during the loop's pre-
+    // gesture ticks. iOS Safari refuses to ever output sound through
+    // a MediaElementSourceNode whose underlying <audio> had its
+    // first .play() rejected without a gesture — even after the
+    // AudioContext has resumed. Resetting the cache forces the next
+    // load() to construct fresh DOM elements + source nodes inside
+    // this gesture, which unlock cleanly.
+    musicResetElements();
+    // Prime every non-title track under THIS gesture too — iOS
+    // activation is per-element. Without this, later phase changes
+    // (wavestart → slow-orbit, warp → warp-transition, gameover →
+    // hull-breached, etc.) load fresh elements outside any gesture
+    // and their first .play() is rejected. musicWarmUpAll() does a
+    // muted in-gesture play + pause on each so they're left
+    // unlocked-and-ready. Skip pallasite-idle since
+    // musicSetTrackForState is about to play it normally.
+    musicWarmUpAll('pallasite-idle');
+    musicSetTrackForState(state);
+  }
   window.removeEventListener('pointerup', firstUnlock, true);
   window.removeEventListener('click', firstUnlock, true);
   window.removeEventListener('keyup', firstUnlock, true);
@@ -541,11 +554,15 @@ function loop(now: number): void {
     lastPhase = state.phase;
   }
 
-  // Music keeps in step with phase + wave (idempotent — diffs internally)
-  musicSetTrackForState(state);
-  // Adaptive stems on top of the recorded track: combo bass while a chain
-  // is live, boss-lead motif on wave 25 until the boss is downed.
-  stemsTickForState(state, performance.now());
+  // Music keeps in step with phase + wave (idempotent — diffs internally).
+  // Skipped on the controller PWA surface — it's a remote, not a game
+  // canvas, and the user brief is "no music on the joystick app".
+  if (!isControllerSurface()) {
+    musicSetTrackForState(state);
+    // Adaptive stems on top of the recorded track: combo bass while a chain
+    // is live, boss-lead motif on wave 25 until the boss is downed.
+    stemsTickForState(state, performance.now());
+  }
 
   // Toast updates
   if (state.toast) {
@@ -677,8 +694,10 @@ async function boot(): Promise<void> {
   preloadBackground(2);
 
   // Prime music tracks so warp-transition (1.3s window) doesn't miss its
-  // first cue waiting on a cold fetch.
-  preloadAllTracks();
+  // first cue waiting on a cold fetch. Skipped on the controller PWA —
+  // no music will ever play there, so the ~3MB of opus track preloads
+  // would be pure data waste on a phone-grade connection.
+  if (!isControllerSurface()) preloadAllTracks();
 
   // Touch controls — buttons reveal themselves on first real touch
   setupTouchControls(state, tryHyperspace, tryActivateShield);
