@@ -113,6 +113,22 @@ export function getGuestRecord(): { name: string; pubkey: string; createdAt: num
   }
 }
 
+/**
+ * Return the raw 64-char hex private key for the stored guest, or
+ * null if there's no guest record (or it's corrupt). Used by the
+ * export panel that lets a player back up their identity by copying
+ * the npub / nsec into a real Nostr client.
+ *
+ * Deliberately separate from getGuestRecord so consumers that only
+ * need the public-side info don't accidentally pull the nsec into
+ * their scope — keeps the "what does this code path see?" surface
+ * tight.
+ */
+export function getGuestPrivkeyHex(): string | null {
+  const stored = readStored();
+  return stored?.nsecHex ?? null;
+}
+
 // ── Signer implementation ───────────────────────────────────────────────────
 
 /**
