@@ -297,213 +297,6 @@ function setupOverlayArrowNav(overlay: HTMLElement): void {
   window.addEventListener('keydown', handler);
 }
 
-/**
- * Classic arcade initials entry — replaces the freeform <input> + SAVE button
- * for high-score naming.
- *
- *   • 4 fixed slots, A in the first, space in the rest
- *   • ↑/↓ cycle the active slot through A-Z, 0-9, space (37 chars)
- *   • →   advance the cursor; pressing → from the 4th slot submits
- *   • ←   move the cursor back one slot
- *   • Backspace clears the active slot to space and steps back
- *   • Enter / Space / Escape are swallowed (no-op) so they can't trigger
- *     the global "Enter restarts game" / "Space fires" / "Escape pauses"
- *     handlers while the player is locking in initials
- *   • An idle countdown auto-submits after `idleSeconds` of no input
- *
- * The handler runs in capture phase and stops immediate propagation on the
- * keys it consumes, so the overlay's arrow-key button-cycling listener
- * doesn't also fire on the same press. Cleans up the listener and the two
- * intervals (blink + idle) once submitted or once the wrapper detaches.
- */
-function renderArcadeInitials(
-  parent: HTMLElement,
-  opts: { onSubmit: (name: string) => void; idleSeconds?: number },
-): void {
-  const idleSeconds = opts.idleSeconds ?? 30;
-  // Letters + digits + a small set of classic arcade-cabinet symbols,
-  // ending in a space (rendered as `_` in the slots so it reads as
-  // "blank" rather than vanishing).
-  const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!?.-+*<> ';
-  const SPACE_IDX = CHARS.length - 1;
-  const slots = [0, SPACE_IDX, SPACE_IDX, SPACE_IDX];
-  let cursor = 0;
-  let secondsLeft = idleSeconds;
-  let submitted = false;
-
-  const wrap = el('div', { parent });
-  wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:10px;margin:6px 0;';
-  // Marker for the global Enter-to-restart handler in main.ts. Capture-phase
-  // stopImmediatePropagation isn't enough on its own: when key events target
-  // window itself (no focused element), capture vs bubble doesn't apply and
-  // listeners fire in registration order — main.ts's window keydown listener
-  // is registered at module load, so it can fire before this widget's
-  // capture handler ever gets a chance. Belt and braces: main.ts checks for
-  // this attribute before treating Enter as "restart game".
-  wrap.dataset.arcadeInitials = 'open';
-
-  const slotsRow = el('div', { parent: wrap });
-  slotsRow.style.cssText = 'display:flex;gap:8px;';
-  const slotEls: HTMLDivElement[] = [];
-
-  // Each slot lives in its own column with ▲/▼ tap buttons so mobile users
-  // (no keyboard) can cycle and submit. Keyboard users still drive via the
-  // arrow-key handler below; touch and keyboard share the same internal
-  // cycleAt / moveTo / commit functions.
-  const cycleAt = (idx: number, dir: 1 | -1): void => {
-    cursor = idx;
-    slots[idx] = (slots[idx] + dir + CHARS.length) % CHARS.length;
-    renderSlots();
-    audio.initialCycle();
-    resetIdle();
-  };
-  const moveTo = (idx: number): void => {
-    if (cursor === idx) return;
-    cursor = idx;
-    renderSlots();
-    audio.initialMove();
-    resetIdle();
-  };
-
-  // pointerdown (not click) so the overlay's touch-action: pan-y can't
-  // re-interpret a tap as a scroll-cancel. position: relative + z-index ensures
-  // the button always wins event capture against any overlapping descendant.
-  const arrowBtnCss = 'width:48px;height:44px;display:flex;align-items:center;justify-content:center;background:rgba(88,255,88,0.12);border:2px solid rgba(88,255,88,0.4);color:#58ff58;font-family:inherit;font-size:1.1rem;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;user-select:none;position:relative;z-index:2;pointer-events:auto;';
-  const bindTap = (btn: HTMLElement, fn: () => void): void => {
-    btn.addEventListener('pointerdown', e => { e.preventDefault(); fn(); });
-    btn.addEventListener('click', e => { e.preventDefault(); });
-  };
-  for (let i = 0; i < 4; i++) {
-    const col = el('div', { parent: slotsRow }) as HTMLDivElement;
-    col.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:4px;';
-
-    const up = el('button', { parent: col, text: '▲' }) as HTMLButtonElement;
-    up.type = 'button';
-    up.style.cssText = arrowBtnCss;
-    bindTap(up, () => cycleAt(i, 1));
-
-    const box = el('div', { parent: col }) as HTMLDivElement;
-    box.style.cssText = 'width:48px;height:54px;display:flex;align-items:center;justify-content:center;font-family:inherit;font-size:1.6rem;background:rgba(0,0,0,0.4);border:2px solid rgba(88,255,88,0.3);color:#58ff58;letter-spacing:0;transition:opacity 120ms;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;user-select:none;position:relative;z-index:2;pointer-events:auto;';
-    bindTap(box, () => moveTo(i));
-
-    const down = el('button', { parent: col, text: '▼' }) as HTMLButtonElement;
-    down.type = 'button';
-    down.style.cssText = arrowBtnCss;
-    bindTap(down, () => cycleAt(i, -1));
-
-    slotEls.push(box);
-  }
-
-  const saveBtn = el('button', { parent: wrap, text: 'SAVE' }) as HTMLButtonElement;
-  saveBtn.type = 'button';
-  saveBtn.style.cssText = 'margin-top:6px;padding:12px 32px;min-height:44px;background:rgba(255,216,74,0.18);border:2px solid #ffd84a;color:#ffd84a;font-family:inherit;font-size:1rem;letter-spacing:0.2em;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;position:relative;z-index:2;pointer-events:auto;';
-  bindTap(saveBtn, () => commit());
-
-  const hint = el('p', { parent: wrap, text: '▲▼ CYCLE · TAP SLOT TO MOVE · SAVE' });
-  hint.style.cssText = 'font-size:0.7rem;color:rgba(180,140,255,0.7);letter-spacing:0.18em;margin:0;';
-
-  const timerLine = el('p', { parent: wrap });
-  timerLine.style.cssText = 'font-size:0.78rem;color:#ffd84a;letter-spacing:0.18em;margin:0;';
-
-  const renderSlots = (): void => {
-    for (let i = 0; i < 4; i++) {
-      const ch = CHARS[slots[i]];
-      slotEls[i].textContent = ch === ' ' ? '_' : ch;
-      const isActive = i === cursor;
-      slotEls[i].style.borderColor = isActive ? '#ffd84a' : 'rgba(88,255,88,0.3)';
-      slotEls[i].style.color = isActive ? '#ffd84a' : '#58ff58';
-    }
-  };
-  const renderTimer = (): void => { timerLine.textContent = `AUTO SAVE IN ${secondsLeft}`; };
-  renderSlots();
-  renderTimer();
-
-  // Cursor blink — only the active slot pulses, so the player knows where
-  // input lands without any other moving parts on the screen.
-  let blinkOn = true;
-  const blinkInterval = window.setInterval(() => {
-    blinkOn = !blinkOn;
-    for (let i = 0; i < 4; i++) slotEls[i].style.opacity = i === cursor && !blinkOn ? '0.5' : '1';
-  }, 450);
-
-  const idleInterval = window.setInterval(() => {
-    secondsLeft -= 1;
-    renderTimer();
-    if (secondsLeft <= 0) commit();
-  }, 1000);
-
-  const resetIdle = (): void => { secondsLeft = idleSeconds; renderTimer(); };
-
-  const cleanup = (): void => {
-    window.removeEventListener('keydown', handler, true);
-    window.clearInterval(blinkInterval);
-    window.clearInterval(idleInterval);
-    for (const s of slotEls) s.style.opacity = '1';
-  };
-
-  const commit = (): void => {
-    if (submitted) return;
-    submitted = true;
-    cleanup();
-    audio.initialCommit();
-    const name = slots.map(i => CHARS[i]).join('').replace(/\s+$/, '') || 'YOU';
-    opts.onSubmit(name);
-  };
-
-  function handler(e: KeyboardEvent): void {
-    if (submitted || !document.body.contains(wrap)) { cleanup(); return; }
-    let consumed = true;
-    let interacted = true;
-    switch (e.code) {
-      case 'ArrowUp':
-        slots[cursor] = (slots[cursor] + 1) % CHARS.length;
-        renderSlots();
-        audio.initialCycle();
-        break;
-      case 'ArrowDown':
-        slots[cursor] = (slots[cursor] - 1 + CHARS.length) % CHARS.length;
-        renderSlots();
-        audio.initialCycle();
-        break;
-      case 'ArrowRight':
-        if (cursor === 3) { commit(); return; }
-        cursor += 1;
-        renderSlots();
-        audio.initialMove();
-        break;
-      case 'ArrowLeft':
-        if (cursor > 0) { cursor -= 1; renderSlots(); audio.initialMove(); }
-        break;
-      case 'Backspace':
-        slots[cursor] = SPACE_IDX;
-        if (cursor > 0) cursor -= 1;
-        renderSlots();
-        audio.initialBackspace();
-        break;
-      case 'Enter':
-      case 'Space':
-      case 'Escape':
-        // Swallowed but no-op. Without this, Enter falls through to the
-        // global "restart game from gameover" listener, Space to "fire",
-        // Escape to "pause" — none of which the player wants while
-        // they're locking in initials. Submission happens only via → at
-        // slot 4 or the idle auto-save. These don't count as
-        // engagement, so the idle timer keeps counting down.
-        interacted = false;
-        break;
-      default:
-        consumed = false;
-        interacted = false;
-    }
-    if (consumed) {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-    }
-    if (interacted) resetIdle();
-  }
-
-  window.addEventListener('keydown', handler, true);
-}
 
 /**
  * Variable-length name picker. Same arcade ▲▼ + ←→ + BKSP grammar as
@@ -8478,15 +8271,6 @@ function shortRelay(url: string): string {
 
 // ── Game over screen ──────────────────────────────────────────────────────────
 
-/** Where would `score` rank in the local top-10? 1-indexed; ties resolve
- *  toward the older entry (the new score sits below equal existing ones). */
-function predictedLocalRank(score: number): number {
-  const list = getLocalHighScores();
-  let higher = 0;
-  for (const e of list) if (e.score >= score) higher += 1;
-  return higher + 1;
-}
-
 export function renderGameOver(state: GameState): void {
   // Push the current skin unlock set to Nostr at the end of every run.
   // kind 30764 is replaceable (d="pallasite-skins") so this is idempotent
@@ -8496,49 +8280,49 @@ export function renderGameOver(state: GameState): void {
     void publishSkinUnlocks(state.session).catch(() => undefined);
   }
 
-  // Two-stage gameover: when the run is a new local high score, focus the
-  // entire screen on the arcade-initials entry first (no other buttons,
-  // no recap rows competing for attention), then advance to the recap +
-  // actions screen on commit. Non-high-score runs skip straight to recap.
-  // Also skip the name-entry stage if the player has already submitted
-  // initials for this run — REPLAY KILL flips phase back through 'gameover'
-  // when the replay completes, and we don't want to prompt again.
+  // High-score handling — auto-save under the player's session display
+  // name (guest's chosen name, or NIP-01 best-name for a real signer)
+  // and advance straight to the recap. The previous 4-char arcade
+  // initials picker is gone: every player now arrives with an
+  // identity already (seamless guest or signed-in Nostr), and a
+  // separate 3-letter pseudonym for the leaderboard was duplicate
+  // identity churn. `initialsEnteredThisRun` is repurposed as "high
+  // score for this run has been written" so REPLAY KILL re-renders
+  // don't double-count.
   const isNewHigh = isHighScore(state.score) && state.score > 0;
-  if (isNewHigh && !state.initialsEnteredThisRun) renderGameOverNameEntry(state);
-  else renderGameOverRecap(state);
+  if (isNewHigh && !state.initialsEnteredThisRun) {
+    addLocalHighScore({
+      name: scoreboardNameFor(state),
+      score: state.score,
+      sats: state.sats,
+      wave: state.wave,
+      at: new Date().toISOString(),
+      pubkey: state.session?.pubkey,
+    });
+    state.initialsEnteredThisRun = true;
+  }
+  renderGameOverRecap(state);
 }
 
-function renderGameOverNameEntry(state: GameState): void {
-  clearOverlay();
-  const overlay = el('div', { className: 'overlay', parent: root });
-  // Deliberately *no* setupOverlayArrowNav here — arrow keys belong to
-  // the arcade widget exclusively on this stage.
-  el('h2', { parent: overlay, text: 'GAME OVER' });
-
-  const rank = predictedLocalRank(state.score);
-  const banner = el('p', { parent: overlay, text: `RANK ${String(rank).padStart(2, '0')} · NEW HIGH SCORE` });
-  banner.style.cssText = 'font-size:1.15rem;color:#ffd84a;letter-spacing:0.22em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:6px 0 4px;';
-
-  renderRunStatGrid(overlay, state, { isCompletion: false });
-
-  const inputRow = el('div', { className: 'menu-row', parent: overlay });
-  renderArcadeInitials(inputRow, {
-    onSubmit: (name) => {
-      addLocalHighScore({
-        name,
-        score: state.score,
-        sats: state.sats,
-        wave: state.wave,
-        at: new Date().toISOString(),
-        pubkey: state.session?.pubkey,
-      });
-      state.initialsEnteredThisRun = true;
-      renderRunCredits(state, { headerText: 'GAME OVER' });
-    },
-  });
-
-  const help = el('p', { parent: overlay, text: 'ENTER YOUR INITIALS · ↑↓ CYCLE   ←→ MOVE   → AT END SAVES' });
-  help.style.cssText = 'font-size:0.72rem;color:rgba(180,140,255,0.5);letter-spacing:0.16em;margin:8px 0 0;text-align:center;';
+/**
+ * Derive the name to write into the local high-score table for the
+ * current session. Order of preference:
+ *   1. session.displayName (set by guest signup, or by Signet for some
+ *      sign-in paths)
+ *   2. NIP-01 kind 0 metadata via the cached profile + bestName helper
+ *   3. truncated pubkey hex as a last-resort fallback
+ *   4. literal 'PLAYER' for sessionless runs (shouldn't happen in the
+ *      new attract → auth flow, but keeps the table populated)
+ *
+ * Upper-cased + capped at 25 chars to match the table's column width.
+ */
+function scoreboardNameFor(state: GameState): string {
+  const session = state.session;
+  if (!session) return 'PLAYER';
+  const raw = session.displayName
+    ?? (state.profile ? bestName(state.profile, session.pubkey) : null)
+    ?? shortPubkey(session.pubkey);
+  return raw.toUpperCase().slice(0, 25);
 }
 
 function renderGameOverRecap(state: GameState): void {
@@ -8901,64 +8685,6 @@ async function maybePublishScore(
 
 // ── Completion screen (wave 25 cleared) ──────────────────────────────────────
 
-function formatRunTime(ms: number): string {
-  const totalSec = Math.floor(ms / 1000);
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-}
-
-/**
- * Compact stat grid for the gameover / completion name-entry stages.
- *
- * Suppresses any zero-valued rows so a quick early death isn't crowded
- * with " 0" placeholders, but always shows the load-bearing rows
- * (score, run time, wave or specimens) so the player has the headline
- * numbers before they enter initials.
- */
-function renderRunStatGrid(
-  parent: HTMLElement,
-  state: GameState,
-  opts: { isCompletion?: boolean } = {},
-): void {
-  const board = el('div', { className: 'scoreboard', parent });
-  const rows: Array<readonly [string, string]> = [];
-  rows.push(['SCORE', state.score.toLocaleString()]);
-  // Sats only matter when there's a Nostr session — guests don't earn payouts.
-  if (state.session) rows.push(['SATS', `₿ ${state.sats.toLocaleString()}`]);
-  rows.push(['RUN TIME', formatRunTime(state.runTimeMs)]);
-  if (opts.isCompletion) {
-    rows.push(['SPECIMENS', '24 / 24']);
-  } else {
-    rows.push(['WAVE', `${state.wave} / 25`]);
-  }
-  const stats = state.runStats;
-  const ufoTotal = Object.values(stats.ufoKills).reduce((a, b) => a + b, 0);
-  if (ufoTotal > 0) rows.push(['UFOS DOWN', String(ufoTotal)]);
-  if (stats.minesDestroyed > 0) rows.push(['MINES CLEARED', String(stats.minesDestroyed)]);
-  if (stats.largestCombo >= 2) rows.push(['BEST COMBO', `×${stats.largestCombo}`]);
-  if (stats.powerupsCollected > 0) rows.push(['POWERUPS', String(stats.powerupsCollected)]);
-  for (const [k, v] of rows) {
-    el('div', { className: 'label', parent: board, text: k });
-    el('div', { className: 'value', parent: board, text: v });
-  }
-
-  // UFO type breakdown — only when at least one of the named types fell.
-  // Boss listed first so it pops, then descending difficulty order.
-  const types: Array<readonly [string, number]> = [
-    ['BOSS', stats.ufoKills.boss],
-    ['TANK', stats.ufoKills.tank],
-    ['ELITE', stats.ufoKills.elite],
-    ['SNIPER', stats.ufoKills.sniper],
-    ['UFO', stats.ufoKills.cruiser],
-  ];
-  const breakdown = types.filter(([, n]) => n > 0);
-  if (breakdown.length > 0) {
-    const line = el('p', { parent });
-    line.style.cssText = 'font-size:0.78rem;letter-spacing:0.18em;color:rgba(180,140,255,0.75);margin:6px 0 0;text-align:center;';
-    line.textContent = breakdown.map(([k, n]) => `${k} ×${n}`).join('  ·  ');
-  }
-}
 
 /**
  * Unified post-run credits stage.
@@ -9313,61 +9039,23 @@ function renderRunCredits(
 }
 
 export function renderCompletion(state: GameState): void {
-  // Two-stage completion, mirroring gameover: focus the player on the
-  // arcade name entry first, then unfurl the celebration. Non-high-score
-  // wave-25 clears (rare but possible — local list already full of higher
-  // scores) skip stage 1 and land on the celebration directly.
+  // Same identity-driven high-score handling as renderGameOver — auto-
+  // save under the session display name, advance to celebration. The
+  // 4-char arcade picker pre-stage is gone now that every run has a
+  // signed-in identity attached at the front door.
   const isNewHigh = isHighScore(state.score) && state.score > 0;
-  if (isNewHigh && !state.initialsEnteredThisRun) renderCompletionNameEntry(state);
-  else renderCompletionRecap(state);
-}
-
-function renderCompletionNameEntry(state: GameState): void {
-  clearOverlay();
-  const overlay = el('div', { className: 'overlay', parent: root });
-  overlay.style.background = 'rgba(0, 0, 0, 0.85)';
-  // No setupOverlayArrowNav — arrow keys belong to the arcade widget on
-  // this stage, full stop.
-
-  // Pallasite logo replaces the bare h1 — the wordmark is the reward for
-  // finishing, surface it where the player will see it most.
-  const logo = el('img', { parent: overlay });
-  logo.className = 'title-logo';
-  (logo as HTMLImageElement).src = '/logo.webp';
-  (logo as HTMLImageElement).alt = 'PALLASITE';
-  (logo as HTMLImageElement).decoding = 'async';
-
-  const sub = el('p', { parent: overlay, text: 'COMPLETE · EVENT HORIZON BREACHED' });
-  sub.style.cssText = 'font-size:1.1rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin-top:-4px;';
-
-  const rank = predictedLocalRank(state.score);
-  const banner = el('p', { parent: overlay, text: `RANK ${String(rank).padStart(2, '0')} · NEW HIGH SCORE` });
-  banner.style.cssText = 'font-size:1.05rem;color:#ffd84a;letter-spacing:0.22em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:6px 0 4px;';
-
-  renderRunStatGrid(overlay, state, { isCompletion: true });
-
-  const inputWrap = el('div', { className: 'menu-row', parent: overlay });
-  renderArcadeInitials(inputWrap, {
-    onSubmit: (name) => {
-      addLocalHighScore({
-        name,
-        score: state.score,
-        sats: state.sats,
-        wave: 25,
-        at: new Date().toISOString(),
-        pubkey: state.session?.pubkey,
-      });
-      state.initialsEnteredThisRun = true;
-      renderRunCredits(state, {
-        headerText: 'PALLASITE COMPLETE',
-        subText: 'EVENT HORIZON · BREACHED',
-        isCompletion: true,
-      });
-    },
-  });
-
-  const help = el('p', { parent: overlay, text: 'ENTER YOUR INITIALS · ↑↓ CYCLE   ←→ MOVE   → AT END SAVES' });
-  help.style.cssText = 'font-size:0.72rem;color:rgba(180,140,255,0.5);letter-spacing:0.16em;margin:8px 0 0;text-align:center;';
+  if (isNewHigh && !state.initialsEnteredThisRun) {
+    addLocalHighScore({
+      name: scoreboardNameFor(state),
+      score: state.score,
+      sats: state.sats,
+      wave: 25,
+      at: new Date().toISOString(),
+      pubkey: state.session?.pubkey,
+    });
+    state.initialsEnteredThisRun = true;
+  }
+  renderCompletionRecap(state);
 }
 
 function renderCompletionRecap(state: GameState): void {
