@@ -861,3 +861,123 @@ export async function uploadReplay(
     return { ok: false, error: 'server_error', status: res.status, detail: 'bad_response' };
   }
 }
+
+// ── /api/admin/v2/* — NIP-98 + pubkey-allowlist admin surface ──────
+
+export type AdminStateResult =
+  | {
+      ok: true;
+      limits: {
+        daily_cap_sats: number;
+        per_claim_cap_sats: number;
+        hourly_cap_count: number;
+        today_spent_sats: number;
+        hour_claims_count: number;
+        today_reset_at: number;
+        hour_reset_at: number;
+      };
+      pool: { paused: boolean; total_paid_sats: number; last_synced_at: number };
+      phoenixd: { balance_sat: number | null; fee_credit_sat: number | null };
+      withdraw_tokens: { status: string; count: number; total: number }[];
+      players: { flagged_count: number };
+      presets: Record<string, {
+        daily_cap_sats: number;
+        per_claim_cap_sats: number;
+        hourly_cap_count: number;
+        pause: boolean;
+      }>;
+    }
+  | { ok: false; error: string; status?: number };
+
+/** Shared NIP-98 fetch helper for admin v2 endpoints. Signs, sends, JSON-parses.
+ *  Returns the raw JSON or an error envelope. Same auth pattern as
+ *  submitClaim / submitWithdraw, just generalised. */
+async function adminFetch<T>(
+  session: SignetSession,
+  path: string,
+  method: 'GET' | 'PUT' | 'POST',
+  body?: unknown,
+): Promise<T | { ok: false; error: string; status?: number }> {
+  if (!session.signer.capabilities.canSignEvents) {
+    return { ok: false, error: 'no_signer' };
+  }
+  const url = `${location.origin}${API_BASE}/admin/v2${path}`;
+  const bodyJson = body !== undefined ? JSON.stringify(body) : '';
+  const payloadHash = bodyJson ? await sha256Hex(bodyJson) : '';
+  const authTemplate = {
+    kind: 27235,
+    created_at: Math.floor(Date.now() / 1000),
+    content: '',
+    tags: [
+      ['u', url],
+      ['method', method],
+      ...(payloadHash ? [['payload', payloadHash]] : []),
+    ],
+  };
+  let signedAuth;
+  try {
+    signedAuth = await Promise.race([
+      session.signer.signEvent(authTemplate),
+      new Promise<never>((_, reject) => {
+        window.setTimeout(() => reject(new Error('signer-timeout')), 30_000);
+      }),
+    ]);
+  } catch (err) {
+    return { ok: false, error: 'sign_failed', status: 0 };
+  }
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/admin/v2${path}`, {
+      method,
+      headers: {
+        authorization: `Nostr ${utf8Base64(JSON.stringify(signedAuth))}`,
+        ...(bodyJson ? { 'content-type': 'application/json' } : {}),
+      },
+      ...(bodyJson ? { body: bodyJson } : {}),
+    });
+  } catch {
+    return { ok: false, error: 'network_error' };
+  }
+  try {
+    const data = await res.json();
+    return data as T;
+  } catch {
+    return { ok: false, error: 'bad_response', status: res.status };
+  }
+}
+
+export async function fetchAdminState(session: SignetSession): Promise<AdminStateResult> {
+  return adminFetch<AdminStateResult>(session, '/state', 'GET');
+}
+
+export type AdminCapsInput = {
+  daily_cap_sats: number;
+  per_claim_cap_sats: number;
+  hourly_cap_count: number;
+};
+
+export async function setAdminCaps(
+  session: SignetSession,
+  caps: AdminCapsInput,
+): Promise<{ ok: boolean; error?: string }> {
+  const r = await adminFetch<{ ok: boolean; error?: string }>(session, '/caps', 'PUT', caps);
+  return r as { ok: boolean; error?: string };
+}
+
+export async function setAdminPause(
+  session: SignetSession,
+  paused: boolean,
+  reason?: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const body = reason ? { paused, reason } : { paused };
+  const r = await adminFetch<{ ok: boolean; error?: string }>(session, '/pause', 'PUT', body);
+  return r as { ok: boolean; error?: string };
+}
+
+export async function applyAdminPreset(
+  session: SignetSession,
+  profile: 'normal' | 'conference' | 'frozen',
+): Promise<{ ok: boolean; error?: string }> {
+  const r = await adminFetch<{ ok: boolean; error?: string }>(session, '/preset', 'POST', { profile });
+  return r as { ok: boolean; error?: string };
+}

@@ -18,7 +18,7 @@ import {
 import { getHapticsEnabled, setHapticsEnabled, hapticsSupported } from './haptics.js';
 import * as auth from './auth.js';
 import { addLocalHighScore, getLocalHighScores, isHighScore, subscribeGlobalHighScores, clearLocalHighScores, type GlobalHighScore } from './score.js';
-import { submitClaim, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, fetchFlagged, requestDeleteFlag, requestLnurlWithdraw, pollLnurlWithdrawStatus, type PlayerTier, type FlaggedEntry } from './faucet.js';
+import { submitClaim, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, fetchFlagged, requestDeleteFlag, requestLnurlWithdraw, pollLnurlWithdrawStatus, fetchAdminState, setAdminCaps, setAdminPause, applyAdminPreset, type PlayerTier, type FlaggedEntry, type AdminStateResult } from './faucet.js';
 import {
   fetchReviewCases,
   generateJuryIdentity,
@@ -11152,3 +11152,205 @@ export function renderToast(state: GameState): void {
 
 // Suppress unused warning — toastNow is re-exported for external triggers
 void toastNow;
+
+// ── Admin v2 panel ────────────────────────────────────────────────────────────
+//
+// NIP-98 + pubkey-allowlist gated. Lives at /admin. Lets TheCryptoDonkey
+// (or whichever pubkey ADMIN_PUBKEY_HEX names server-side) flip caps,
+// pause the pool, apply NORMAL / CONFERENCE / FROZEN presets without
+// SSH-ing in for raw SQL. Authentication is implicit: the server only
+// accepts events signed by the admin pubkey, so a non-admin who lands
+// here just sees a 403 and a "not authorised" hint.
+
+/** Format a unix-ms timestamp as a relative-time hint ("3m ago"). */
+function relativeTime(unixMs: number): string {
+  const dt = Date.now() - unixMs;
+  if (dt < 0) {
+    const ahead = Math.floor(-dt / 1000);
+    if (ahead < 60) return `in ${ahead}s`;
+    if (ahead < 3600) return `in ${Math.floor(ahead / 60)}m`;
+    return `in ${Math.floor(ahead / 3600)}h`;
+  }
+  const s = Math.floor(dt / 1000);
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+export function renderAdminV2Panel(state: GameState): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  overlay.style.cssText = 'padding:20px;max-width:720px;width:100%;margin:0 auto;display:flex;flex-direction:column;gap:14px;';
+  setupOverlayArrowNav(overlay);
+
+  el('h2', { parent: overlay, text: 'ADMIN' }).style.cssText = 'margin:0;font-size:1.2rem;letter-spacing:0.22em;color:#ffd84a;';
+
+  const session = state.session;
+  if (!session) {
+    const note = el('p', { parent: overlay });
+    note.style.cssText = 'font-size:0.9rem;color:#ff8050';
+    note.textContent = 'Sign in first — admin actions are NIP-98 signed.';
+    const back = el('button', { className: 'menu-btn', parent: overlay, text: '← BACK' }) as HTMLButtonElement;
+    back.addEventListener('click', () => { window.location.assign('/'); });
+    return;
+  }
+
+  const status = el('p', { parent: overlay });
+  status.style.cssText = 'min-height:1.2em;font-size:0.85rem;color:rgba(220,210,255,0.75)';
+  const setStatus = (msg: string, color = '#5b9dff'): void => {
+    status.textContent = msg;
+    status.style.color = color;
+  };
+
+  const stateSlot = el('div', { parent: overlay });
+  stateSlot.style.cssText = 'display:flex;flex-direction:column;gap:14px;';
+
+  let cached: AdminStateResult | null = null;
+
+  const refresh = async (): Promise<void> => {
+    setStatus('Loading…');
+    const r = await fetchAdminState(session);
+    if (r.ok) {
+      cached = r;
+      render(r);
+      setStatus('');
+    } else {
+      cached = null;
+      stateSlot.replaceChildren();
+      if (r.error === 'not_authorised' || (r as { status?: number }).status === 403) {
+        setStatus('Not authorised — your pubkey is not on the admin allowlist.', '#ff5050');
+      } else if (r.error === 'service_not_configured') {
+        setStatus('Admin v2 not configured on the server (set ADMIN_PUBKEY_HEX).', '#ff8050');
+      } else {
+        setStatus(`Load failed: ${r.error}`, '#ff8050');
+      }
+    }
+  };
+
+  const render = (data: Extract<AdminStateResult, { ok: true }>): void => {
+    stateSlot.replaceChildren();
+
+    // ── Status card ─────────────────────────────────────────────
+    const stCard = el('div', { parent: stateSlot });
+    stCard.style.cssText = 'padding:14px;border:1px solid rgba(91,157,255,0.4);border-radius:10px;background:rgba(91,157,255,0.06);display:grid;grid-template-columns:1fr 1fr;gap:10px;';
+    const stat = (label: string, value: string, accent = '#fff5d8'): void => {
+      const cell = el('div', { parent: stCard });
+      cell.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
+      const k = el('span', { parent: cell, text: label });
+      k.style.cssText = 'font-size:0.66rem;letter-spacing:0.14em;color:rgba(220,210,255,0.6);';
+      const v = el('span', { parent: cell, text: value });
+      v.style.cssText = `font-size:0.95rem;color:${accent};font-family:monospace`;
+    };
+    stat('PHOENIXD BALANCE', data.phoenixd.balance_sat !== null ? `${data.phoenixd.balance_sat} sats` : '— unavailable —', data.phoenixd.balance_sat !== null ? '#8cffb4' : '#888');
+    stat('LIFETIME PAID', `${data.pool.total_paid_sats} sats`);
+    stat('TODAY SPENT', `${data.limits.today_spent_sats} / ${data.limits.daily_cap_sats}`, data.limits.today_spent_sats >= data.limits.daily_cap_sats ? '#ff8050' : '#fff5d8');
+    stat('HOURLY CLAIMS', `${data.limits.hour_claims_count} / ${data.limits.hourly_cap_count}`, data.limits.hour_claims_count >= data.limits.hourly_cap_count ? '#ff8050' : '#fff5d8');
+    stat('POOL STATE', data.pool.paused ? 'PAUSED' : 'LIVE', data.pool.paused ? '#ff5050' : '#58ff58');
+    stat('FLAGGED PLAYERS', String(data.players.flagged_count), data.players.flagged_count > 0 ? '#ff8050' : '#fff5d8');
+    const tokenSummary = data.withdraw_tokens.length === 0
+      ? 'none'
+      : data.withdraw_tokens.map(t => `${t.status}=${t.count}`).join(' · ');
+    stat('LNURL TOKENS', tokenSummary);
+    stat('LAST POOL SYNC', data.pool.last_synced_at ? relativeTime(data.pool.last_synced_at) : '—');
+
+    // ── Presets ──────────────────────────────────────────────────
+    const presetCard = el('div', { parent: stateSlot });
+    presetCard.style.cssText = 'padding:14px;border:1px solid rgba(184,144,255,0.4);border-radius:10px;background:rgba(184,144,255,0.06);';
+    const presetHead = el('h3', { parent: presetCard, text: 'PRESETS' });
+    presetHead.style.cssText = 'margin:0 0 8px;font-size:0.9rem;letter-spacing:0.18em;color:#cbb6ff;';
+    const presetRow = el('div', { parent: presetCard });
+    presetRow.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;';
+    const mkPreset = (label: string, profile: 'normal' | 'conference' | 'frozen', accent: string): void => {
+      const btn = el('button', { className: 'menu-btn', parent: presetRow, text: label }) as HTMLButtonElement;
+      const p = data.presets[profile];
+      btn.style.cssText = `flex:1 1 30%;min-width:160px;padding:12px 10px;border:1.5px solid ${accent};background:rgba(2,5,13,0.5);cursor:pointer;font-size:0.85rem;letter-spacing:0.14em;`;
+      btn.title = p ? `daily=${p.daily_cap_sats} · per-claim=${p.per_claim_cap_sats} · hourly=${p.hourly_cap_count} · pause=${p.pause}` : '';
+      btn.addEventListener('click', () => {
+        void (async () => {
+          if (!window.confirm(`Apply ${profile} preset?`)) return;
+          setStatus(`Applying ${profile}…`);
+          const r = await applyAdminPreset(session, profile);
+          if (r.ok) await refresh();
+          else setStatus(`Preset failed: ${r.error}`, '#ff8050');
+        })();
+      });
+    };
+    mkPreset('🟢 NORMAL', 'normal', 'rgba(140,255,180,0.55)');
+    mkPreset('🟡 CONFERENCE', 'conference', 'rgba(255,216,74,0.55)');
+    mkPreset('🔴 FROZEN', 'frozen', 'rgba(255,120,120,0.55)');
+
+    // ── Manual caps ──────────────────────────────────────────────
+    const capsCard = el('div', { parent: stateSlot });
+    capsCard.style.cssText = 'padding:14px;border:1px solid rgba(140,255,180,0.4);border-radius:10px;background:rgba(60,200,140,0.06);display:flex;flex-direction:column;gap:10px;';
+    el('h3', { parent: capsCard, text: 'MANUAL CAPS' }).style.cssText = 'margin:0;font-size:0.9rem;letter-spacing:0.18em;color:#8cffb4;';
+    const capInput = (label: string, value: number): HTMLInputElement => {
+      const row = el('div', { parent: capsCard });
+      row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:10px;';
+      const lbl = el('label', { parent: row, text: label });
+      lbl.style.cssText = 'font-size:0.78rem;color:rgba(220,210,255,0.8);letter-spacing:0.08em';
+      const inp = document.createElement('input');
+      inp.type = 'number';
+      inp.min = '0';
+      inp.step = '1';
+      inp.value = String(value);
+      inp.style.cssText = 'padding:8px 10px;font-family:monospace;font-size:0.95rem;background:#0a0a0a;color:#eee;border:1px solid #333;border-radius:6px;width:140px;text-align:right';
+      row.appendChild(inp);
+      return inp;
+    };
+    const dailyInp = capInput('Daily cap (sats)', data.limits.daily_cap_sats);
+    const perClaimInp = capInput('Per-claim cap (sats)', data.limits.per_claim_cap_sats);
+    const hourlyInp = capInput('Hourly claim count', data.limits.hourly_cap_count);
+    const saveBtn = el('button', { className: 'menu-btn', parent: capsCard, text: 'SAVE CAPS' }) as HTMLButtonElement;
+    saveBtn.style.cssText = 'padding:10px 14px;font-size:0.9rem;cursor:pointer;letter-spacing:0.14em';
+    saveBtn.addEventListener('click', () => {
+      void (async () => {
+        const caps = {
+          daily_cap_sats: Math.max(0, Math.floor(Number(dailyInp.value))),
+          per_claim_cap_sats: Math.max(0, Math.floor(Number(perClaimInp.value))),
+          hourly_cap_count: Math.max(0, Math.floor(Number(hourlyInp.value))),
+        };
+        setStatus('Saving caps…');
+        const r = await setAdminCaps(session, caps);
+        if (r.ok) await refresh();
+        else setStatus(`Save failed: ${r.error}`, '#ff8050');
+      })();
+    });
+
+    // ── Pause toggle ─────────────────────────────────────────────
+    const pauseCard = el('div', { parent: stateSlot });
+    pauseCard.style.cssText = `padding:14px;border:1px solid ${data.pool.paused ? 'rgba(255,120,120,0.6)' : 'rgba(220,210,255,0.3)'};border-radius:10px;background:${data.pool.paused ? 'rgba(255,120,120,0.08)' : 'rgba(2,5,13,0.4)'};display:flex;justify-content:space-between;align-items:center;gap:10px;`;
+    const pauseLabel = el('div', { parent: pauseCard });
+    pauseLabel.style.cssText = 'display:flex;flex-direction:column;gap:2px';
+    const pHead = el('span', { parent: pauseLabel, text: 'CIRCUIT BREAKER' });
+    pHead.style.cssText = 'font-size:0.78rem;letter-spacing:0.16em;color:rgba(220,210,255,0.85)';
+    const pSub = el('span', { parent: pauseLabel, text: data.pool.paused ? 'All /api/claim returning 503' : 'Faucet live — claims paying out' });
+    pSub.style.cssText = `font-size:0.72rem;color:${data.pool.paused ? '#ff8050' : 'rgba(220,210,255,0.55)'}`;
+    const pauseBtn = el('button', { className: 'menu-btn', parent: pauseCard, text: data.pool.paused ? 'UNPAUSE' : 'PAUSE' }) as HTMLButtonElement;
+    pauseBtn.style.cssText = `padding:10px 18px;font-size:0.9rem;cursor:pointer;letter-spacing:0.14em;border:1.5px solid ${data.pool.paused ? 'rgba(140,255,180,0.6)' : 'rgba(255,120,120,0.6)'};background:rgba(2,5,13,0.5);`;
+    pauseBtn.addEventListener('click', () => {
+      void (async () => {
+        const target = !data.pool.paused;
+        const reason = target ? window.prompt('Reason for pause? (optional)') ?? undefined : undefined;
+        setStatus(target ? 'Pausing…' : 'Unpausing…');
+        const r = await setAdminPause(session, target, reason);
+        if (r.ok) await refresh();
+        else setStatus(`Toggle failed: ${r.error}`, '#ff8050');
+      })();
+    });
+
+    // ── Footer ───────────────────────────────────────────────────
+    const footer = el('div', { parent: stateSlot });
+    footer.style.cssText = 'display:flex;gap:10px;margin-top:6px;';
+    const refreshBtn = el('button', { className: 'menu-btn secondary', parent: footer, text: '↻ REFRESH' }) as HTMLButtonElement;
+    refreshBtn.style.cssText = 'padding:8px 14px;font-size:0.78rem;cursor:pointer;letter-spacing:0.12em';
+    refreshBtn.addEventListener('click', () => { void refresh(); });
+    const backBtn = el('button', { className: 'menu-btn secondary', parent: footer, text: '← BACK TO TITLE' }) as HTMLButtonElement;
+    backBtn.style.cssText = 'padding:8px 14px;font-size:0.78rem;cursor:pointer;letter-spacing:0.12em';
+    backBtn.addEventListener('click', () => { window.location.assign('/'); });
+  };
+
+  void refresh();
+  // Suppress unused warning if cached is touched elsewhere later.
+  void cached;
+}

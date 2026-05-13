@@ -9,7 +9,7 @@ import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHype
 import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadBackground, setRenderMode, getRenderModeKind } from './render.js';
-import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderJuryPage, renderWatchPage, renderControllerPage } from './ui.js';
+import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage } from './ui.js';
 import { postHeartbeat } from './faucet.js';
 import {
   startStreamSession,
@@ -1034,6 +1034,12 @@ async function boot(): Promise<void> {
       renderJuryPage(state);
     } else if (path === '/controller') {
       renderControllerPage(state);
+    } else if (path === '/admin') {
+      // NIP-98 + pubkey-allowlist admin panel. Server enforces the
+      // allowlist on every action; the client just renders whatever
+      // the GET /api/admin/v2/state response is. Non-admin lands on
+      // a "not authorised" message and a back link.
+      renderAdminV2Panel(state);
     }
   }
 
