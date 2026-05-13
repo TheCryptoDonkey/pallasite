@@ -4624,9 +4624,15 @@ function renderControllerIdentityCardInner(
     const guest = getGuestRecord();
     const isGuest = guest?.pubkey === session.pubkey;
     const profile = getCachedProfile(session.pubkey);
+    // Same precedence as buildAnnouncedSigner — prefer profile, then
+    // fall back to SignetSession.displayName before the 8-hex sentinel
+    // so a freshly-paired bunker session shows the bunker's display
+    // name immediately instead of "ABCD1234".
+    const profileName = bestName(profile, session.pubkey);
+    const profileLooksLikeFallback = /^[0-9A-F]{8}$/.test(profileName);
     const name = isGuest && guest
       ? guest.name
-      : bestName(profile, session.pubkey);
+      : (profileLooksLikeFallback && session.displayName ? session.displayName : profileName);
 
     const nameRow = el('div', { parent: card, text: name });
     nameRow.style.cssText = 'font-size:1.05rem;color:#fff5d8;letter-spacing:0.08em;text-align:center;text-shadow:0 0 10px rgba(255,216,74,0.35);';
@@ -4808,7 +4814,19 @@ function buildAnnouncedSigner(state: GameState): import('./controller-mobile.js'
   const guest = getGuestRecord();
   const isGuest = guest?.pubkey === session.pubkey;
   const profile = getCachedProfile(session.pubkey);
-  const rawName = isGuest && guest ? guest.name : bestName(profile, session.pubkey);
+  // Name precedence (so a bunker for "thecryptodonkey" shows up as
+  // "The Crypto Donkey" even before the kind 0 fetch lands on the
+  // pad):
+  //   1. guest record name (when this IS the guest identity)
+  //   2. cached kind 0 display_name / name
+  //   3. SignetSession.displayName — the SDK fills this in from the
+  //      bunker / amber / signet handshake metadata
+  //   4. 8-hex fallback (bestName's terminal case)
+  const profileName = bestName(profile, session.pubkey);
+  const profileLooksLikeFallback = /^[0-9A-F]{8}$/.test(profileName);
+  const rawName = isGuest && guest
+    ? guest.name
+    : (profileLooksLikeFallback && session.displayName ? session.displayName : profileName);
   const name = rawName.length > 64 ? rawName.slice(0, 64) : rawName;
   let npub: string | undefined;
   try { npub = encodeNpub(session.pubkey); } catch { /* leave undefined */ }
@@ -5606,6 +5624,19 @@ export function renderControllerPage(state: GameState): void {
     // round-trips back here via onSignRequest.
     if (state.session) {
       client.announceSigner(buildAnnouncedSigner(state));
+      // The profile fetch is async, so the initial announce above can
+      // carry a placeholder name (8-hex stub or SDK displayName). Once
+      // kind 0 lands, re-announce so the host swaps its banner to the
+      // real name. Cheap idempotent re-send — the host's onSigner
+      // change-detection skips if the pubkey hasn't moved unless
+      // name/method changed (which they have now).
+      const sigPubkey = state.session.pubkey;
+      void fetchProfile(sigPubkey).then(p => {
+        if (!p) return;
+        if (state.session?.pubkey !== sigPubkey) return;
+        state.profile = p;
+        client?.announceSigner(buildAnnouncedSigner(state));
+      });
     }
     // Fulfil host sign-requests via the phone's local session signer.
     // The phone's signer is already wrapped through the global sign-

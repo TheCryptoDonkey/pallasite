@@ -23,6 +23,7 @@ import type { GameState } from './types.js';
 import type { AnnouncedSigner, ControllerHost } from './controller-host.js';
 import type { RemoteEventTemplate, RemoteSignedEvent } from './controller-types.js';
 import { serialiseSigner } from './sign-queue.js';
+import { fetchProfile, getCachedProfile, type NostrProfile } from './profile.js';
 
 const REMOTE_METHOD = 'remote-controller' as unknown as SignetSigner['method'];
 
@@ -77,10 +78,14 @@ class RemoteControllerSigner implements SignetSigner {
  * intermediate remote session.
  */
 export function attachRemoteSession(state: GameState, host: ControllerHost): () => void {
-  // Snapshot of the session the game had before we ever swapped it,
-  // OR null if state had no session pre-swap. Either way this is the
-  // value we restore on revoke.
-  let savedLocal: SignetSession | null | undefined = undefined;
+  // Snapshot of the session AND profile the game had before we ever
+  // swapped, OR null if state had no session pre-swap. Both are
+  // restored together on revoke — otherwise a stale state.profile
+  // (kind 0 of the pre-swap identity) would leak into renderSessionPanel
+  // after the swap reverts (and after the swap forward, before the
+  // remote pubkey's profile fetch lands).
+  let savedLocalSession: SignetSession | null | undefined = undefined;
+  let savedLocalProfile: NostrProfile | null | undefined = undefined;
   let activeRemote: SignetSession | null = null;
   let swapInFlight = false;
 
@@ -120,12 +125,24 @@ export function attachRemoteSession(state: GameState, host: ControllerHost): () 
           };
           // First successful swap latches the saved-local pointer.
           // Subsequent identity changes overwrite activeRemote but
-          // savedLocal stays anchored to the pre-swap session.
-          if (savedLocal === undefined) {
-            savedLocal = state.session;
+          // savedLocal* stays anchored to the pre-swap session/profile.
+          if (savedLocalSession === undefined) {
+            savedLocalSession = state.session;
+            savedLocalProfile = state.profile;
           }
           activeRemote = remoteSession;
           state.session = remoteSession;
+          // Reset the profile because the pre-swap state.profile is for
+          // a different pubkey. Prime from cache if we've seen this
+          // identity before; either way kick off a fresh fetch so the
+          // title's "Locked to X via Y" picks up the right name.
+          const cached = getCachedProfile(announced.pubkey);
+          state.profile = cached ?? null;
+          void fetchProfile(announced.pubkey).then((p) => {
+            if (p && state.session?.pubkey === announced.pubkey) {
+              state.profile = p;
+            }
+          }).catch(() => { /* ignore — name falls back to npub/hex */ });
         } catch (err) {
           console.warn('[remote-signer] swap aborted:', err);
         } finally {
@@ -134,11 +151,13 @@ export function attachRemoteSession(state: GameState, host: ControllerHost): () 
       })();
     } else {
       // Revoke — phone signed out, peer disconnected, or host closed.
-      // Revert to whatever the local session was pre-swap.
-      if (activeRemote && savedLocal !== undefined) {
-        state.session = savedLocal;
+      // Restore the pre-swap session + profile together.
+      if (activeRemote && savedLocalSession !== undefined) {
+        state.session = savedLocalSession;
+        state.profile = savedLocalProfile ?? null;
         activeRemote = null;
-        savedLocal = undefined;
+        savedLocalSession = undefined;
+        savedLocalProfile = undefined;
       }
     }
   });
