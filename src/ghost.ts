@@ -277,6 +277,22 @@ export interface PublishReplayInput {
   durationMs: number;
   frames: ReadonlyArray<ReplayFrameRaw>;
   relays?: readonly string[];
+  /** Optional pre-gzipped frames bytes. When the caller is retrying a
+   *  previously-built replay (signer hiccup, RETRY button), reusing
+   *  the gzipped bytes skips re-compressing 14k frames on each click
+   *  — gzip a 3MB replay is ~500ms of CPU on a phone. The caller is
+   *  responsible for ensuring these bytes are gzip(JSON.stringify(
+   *  frames)) for the same frame array. */
+  gzippedFrames?: Uint8Array;
+}
+
+/** Gzip a frame array and return the bytes. Exported so the game-over
+ *  retry UI can compress once at run end and cache the result for
+ *  subsequent retries without recompressing every click. Returns null
+ *  on CompressionStream failure (very rare — graceful fallback path
+ *  is to skip the replay entirely). */
+export async function gzipReplayFrames(frames: ReadonlyArray<ReplayFrameRaw>): Promise<Uint8Array | null> {
+  return gzipFrames(frames);
 }
 
 /** Gzip a JSON-serialisable frame array to raw bytes. The Blossom-style
@@ -325,7 +341,7 @@ async function gunzipFrames(bytes: Uint8Array): Promise<ReplayFrameRaw[] | null>
  *  Sign count for the entire replay flow: 2 (the NIP-98 auth for the
  *  upload + the pointer event). Prior path: 1 + N waves. */
 export async function publishReplay(input: PublishReplayInput): Promise<NostrEvent | null> {
-  const { session, scoreEventId, finalScore, finalWave, durationMs, frames } = input;
+  const { session, scoreEventId, finalScore, finalWave, durationMs, frames, gzippedFrames } = input;
   if (!session.signer.capabilities.canSignEvents) {
     console.warn('[replay] skip publish — signer cannot sign events');
     return null;
@@ -335,12 +351,17 @@ export async function publishReplay(input: PublishReplayInput): Promise<NostrEve
     return null;
   }
 
-  const gzipped = await gzipFrames(frames);
+  // Reuse pre-gzipped bytes when the caller provided them (RETRY path)
+  // to avoid re-compressing 14k frames on every click. First-time
+  // publish path still re-gzips inline.
+  const gzipped = gzippedFrames ?? await gzipFrames(frames);
   if (!gzipped) {
     console.error('[replay] gzip failed');
     return null;
   }
-  console.log(`[replay] gzipped ${frames.length} frames → ${gzipped.byteLength}B`);
+  if (!gzippedFrames) {
+    console.log(`[replay] gzipped ${frames.length} frames → ${gzipped.byteLength}B`);
+  }
 
   const uploaded = await uploadReplay(session, gzipped);
   if (!uploaded.ok) {

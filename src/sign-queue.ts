@@ -25,6 +25,20 @@ type Signer = SignetSigner;
  *  helps with stuck signers at the cost of slowing batch publishes. */
 const POST_SIGN_GAP_MS = 80;
 
+/** Hard per-task timeout. If orig() doesn't resolve in this long, the
+ *  queue rejects the task with 'queue-timeout' and moves on to the
+ *  next. Without this the runner would `await orig(task.template)`
+ *  indefinitely on a stuck bark, blocking every subsequent sign for
+ *  the rest of the page session — claim signs would queue behind a
+ *  failed replay retry and the user would be unable to bank sats.
+ *
+ *  45s is slightly longer than the longest call-site timeout (30s for
+ *  claim + replay), so call-site Promise.race bails first with a
+ *  domain-specific error; the queue timeout is the backstop that
+ *  unblocks the next sign for the queue when orig() is genuinely
+ *  wedged. */
+const QUEUE_TIMEOUT_MS = 45_000;
+
 interface QueuedSign {
   template: Parameters<Signer['signEvent']>[0];
   resolve: (event: Awaited<ReturnType<Signer['signEvent']>>) => void;
@@ -46,11 +60,27 @@ function runQueue(orig: Signer['signEvent']): void {
       const gap = Math.max(0, POST_SIGN_GAP_MS - (Date.now() - lastSignFinishedAt));
       if (gap > 0) await new Promise((r) => setTimeout(r, gap));
       inFlight = true;
+      // Race orig() against the queue's hard timeout. The orig() promise
+      // may keep running in the background after we move on (we can't
+      // cancel a NIP-07 extension's signEvent), but `await` releases so
+      // the next task gets its turn. Caller already rejected via its
+      // own call-site timeout by this point.
       try {
-        const ev = await orig(task.template);
-        task.resolve(ev);
-      } catch (err) {
-        task.reject(err);
+        let timer: number | undefined;
+        const timeout = new Promise<never>((_, reject) => {
+          timer = window.setTimeout(
+            () => reject(new Error('queue-timeout')),
+            QUEUE_TIMEOUT_MS,
+          );
+        });
+        try {
+          const ev = await Promise.race([orig(task.template), timeout]);
+          task.resolve(ev);
+        } catch (err) {
+          task.reject(err);
+        } finally {
+          if (timer !== undefined) window.clearTimeout(timer);
+        }
       } finally {
         inFlight = false;
         lastSignFinishedAt = Date.now();

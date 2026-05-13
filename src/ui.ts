@@ -50,7 +50,7 @@ import { decodeNpub } from './bech32.js';
 import { subscribeZapTotals, type ZapTotalsByPubkey } from './zaps.js';
 import { isGuestSession, setGuestName, clearGuestIdentity } from './guest.js';
 import { getReplayBuffer, type ReplayFrameRaw } from './stream-session.js';
-import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, findReplayByAuthor, fetchReplayByScoreEventId, fetchReplayByEventId, type GhostRun } from './ghost.js';
+import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, gzipReplayFrames, findReplayByAuthor, fetchReplayByScoreEventId, fetchReplayByEventId, type GhostRun } from './ghost.js';
 import { preloadBackground } from './render.js';
 import { musicSetTrackForState } from './music.js';
 import { savePersonalGhost } from './personal-ghost.js';
@@ -1641,7 +1641,7 @@ function withdrawErrorMessage(error: string, detail?: string): string {
     case 'no_signer': return 'Cannot sign with this session.';
     case 'sign_failed': {
       if (!detail) return 'Could not sign request. Check your signer.';
-      if (/timeout|signer-timeout/i.test(detail)) return 'Signer did not respond.';
+      if (/timeout|signer-timeout|queue-timeout/i.test(detail)) return 'Signer did not respond. Open your Nostr extension and unlock it.';
       if (/reject|denied|cancel/i.test(detail)) return 'Signature rejected.';
       return `Sign failed: ${detail.slice(0, 80)}`;
     }
@@ -8472,8 +8472,8 @@ function claimErrorMessage(error: string, detail?: string): string {
     case 'no_signer': return 'Cannot sign with this session.';
     case 'sign_failed': {
       if (!detail) return 'Could not sign claim. Check your signer extension.';
-      if (/timeout|signer-timeout/i.test(detail)) {
-        return 'Signer did not respond. Unlock your extension and try again.';
+      if (/timeout|signer-timeout|queue-timeout/i.test(detail)) {
+        return 'Signer did not respond. Open your Nostr extension, unlock it, then click CLAIM again.';
       }
       if (/reject|denied|cancel/i.test(detail)) return 'Signature rejected.';
       return `Could not sign claim: ${detail.slice(0, 80)}`;
@@ -8908,6 +8908,17 @@ function renderRunCredits(
         const score = state.score;
         const finalWave = state.wave;
         const durationMs = Math.max(0, Math.floor(state.runTimeMs));
+        // Cache the gzipped frames across retries. First click gzips
+        // (~500ms for a 14k-frame run on a phone); subsequent RETRY
+        // clicks reuse the same bytes. Caller-side caching keeps
+        // publishReplay's interface clean — it doesn't need to know
+        // about retry semantics.
+        let cachedGzip: Uint8Array | null = null;
+        // Tells the player WHAT to do, not just THAT it failed. Most
+        // common failure mode: bark's service worker fell asleep mid-
+        // session and the signEvent times out. The remedy is opening
+        // the extension to wake it.
+        const signerHint = 'Your Nostr signer didn\'t respond. Open your extension (bark / nsec.app / your bunker), make sure it\'s unlocked, then click RETRY.';
         const renderRetryBadge = (msg: string, hint: string): void => {
           replayStatus.innerHTML = '';
           replayStatus.style.color = 'rgba(255,120,120,0.95)';
@@ -8919,22 +8930,34 @@ function renderRunCredits(
           retry.style.cssText = 'background:rgba(255,255,255,0.08);border:1px solid rgba(255,120,120,0.7);color:#fff;padding:2px 10px;border-radius:4px;font-family:monospace;font-size:0.78rem;letter-spacing:0.1em;cursor:pointer;margin-left:6px;';
           retry.addEventListener('click', tryPublish);
           const hintEl = el('div', { parent: replayStatus, text: hint });
-          hintEl.style.cssText = 'font-size:0.7rem;margin-top:4px;color:rgba(220,210,255,0.65);letter-spacing:0.04em;';
+          hintEl.style.cssText = 'font-size:0.72rem;margin-top:4px;color:rgba(220,210,255,0.75);letter-spacing:0.04em;line-height:1.4;';
         };
         const tryPublish = (): void => {
-          setReplayBadge('pending', `📼 REPLAY · uploading ${remainingBuffer.length} frames…`);
-          void publishReplay({
-            session,
-            finalScore: score,
-            finalWave,
-            durationMs,
-            frames: remainingBuffer,
-          }).then((signed) => {
-            if (signed) setReplayBadge('ok', `✓ REPLAY PUBLISHED · ${signed.id.slice(0, 8)}…`);
-            else renderRetryBadge('✗ REPLAY FAILED', 'Check console [replay] for the upload or sign failure.');
-          }, (err) => {
-            renderRetryBadge(`✗ REPLAY THREW · ${err instanceof Error ? err.message : String(err)}`, 'Try again, or check console [replay] for details.');
-          });
+          setReplayBadge('pending', `📼 REPLAY · ${cachedGzip ? 'retrying' : 'uploading'} ${remainingBuffer.length} frames…`);
+          void (async () => {
+            try {
+              if (!cachedGzip) {
+                cachedGzip = await gzipReplayFrames(remainingBuffer);
+                if (!cachedGzip) {
+                  renderRetryBadge('✗ REPLAY FAILED · gzip error', 'Compression failed on your device. Try again, or play a shorter run.');
+                  return;
+                }
+                console.log(`[replay] gzipped ${remainingBuffer.length} frames → ${cachedGzip.byteLength}B (cached for retries)`);
+              }
+              const signed = await publishReplay({
+                session,
+                finalScore: score,
+                finalWave,
+                durationMs,
+                frames: remainingBuffer,
+                gzippedFrames: cachedGzip,
+              });
+              if (signed) setReplayBadge('ok', `✓ REPLAY PUBLISHED · ${signed.id.slice(0, 8)}…`);
+              else renderRetryBadge('✗ REPLAY FAILED', signerHint);
+            } catch (err) {
+              renderRetryBadge(`✗ REPLAY THREW · ${err instanceof Error ? err.message : String(err)}`, signerHint);
+            }
+          })();
         };
         tryPublish();
       }
