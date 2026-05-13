@@ -4661,6 +4661,16 @@ function renderControllerIdentityCardInner(
         refresh();
       })();
     });
+
+    // Clarify the current limitation. Step 2 only announces the
+    // identity to the host on pair — the host still signs with its
+    // own local session. Step 3 (RemoteControllerSigner) is what
+    // makes the host actually route signEvent through the phone.
+    // Until then, the game's title screen will show its own session
+    // (likely a local guest) and the pad-side identity is informational.
+    const gap = el('p', { parent: card });
+    gap.style.cssText = 'margin:8px 0 0;font-size:0.68rem;color:rgba(220,210,255,0.45);text-align:center;letter-spacing:0.04em;line-height:1.5;';
+    gap.textContent = 'Pair-time announce only — the big screen still signs locally for now. Remote signing arrives in the next update.';
     return;
   }
 
@@ -4750,7 +4760,7 @@ function renderControllerIdentityCardInner(
   }
   specs.push({
     label: '📱 SIGN IN WITH SIGNET',
-    sub: 'Account-style sign-in via mysignet.app · trust the operator',
+    sub: 'OAuth-style sign-in via Signet · open-source, self-hostable',
     accent: 'rgba(255,216,74,0.55)',
     onClick: () => { void runSignIn('redirect', 'Signet'); },
   });
