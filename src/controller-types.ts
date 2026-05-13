@@ -118,6 +118,40 @@ export interface SignerRevokeFrame {
   type: 'signer-revoke';
 }
 
+/** Unsigned event template the host wants the phone to sign. Minimal
+ *  Nostr event shape — kind + content + tags + optional created_at. */
+export interface RemoteEventTemplate {
+  kind: number;
+  content: string;
+  tags?: string[][];
+  created_at?: number;
+}
+
+/** Signed Nostr event the phone sends back in response. */
+export interface RemoteSignedEvent {
+  id: string;
+  pubkey: string;
+  kind: number;
+  created_at: number;
+  tags: string[][];
+  content: string;
+  sig: string;
+}
+
+/** Host → phone: please sign this template. */
+export interface SignRequestFrame {
+  type: 'sign-request';
+  /** Correlation id — phone echoes back in sign-response so the host
+   *  can match concurrent requests. UUID or 8+ hex chars. */
+  id: string;
+  template: RemoteEventTemplate;
+}
+
+/** Phone → host: result of a sign-request. */
+export type SignResponseFrame =
+  | { type: 'sign-response'; id: string; ok: true; event: RemoteSignedEvent }
+  | { type: 'sign-response'; id: string; ok: false; error: string };
+
 /** Pairing token — encoded into the QR-code URL. */
 export interface PairingToken {
   sessionId: string;
