@@ -376,11 +376,22 @@ window.addEventListener('keydown', e => {
     audio.setMuted(!audio.isMuted());
     if (audio.isMuted()) audio.thrustOff();
   }
-  // Enter to start from title. Two gates: the data-onboarding marker stops
-  // Enter from advancing past the cinematic itself, and gateBehindOnboarding
-  // diverts first-time players into the cinematic instead of the game so they
-  // can't skip the intro by Entering before clicking IGNITE.
-  if (e.code === 'Enter' && state.phase === 'title' && !document.querySelector('[data-onboarding="open"]')) {
+  // Enter on a focused <button> belongs to that button's click — never
+  // the global "Enter restarts" shortcut. The controller PWA's A face
+  // button maps to Enter; when the player has d-pad'd to CLAIM on the
+  // gameover screen, the focused button must win or pressing SELECT
+  // restarts the game instead of claiming sats (reported in the wild).
+  // Same gate stops Enter on a focused HOW TO PLAY / SETTINGS button
+  // on the title from firing IGNITE.
+  const focusedIsButton = document.activeElement instanceof HTMLButtonElement;
+
+  // Enter to start from title. Three gates: the data-onboarding marker
+  // stops Enter from advancing past the cinematic itself; the focused-
+  // button check defers to a target action when one is selected; and
+  // gateBehindOnboarding diverts first-time players into the cinematic
+  // instead of the game so they can't skip the intro by Entering before
+  // clicking IGNITE.
+  if (e.code === 'Enter' && state.phase === 'title' && !focusedIsButton && !document.querySelector('[data-onboarding="open"]')) {
     void audio.unlockAudio();
     lockInDifficulty(getStoredDifficulty());
     gateBehindOnboarding(() => {
@@ -390,12 +401,11 @@ window.addEventListener('keydown', e => {
       clearOverlay();
     });
   }
-  // Enter to play again from gameover. Gated on the arcade-initials widget
-  // not being open — when the player is locking in initials, Enter is a
-  // no-op (see renderArcadeInitials in ui.ts). Without this gate, Enter on
-  // the name-entry screen restarts the game and the player never sees the
-  // submit / countdown.
-  if (e.code === 'Enter' && state.phase === 'gameover' && !document.querySelector('[data-arcade-initials="open"]')) {
+  // Enter to play again from gameover. Gated on the arcade-initials
+  // widget not being open AND no button having focus — when the player
+  // has d-pad-navigated to CLAIM (or any other game-over button),
+  // Enter must trigger that button's click rather than restarting.
+  if (e.code === 'Enter' && state.phase === 'gameover' && !focusedIsButton && !document.querySelector('[data-arcade-initials="open"]')) {
     void audio.unlockAudio();
     lockInDifficulty(getStoredDifficulty());
     setDailySeed(getStoredDailyPref() ? todayUTC() : null);
