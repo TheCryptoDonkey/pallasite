@@ -18,7 +18,7 @@ import {
 import { getHapticsEnabled, setHapticsEnabled, hapticsSupported } from './haptics.js';
 import * as auth from './auth.js';
 import { addLocalHighScore, getLocalHighScores, isHighScore, subscribeGlobalHighScores, clearLocalHighScores, type GlobalHighScore } from './score.js';
-import { submitClaim, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, fetchFlagged, requestDeleteFlag, requestLnurlWithdraw, pollLnurlWithdrawStatus, fetchAdminState, setAdminCaps, setAdminPause, applyAdminPreset, type PlayerTier, type FlaggedEntry, type AdminStateResult } from './faucet.js';
+import { submitClaim, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, fetchFlagged, requestDeleteFlag, requestLnurlWithdraw, pollLnurlWithdrawStatus, fetchAdminState, setAdminCaps, setAdminPause, applyAdminPreset, saveAdminSettings, fetchAdminPlayer, setAdminPlayerFlag, adjustAdminPlayerBalance, setAdminPlayerTier, type PlayerTier, type FlaggedEntry, type AdminStateResult, type AdminPlayer } from './faucet.js';
 import {
   fetchReviewCases,
   generateJuryIdentity,
@@ -11337,6 +11337,226 @@ export function renderAdminV2Panel(state: GameState): void {
         if (r.ok) await refresh();
         else setStatus(`Toggle failed: ${r.error}`, '#ff8050');
       })();
+    });
+
+    // ── Live settings (wave B) ──────────────────────────────────
+    // Static-today constants made tunable: withdraw threshold, LNURL
+    // bounds, per-tier lifetime caps + multipliers. Each row shows
+    // current vs default. SAVE ALL fires one signed batch update.
+    const settingsCard = el('div', { parent: stateSlot });
+    settingsCard.style.cssText = 'padding:14px;border:1px solid rgba(220,210,255,0.3);border-radius:10px;background:rgba(2,5,13,0.4);display:flex;flex-direction:column;gap:10px;';
+    el('h3', { parent: settingsCard, text: 'LIVE SETTINGS' }).style.cssText = 'margin:0;font-size:0.9rem;letter-spacing:0.18em;color:rgba(220,210,255,0.85);';
+    const settingsHint = el('p', { parent: settingsCard, text: 'Tunable without redeploy. Defaults shown after each value when modified.' });
+    settingsHint.style.cssText = 'margin:0;font-size:0.72rem;color:rgba(220,210,255,0.55);';
+    const settingInputs: { key: string; input: HTMLInputElement }[] = [];
+    const settingRow = (key: string, label: string, fractional = false): void => {
+      const row = el('div', { parent: settingsCard });
+      row.style.cssText = 'display:grid;grid-template-columns:1fr 140px 60px;gap:10px;align-items:center;';
+      const lbl = el('label', { parent: row, text: label });
+      lbl.style.cssText = 'font-size:0.78rem;color:rgba(220,210,255,0.8);letter-spacing:0.06em';
+      const inp = document.createElement('input');
+      inp.type = 'number';
+      inp.step = fractional ? '0.01' : '1';
+      inp.min = '0';
+      inp.value = String(data.settings[key] ?? data.setting_defaults[key] ?? 0);
+      inp.style.cssText = 'padding:8px 10px;font-family:monospace;font-size:0.9rem;background:#0a0a0a;color:#eee;border:1px solid #333;border-radius:6px;text-align:right;';
+      row.appendChild(inp);
+      const def = el('span', { parent: row });
+      def.style.cssText = 'font-size:0.66rem;color:rgba(180,180,180,0.5);font-family:monospace;text-align:right;';
+      const defaultVal = data.setting_defaults[key];
+      const liveVal = data.settings[key];
+      def.textContent = liveVal !== defaultVal ? `def ${defaultVal}` : '';
+      settingInputs.push({ key, input: inp });
+    };
+    settingRow('withdraw_threshold_sats', 'Withdraw threshold (sats)');
+    settingRow('lnurl_min_sats',          'LNURL min (sats)');
+    settingRow('lnurl_max_sats',          'LNURL max (sats)');
+    settingRow('lnurl_ttl_ms',            'LNURL TTL (ms)');
+    settingRow('tier_lifetime_anon',      'Anon lifetime cap');
+    settingRow('tier_lifetime_nip05',     'Nip05 lifetime cap');
+    settingRow('tier_lifetime_close',     'Close lifetime cap');
+    settingRow('tier_lifetime_verified',  'Verified lifetime cap');
+    settingRow('tier_multiplier_anon',     'Anon multiplier',     true);
+    settingRow('tier_multiplier_nip05',    'Nip05 multiplier',    true);
+    settingRow('tier_multiplier_close',    'Close multiplier',    true);
+    settingRow('tier_multiplier_verified', 'Verified multiplier', true);
+    const saveSettingsBtn = el('button', { className: 'menu-btn', parent: settingsCard, text: 'SAVE ALL SETTINGS' }) as HTMLButtonElement;
+    saveSettingsBtn.style.cssText = 'padding:10px 14px;font-size:0.85rem;cursor:pointer;letter-spacing:0.14em;align-self:flex-start';
+    saveSettingsBtn.addEventListener('click', () => {
+      void (async () => {
+        const payload = settingInputs.map(({ key, input }) => ({
+          key,
+          value: Number(input.value),
+        }));
+        setStatus('Saving settings…');
+        const r = await saveAdminSettings(session, payload);
+        if (r.ok) {
+          const appliedCount = r.applied?.length ?? 0;
+          const skipped = r.skipped ?? [];
+          if (skipped.length > 0) {
+            setStatus(`Saved ${appliedCount}, skipped ${skipped.length} (${skipped.map(s => `${s.key}:${s.reason}`).join(', ')})`, '#ff8050');
+          }
+          await refresh();
+        } else {
+          setStatus(`Save failed: ${r.error}`, '#ff8050');
+        }
+      })();
+    });
+
+    // ── Player management ───────────────────────────────────────
+    const playerCard = el('div', { parent: stateSlot });
+    playerCard.style.cssText = 'padding:14px;border:1px solid rgba(255,140,200,0.4);border-radius:10px;background:rgba(255,140,200,0.06);display:flex;flex-direction:column;gap:10px;';
+    el('h3', { parent: playerCard, text: 'PLAYER' }).style.cssText = 'margin:0;font-size:0.9rem;letter-spacing:0.18em;color:#ffacd5;';
+    const lookupRow = el('div', { parent: playerCard });
+    lookupRow.style.cssText = 'display:flex;gap:8px;';
+    const npubInput = document.createElement('input');
+    npubInput.type = 'text';
+    npubInput.placeholder = 'npub1… or 64-char hex';
+    npubInput.spellcheck = false;
+    npubInput.autocapitalize = 'off';
+    npubInput.autocomplete = 'off';
+    npubInput.style.cssText = 'flex:1;padding:8px 10px;font-family:monospace;font-size:0.85rem;background:#0a0a0a;color:#eee;border:1px solid #333;border-radius:6px';
+    lookupRow.appendChild(npubInput);
+    const lookupBtn = el('button', { className: 'menu-btn', parent: lookupRow, text: 'LOOKUP' }) as HTMLButtonElement;
+    lookupBtn.style.cssText = 'padding:8px 14px;font-size:0.85rem;cursor:pointer;letter-spacing:0.12em';
+    const playerSlot = el('div', { parent: playerCard });
+    playerSlot.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
+
+    const renderPlayerCard = (p: AdminPlayer): void => {
+      playerSlot.replaceChildren();
+      const head = el('div', { parent: playerSlot });
+      head.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px;font-family:monospace;font-size:0.8rem;';
+      const stat = (k: string, v: string, color = '#fff5d8'): void => {
+        const cell = el('div', { parent: head });
+        cell.style.cssText = 'display:flex;flex-direction:column;gap:2px';
+        const kEl = el('span', { parent: cell, text: k });
+        kEl.style.cssText = 'font-size:0.62rem;letter-spacing:0.14em;color:rgba(220,210,255,0.55)';
+        const vEl = el('span', { parent: cell, text: v });
+        vEl.style.cssText = `font-size:0.85rem;color:${color}`;
+      };
+      stat('PUBKEY', `${p.pubkey.slice(0, 12)}…${p.pubkey.slice(-6)}`);
+      stat('TIER', p.tier_override ? `${p.tier_override} (override)` : p.tier, p.tier_override ? '#ffd84a' : '#fff5d8');
+      stat('BALANCE', `${p.balance_sats} sats`);
+      stat('LIFETIME PAID', `${p.lifetime_paid_sats} sats`);
+      stat('CLAIMS', String(p.claims_count));
+      stat('BEST', `${p.best_score} · W${p.best_wave}`);
+      stat('FLAGGED', p.flagged ? 'YES' : 'no', p.flagged ? '#ff5050' : '#fff5d8');
+      stat('OPEN LNURL', String(p.open_withdraw_tokens), p.open_withdraw_tokens > 0 ? '#ffd84a' : '#fff5d8');
+
+      const actions = el('div', { parent: playerSlot });
+      actions.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;';
+
+      // Flag / unflag
+      const flagBtn = el('button', { className: 'menu-btn', parent: actions, text: p.flagged ? 'UNFLAG' : 'FLAG' }) as HTMLButtonElement;
+      flagBtn.style.cssText = `padding:8px 14px;font-size:0.78rem;cursor:pointer;letter-spacing:0.1em;border:1.5px solid ${p.flagged ? 'rgba(140,255,180,0.55)' : 'rgba(255,120,120,0.55)'}`;
+      flagBtn.addEventListener('click', () => {
+        void (async () => {
+          const reason = window.prompt(p.flagged ? 'Reason for unflagging?' : 'Reason for flagging?') ?? undefined;
+          setStatus(p.flagged ? 'Unflagging…' : 'Flagging…');
+          const r = await setAdminPlayerFlag(session, p.pubkey, !p.flagged, reason);
+          if (r.ok) {
+            setStatus(p.flagged ? 'Unflagged.' : 'Flagged.', '#58ff58');
+            await loadPlayer(p.pubkey);
+            void refresh();
+          } else {
+            setStatus(`Action failed: ${r.error}`, '#ff8050');
+          }
+        })();
+      });
+
+      // Balance adjust
+      const balanceBtn = el('button', { className: 'menu-btn', parent: actions, text: 'ADJUST BALANCE' }) as HTMLButtonElement;
+      balanceBtn.style.cssText = 'padding:8px 14px;font-size:0.78rem;cursor:pointer;letter-spacing:0.1em;border:1.5px solid rgba(255,216,74,0.55)';
+      balanceBtn.addEventListener('click', () => {
+        void (async () => {
+          const raw = window.prompt('Delta sats (negative to debit, positive to credit):');
+          if (raw === null) return;
+          const delta = Math.floor(Number(raw));
+          if (!Number.isFinite(delta) || delta === 0) {
+            setStatus('Invalid delta.', '#ff5050');
+            return;
+          }
+          const reason = window.prompt('Reason? (optional)') ?? undefined;
+          setStatus('Adjusting balance…');
+          const r = await adjustAdminPlayerBalance(session, p.pubkey, delta, reason);
+          if (r.ok) {
+            setStatus(`Balance ${delta > 0 ? '+' : ''}${delta} → ${r.balance_sats}`, '#58ff58');
+            await loadPlayer(p.pubkey);
+          } else {
+            setStatus(`Adjust failed: ${r.error}${r.detail ? ` (${r.detail})` : ''}`, '#ff8050');
+          }
+        })();
+      });
+
+      // Tier override
+      const tierWrap = el('div', { parent: actions });
+      tierWrap.style.cssText = 'display:flex;gap:6px;align-items:center;border:1.5px solid rgba(184,144,255,0.55);border-radius:6px;padding:6px 10px;';
+      const tierLbl = el('span', { parent: tierWrap, text: 'TIER OVERRIDE' });
+      tierLbl.style.cssText = 'font-size:0.66rem;letter-spacing:0.12em;color:rgba(184,144,255,0.8)';
+      const tierSel = document.createElement('select');
+      tierSel.style.cssText = 'background:#0a0a0a;color:#eee;border:1px solid #333;border-radius:4px;padding:4px 6px;font-size:0.78rem;font-family:monospace';
+      const opts: Array<['', 'anon', 'nip05', 'close', 'verified']> = [['', 'anon', 'nip05', 'close', 'verified']];
+      for (const v of opts[0]) {
+        const o = document.createElement('option');
+        o.value = v;
+        o.text = v === '' ? '— none —' : v;
+        if ((p.tier_override ?? '') === v) o.selected = true;
+        tierSel.appendChild(o);
+      }
+      tierWrap.appendChild(tierSel);
+      const tierApply = el('button', { className: 'menu-btn secondary', parent: tierWrap, text: 'APPLY' }) as HTMLButtonElement;
+      tierApply.style.cssText = 'padding:4px 10px;font-size:0.72rem;cursor:pointer';
+      tierApply.addEventListener('click', () => {
+        void (async () => {
+          const v = tierSel.value as '' | 'anon' | 'nip05' | 'close' | 'verified';
+          const tier = v === '' ? null : v;
+          const reason = window.prompt('Reason for tier override?') ?? undefined;
+          setStatus('Updating tier override…');
+          const r = await setAdminPlayerTier(session, p.pubkey, tier, reason);
+          if (r.ok) {
+            setStatus(`Tier override = ${tier ?? 'cleared'}`, '#58ff58');
+            await loadPlayer(p.pubkey);
+          } else {
+            setStatus(`Tier update failed: ${r.error}`, '#ff8050');
+          }
+        })();
+      });
+    };
+
+    const loadPlayer = async (pubkey: string): Promise<void> => {
+      setStatus('Loading player…');
+      const r = await fetchAdminPlayer(session, pubkey);
+      if (r.ok) {
+        renderPlayerCard(r.player);
+        setStatus('');
+      } else {
+        playerSlot.replaceChildren();
+        if (r.error === 'not_found') {
+          setStatus('Player not found.', '#ff8050');
+        } else {
+          setStatus(`Lookup failed: ${r.error}`, '#ff8050');
+        }
+      }
+    };
+
+    lookupBtn.addEventListener('click', () => {
+      const raw = npubInput.value.trim();
+      if (!raw) return;
+      // Accept npub1… or 64-char hex.
+      let pubkey: string | null = null;
+      if (/^[0-9a-f]{64}$/i.test(raw)) {
+        pubkey = raw.toLowerCase();
+      } else if (raw.startsWith('npub1')) {
+        pubkey = decodeNpub(raw);
+      }
+      if (!pubkey) {
+        setStatus('Invalid pubkey — expecting npub1… or 64-char hex.', '#ff5050');
+        return;
+      }
+      void loadPlayer(pubkey);
+    });
+    npubInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') lookupBtn.click();
     });
 
     // ── Footer ───────────────────────────────────────────────────

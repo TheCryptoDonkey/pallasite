@@ -886,7 +886,28 @@ export type AdminStateResult =
         hourly_cap_count: number;
         pause: boolean;
       }>;
+      settings: Record<string, number>;
+      setting_defaults: Record<string, number>;
     }
+  | { ok: false; error: string; status?: number };
+
+export type AdminPlayer = {
+  pubkey: string;
+  tier: string;
+  tier_override: string | null;
+  balance_sats: number;
+  lifetime_paid_sats: number;
+  claims_count: number;
+  flagged: boolean;
+  best_score: number;
+  best_wave: number;
+  first_seen_at: number;
+  last_claim_at: number | null;
+  open_withdraw_tokens: number;
+};
+
+export type AdminPlayerResult =
+  | { ok: true; player: AdminPlayer }
   | { ok: false; error: string; status?: number };
 
 /** Shared NIP-98 fetch helper for admin v2 endpoints. Signs, sends, JSON-parses.
@@ -979,5 +1000,82 @@ export async function applyAdminPreset(
   profile: 'normal' | 'conference' | 'frozen',
 ): Promise<{ ok: boolean; error?: string }> {
   const r = await adminFetch<{ ok: boolean; error?: string }>(session, '/preset', 'POST', { profile });
+  return r as { ok: boolean; error?: string };
+}
+
+/** Batched settings update — single signed request flips many knobs.
+ *  Server rejects unknown keys and non-finite values per-row, so the
+ *  result enumerates which entries landed and which were skipped. */
+export async function saveAdminSettings(
+  session: SignetSession,
+  settings: { key: string; value: number }[],
+): Promise<{ ok: boolean; applied?: { key: string; value: number }[]; skipped?: { key: string; reason: string }[]; error?: string }> {
+  const r = await adminFetch<{
+    ok: boolean;
+    applied?: { key: string; value: number }[];
+    skipped?: { key: string; reason: string }[];
+    error?: string;
+  }>(session, '/settings', 'PUT', { settings });
+  return r as { ok: boolean; applied?: { key: string; value: number }[]; skipped?: { key: string; reason: string }[]; error?: string };
+}
+
+/** Player lookup. Pubkey must be 64-char hex (decode npub on the
+ *  client first). Returns full player row + a count of open LNURL
+ *  tokens so the admin doesn't accidentally adjust a balance mid-
+ *  withdraw. */
+export async function fetchAdminPlayer(
+  session: SignetSession,
+  pubkey: string,
+): Promise<AdminPlayerResult> {
+  return adminFetch<AdminPlayerResult>(session, `/player/${pubkey.toLowerCase()}`, 'GET');
+}
+
+export async function setAdminPlayerFlag(
+  session: SignetSession,
+  pubkey: string,
+  flagged: boolean,
+  reason?: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const body = reason ? { flagged, reason } : { flagged };
+  const r = await adminFetch<{ ok: boolean; error?: string }>(
+    session,
+    `/player/${pubkey.toLowerCase()}/flag`,
+    'POST',
+    body,
+  );
+  return r as { ok: boolean; error?: string };
+}
+
+export async function adjustAdminPlayerBalance(
+  session: SignetSession,
+  pubkey: string,
+  deltaSats: number,
+  reason?: string,
+): Promise<{ ok: boolean; balance_sats?: number; error?: string; detail?: string }> {
+  const body = reason
+    ? { delta_sats: deltaSats, reason }
+    : { delta_sats: deltaSats };
+  const r = await adminFetch<{ ok: boolean; balance_sats?: number; error?: string; detail?: string }>(
+    session,
+    `/player/${pubkey.toLowerCase()}/balance`,
+    'POST',
+    body,
+  );
+  return r as { ok: boolean; balance_sats?: number; error?: string; detail?: string };
+}
+
+export async function setAdminPlayerTier(
+  session: SignetSession,
+  pubkey: string,
+  tier: 'anon' | 'nip05' | 'close' | 'verified' | null,
+  reason?: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const body = reason ? { tier, reason } : { tier };
+  const r = await adminFetch<{ ok: boolean; error?: string }>(
+    session,
+    `/player/${pubkey.toLowerCase()}/tier`,
+    'POST',
+    body,
+  );
   return r as { ok: boolean; error?: string };
 }
