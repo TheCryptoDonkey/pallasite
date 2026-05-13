@@ -9221,8 +9221,25 @@ async function maybePublishScore(
     return btn;
   };
 
-  const addressBtn = canDirectPayout
-    ? mkBtn('⚡ SEND TO LIGHTNING ADDRESS', 'Pay an address like donkey@strike.me', 'rgba(140,255,180,0.55)')
+  // D-pad / controller-only surfaces can't type, so the lud16 path
+  // only makes sense when we have a pre-fill (returning player) or
+  // a real keyboard is plausible. Hide it otherwise — the QR path
+  // is the venue-native option anyway, so a fresh BTC Prague guest
+  // is funnelled there instead of staring at an unusable input.
+  const preFilledLud16 = state.profile?.lud16 ?? getStoredLnAddress() ?? '';
+  const coarsePointer = matchMedia('(pointer: coarse)').matches;
+  const controllerPaired = activeControllerHost?.paired === true;
+  const kbAvailable = !coarsePointer && !controllerPaired;
+  const offerAddress = canDirectPayout && (preFilledLud16 !== '' || kbAvailable);
+
+  const addressBtn = offerAddress
+    ? mkBtn(
+        '⚡ SEND TO LIGHTNING ADDRESS',
+        preFilledLud16
+          ? `Pay ${preFilledLud16.slice(0, 28)}${preFilledLud16.length > 28 ? '…' : ''}`
+          : 'Pay an address like donkey@strike.me',
+        'rgba(140,255,180,0.55)',
+      )
     : null;
   const qrBtn = canDirectPayout
     ? mkBtn('📱 SCAN WITH WALLET', 'LNURL-w QR — your wallet pulls the sats', 'rgba(184,144,255,0.55)')
@@ -9382,6 +9399,23 @@ async function maybePublishScore(
     chosen.style.background = 'rgba(255,216,74,0.10)';
   };
 
+  // Undo a lockPicker. Only useful before the destination's actual
+  // claim fires (e.g. the player tapped ADDRESS but realised they
+  // can't type and wants to back out to pick QR instead). After the
+  // claim runs there's no going back.
+  const unlockPicker = (): void => {
+    flowSlot.replaceChildren();
+    setEnabled(true);
+    for (const b of allButtons) {
+      b.style.borderColor = '';
+      b.style.background = 'rgba(2,5,13,0.4)';
+      // mkBtn's border was set from the accent colour; restoring the
+      // exact original needs the inline cssText. Re-applying the
+      // outline via the picker's setter would be tidier, but for the
+      // visual revert here we just clear the highlight.
+    }
+  };
+
   // ── Destination: Add to balance ─────────────────────────────────────
   onTap(balanceBtn, () => {
     void (async () => {
@@ -9415,12 +9449,34 @@ async function maybePublishScore(
       input.autocomplete = 'email';
       input.placeholder = 'alice@yourwallet.com';
       input.style.cssText = 'padding:10px 12px;font-family:inherit;font-size:0.95rem;background:#0a0a0a;color:#eee;border:1px solid #333;border-radius:4px';
-      input.value = state.profile?.lud16 ?? getStoredLnAddress() ?? '';
+      input.value = preFilledLud16;
       card.appendChild(input);
       const sendBtn = el('button', { className: 'menu-btn', parent: card, text: `SEND ${sats} SATS →` }) as HTMLButtonElement;
       sendBtn.style.cssText = 'padding:8px 14px;cursor:pointer;font-size:0.92rem';
+      // BACK button — gives a d-pad / mis-tap player a route back to
+      // the picker without having to wait for the auto-skip-to-title
+      // timer. Only effective until SEND is pressed (after that the
+      // claim is in flight). Stays visible inside the card so d-pad
+      // nav can reach it via the standard geometric search.
+      const backBtn = el('button', { className: 'menu-btn secondary', parent: card, text: '← BACK' }) as HTMLButtonElement;
+      backBtn.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:0.78rem;align-self:flex-start';
+      onTap(backBtn, () => unlockPicker());
       const sendErr = el('p', { parent: card });
       sendErr.style.cssText = 'margin:0;font-size:0.74rem;min-height:1em;color:#888';
+
+      // Focus strategy: pre-fill present → focus SEND so d-pad A
+      // activates immediately; pre-fill empty → focus the input so
+      // desktop kb / mobile OSK users start typing without an extra
+      // tap. setupOverlayArrowNav ignores INPUT focus, so a
+      // controller-pad user pressing arrows from inside the input
+      // sees nothing happen — which is why the address button is
+      // hidden upstream when no pre-fill and no kb is plausible.
+      window.setTimeout(() => {
+        try {
+          if (preFilledLud16) tryFocusVisible(sendBtn);
+          else input.focus();
+        } catch { /* ignore */ }
+      }, 50);
       onTap(sendBtn, () => {
         void (async () => {
           const addr = input.value.trim();
@@ -9473,11 +9529,25 @@ async function maybePublishScore(
       const sub = el('p', { parent: card });
       sub.style.cssText = 'margin:0;font-size:0.74rem;color:rgba(220,210,255,0.7);text-align:center;line-height:1.45';
       sub.textContent = 'Phoenix, Wallet of Satoshi, Mutiny, Zeus, Cash App — any wallet that supports LNURL withdraw.';
+      // BACK button — d-pad / mis-tap recovery before the mint
+      // claim runs. Once claim resolves the sats are already on
+      // balance and the QR is the way to drain them; backing out
+      // after that is meaningless.
+      let claimFired = false;
+      const backBtn = el('button', { className: 'menu-btn secondary', parent: card, text: '← BACK' }) as HTMLButtonElement;
+      backBtn.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:0.78rem;align-self:flex-start';
+      onTap(backBtn, () => {
+        if (claimFired) return;
+        unlockPicker();
+      });
 
       void (async () => {
         setStatus('Crediting balance…', '#5b9dff');
         setIdlePaused?.(true);
         try {
+          claimFired = true;
+          backBtn.disabled = true;
+          backBtn.style.opacity = '0.4';
           const claim = await runClaim();
           if (!claim.ok) {
             flowSlot.replaceChildren();
