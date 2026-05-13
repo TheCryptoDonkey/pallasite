@@ -264,6 +264,10 @@ export interface ClaimInput {
   lightning_address?: string;
   cheated?: boolean;
   daily_seed?: string;
+  /** Deploy flavour the run came from. '600bn' routes through the
+   *  Sanctum teaser daily-cap budget and stamps a `['t','600bn']` tag
+   *  on the score event. Defaults server-side to 'main' when omitted. */
+  room?: 'main' | '600bn';
   telemetry?: Record<string, unknown>;
 }
 
