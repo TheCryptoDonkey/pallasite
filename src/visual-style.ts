@@ -92,6 +92,7 @@ export const getVisualStyleRaw = getVisualStyle;
  *  shortly after). Fire-and-forget — render code falls back to shaded
  *  while the load resolves. */
 export function setVisualStyle(cat: VisualCategory, tier: VisualTier): void {
+  console.info('[visual-style] setVisualStyle', { cat, tier });
   const next = { ...load(), [cat]: tier };
   save(next);
   if (tier === 'mesh') void warmWebGL();
@@ -100,6 +101,7 @@ export function setVisualStyle(cat: VisualCategory, tier: VisualTier): void {
 /** Set every category to the same tier. Used by the quick-pick row in the
  *  settings panel. */
 export function setAllVisualStyles(tier: VisualTier): void {
+  console.info('[visual-style] setAllVisualStyles', { tier });
   save({ asteroid: tier, ship: tier, bullet: tier, particle: tier });
   if (tier === 'mesh') void warmWebGL();
 }
@@ -109,7 +111,9 @@ export function setAllVisualStyles(tier: VisualTier): void {
  *  main.ts; safe to call repeatedly (the loader is idempotent). */
 export function warmWebGLIfPreviouslyEnabled(): void {
   const s = load();
-  if (s.asteroid === 'mesh' || s.ship === 'mesh' || s.bullet === 'mesh' || s.particle === 'mesh') {
+  const anyMesh = s.asteroid === 'mesh' || s.ship === 'mesh' || s.bullet === 'mesh' || s.particle === 'mesh';
+  console.info('[visual-style] warmWebGLIfPreviouslyEnabled', { state: s, anyMesh });
+  if (anyMesh) {
     void warmWebGL();
   }
 }
@@ -135,13 +139,17 @@ export function callWebGLOverlay(opts: WebGLOverlayCall): void {
 
 let warmStarted = false;
 async function warmWebGL(): Promise<void> {
+  console.info('[visual-style] warmWebGL invoked', { warmStarted, overlayReady });
   if (warmStarted) return;
   warmStarted = true;
   try {
+    console.info('[visual-style] importing ./webgl/overlay.js…');
     const mod = await import('./webgl/overlay.js');
+    console.info('[visual-style] overlay module loaded, calling ensureWebGLOverlay…');
     await mod.ensureWebGLOverlay();
     overlayRenderFn = mod.renderOverlay;
     overlayReady = true;
+    console.info('[visual-style] overlay ready');
   } catch (e) {
     // If three.js fails to load (offline, sw bug, etc.), render code
     // keeps falling back to shaded — no game-breaking failure mode.
