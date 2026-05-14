@@ -593,3 +593,22 @@ export function musicSetPaused(paused: boolean): void {
     }
   }
 }
+
+/**
+ * Soft mute / unmute — toggles `el.muted` without pausing. Used by the
+ * visibilitychange handler so transient hide events (mobile toolbar
+ * collapse, brief notification pulls, fullscreen transition flickers)
+ * don't break the playback's user-gesture chain. The element keeps
+ * decoding so the resume path doesn't need a fresh gesture, which iOS
+ * Safari otherwise rejects. The trade-off is a smidge of background
+ * battery use during a transient hide — acceptable vs. music dying.
+ *
+ * pagehide / freeze (real backgrounding) keep using musicSetPaused
+ * which DOES pause + mute, so the decode stops when the app is
+ * actually backgrounded for the lock-screen Control Centre.
+ */
+export function musicSetMuted(muted: boolean): void {
+  for (const entry of loaded.values()) {
+    try { entry.el.muted = muted; } catch { /* ignore */ }
+  }
+}
