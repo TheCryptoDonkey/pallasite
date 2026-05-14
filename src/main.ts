@@ -6,6 +6,7 @@
  */
 
 import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHyperspace, tryActivateShield, cheatJumpToWave, cheatJumpToBonus, skipDeathReplay, skipWaveStart, skipWarp } from './game.js';
+import { getFlavour } from './flavour.js';
 import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadBackground, setRenderMode, getRenderModeKind } from './render.js';
@@ -241,7 +242,10 @@ bindActions({
     // (the IGNITE button bypasses the keyboard Enter path that did the reset).
     setDailySeed(getStoredDailyPref() ? todayUTC() : null);
     startGame(state);
-    state.phase = 'wavestart';
+    // Only force wavestart for the standard campaign — startGame on the
+    // 600bn flavour sets phase='sanctum' and doesn't want the warp/wave
+    // pipeline kicking in over the top.
+    if (getFlavour() !== '600bn') state.phase = 'wavestart';
     clearOverlay();
     audio.setMusicDuck(1);
     musicSetTrackForState(state);
@@ -397,7 +401,7 @@ window.addEventListener('keydown', e => {
     gateBehindOnboarding(() => {
       setDailySeed(getStoredDailyPref() ? todayUTC() : null);
       startGame(state);
-      state.phase = 'wavestart';
+      if (getFlavour() !== '600bn') state.phase = 'wavestart';
       clearOverlay();
     });
   }
@@ -410,7 +414,7 @@ window.addEventListener('keydown', e => {
     lockInDifficulty(getStoredDifficulty());
     setDailySeed(getStoredDailyPref() ? todayUTC() : null);
     startGame(state);
-    state.phase = 'wavestart';
+    if (getFlavour() !== '600bn') state.phase = 'wavestart';
     clearOverlay();
   }
 });
