@@ -9974,23 +9974,16 @@ function renderSanctumGameOver(
     sub.style.cssText = 'font-size:1.05rem;color:var(--hud-yellow);letter-spacing:0.22em;margin:0 0 8px;';
   }
 
-  // Score + sats summary — the only stats that matter for the teaser.
+  // Score only — no sats, no nostr-claim flow on the 600bn end screen.
+  // Tournament prizes are awarded manually at the party night, not
+  // via the per-run sat-credit pipeline. (Score is the leaderboard
+  // signal; sats stay on the main pallasite.app campaign.)
   const stats = el('div', { parent: overlay });
-  stats.style.cssText = 'display:flex;gap:32px;font:bold 16px ui-monospace,monospace;letter-spacing:0.18em;margin:6px 0 4px;';
-  stats.innerHTML = `
-    <span style="color:#3afc7c;">${state.sats} SATS</span>
-    <span style="color:rgba(255,245,216,0.85);">${state.score.toLocaleString()} PTS</span>
-  `;
+  stats.style.cssText = 'display:flex;gap:32px;font:bold 22px ui-monospace,monospace;letter-spacing:0.18em;margin:8px 0 6px;';
+  stats.innerHTML = `<span style="color:#ffd84a;text-shadow:0 0 12px rgba(255,138,58,0.55);">${state.score.toLocaleString()} PTS</span>`;
 
   // FUCHS2 party card — the whole point of the conference funnel.
   renderFuchs2Card(overlay);
-
-  // Claim flow — reuse the main-game machinery (handles auth, three-
-  // way picker, sat credit). room=600bn is stamped server-side via
-  // the buildPayload flavour check.
-  const publishWrap = el('div', { parent: overlay });
-  publishWrap.style.cssText = 'width:100%;display:flex;flex-direction:column;align-items:center;margin-top:6px;';
-  void maybePublishScore(state, publishWrap);
 
   // Action row — PLAY AGAIN restarts wave 1; BACK returns to the
   // attract screen so the player can choose to leave or replay.

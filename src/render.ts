@@ -622,11 +622,29 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   ctx.stroke();
 
   // 600bn council-textured asteroids — clip the member portrait inside
-  // the lumpy outline. Renders at every size now that the texture is
-  // pre-baked to a 128px canvas; drawImage is cheap and the face still
-  // reads on the smallest fragment because the eyes/glasses survive
-  // even at ~12px radius.
+  // the lumpy outline. Renders at every size; texture is pre-baked to
+  // a 128px canvas so drawImage is cheap. Plus a HP-proportional
+  // shimmer aura (council mass scale gives large 5-7 HP) so the player
+  // can read "this rock has more left in it" without an HP bar.
   if (a.councilMember) {
+    if (a.hp > 1) {
+      // Pulsing outer aura — intensity scales with remaining-HP ratio,
+      // pulse speeds up as health drops so a near-dead asteroid feels
+      // more frantic. Drawn before the polygon stroke so the outline
+      // sits crisply on top.
+      const ratio = a.hp / a.hpMax;
+      const pulseHz = 0.0035 + (1 - ratio) * 0.005;
+      const pulse = 0.85 + 0.15 * Math.sin(now * pulseHz);
+      const auraR = a.radius * (1.18 + 0.12 * pulse * ratio);
+      const auraGrad = ctx.createRadialGradient(0, 0, a.radius * 0.85, 0, 0, auraR);
+      auraGrad.addColorStop(0, `rgba(255, 216, 74, ${0.18 * ratio * pulse})`);
+      auraGrad.addColorStop(1, 'rgba(255, 216, 74, 0)');
+      ctx.fillStyle = auraGrad;
+      ctx.beginPath();
+      ctx.arc(0, 0, auraR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
     const img = getMemberImage(a.councilMember.name);
     if (img) {
       ctx.save();
