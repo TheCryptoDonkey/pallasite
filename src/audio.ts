@@ -882,6 +882,108 @@ export function hit(): void {
   sub.stop(t0 + 0.14);
 }
 
+// ── Council member hit — bronze-gong impact ──────────────────────────────────
+// Sits between the generic hit() and a full explosion: the player should
+// hear they've struck something special, not a regular rock. Used on each
+// council shrink step (large→medium→small).
+export function councilHit(): void {
+  if (settings.muted) return;
+  const c = getCtx();
+  const t0 = c.currentTime;
+  // Body thump — slightly higher and shorter than hit() so it doesn't muddy.
+  const body = c.createOscillator();
+  body.type = 'sine';
+  const bodyGain = c.createGain();
+  body.frequency.setValueAtTime(180, t0);
+  body.frequency.exponentialRampToValueAtTime(70, t0 + 0.18);
+  bodyGain.gain.setValueAtTime(0.36, t0);
+  bodyGain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.22);
+  body.connect(bodyGain);
+  bodyGain.connect(destination());
+  body.start(t0);
+  body.stop(t0 + 0.24);
+  // Metallic ring — three partials slightly inharmonic, slow downward bend.
+  const rings: ReadonlyArray<number> = [880, 1318.5, 1760];
+  for (let i = 0; i < rings.length; i++) {
+    const o = c.createOscillator();
+    o.type = 'triangle';
+    const g = c.createGain();
+    const f = rings[i];
+    o.frequency.setValueAtTime(f, t0);
+    o.frequency.exponentialRampToValueAtTime(f * 0.88, t0 + 0.5);
+    g.gain.setValueAtTime(0.0, t0);
+    g.gain.linearRampToValueAtTime(0.14 / (i + 1), t0 + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.55);
+    o.connect(g);
+    g.connect(destination());
+    o.start(t0);
+    o.stop(t0 + 0.58);
+  }
+}
+
+// ── Council member destruction — heroic shatter ──────────────────────────────
+// Plays on the final small-size break of a council asteroid. Distinct from
+// the generic explosion(): adds a descending triad shimmer over a bandpass
+// noise burst so the moment lands as "you toppled a council member" rather
+// than "another rock cracked".
+export function councilBreak(): void {
+  if (settings.muted) return;
+  const c = getCtx();
+  const t0 = c.currentTime;
+  // Bandpass-swept noise — metallic-shatter character.
+  const burstBuf = c.createBuffer(1, c.sampleRate * 0.9, c.sampleRate);
+  const burstData = burstBuf.getChannelData(0);
+  for (let i = 0; i < burstData.length; i++) {
+    const t = i / burstData.length;
+    burstData[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, 1.4);
+  }
+  const burst = c.createBufferSource();
+  burst.buffer = burstBuf;
+  const filt = c.createBiquadFilter();
+  filt.type = 'bandpass';
+  filt.frequency.setValueAtTime(900, t0);
+  filt.frequency.exponentialRampToValueAtTime(150, t0 + 0.7);
+  filt.Q.value = 1.5;
+  const burstGain = c.createGain();
+  burstGain.gain.setValueAtTime(0.6, t0);
+  burstGain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.75);
+  burst.connect(filt);
+  filt.connect(burstGain);
+  burstGain.connect(destination());
+  burst.start(t0);
+  burst.stop(t0 + 0.78);
+  // Descending major triad — root, M3, P5 — sliding down an octave-and-a-bit.
+  const root = 660;
+  const chord: ReadonlyArray<number> = [root, root * 1.25, root * 1.5];
+  for (let i = 0; i < chord.length; i++) {
+    const o = c.createOscillator();
+    o.type = 'sawtooth';
+    const g = c.createGain();
+    const f = chord[i];
+    o.frequency.setValueAtTime(f, t0);
+    o.frequency.exponentialRampToValueAtTime(f * 0.32, t0 + 0.55);
+    g.gain.setValueAtTime(0.0, t0);
+    g.gain.linearRampToValueAtTime(0.10, t0 + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.6);
+    o.connect(g);
+    g.connect(destination());
+    o.start(t0);
+    o.stop(t0 + 0.62);
+  }
+  // Sub thump — gives the shatter its weight.
+  const sub = c.createOscillator();
+  sub.type = 'sine';
+  const subGain = c.createGain();
+  sub.frequency.setValueAtTime(95, t0);
+  sub.frequency.exponentialRampToValueAtTime(32, t0 + 0.5);
+  subGain.gain.setValueAtTime(0.52, t0);
+  subGain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.62);
+  sub.connect(subGain);
+  subGain.connect(destination());
+  sub.start(t0);
+  sub.stop(t0 + 0.64);
+}
+
 // ── Level-up — bright fanfare with sub ───────────────────────────────────────
 
 export function levelUp(): void {
