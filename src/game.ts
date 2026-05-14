@@ -12,6 +12,7 @@ import { recordStreamEvent } from './stream-session.js';
 import { getGameConfig } from './faucet.js';
 import { getFlavour } from './flavour.js';
 import { getCouncil } from './sanctum-avatars.js';
+import { DEPTH_CONFIGS, decorativeSpawnCount, getParallaxTier, pickDecorativeDepth } from './parallax.js';
 import {
   waveName, FINAL_WAVE, ASTEROID_TYPE_CONFIG,
   REPLAY_RECORD_INTERVAL_MS, REPLAY_BUFFER_FRAMES, REPLAY_TOTAL_WALL_MS, REPLAY_EXPLOSION_WALL_MS,
@@ -345,14 +346,34 @@ function pickAsteroidType(wave: number): AsteroidType {
   return 'stony';
 }
 
-export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?: Vec2, type?: AsteroidType, opts?: { vein?: boolean; councilMember?: import('./types.js').CouncilMemberRef }): Asteroid {
+/** Drop a handful of decorative asteroids onto the non-gameplay
+ *  depth bands. They drift in the background or foreground for
+ *  parallax depth, take no damage and deal none. Count + visual
+ *  treatment governed by the parallax setting. */
+function spawnDecorativeAsteroids(s: GameState, wave: number): void {
+  const tier = getParallaxTier();
+  const count = decorativeSpawnCount(tier);
+  if (count === 0) return;
+  for (let i = 0; i < count; i++) {
+    const depth = pickDecorativeDepth(gameRng);
+    const size: AsteroidSize = gameRng() < 0.4 ? 'large' : gameRng() < 0.7 ? 'medium' : 'small';
+    s.asteroids.push(spawnAsteroid(size, wave, undefined, undefined, undefined, { depth }));
+  }
+}
+
+export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?: Vec2, type?: AsteroidType, opts?: { vein?: boolean; councilMember?: import('./types.js').CouncilMemberRef; depth?: number }): Asteroid {
   const mods = currentMods();
   const isVein = opts?.vein === true;
+  // Parallax depth band — 3 by default (gameplay plane, full collision).
+  // Non-3 spawns are decorative: smaller/dimmer/faster per the depth
+  // config so the eye reads them as distance, not threats.
+  const depth = opts?.depth ?? 3;
+  const depthCfg = DEPTH_CONFIGS[depth] ?? DEPTH_CONFIGS[3];
   // Veins are oversized and drift slowly — they're a fixed-position target,
   // not a hazard the player has to dodge. Standard asteroids use the per-wave
   // speed band as before.
-  const radius = RADIUS_PER_SIZE[size] * (isVein ? VEIN_RADIUS_MUL : 1);
-  const speedBase = (ASTEROID_BASE_SPEED + wave * ASTEROID_SPEED_PER_WAVE) * mods.asteroidSpeedMul;
+  const radius = RADIUS_PER_SIZE[size] * (isVein ? VEIN_RADIUS_MUL : 1) * depthCfg.sizeMul;
+  const speedBase = (ASTEROID_BASE_SPEED + wave * ASTEROID_SPEED_PER_WAVE) * mods.asteroidSpeedMul * depthCfg.speedMul;
   const sizeMul = size === 'large' ? 0.7 : size === 'medium' ? 1 : 1.5;
   const speed = isVein
     ? speedBase * 0.2 * (0.7 + Math.random() * 0.6)
@@ -428,6 +449,7 @@ export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?
     shape: makeAsteroidShape(),
     hue: Math.random() * 60 - 30,
     isVein,
+    depth,
     ...(opts?.councilMember ? { councilMember: opts.councilMember } : {}),
   };
 }
@@ -845,6 +867,10 @@ export function beginWave(s: GameState, wave: number): void {
       s.asteroids.push(spawnAsteroid('large', wave));
     }
   }
+  // Parallax decoration — extra rocks on non-gameplay bands. Gated by
+  // the parallax setting, deterministic from gameRng so replays remain
+  // bit-identical.
+  spawnDecorativeAsteroids(s, wave);
   // Place static mines for this wave unless the set piece supplied its own.
   if (!setPiece?.suppressDefaultMines) placeWaveMines(s, wave);
   // Rare pallasite-vein event — roll on procedural waves only (≥6,
@@ -2600,6 +2626,11 @@ export function updateGame(s: GameState, dt: number, now: number): void {
     wrap(a.pos, RADIUS_PER_SIZE.large);
   }
 
+  // Asteroid-asteroid elastic bounce on the gameplay plane. Decorative
+  // depth bands pass through everything. O(N²) is cheap at the typical
+  // ~10-30 active rocks; only kicks in when same-depth circles overlap.
+  runAsteroidCollisions(s);
+
   // ── Shield expiry ──
   if (s.ship.shieldUp && now >= s.ship.shieldExpiresAt) {
     dropShield(s, now);
@@ -2668,6 +2699,9 @@ export function updateGame(s: GameState, dt: number, now: number): void {
     if (!b.alive) continue;
     for (const a of s.asteroids) {
       if (!a.alive) continue;
+      // Bullets only hit gameplay-plane asteroids. Decorative bands
+      // pass through without interaction.
+      if (a.depth !== 3) continue;
       if (circlesHit(b, a)) {
         // Carom: a bullet that has already broken one asteroid earns the
         // bonus on its next break. Wrap: a bullet that has crossed a playfield
@@ -2738,7 +2772,7 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   // ── Shield deflection (runs before damage check) ──
   if (s.ship.alive && s.ship.shieldUp) {
     for (const a of s.asteroids) {
-      if (!a.alive) continue;
+      if (!a.alive || a.depth !== 3) continue;
       if (circlesHit(s.ship, a)) {
         // Use wrap-aware delta so reflections at the edges push the asteroid
         // along the actual contact normal, not a normal flipped by the wrap.
@@ -2780,7 +2814,9 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   // ── Collisions: ship × asteroids / UFOs / enemy bullets ──
   if (s.ship.alive && !s.ship.shieldUp && s.ship.hyperspaceCloakMs <= 0 && now > s.ship.invulnerableUntil) {
     for (const a of s.asteroids) {
-      if (a.alive && circlesHit(s.ship, a)) {
+      // Decorative depth bands pass through the ship — only gameplay-
+      // plane rocks can kill.
+      if (a.alive && a.depth === 3 && circlesHit(s.ship, a)) {
         killShip(s);
         break;
       }
@@ -3042,6 +3078,81 @@ function computeRiskBonus(s: GameState): { mul: number; tier: 'risk' | 'close' |
   if (minDistSq <= 55 * 55) return { mul: 1.5,  tier: 'risk' };
   if (minDistSq <= 110 * 110) return { mul: 1.25, tier: 'close' };
   return { mul: 1, tier: 'none' };
+}
+
+/** Mass for asteroid-asteroid elastic collisions. Size dominates
+ *  (volume-ish ~ radius³ would over-weight large rocks, so square-root
+ *  it down); type tweaks density slightly (iron + mesosiderite heavier,
+ *  carbonaceous lighter). */
+function asteroidMass(a: Asteroid): number {
+  const sizeFactor = a.size === 'large' ? 4 : a.size === 'medium' ? 2 : 1;
+  const typeFactor =
+    a.type === 'iron' || a.type === 'mesosiderite' ? 1.5 :
+    a.type === 'pallasite' ? 1.3 :
+    a.type === 'carbonaceous' ? 0.8 :
+    1.0;
+  return sizeFactor * typeFactor;
+}
+
+/** Pair-wise elastic bounce between same-depth asteroids. Currently
+ *  only depth 3 (the gameplay plane) has collide=true; the loop will
+ *  fan out cleanly if other bands flip the flag later. */
+function runAsteroidCollisions(s: GameState): void {
+  const list = s.asteroids;
+  const n = list.length;
+  const RESTITUTION = 0.86;  // <1 so collisions slowly bleed energy
+  for (let i = 0; i < n; i++) {
+    const a = list[i];
+    if (!a.alive) continue;
+    const cfgA = DEPTH_CONFIGS[a.depth];
+    if (!cfgA || !cfgA.collide) continue;
+    for (let j = i + 1; j < n; j++) {
+      const b = list[j];
+      if (!b.alive || b.depth !== a.depth) continue;
+      const dx = b.pos.x - a.pos.x;
+      const dy = b.pos.y - a.pos.y;
+      const minDist = a.radius + b.radius;
+      const distSq = dx * dx + dy * dy;
+      if (distSq >= minDist * minDist || distSq < 1) continue;
+      const dist = Math.sqrt(distSq);
+      const nx = dx / dist;
+      const ny = dy / dist;
+      const rvx = b.vel.x - a.vel.x;
+      const rvy = b.vel.y - a.vel.y;
+      const velAlongNormal = rvx * nx + rvy * ny;
+      // Separating already — skip impulse, only correct overlap.
+      if (velAlongNormal < 0) {
+        const massA = asteroidMass(a);
+        const massB = asteroidMass(b);
+        const jImpulse = -(1 + RESTITUTION) * velAlongNormal / (1 / massA + 1 / massB);
+        const ix = jImpulse * nx;
+        const iy = jImpulse * ny;
+        a.vel.x -= ix / massA;
+        a.vel.y -= iy / massA;
+        b.vel.x += ix / massB;
+        b.vel.y += iy / massB;
+        // Angular kick — convert tangential component into rotational
+        // velocity so big crunches visibly spin the rocks.
+        const tx = -ny;
+        const ty = nx;
+        const tangSpeed = (rvx * tx + rvy * ty);
+        a.rotVel += tangSpeed * 0.012 / massA;
+        b.rotVel -= tangSpeed * 0.012 / massB;
+      }
+      // Position correction so the rocks aren't penetrating next frame.
+      // Distribute the push by inverse mass so the heavier one moves less.
+      const overlap = minDist - dist;
+      const massA = asteroidMass(a);
+      const massB = asteroidMass(b);
+      const totalInvMass = (1 / massA) + (1 / massB);
+      const corrA = (overlap / totalInvMass) * (1 / massA);
+      const corrB = (overlap / totalInvMass) * (1 / massB);
+      a.pos.x -= nx * corrA;
+      a.pos.y -= ny * corrA;
+      b.pos.x += nx * corrB;
+      b.pos.y += ny * corrB;
+    }
+  }
 }
 
 /**
