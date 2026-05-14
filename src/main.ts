@@ -27,7 +27,7 @@ import {
 import { getActiveSkinId } from './skins.js';
 import { handleAuthCallback, tryRestore, sweepSignetArtefacts } from './auth.js';
 import * as audio from './audio.js';
-import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicResetElements, musicWarmUpAll } from './music.js';
+import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicSetMuted, musicResetElements, musicWarmUpAll } from './music.js';
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, setDisplayMode } from './display.js';
@@ -515,15 +515,24 @@ window.addEventListener('blur', () => {
   }
 });
 
-// PWA backgrounded → fully silence playback. iOS Safari and PWA shells
-// keep HTMLAudio elements decoding when the page is hidden, so the music
-// keeps playing after "closing" the app from the user's perspective.
-// Suspending the AudioContext silences any scheduled SFX/oscillators, and
-// silenceMusicEls stops + mutes the underlying audio elements. We listen
-// on three events because iOS doesn't fire visibilitychange consistently
-// when a standalone PWA is swiped away — pagehide is the reliable signal,
-// and freeze (Page Lifecycle API) covers Chrome's discard path.
-function silenceAll(): void {
+// Two-tier silence:
+//   - visibilitychange is FLAKY on mobile (fires on toolbar collapse,
+//     fullscreen transition, transient overlays). Hard-pausing music on
+//     these events broke gameplay (music dies after ~5s as soon as the
+//     OS pulls the address bar). We soft-mute instead — toggle muted=
+//     true without pause — so the playback's user-gesture chain stays
+//     intact and visible again is a one-flag flip with no fresh play().
+//     Also debounce so quick hide-show cycles don't even mute.
+//   - pagehide / freeze are RELIABLE backgrounding signals. Full pause
+//     + AudioContext suspend so the OS lock-screen Control Centre
+//     doesn't get a phantom now-playing entry.
+function softMute(): void {
+  musicSetMuted(true);
+}
+function softUnmute(): void {
+  musicSetMuted(false);
+}
+function hardSilence(): void {
   audio.thrustOff();
   audio.ufoSirenStop();
   audio.stopHeartbeat();
@@ -531,20 +540,30 @@ function silenceAll(): void {
   musicSetPaused(true);
   audio.suspendPlayback();
 }
-function resumeAll(): void {
+function hardResume(): void {
   audio.resumePlayback();
   musicSetPaused(false);
 }
+let visibilityTimer: number | null = null;
+const VISIBILITY_SILENCE_DEBOUNCE_MS = 800;
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') resumeAll();
-  else silenceAll();
+  if (document.visibilityState === 'visible') {
+    if (visibilityTimer !== null) { clearTimeout(visibilityTimer); visibilityTimer = null; }
+    softUnmute();
+  } else {
+    if (visibilityTimer !== null) clearTimeout(visibilityTimer);
+    visibilityTimer = window.setTimeout(() => {
+      visibilityTimer = null;
+      softMute();
+    }, VISIBILITY_SILENCE_DEBOUNCE_MS);
+  }
 });
-window.addEventListener('pagehide', silenceAll);
-window.addEventListener('pageshow', resumeAll);
+window.addEventListener('pagehide', hardSilence);
+window.addEventListener('pageshow', hardResume);
 // Page Lifecycle API — Chromium discards a backgrounded tab. Last chance
 // to silence before the page is frozen and listeners stop firing.
-document.addEventListener('freeze', silenceAll);
-document.addEventListener('resume', resumeAll);
+document.addEventListener('freeze', hardSilence);
+document.addEventListener('resume', hardResume);
 
 // ── Game loop ─────────────────────────────────────────────────────────────────
 
