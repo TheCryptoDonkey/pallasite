@@ -349,14 +349,28 @@ function pickAsteroidType(wave: number): AsteroidType {
 /** Drop a handful of decorative asteroids onto the non-gameplay
  *  depth bands. They drift in the background or foreground for
  *  parallax depth, take no damage and deal none. Count + visual
- *  treatment governed by the parallax setting. */
+ *  treatment governed by the parallax setting.
+ *
+ *  Wave 1 spawns no decoratives — players need a clean onboarding
+ *  where every visible rock is a gameplay rock. Decoration kicks in
+ *  from wave 2 once the player has the controls under their fingers.
+ *
+ *  Size bias depends on depth: backgrounds favour small/medium (they
+ *  read as distant), foregrounds favour medium/large (closer to
+ *  camera). Avoids the "shot a large background rock and it just
+ *  vanished" confusion. */
 function spawnDecorativeAsteroids(s: GameState, wave: number): void {
+  if (wave <= 1) return;
   const tier = getParallaxTier();
   const count = decorativeSpawnCount(tier);
   if (count === 0) return;
   for (let i = 0; i < count; i++) {
     const depth = pickDecorativeDepth(gameRng);
-    const size: AsteroidSize = gameRng() < 0.4 ? 'large' : gameRng() < 0.7 ? 'medium' : 'small';
+    const isBackground = depth <= 2;
+    const r = gameRng();
+    const size: AsteroidSize = isBackground
+      ? (r < 0.55 ? 'small' : r < 0.90 ? 'medium' : 'large')
+      : (r < 0.20 ? 'small' : r < 0.55 ? 'medium' : 'large');
     s.asteroids.push(spawnAsteroid(size, wave, undefined, undefined, undefined, { depth }));
   }
 }
@@ -3202,11 +3216,17 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
 function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boolean; isCarom?: boolean; isWrap?: boolean }): void {
   // Decorative (non-gameplay-plane) rocks pop cleanly — visual
   // satisfaction without disrupting gameplay economy. No coin drop,
-  // no score, no fragments. They just vanish with a particle burst.
+  // no score, no fragments. Particle burst sized to the rock so the
+  // pop reads as a deliberate disintegration rather than the rock
+  // glitching out of the scene.
   if ((a.depth ?? 3) !== 3 && !a.councilMember && !a.isVein) {
     a.alive = false;
     const cfg = ASTEROID_TYPE_CONFIG[a.type];
-    spawnParticles(s, a.pos.x, a.pos.y, 8, cfg.glow, 140, 320);
+    const sizeBoost = a.size === 'large' ? 22 : a.size === 'medium' ? 16 : 10;
+    spawnParticles(s, a.pos.x, a.pos.y, sizeBoost, cfg.glow, 180, 420);
+    // Second burst in white so the dust catches the eye even when
+    // the rock was on a dim background band.
+    spawnParticles(s, a.pos.x, a.pos.y, Math.floor(sizeBoost * 0.4), '#fff5d8', 220, 360);
     audio.hit();
     return;
   }
