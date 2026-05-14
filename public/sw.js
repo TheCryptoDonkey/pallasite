@@ -11,7 +11,7 @@
  * Bump SW_VERSION below to invalidate all caches on the next visit.
  */
 
-const SW_VERSION = 'v106';
+const SW_VERSION = 'v107';
 const CACHE_HTML = `pallasite-html-${SW_VERSION}`;
 const CACHE_ASSET = `pallasite-asset-${SW_VERSION}`;
 
@@ -62,6 +62,16 @@ self.addEventListener('fetch', event => {
   // Don't intercept cross-origin requests — let them hit the network direct.
   if (url.origin !== self.location.origin) return;
 
+  // Don't intercept Range-style media requests. HTMLAudioElement and
+  // friends use byte-range fetches when streaming media, and Safari
+  // requires 206 Partial Content responses. A SW that returns the
+  // full body as 200 OK from cache hangs playback after the initial
+  // buffer — exactly the "music plays for 5s then stops on mobile"
+  // bug. Also skip music entirely (no offline benefit, and the
+  // /music/ tree is large enough that caching it bloats storage).
+  if (req.headers.has('Range')) return;
+  if (url.pathname.startsWith('/music/')) return;
+
   // HTML / navigation AND the signet-login IIFE: network-first.
   // The IIFE lives at a stable, non-hashed path (`/signet-login.iife.js`), so
   // a deploy that ships a new SDK build needs the SW to fetch fresh — otherwise
@@ -84,9 +94,10 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Static assets: cache-first (content-hashed by Vite, safe to keep forever)
+  // Static assets: cache-first (content-hashed by Vite, safe to keep forever).
+  // Music is NOT in this list — see Range/music skip earlier. Audio
+  // media files need network passthrough so Safari can byte-range-fetch.
   const isAsset = url.pathname.startsWith('/assets/')
-    || url.pathname.startsWith('/music/')
     || url.pathname.startsWith('/backgrounds/')
     || url.pathname.endsWith('.svg')
     || url.pathname.endsWith('.png')
