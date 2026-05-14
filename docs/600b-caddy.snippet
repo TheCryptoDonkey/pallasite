@@ -2,6 +2,16 @@
 # 600bn Sanctum teaser (getFlavour() detects the subdomain at runtime)
 # lives at a memorable URL without a parallel build pipeline.
 #
+# IMPORTANT: do NOT use a bare `try_files {path} /index.html`. That
+# returns the SPA index.html with content-type text/html for ANY
+# missing path, including /assets/<hash>.js. When a user has an old
+# bundle cached that tries to import a now-removed hash, Caddy hands
+# back HTML for a request expecting JS; the browser fails the module
+# load with a MIME error, AND the service worker happily caches the
+# bad response. The pair-with-phone flow has been bitten by exactly
+# this on pallasite.app. Scope the SPA fallback to navigation requests
+# only so real asset 404s return 404 cleanly.
+#
 # Two ways to apply this — pick whichever fits the existing Caddyfile
 # on 95.217.39.110:/etc/caddy/Caddyfile better.
 #
@@ -12,8 +22,16 @@
 #   pallasite.app, 600b.pallasite.app {
 #       encode gzip
 #       root * /opt/pallasite
+#
+#       # SPA fallback only for navigation-shaped requests. Missing
+#       # /assets/* (or any path with a known asset extension) falls
+#       # through to file_server and returns a clean 404.
+#       @navigation {
+#           not file
+#           not path *.js *.css *.map *.png *.jpg *.jpeg *.svg *.webp *.woff *.woff2 *.opus *.mp3 *.json *.webmanifest *.ico *.txt
+#       }
+#       rewrite @navigation /index.html
 #       file_server
-#       try_files {path} /index.html
 #   }
 #
 # Option B — separate block that mirrors the existing one. Use this
@@ -23,8 +41,13 @@
 #   600b.pallasite.app {
 #       encode gzip
 #       root * /opt/pallasite
+#
+#       @navigation {
+#           not file
+#           not path *.js *.css *.map *.png *.jpg *.jpeg *.svg *.webp *.woff *.woff2 *.opus *.mp3 *.json *.webmanifest *.ico *.txt
+#       }
+#       rewrite @navigation /index.html
 #       file_server
-#       try_files {path} /index.html
 #   }
 #
 # After editing:
@@ -32,3 +55,9 @@
 # Caddy auto-provisions a Let's Encrypt cert for 600b.pallasite.app
 # on first reload. Watch the logs to confirm:
 #   sudo journalctl -u caddy -f
+#
+# Verify the fix:
+#   curl -sI https://pallasite.app/assets/nonexistent-file.js
+# Expected: HTTP/2 404 with text/plain or similar. If it returns 200
+# with text/html, the @navigation matcher is mis-scoped — fix that
+# before redeploying any bundle hashes.

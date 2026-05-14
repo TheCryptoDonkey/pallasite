@@ -11,7 +11,7 @@
  * Bump SW_VERSION below to invalidate all caches on the next visit.
  */
 
-const SW_VERSION = 'v78';
+const SW_VERSION = 'v79';
 const CACHE_HTML = `pallasite-html-${SW_VERSION}`;
 const CACHE_ASSET = `pallasite-asset-${SW_VERSION}`;
 
@@ -94,9 +94,28 @@ self.addEventListener('fetch', event => {
   if (isAsset) {
     event.respondWith((async () => {
       const cached = await caches.match(req);
-      if (cached) return cached;
+      if (cached) {
+        // Defence: if a previous SW (or browser cache) somehow ended up with an
+        // HTML SPA-fallback stored under an asset URL (Caddy used to return 200
+        // index.html for missing /assets/* paths), evict and refetch. A module
+        // script served as text/html crashes the page on first import.
+        const cachedCt = cached.headers.get('content-type') || '';
+        const looksLikeAsset = /\.(js|css|map|webp|png|jpe?g|svg|woff2?|opus|mp3|json)$/i.test(url.pathname);
+        if (looksLikeAsset && cachedCt.includes('text/html')) {
+          const cache = await caches.open(CACHE_ASSET);
+          await cache.delete(req);
+        } else {
+          return cached;
+        }
+      }
       const fresh = await fetch(req);
-      if (fresh.ok) {
+      const freshCt = fresh.headers.get('content-type') || '';
+      const isCorruptHtmlAsset = /\.(js|css|map|webp|png|jpe?g|svg|woff2?|opus|mp3|json)$/i.test(url.pathname)
+                              && freshCt.includes('text/html');
+      // Only cache responses that look right. A 200 with text/html on a JS
+      // path means the origin served the SPA fallback for a missing file —
+      // caching that would mask the bug indefinitely on this device.
+      if (fresh.ok && !isCorruptHtmlAsset) {
         const cache = await caches.open(CACHE_ASSET);
         cache.put(req, fresh.clone()).catch(() => { /* ignore quota errors */ });
       }
