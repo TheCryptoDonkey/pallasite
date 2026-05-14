@@ -558,7 +558,12 @@ function loop(now: number): void {
     if (state.phase === 'gameover') {
       renderGameOver(state);
     } else if (state.phase === 'title') {
-      renderTitle(state);
+      // 600bn flavour returns to the bespoke attract screen on title-
+      // transition, NOT the campaign mission-select. Without this
+      // the BACK TO TITLE button from the game-over funnel dropped
+      // the player on the main-game title.
+      if (getFlavour() === '600bn') renderAttract(state);
+      else renderTitle(state);
     } else if (state.phase === 'completed') {
       renderCompletion(state);
     }

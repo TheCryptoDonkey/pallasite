@@ -9891,7 +9891,7 @@ function renderSanctumAttract(state: GameState): void {
   const footer = el('div', { parent: overlay });
   footer.style.cssText = 'margin-top:28px;display:flex;flex-direction:column;align-items:center;gap:4px;';
   const partyLink = el('a', { parent: footer, text: 'PRAGUE PARTY · 11 JUNE · FUCHS2 ↗' }) as HTMLAnchorElement;
-  partyLink.href = 'https://600.wtf';
+  partyLink.href = 'https://600000000000.com';
   partyLink.target = '_blank';
   partyLink.rel = 'noopener noreferrer';
   partyLink.style.cssText = 'font:11px ui-monospace,monospace;color:#ffd84a;letter-spacing:0.18em;text-decoration:none;border:1px solid rgba(255,216,74,0.35);padding:6px 14px;border-radius:3px;background:rgba(255,216,74,0.06);';
@@ -9932,20 +9932,20 @@ function renderFuchs2Card(overlay: HTMLElement): void {
 
   // QR code anchor — clickable so desktop users can just tap.
   const link = el('a', { parent: card }) as HTMLAnchorElement;
-  link.href = 'https://600.wtf';
+  link.href = 'https://600000000000.com';
   link.target = '_blank';
   link.rel = 'noopener noreferrer';
   link.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:4px;margin-top:6px;text-decoration:none;';
 
   const qrCanvas = el('canvas', { parent: link }) as HTMLCanvasElement;
   qrCanvas.style.cssText = 'background:#fff5d8;padding:6px;border-radius:4px;';
-  void QRCode.toCanvas(qrCanvas, 'https://600.wtf', {
+  void QRCode.toCanvas(qrCanvas, 'https://600000000000.com', {
     width: 140,
     margin: 0,
     color: { dark: '#0a0418', light: '#fff5d8' },
   }).catch(() => undefined);
 
-  const url = el('div', { parent: link, text: '600.wtf · TAP' });
+  const url = el('div', { parent: link, text: 'TAP FOR PARTY' });
   url.style.cssText = 'font:bold 12px ui-monospace,monospace;color:#ffd84a;letter-spacing:0.2em;margin-top:4px;';
 }
 
@@ -10012,8 +10012,8 @@ function renderSanctumGameOver(
   });
 
   // Footer — party link as a discreet line beneath the row.
-  const partyLink = el('a', { parent: overlay, text: '600.wtf · PRAGUE PARTY 11 JUNE ↗' }) as HTMLAnchorElement;
-  partyLink.href = 'https://600.wtf';
+  const partyLink = el('a', { parent: overlay, text: 'PRAGUE PARTY · 11 JUNE · 600B ↗' }) as HTMLAnchorElement;
+  partyLink.href = 'https://600000000000.com';
   partyLink.target = '_blank';
   partyLink.rel = 'noopener noreferrer';
   partyLink.style.cssText = 'font:11px ui-monospace,monospace;color:rgba(255,216,74,0.7);letter-spacing:0.2em;margin-top:18px;text-decoration:none;';
@@ -10410,10 +10410,13 @@ export function renderCompletion(state: GameState): void {
 }
 
 function renderCompletionRecap(state: GameState): void {
-  // Non-high-score wave-25 clears land directly on the credits stage.
+  // 600bn flavour completion swaps the wave-25 'EVENT HORIZON ·
+  // BREACHED' framing for canonical 600B copy — wave 1 IS the whole
+  // experience here, so 'COMPLETE' is what mattered.
+  const is600bn = getFlavour() === '600bn';
   renderRunCredits(state, {
-    headerText: 'PALLASITE COMPLETE',
-    subText: 'EVENT HORIZON · BREACHED',
+    headerText: is600bn ? '$600B WAVE COMPLETE' : 'PALLASITE COMPLETE',
+    subText: is600bn ? 'COUNCIL CLEARED' : 'EVENT HORIZON · BREACHED',
     isCompletion: true,
   });
 }
