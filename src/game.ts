@@ -2721,7 +2721,7 @@ export function updateGame(s: GameState, dt: number, now: number): void {
         const isCarom = b.caromHit;
         const isWrap = b.wrapped;
         b.hasLanded = true;
-        damageAsteroid(s, a, { isCarom, isWrap });
+        damageAsteroid(s, a, { isCarom, isWrap, bulletVel: b.vel });
         // Pierce: if the asteroid actually broke and the bullet has pierce
         // left, the bullet survives to seek a second target. Iron-large takes
         // two hits to break, so a pierce shot only travels through fully
@@ -3170,9 +3170,17 @@ function runAsteroidCollisions(s: GameState): void {
  * Apply one bullet's worth of damage to an asteroid. Iron at large size has hp=2
  * — first hit flashes and dents, second hit fragments. All other cases are 1hp.
  */
-function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; isWrap?: boolean }): void {
+function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; isWrap?: boolean; bulletVel?: Vec2 }): void {
   a.hp -= 1;
   a.hitFlash = 1;
+  // Tiny momentum transfer on the non-fatal hit — even iron-large surviving
+  // a first shot should visibly accept the impulse. Scales inversely with
+  // asteroid mass-equivalent so a small rock budges more than a large one.
+  if (opts?.bulletVel) {
+    const massBias = a.size === 'large' ? 0.05 : a.size === 'medium' ? 0.08 : 0.12;
+    a.vel.x += opts.bulletVel.x * massBias;
+    a.vel.y += opts.bulletVel.y * massBias;
+  }
   if (a.hp <= 0) {
     breakAsteroid(s, a, opts);
     return;
@@ -3213,7 +3221,7 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
   spawnParticles(s, a.pos.x, a.pos.y, 5, cfg.glow, 110, 280);
 }
 
-function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boolean; isCarom?: boolean; isWrap?: boolean }): void {
+function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boolean; isCarom?: boolean; isWrap?: boolean; bulletVel?: Vec2 }): void {
   // Two shrink-rather-than-fragment cases:
   //   - Council members on the gameplay plane (chip a sculpture down).
   //   - Decoratives on non-gameplay depth bands (the player's bullet
@@ -3235,7 +3243,17 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
     a.hp = 1;
     a.hpMax = 1;
     a.hitFlash = 1.5;
-    audio.hit();
+    // Carry bullet momentum into the surviving piece. The chunk just lost
+    // mass, so the laser's impulse should push it along the shot direction
+    // instead of leaving a stationary post-shrink rock floating in place.
+    // Smaller surviving sizes accept proportionally more kick.
+    if (opts?.bulletVel) {
+      const kick = newSize === 'small' ? 0.28 : 0.20;
+      a.vel.x += opts.bulletVel.x * kick;
+      a.vel.y += opts.bulletVel.y * kick;
+    }
+    if (a.councilMember) audio.councilHit();
+    else                 audio.hit();
     const colour = a.councilMember ? '#ffd84a' : (ASTEROID_TYPE_CONFIG[a.type]?.glow ?? '#fff5d8');
     spawnParticles(s, a.pos.x, a.pos.y, 16, colour, 200, 460);
     spawnParticles(s, a.pos.x, a.pos.y, 6, '#fff5d8', 220, 380);
@@ -3318,6 +3336,12 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
   }
 
   audio.explosion(a.size === 'large' ? 1.0 : a.size === 'medium' ? 0.8 : 0.6);
+  // Final council shatter: layer the heroic break chord over the standard
+  // explosion. Only fires on a.size === 'small' because larger council
+  // sizes shrink via the branch above and never reach this code path.
+  if (a.councilMember && a.size === 'small') {
+    audio.councilBreak();
+  }
   recordStreamEvent('ak', a.pos.x, a.pos.y);
 
   // Spawn smaller children — same type carries over so a chondrite swarm stays a swarm
@@ -3326,11 +3350,21 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
     const count = cfg.breakInto;
     const baseAngle = Math.atan2(a.vel.y, a.vel.x);
     const spread = count === 2 ? 1.2 : 0.6;
+    // Bullet impulse blended into every child — without this, a near-stationary
+    // parent produces near-stationary kids whose only motion is the spread
+    // offset around a zero-length vector. With it, the shot's direction
+    // dominates when the parent was slow and adds to it when the parent was fast.
+    const childSizeFactor = childSize === 'medium' ? 0.18 : 0.26;
+    const bulletKickX = opts?.bulletVel ? opts.bulletVel.x * childSizeFactor : 0;
+    const bulletKickY = opts?.bulletVel ? opts.bulletVel.y * childSizeFactor : 0;
     for (let i = 0; i < count; i++) {
       const offset = (i - (count - 1) / 2) * spread;
       const angle = baseAngle + offset;
       const speed = Math.hypot(a.vel.x, a.vel.y) * 1.2;
-      const vel: Vec2 = { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed };
+      const vel: Vec2 = {
+        x: Math.cos(angle) * speed + bulletKickX,
+        y: Math.sin(angle) * speed + bulletKickY,
+      };
       // Preserve the council-member ref so child fragments carry the
       // same face all the way down to the smallest size. Sat drops on
       // the small break still come from the normal coin-spawn path.
