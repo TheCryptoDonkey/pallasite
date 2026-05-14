@@ -644,6 +644,11 @@ function spawnCouncilWave(s: GameState): void {
     const ast = spawnAsteroid('large', 1, { x, y }, { x: vx, y: vy }, m.asteroidType, {
       councilMember: { name: m.name, role: m.role, archetype: m.archetype, img: m.img, pubkey: m.pubkey, asteroidType: m.asteroidType },
     });
+    // Guaranteed visible tumble — boost rotVel above the default
+    // ±0.8 rad/s with a sign that alternates so adjacent slots spin
+    // opposite directions. Reads as "council in motion" rather than
+    // the occasional near-zero spin the standard random can give.
+    ast.rotVel = ((i % 2 === 0) ? 1 : -1) * (1.4 + Math.random() * 0.8);
     s.asteroids.push(ast);
     spawned.push(ast);
   }
@@ -659,7 +664,9 @@ function spawnCouncilWave(s: GameState): void {
       const speed = 60 + Math.random() * 70;  // 60-130 px/s wandering pace
       a.vel.x = Math.cos(ang) * speed;
       a.vel.y = Math.sin(ang) * speed;
-      a.rotVel = (Math.random() - 0.5) * 1.4;
+      // Keep the strong tumble post-scatter — sign flips randomly,
+      // magnitude stays in the "obviously rotating" band.
+      a.rotVel = (Math.random() < 0.5 ? -1 : 1) * (1.2 + Math.random() * 1.0);
     }
   }, 1_600);
 }
@@ -3016,8 +3023,15 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
       // Preserve the council-member ref so child fragments carry the
       // same face all the way down to the smallest size. Sat drops on
       // the small break still come from the normal coin-spawn path.
-      s.asteroids.push(spawnAsteroid(childSize, s.wave, { x: a.pos.x, y: a.pos.y }, vel, a.type,
-        a.councilMember ? { councilMember: a.councilMember } : undefined));
+      const child = spawnAsteroid(childSize, s.wave, { x: a.pos.x, y: a.pos.y }, vel, a.type,
+        a.councilMember ? { councilMember: a.councilMember } : undefined);
+      // Council children get the same guaranteed-visible tumble as
+      // their parent — fragments spin distinctly from the get-go so
+      // it reads as kinetic debris, not floating stickers.
+      if (a.councilMember) {
+        child.rotVel = (Math.random() < 0.5 ? -1 : 1) * (1.6 + Math.random() * 1.2);
+      }
+      s.asteroids.push(child);
     }
   }
 
