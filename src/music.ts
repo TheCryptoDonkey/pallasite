@@ -146,12 +146,35 @@ function load(track: Track): Loaded {
       blobRetryUsed = true;
       console.warn('[music] retrying via fetch+Blob/audio-ogg', track.id);
       fetch(track.src)
-        .then(r => r.ok ? r.arrayBuffer() : Promise.reject(new Error(`HTTP ${r.status}`)))
-        .then(buf => {
+        .then(async r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          const contentType = r.headers.get('content-type') ?? '';
+          const buf = await r.arrayBuffer();
+          // OGG files start with "OggS" (0x4f 0x67 0x67 0x53). If the
+          // server returned HTML (404 page proxied as 200), we'll see
+          // ASCII letters here instead. Also log the file size + the
+          // Content-Type header so we can tell whether the upstream
+          // is serving the file at all.
+          const first4 = new Uint8Array(buf.slice(0, 4));
+          const magic = String.fromCharCode(first4[0], first4[1], first4[2], first4[3]);
+          const isOgg = magic === 'OggS';
+          // canPlayType — definitive answer on whether the browser
+          // claims OGG/Opus support. '' means no, 'probably' / 'maybe' yes.
+          const cpt = new Audio().canPlayType('audio/ogg; codecs=opus');
+          console.warn('[music] blob diag', {
+            id: track.id, bytes: buf.byteLength, magic, isOgg,
+            contentType, canPlayOpus: cpt || '(empty)',
+          });
+          try {
+            window.dispatchEvent(new CustomEvent('pallasite:music-blob-diag', {
+              detail: {
+                id: track.id, bytes: buf.byteLength, magic, isOgg,
+                contentType, canPlayOpus: cpt || '(empty)',
+              },
+            }));
+          } catch { /* ignore */ }
           const blob = new Blob([buf], { type: 'audio/ogg' });
           el.src = URL.createObjectURL(blob);
-          // The element will fire error AGAIN if even the blob path
-          // fails; the !blobRetryUsed gate ensures we don't loop.
         })
         .catch(e => {
           console.warn('[music] blob retry fetch failed', track.id, e);

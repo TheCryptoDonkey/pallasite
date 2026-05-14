@@ -1315,9 +1315,17 @@ function setupAudioDebugOverlay(): void {
   document.body.appendChild(panel);
 
   let lastFailMsg = '';
+  let lastDiagMsg = '';
   window.addEventListener('pallasite:music-load-failed', (ev) => {
     const d = (ev as CustomEvent<{ id: string; src: string; code?: number; msg?: string }>).detail;
     lastFailMsg = `LOAD-FAIL ${d.id} src=${d.src} code=${d.code ?? '-'} ${d.msg ?? ''}`;
+  });
+  window.addEventListener('pallasite:music-blob-diag', (ev) => {
+    const d = (ev as CustomEvent<{
+      id: string; bytes: number; magic: string; isOgg: boolean;
+      contentType: string; canPlayOpus: string;
+    }>).detail;
+    lastDiagMsg = `BLOB ${d.id} ${d.bytes}b magic=${d.magic}/${d.isOgg ? 'ogg' : '!ogg'} ctype=${d.contentType} canPlayOpus=${d.canPlayOpus}`;
   });
 
   const render = (): void => {
@@ -1332,6 +1340,8 @@ function setupAudioDebugOverlay(): void {
       const s = getMusicDebugSnapshot();
       panel.textContent = [
         `audio.ctx: ${ctxState}`,
+        `canPlayOpus: ${new Audio().canPlayType('audio/ogg; codecs=opus') || '(empty)'}`,
+        `canPlayAAC:  ${new Audio().canPlayType('audio/mp4; codecs=mp4a.40.2') || '(empty)'}`,
         `track: ${s.currentId ?? '-'}`,
         `paused: ${s.paused ?? '-'}   failed: ${s.failedFlag ?? '-'}`,
         `readyState: ${s.readyState ?? '-'}   networkState: ${s.networkState ?? '-'}`,
@@ -1339,6 +1349,7 @@ function setupAudioDebugOverlay(): void {
         `loaded#: ${s.loadedCount}`,
         `src: ${s.src ?? '-'}`,
         lastFailMsg ? `last: ${lastFailMsg}` : '',
+        lastDiagMsg ? `diag: ${lastDiagMsg}` : '',
       ].filter(Boolean).join('\n');
     }).catch(() => undefined);
   };
