@@ -3092,6 +3092,22 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
 }
 
 function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boolean; isCarom?: boolean; isWrap?: boolean }): void {
+  // Council members shrink rather than fragment. The medallion stays
+  // single throughout — players chip a sculpture down one tier at a
+  // time. Final small-size break flows through the normal path below
+  // so the coin drop + stats hooks still fire on defeat.
+  if (a.councilMember && a.size !== 'small') {
+    const newSize: AsteroidSize = a.size === 'large' ? 'medium' : 'small';
+    a.size = newSize;
+    a.radius = RADIUS_PER_SIZE[newSize];
+    a.hp = 1;
+    a.hpMax = 1;
+    a.hitFlash = 1.5;
+    audio.hit();
+    spawnParticles(s, a.pos.x, a.pos.y, 14, '#ffd84a', 200, 460);
+    bumpTrauma(s, 0.15);
+    return;
+  }
   a.alive = false;
   // Vein collapse: jackpot, big bloom, no fragments. Vapourises clean.
   if (a.isVein) {

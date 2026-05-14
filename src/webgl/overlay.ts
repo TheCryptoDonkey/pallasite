@@ -57,6 +57,11 @@ interface MeshEntry<M extends THREE.Material> {
   geometry: THREE.BufferGeometry;
   material: M;
   lastSeenFrame: number;
+  /** Radius the geometry was built at. Mesh.scale tracks the live
+   *  asteroid radius / builtRadius so runtime shrinks (council
+   *  members losing mass per hit) read visually without rebuilding
+   *  the GPU geometry. */
+  builtRadius: number;
 }
 
 /** Per-type fallback base colour. Brighter than the visible-against-
@@ -838,7 +843,7 @@ export function renderOverlay(opts: {
       if (a.councilMember) {
         const built = buildCouncilMedallionMesh(a);
         scene.add(built.mesh);
-        entry = { mesh: built.mesh, geometry: built.geometry, material: built.material, lastSeenFrame: frameCounter };
+        entry = { mesh: built.mesh, geometry: built.geometry, material: built.material, lastSeenFrame: frameCounter, builtRadius: a.radius };
       } else {
         const geometry = buildAsteroidGeometry(a);
         const baseColor = ASTEROID_TYPE_COLOR[a.type] ?? 0xb0a090;
@@ -859,12 +864,18 @@ export function renderOverlay(opts: {
         const mesh = new THREE.Mesh(geometry, material);
         mesh.frustumCulled = false;
         scene.add(mesh);
-        entry = { mesh, geometry, material, lastSeenFrame: frameCounter };
+        entry = { mesh, geometry, material, lastSeenFrame: frameCounter, builtRadius: a.radius };
       }
       handle.asteroidMeshes.set(a.id, entry);
     }
     entry.lastSeenFrame = frameCounter;
     entry.mesh.position.set(a.pos.x, 720 - a.pos.y, 0);
+    // Live radius can shift mid-life (council shrink-on-hit); scale
+    // the mesh to match without re-building the GPU buffer.
+    if (a.radius !== entry.builtRadius) {
+      const s = a.radius / entry.builtRadius;
+      entry.mesh.scale.set(s, s, s);
+    }
     if (a.councilMember) {
       // Medallion tumble — main rotation around Y (vertical axis) flips
       // the coin face↔back, with small X/Z wobble for life. Slower than
@@ -893,7 +904,7 @@ export function renderOverlay(opts: {
     if (!entry) {
       const { group, geometry, material } = buildUfoMesh(u);
       scene.add(group);
-      entry = { mesh: group, geometry, material, lastSeenFrame: frameCounter };
+      entry = { mesh: group, geometry, material, lastSeenFrame: frameCounter, builtRadius: u.radius };
       handle.ufoMeshes.set(u.id, entry);
     }
     entry.lastSeenFrame = frameCounter;
@@ -928,7 +939,7 @@ export function renderOverlay(opts: {
     if (!entry) {
       const { mesh, geometry, material } = buildPowerupMesh(p);
       scene.add(mesh);
-      entry = { mesh, geometry, material, lastSeenFrame: frameCounter };
+      entry = { mesh, geometry, material, lastSeenFrame: frameCounter, builtRadius: p.radius };
       handle.powerupMeshes.set(p.id, entry);
     }
     entry.lastSeenFrame = frameCounter;
