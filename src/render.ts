@@ -624,10 +624,11 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   ctx.stroke();
 
   // 600bn council-textured asteroids — clip the member portrait inside
-  // the lumpy outline. Only renders on large + medium sizes; smalls
-  // skip the texture (the face wouldn't read at that pixel count and
-  // the drawImage+clip is the per-frame hot path during a busy fight).
-  if (a.councilMember && a.size !== 'small') {
+  // the lumpy outline. Renders at every size now that the texture is
+  // pre-baked to a 128px canvas; drawImage is cheap and the face still
+  // reads on the smallest fragment because the eyes/glasses survive
+  // even at ~12px radius.
+  if (a.councilMember) {
     const img = getMemberImage(a.councilMember.name);
     if (img) {
       ctx.save();
@@ -776,58 +777,77 @@ function drawEngineGlow(ctx: CanvasRenderingContext2D, dir: 1 | -1, x: number, y
   ctx.restore();
 }
 
-/** Render the 600bn UFO swap — a rotating circular badge with the
- *  canonical $600B 4-line wordmark. Same radius + hit-flash as the
- *  standard UFO, so collisions feel identical. */
+/** Render the 600bn UFO swap — a rotating coin-style badge with the
+ *  canonical $600B 4-line wordmark, gold disc + black text for max
+ *  contrast against the night background. Bigger visual than the
+ *  standard cruiser footprint (1.6× radius) — the hit-box stays at
+ *  u.radius so the asymmetry only helps the player. */
 function drawSixHundredBnLogoUfo(ctx: CanvasRenderingContext2D, u: Ufo, now: number): void {
-  const r = u.radius;
+  // Visual radius — boosted so the badge reads big and clear. Hit-
+  // box still uses u.radius which is smaller; shooting the visible
+  // disc lands the shot reliably.
+  const visR = u.radius * 1.6;
   ctx.save();
   ctx.translate(u.pos.x, u.pos.y);
 
   // Outer ember corona — pulsing, fixed (doesn't rotate with the badge).
   const pulse = 0.7 + 0.3 * Math.sin(now * 0.004);
-  const corona = ctx.createRadialGradient(0, 0, r * 0.5, 0, 0, r * 1.7);
-  corona.addColorStop(0, `rgba(255, 138, 58, ${0.35 * pulse})`);
+  const corona = ctx.createRadialGradient(0, 0, visR * 0.5, 0, 0, visR * 1.75);
+  corona.addColorStop(0, `rgba(255, 138, 58, ${0.45 * pulse})`);
   corona.addColorStop(1, 'rgba(255, 138, 58, 0)');
   ctx.fillStyle = corona;
   ctx.beginPath();
-  ctx.arc(0, 0, r * 1.7, 0, Math.PI * 2);
+  ctx.arc(0, 0, visR * 1.75, 0, Math.PI * 2);
   ctx.fill();
 
-  // Badge body — black disc with gold ring outline.
-  ctx.fillStyle = '#0a0418';
+  // Badge body — gold disc, like a struck coin. Radial highlight for
+  // a hint of dimensionality.
+  const bodyGrad = ctx.createRadialGradient(-visR * 0.3, -visR * 0.3, visR * 0.15, 0, 0, visR);
+  bodyGrad.addColorStop(0, '#fff5d8');
+  bodyGrad.addColorStop(0.45, '#ffd84a');
+  bodyGrad.addColorStop(1, '#c08020');
+  ctx.fillStyle = bodyGrad;
   ctx.beginPath();
-  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.arc(0, 0, visR, 0, Math.PI * 2);
   ctx.fill();
-  ctx.lineWidth = 2.2;
-  ctx.strokeStyle = '#ffd84a';
-  ctx.shadowColor = '#ff8a3a';
-  ctx.shadowBlur = 14;
-  ctx.stroke();
-  ctx.shadowBlur = 0;
 
-  // 4-line sacred number, rotating with the badge.
+  // Outer rim — dark contrast band.
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#3a1a08';
+  ctx.shadowColor = '#ff8a3a';
+  ctx.shadowBlur = 18;
+  ctx.stroke();
+
+  // Inner concentric ring — like a coin's rim line.
+  ctx.lineWidth = 1.2;
+  ctx.strokeStyle = 'rgba(58, 26, 8, 0.7)';
+  ctx.shadowBlur = 0;
+  ctx.beginPath();
+  ctx.arc(0, 0, visR * 0.88, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // 4-line sacred number, rotating with the badge. Black on gold
+  // for maximum legibility — the previous gold-on-black was too low
+  // contrast at flight distance.
   ctx.rotate(now * 0.0008);
-  const size = Math.floor(r * 0.36);
+  const size = Math.floor(visR * 0.38);
   ctx.font = `bold ${size}px ui-monospace, monospace`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = '#ffd84a';
-  ctx.shadowColor = '#ff8a3a';
-  ctx.shadowBlur = 6;
+  ctx.fillStyle = '#1a0a04';
   const lineH = size * 0.95;
   ctx.fillText('600', 0, -lineH * 1.5);
   ctx.fillText('000', 0, -lineH * 0.5);
   ctx.fillText('000', 0,  lineH * 0.5);
   ctx.fillText('000', 0,  lineH * 1.5);
 
-  // Hit-flash overlay.
+  // Hit-flash overlay (unrotated so the flash is round).
   if (u.hitFlash > 0) {
-    ctx.rotate(-now * 0.0008);  // unrotate so flash is round
-    ctx.globalAlpha = u.hitFlash * 0.6;
+    ctx.rotate(-now * 0.0008);
+    ctx.globalAlpha = u.hitFlash * 0.65;
     ctx.fillStyle = '#fff5d8';
     ctx.beginPath();
-    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.arc(0, 0, visR, 0, Math.PI * 2);
     ctx.fill();
   }
 

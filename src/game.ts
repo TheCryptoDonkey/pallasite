@@ -624,8 +624,8 @@ function spawnCouncilWave(s: GameState): void {
     const y = cy + Math.sin(angle) * ringR;
     const vx = -Math.sin(angle) * initialOrbit;
     const vy =  Math.cos(angle) * initialOrbit;
-    const ast = spawnAsteroid('large', 1, { x, y }, { x: vx, y: vy }, 'pallasite', {
-      councilMember: { name: m.name, role: m.role, archetype: m.archetype, img: m.img, pubkey: m.pubkey },
+    const ast = spawnAsteroid('large', 1, { x, y }, { x: vx, y: vy }, m.asteroidType, {
+      councilMember: { name: m.name, role: m.role, archetype: m.archetype, img: m.img, pubkey: m.pubkey, asteroidType: m.asteroidType },
     });
     s.asteroids.push(ast);
     spawned.push(ast);
@@ -1193,7 +1193,13 @@ function updateUfos(s: GameState, dt: number): void {
     // Shoot
     u.shootTimer -= dt * 1000;
     if (u.shootTimer <= 0 && s.ship.alive) {
-      if (u.type === 'tank') {
+      // 600bn flavour — every UFO is the $600B badge and it fires 8-way
+      // radial spray. Reads as a ritual broadcast pulse rather than a
+      // sniper, matching the "signal carrier" theme.
+      if (getFlavour() === '600bn' && s.wave === 1) {
+        u.shootTimer = 1800;
+        ufoRadialShoot(s, u);
+      } else if (u.type === 'tank') {
         u.shootTimer = UFO_SHOOT_INTERVAL[u.type];
         ufoFanShoot(s, u, s.ship.pos);
       } else if (u.type === 'boss') {
@@ -2358,7 +2364,12 @@ export function updateGame(s: GameState, dt: number, now: number): void {
       cfg.ufo_respawn_min_ms,
       cfg.ufo_respawn_base_ms - s.wave * cfg.ufo_respawn_per_wave_ms,
     );
-    s.nextUfoSpawn = baseInterval * mods.ufoIntervalMul;
+    // 600bn flavour wants the $600B badge UFOs MUCH more frequent —
+    // they're a marquee visual element of the cross-promo wave, not
+    // a periodic harasser. ~4s respawn instead of ~17s.
+    s.nextUfoSpawn = (getFlavour() === '600bn' && s.wave === 1)
+      ? 4_000
+      : baseInterval * mods.ufoIntervalMul;
   }
   updateUfos(s, dt);
   // Set-piece per-frame tick — curtain respawns cruisers as they die.

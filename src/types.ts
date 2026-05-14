@@ -77,6 +77,9 @@ export interface CouncilMemberRef {
   archetype: string;
   img: string;
   pubkey?: string;
+  /** Pallasite asteroid mineral type this member spawns as — drives
+   *  HP, break-count, sat multiplier. */
+  asteroidType?: AsteroidType;
 }
 
 export interface Asteroid extends Entity {
