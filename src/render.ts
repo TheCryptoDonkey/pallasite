@@ -19,7 +19,7 @@ import { getAsteroidStyle, shouldReduceMotion } from './a11y.js';
 import { getActiveSkin } from './skins.js';
 import { getMemberImage } from './sanctum-avatars.js';
 import { getFlavour } from './flavour.js';
-import { getVisualStyle } from './visual-style.js';
+import { getVisualStyle, isWebGLOverlayReady, callWebGLOverlay } from './visual-style.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
 
@@ -415,7 +415,13 @@ function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, idleSw
 
   const skin = getActiveSkin().palette;
 
-  const shipShaded = getVisualStyle('ship') === 'shaded';
+  const shipTier = getVisualStyle('ship');
+  // MESH ship draws on the WebGL overlay; skip the 2D path entirely
+  // once the overlay's loaded so the player sees the 3D mesh alone.
+  if (shipTier === 'mesh' && isWebGLOverlayReady()) return;
+  // MESH falls back to SHADED rendering while the overlay is loading,
+  // and SHADED itself is the lit gradient hull.
+  const shipShaded = shipTier !== 'vector';
 
   ctx.save();
   // Idle sway — gentle bob + tilt applied in screen space (before the rotate)
@@ -852,12 +858,20 @@ function bakeAsteroidTexture(type: AsteroidType): HTMLCanvasElement {
 function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): void {
   if (!a.alive) return;
   const style = getAsteroidStyle(a.type);
+  // MESH-tier asteroids are rendered by the WebGL overlay below. Skip
+  // the 2D path entirely so the player sees one mesh per rock instead
+  // of a 2D copy underneath. Falls back to SHADED 2D if the overlay
+  // hasn't finished loading yet (or the player has the renderer turned
+  // off via prefers-reduced-motion / WebGL unavailable).
+  const asteroidTier = getVisualStyle('asteroid');
+  if (asteroidTier === 'mesh' && isWebGLOverlayReady() && !a.isVein) return;
   // SHADED-tier asteroids get the "tumbling through space" treatment:
   // drop shadow under, camera-fixed rim light + terminator shading on
   // top, neutral outline (no per-type tint). Council members carry
   // their portrait inside the polygon; everything else (textured
-  // filler) uses the photoreal rock surface.
-  const asteroidShaded = !a.isVein && getVisualStyle('asteroid') === 'shaded';
+  // filler) uses the photoreal rock surface. 'mesh' falls back to
+  // shaded when the overlay isn't ready.
+  const asteroidShaded = !a.isVein && asteroidTier !== 'vector';
   const is600bnFiller = asteroidShaded && !a.councilMember;
   ctx.save();
   ctx.translate(a.pos.x, a.pos.y);
@@ -1794,7 +1808,9 @@ function drawBullet(ctx: CanvasRenderingContext2D, b: Bullet, friendly: boolean)
   const len = Math.max(6, speed * 0.012);
   const ux = b.vel.x / speed;
   const uy = b.vel.y / speed;
-  const bulletShaded = getVisualStyle('bullet') === 'shaded';
+  // MESH falls back to SHADED for bullets — the WebGL overlay doesn't
+  // render bullets yet (asteroid + ship only in the first MESH cut).
+  const bulletShaded = getVisualStyle('bullet') !== 'vector';
   ctx.save();
 
   if (bulletShaded) {
@@ -2115,7 +2131,10 @@ function drawDebris(ctx: CanvasRenderingContext2D, debris: ReadonlyArray<Debris>
 
 function drawParticles(ctx: CanvasRenderingContext2D, particles: ReadonlyArray<Particle>): void {
   if (particles.length === 0) return;
-  const particleShaded = getVisualStyle('particle') === 'shaded';
+  // MESH falls back to SHADED for particles (WebGL pass doesn't handle
+  // particles in the first cut — they're fast/transient enough that
+  // the additive 2D bloom path reads well already).
+  const particleShaded = getVisualStyle('particle') !== 'vector';
   ctx.save();
   ctx.shadowBlur = 0;
   if (particleShaded) {
@@ -3078,6 +3097,23 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   drawHud(ctx, state, now);
   drawWaveBanner(ctx, state, now);
   drawBonusBanner(ctx, state, now);
+
+  // WebGL mesh overlay — runs only if any category is currently on
+  // 'mesh' tier AND the overlay module has finished loading. Lives on
+  // a separate canvas (#game3d) absolutely positioned above #game so
+  // the call here is just "feed it the entity list and let it paint."
+  // While the overlay is still loading the renderer is a no-op and
+  // the 2D path renders shaded fallbacks (see drawAsteroid).
+  if (isWebGLOverlayReady()) {
+    callWebGLOverlay({
+      asteroids: getVisualStyle('asteroid') === 'mesh' ? state.asteroids : [],
+      ship: getVisualStyle('ship') === 'mesh' ? state.ship : null,
+      dpr: renderMode.dpr,
+      scale: renderMode.scale,
+      tx: renderMode.tx,
+      ty: renderMode.ty,
+    });
+  }
 }
 
 /** BONUS banner — large 'B · O · N · U · S' intro for the first ~3s,

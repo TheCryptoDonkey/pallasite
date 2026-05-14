@@ -8919,7 +8919,7 @@ export function renderSettings(onBack: () => void): void {
   const tierLabels: Record<VisualTier, string> = {
     vector: 'VECTOR',
     shaded: 'SHADED',
-    mesh: '3D · SOON',
+    mesh: '3D MESH',
   };
 
   // Quick-preset row — single click sets all four categories to the
@@ -8932,10 +8932,7 @@ export function renderSettings(onBack: () => void): void {
   for (const tier of ['vector', 'shaded', 'mesh'] as const) {
     const btn = el('button', { parent: presetRow, text: tierLabels[tier] }) as HTMLButtonElement;
     presetBtns[tier] = btn;
-    const locked = tier === 'mesh';
-    if (locked) btn.disabled = true;
     btn.addEventListener('click', () => {
-      if (locked) return;
       setAllVisualStyles(tier);
       paintStyle();
     });
@@ -8959,10 +8956,7 @@ export function renderSettings(onBack: () => void): void {
     for (const tier of ['vector', 'shaded', 'mesh'] as const) {
       const btn = el('button', { parent: row, text: tierLabels[tier] }) as HTMLButtonElement;
       map[tier] = btn;
-      const locked = tier === 'mesh';
-      if (locked) btn.disabled = true;
       btn.addEventListener('click', () => {
-        if (locked) return;
         setVisualStyle(cat, tier);
         paintStyle();
       });
@@ -8973,8 +8967,7 @@ export function renderSettings(onBack: () => void): void {
     for (const tier of ['vector', 'shaded', 'mesh'] as const) {
       const btn = presetBtns[tier];
       if (!btn) continue;
-      const locked = tier === 'mesh';
-      btn.style.cssText = styleBtnCss(visualStyleIsUniform(tier), locked);
+      btn.style.cssText = styleBtnCss(visualStyleIsUniform(tier), false);
     }
     for (const cat of VISUAL_CATEGORIES) {
       const map = catBtns.get(cat);
@@ -8983,8 +8976,7 @@ export function renderSettings(onBack: () => void): void {
       for (const tier of ['vector', 'shaded', 'mesh'] as const) {
         const btn = map[tier];
         if (!btn) continue;
-        const locked = tier === 'mesh';
-        btn.style.cssText = styleBtnCss(current === tier, locked);
+        btn.style.cssText = styleBtnCss(current === tier, false);
       }
     }
   }

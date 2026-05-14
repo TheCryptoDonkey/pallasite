@@ -18,6 +18,10 @@
 </head>
 <body>
   <canvas id="game" width="960" height="720" aria-label="Pallasite game"></canvas>
+  <!-- WebGL overlay: transparent canvas stacked over #game for the mesh
+       visual tier. Lazy-initialised on first mesh-tier render; absent
+       browsers / users on vector/shaded never pay the three.js cost. -->
+  <canvas id="game3d" width="960" height="720" aria-hidden="true"></canvas>
   <div id="ui-root"></div>
   <div id="touch-controls"></div>
   <!-- Signet SDKs share window.Signet. signet-verify replaces window.Signet
