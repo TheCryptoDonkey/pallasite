@@ -178,6 +178,34 @@ export type SignResponseFrame =
   | { type: 'sign-response'; id: string; ok: true; event: RemoteSignedEvent }
   | { type: 'sign-response'; id: string; ok: false; error: string };
 
+/**
+ * Haptic feedback — host → phone.
+ *
+ * Hosts trigger short vibrations on paired phones for tactile feedback
+ * (hit, kill, button press, wall thud, race finish). Phones honour
+ * requests via navigator.vibrate; iOS Safari ignores them silently,
+ * Android browsers respect them.
+ *
+ * Two ways to specify the pattern:
+ *   - `pattern: 'tap' | 'pulse' | 'thud' | 'win' | 'fail'` — one of
+ *     the named presets the mobile SDK maps to a vibration sequence.
+ *   - `pattern: number[]` — raw on/off durations in ms, passed straight
+ *     to navigator.vibrate (e.g. [40, 30, 80]).
+ *
+ * The `p` field targets one phone in multi-player mode; omit it to
+ * broadcast to all paired phones. Phones can suppress haptics
+ * client-side (e.g. via a settings toggle); host should not assume
+ * the vibration ran.
+ */
+export type HapticPreset = 'tap' | 'pulse' | 'thud' | 'win' | 'fail';
+
+export interface HapticFrame {
+  type: 'haptic';
+  pattern: HapticPreset | number[];
+  /** Player slot to target (multi-player only). Omit to broadcast. */
+  p?: number;
+}
+
 /** Pairing token — encoded into the QR-code URL. */
 export interface PairingToken {
   sessionId: string;
