@@ -69,11 +69,17 @@ export interface DepthConfig {
 }
 
 export const DEPTH_CONFIGS: Record<number, DepthConfig> = {
+  // Backgrounds fade into the void — translucent reads as "distant".
   1: { sizeMul: 0.35, speedMul: 0.25, alphaMul: 0.40, meshZ: -80, collide: false },
   2: { sizeMul: 0.65, speedMul: 0.55, alphaMul: 0.70, meshZ: -40, collide: false },
+  // Gameplay plane — fully opaque.
   3: { sizeMul: 1.00, speedMul: 1.00, alphaMul: 1.00, meshZ:   0, collide: true  },
-  4: { sizeMul: 1.40, speedMul: 1.35, alphaMul: 0.70, meshZ:  40, collide: false },
-  5: { sizeMul: 1.85, speedMul: 1.70, alphaMul: 0.50, meshZ:  80, collide: false },
+  // Foregrounds are CLOSER to the camera, not "out of focus" — they
+  // should occlude whatever's behind them. Keep alpha at 1.0 so a
+  // foreground rock properly hides a gameplay-plane rock it's in front
+  // of, rather than showing the other rock through itself.
+  4: { sizeMul: 1.40, speedMul: 1.35, alphaMul: 1.00, meshZ:  40, collide: false },
+  5: { sizeMul: 1.85, speedMul: 1.70, alphaMul: 1.00, meshZ:  80, collide: false },
 };
 
 /** Decorative-asteroid spawn count per wave, by tier. */
