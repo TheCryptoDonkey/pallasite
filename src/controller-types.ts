@@ -206,6 +206,44 @@ export interface HapticFrame {
   p?: number;
 }
 
+/**
+ * Tournament context — phone → host on pair-up.
+ *
+ * Phones can carry a running cross-game score in localStorage (set
+ * by the pad PWA, incremented every time a game sends a GameScoreFrame
+ * at the end of a round). On every pair-up the phone announces this
+ * total so the game host can show "P3 entered with 17 pts" in its
+ * lobby and treat the score as a tournament-wide leaderboard.
+ *
+ * Optional. Phones that don't keep a tournament score simply skip
+ * sending the frame and games carry on as before.
+ */
+export interface PhoneContextFrame {
+  type: 'phone-context';
+  /** Running tournament total this phone has accumulated. */
+  tournamentTotal: number;
+  /** Optional short display name set by the pad's tournament UI. */
+  name?: string;
+}
+
+/**
+ * Per-game score award — host → phone, at the end of a game's final
+ * round. The phone adds the award to its running total and updates
+ * localStorage. Games choose their own scoring (winner = 5 + N for
+ * extra effort, etc.); the protocol carries the numeric result only.
+ *
+ * The `p` field targets one phone in multi-player mode.
+ */
+export interface GameScoreFrame {
+  type: 'game-score';
+  /** Points to add to the phone's running tournament total. */
+  score: number;
+  /** Short label for the toast the phone shows (e.g. '1st!', 'right answer'). */
+  label?: string;
+  /** Player slot in multi-player mode. */
+  p?: number;
+}
+
 /** Pairing token — encoded into the QR-code URL. */
 export interface PairingToken {
   sessionId: string;
