@@ -2793,7 +2793,10 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   // ── Shield deflection (runs before damage check) ──
   if (s.ship.alive && s.ship.shieldUp) {
     for (const a of s.asteroids) {
-      if (!a.alive || a.depth !== 3) continue;
+      // Backgrounds (depth 1, 2) read as distant + faded, so they
+      // pass through. Gameplay plane (3) and foregrounds (4, 5) are
+      // fully opaque and visually "in your face" — they hit / deflect.
+      if (!a.alive || (a.depth ?? 3) < 3) continue;
       if (circlesHit(s.ship, a)) {
         // Use wrap-aware delta so reflections at the edges push the asteroid
         // along the actual contact normal, not a normal flipped by the wrap.
@@ -2835,9 +2838,12 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   // ── Collisions: ship × asteroids / UFOs / enemy bullets ──
   if (s.ship.alive && !s.ship.shieldUp && s.ship.hyperspaceCloakMs <= 0 && now > s.ship.invulnerableUntil) {
     for (const a of s.asteroids) {
-      // Decorative depth bands pass through the ship — only gameplay-
-      // plane rocks can kill.
-      if (a.alive && a.depth === 3 && circlesHit(s.ship, a)) {
+      // Backgrounds (depth 1, 2) are faded + distant-reading and pass
+      // through the ship. Gameplay plane (3) AND foregrounds (4, 5) are
+      // fully opaque, large, and visually "in your face" — letting one
+      // sail through reads as a bug ("asteroid passed right through
+      // me"), so foregrounds are hazards too.
+      if (a.alive && (a.depth ?? 3) >= 3 && circlesHit(s.ship, a)) {
         killShip(s);
         break;
       }
