@@ -910,7 +910,11 @@ export function renderTitle(state: GameState): void {
 function mountAttractUtilityChips(overlay: HTMLElement, rerender: () => void): void {
   const strip = el('div', { parent: overlay });
   strip.style.cssText = [
-    'position:absolute', 'top:14px', 'right:14px',
+    // Respect the iPhone notch / dynamic island safe area. Without this
+    // the SETTINGS chip can be obscured by the notch in portrait on
+    // newer iPhones — and that's the only way to access settings from
+    // the 600bn title.
+    'position:absolute', 'top:max(14px, env(safe-area-inset-top))', 'right:14px',
     'display:flex', 'gap:8px', 'flex-wrap:wrap',
     'justify-content:flex-end', 'max-width:60%',
     'z-index:5',
@@ -10158,6 +10162,21 @@ function renderSanctumAttract(state: GameState): void {
     // beginWave (council-member asteroids) + trackForState (the-cult
     // music) + a flavour check on the game-over recap (FUCHS2 card).
     onStartCb?.();
+  });
+
+  // How-to-play + music picker — same surfaces as the main title.
+  // Music doubles as the iOS audio-unlock gesture: tapping it starts
+  // the AudioContext, so when the player backs out, title music
+  // begins playing. The picker itself lists every track including
+  // the-cult (the Sanctum bed) so players can preview level music.
+  const auxRow = el('div', { className: 'menu-row', parent: overlay });
+  auxRow.style.cssText = 'margin-top:12px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap;';
+  const howBtn = el('button', { className: 'menu-btn secondary', parent: auxRow, text: 'HOW TO PLAY' });
+  howBtn.addEventListener('click', () => renderHowToPlay(() => renderSanctumAttract(state)));
+  const musicBtn = el('button', { className: 'menu-btn secondary', parent: auxRow, text: '🎵 MUSIC' });
+  musicBtn.addEventListener('click', () => {
+    void audio.unlockAudio();
+    renderMusicPlayer(state, () => renderSanctumAttract(state));
   });
 
   // Footer — party promo links straight to 600.wtf.
