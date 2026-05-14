@@ -128,20 +128,29 @@ interface AsteroidStyle {
 
 const HIGH_CONTRAST_PALETTE: Record<AsteroidType, AsteroidStyle> = {
   // Pure blue, well clear of cyan + yellow on the wheel.
-  stony:     { hueBase: 220, glow: '#7ea8ff' },
+  stony:        { hueBase: 220, glow: '#7ea8ff' },
   // Saturated red — orange shifted hard. Pairs with the iron inner-ring pattern.
-  iron:      { hueBase: 0,   glow: '#ff5050' },
+  iron:         { hueBase: 0,   glow: '#ff5050' },
   // Cyan with high luminance.
-  chondrite: { hueBase: 180, glow: '#7fffff' },
+  chondrite:    { hueBase: 180, glow: '#7fffff' },
   // Pure bright yellow, distinct from iron-red across all common deficiencies.
-  pallasite: { hueBase: 55,  glow: '#ffe07a' },
+  pallasite:    { hueBase: 55,  glow: '#ffe07a' },
+  // White-ish for the very dark carbonaceous so the outline reads against space.
+  carbonaceous: { hueBase: 0,   glow: '#e8e0f0' },
+  // Magenta/pink — distinct from iron-red and pallasite-yellow.
+  mesosiderite: { hueBase: 320, glow: '#ff80c0' },
+  // Saturated lime — distinct from the others on the wheel.
+  achondrite:   { hueBase: 90,  glow: '#a8ff60' },
 };
 
 const DEFAULT_PALETTE: Record<AsteroidType, AsteroidStyle> = {
-  stony:     { hueBase: 265, glow: '#b48cff' },
-  iron:      { hueBase: 16,  glow: '#ff7a3a' },
-  chondrite: { hueBase: 195, glow: '#7fbfff' },
-  pallasite: { hueBase: 80,  glow: '#ffd84a' },
+  stony:        { hueBase: 265, glow: '#b48cff' },
+  iron:         { hueBase: 16,  glow: '#ff7a3a' },
+  chondrite:    { hueBase: 195, glow: '#7fbfff' },
+  pallasite:    { hueBase: 80,  glow: '#ffd84a' },
+  carbonaceous: { hueBase: 280, glow: '#7a5aa0' },
+  mesosiderite: { hueBase: 30,  glow: '#c0884a' },
+  achondrite:   { hueBase: 0,   glow: '#d05a3a' },
 };
 
 /** Resolve hue + glow for an asteroid type under the active palette.

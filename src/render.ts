@@ -660,7 +660,7 @@ function getAsteroidPhotoreal(type: AsteroidType): HTMLImageElement | null {
 function maybePreloadAsteroidPhotoreal(): void {
   if (typeof window === 'undefined') return;
   if (getFlavour() !== '600bn') return;
-  for (const t of ['stony', 'iron', 'chondrite', 'pallasite'] as const) {
+  for (const t of ['stony', 'iron', 'chondrite', 'pallasite', 'carbonaceous', 'mesosiderite', 'achondrite'] as const) {
     void getAsteroidPhotoreal(t);
   }
 }
@@ -702,17 +702,25 @@ function bakeAsteroidTexture(type: AsteroidType): HTMLCanvasElement {
   // — bright at (cx - 30%r, cy - 30%r), dark at the opposite corner.
   // Then small features overlaid for the mineral character.
   const palettes: Record<AsteroidType, { lit: string; mid: string; shadow: string; rim: string }> = {
-    stony:     { lit: '#c4b298', mid: '#7a6856', shadow: '#2a2218', rim: '#1a1410' },
-    iron:      { lit: '#7a4e36', mid: '#3a1f12', shadow: '#1a0a06', rim: '#0a0402' },
-    chondrite: { lit: '#d8b070', mid: '#7c5828', shadow: '#2c1c08', rim: '#180e04' },
-    pallasite: { lit: '#a6b070', mid: '#3a4a18', shadow: '#1a200a', rim: '#0a1004' },
+    stony:        { lit: '#c4b298', mid: '#7a6856', shadow: '#2a2218', rim: '#1a1410' },
+    iron:         { lit: '#7a4e36', mid: '#3a1f12', shadow: '#1a0a06', rim: '#0a0402' },
+    chondrite:    { lit: '#d8b070', mid: '#7c5828', shadow: '#2c1c08', rim: '#180e04' },
+    pallasite:    { lit: '#a6b070', mid: '#3a4a18', shadow: '#1a200a', rim: '#0a1004' },
+    // New types — used as procedural fallback until the photoreal
+    // webps land. Once loaded the photoreal overrides this anyway.
+    carbonaceous: { lit: '#605866', mid: '#2a2832', shadow: '#0c0a14', rim: '#040208' },
+    mesosiderite: { lit: '#b89868', mid: '#5a3e22', shadow: '#221408', rim: '#100804' },
+    achondrite:   { lit: '#b06848', mid: '#5a2818', shadow: '#1e0a04', rim: '#0a0402' },
   };
   const p = palettes[type];
   const rng = makePrng(
     type === 'stony' ? 0x57071 :
     type === 'iron' ? 0x12041 :
     type === 'chondrite' ? 0xC4014 :
-    /* pallasite */ 0xA1148,
+    type === 'pallasite' ? 0xA1148 :
+    type === 'carbonaceous' ? 0xCA160 :
+    type === 'mesosiderite' ? 0xE502D :
+    /* achondrite */ 0xAC410,
   );
 
   // Base 3D sphere shading — radial gradient from a lit upper-left to
@@ -3128,6 +3136,59 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       ty: renderMode.ty,
     });
   }
+
+  // Council labels — drawn AFTER the WebGL pass so they overlay the
+  // mesh-rendered asteroids cleanly. Each member gets a small chip
+  // with NAME + ROLE · ARCHETYPE so players can recognise who they're
+  // engaging beyond just the portrait stretched on the rock.
+  for (const a of state.asteroids) {
+    if (a.alive && a.councilMember) drawCouncilLabel(ctx, a);
+  }
+}
+
+/** Floating chip below a council asteroid: NAME on top, ROLE ·
+ *  ARCHETYPE on second line. Gold border so it reads as "Council"
+ *  hierarchy without needing a separate legend. */
+function drawCouncilLabel(ctx: CanvasRenderingContext2D, a: Asteroid): void {
+  const m = a.councilMember;
+  if (!m) return;
+  const nameText = m.name.toUpperCase();
+  const roleText = m.archetype
+    ? `${m.role} · ${m.archetype.toUpperCase()}`
+    : m.role;
+  ctx.save();
+  ctx.translate(a.pos.x, a.pos.y);
+  ctx.font = 'bold 11px ui-monospace, monospace';
+  const nameW = ctx.measureText(nameText).width;
+  ctx.font = '9px ui-monospace, monospace';
+  const roleW = ctx.measureText(roleText).width;
+  const padX = 10;
+  const w = Math.max(nameW, roleW) + padX * 2;
+  const h = 30;
+  const yOff = a.radius + 10;
+  // Chip background.
+  ctx.fillStyle = 'rgba(8, 4, 24, 0.82)';
+  ctx.strokeStyle = '#ffd84a';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  if (typeof ctx.roundRect === 'function') {
+    ctx.roundRect(-w / 2, yOff, w, h, 5);
+  } else {
+    ctx.rect(-w / 2, yOff, w, h);
+  }
+  ctx.fill();
+  ctx.stroke();
+  // Name in gold.
+  ctx.fillStyle = '#ffd84a';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 11px ui-monospace, monospace';
+  ctx.fillText(nameText, 0, yOff + 9);
+  // Role + archetype in dimmer gold.
+  ctx.fillStyle = '#d8c08a';
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.fillText(roleText, 0, yOff + 22);
+  ctx.restore();
 }
 
 /** BONUS banner — large 'B · O · N · U · S' intro for the first ~3s,
