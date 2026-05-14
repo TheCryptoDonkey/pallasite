@@ -5,7 +5,7 @@
  * to handle clicks/inputs, and keeps the canvas pure-vector.
  */
 
-import type { GameState } from './types.js';
+import type { AsteroidType, GameState } from './types.js';
 import { WAVE_LORE } from './types.js';
 import { getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRelay, removeRelay, resetRelays } from './relays.js';
 import { getTouchMode, setTouchMode, type TouchInputMode } from './touch.js';
@@ -3071,8 +3071,9 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   // theatre tracks the same hue + glow combos the player is seeing
   // (default vs high-contrast). hueBase drives the stroke colour via
   // HSL exactly like render.ts drawAsteroid.
-  const WIRE_TYPE_TO_GAME: Record<'s' | 'i' | 'c' | 'p', 'stony' | 'iron' | 'chondrite' | 'pallasite'> = {
+  const WIRE_TYPE_TO_GAME: Record<'s' | 'i' | 'c' | 'p' | 'b' | 'm' | 'a', AsteroidType> = {
     s: 'stony', i: 'iron', c: 'chondrite', p: 'pallasite',
+    b: 'carbonaceous', m: 'mesosiderite', a: 'achondrite',
   };
   // Match game's RADIUS_PER_SIZE — the v2d radii were a fraction too
   // small, which made asteroids feel undersized vs the player's view.

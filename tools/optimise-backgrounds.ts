@@ -36,7 +36,7 @@ if (!existsSync(SRC_DIR)) {
 
 mkdirSync(OUT_DIR, { recursive: true });
 
-const files = readdirSync(SRC_DIR).filter(f => /^(wave-\d+|sanctum|sanctum-space|asteroid-(stony|iron|chondrite|pallasite))\.(png|jpg|jpeg|webp)$/i.test(f));
+const files = readdirSync(SRC_DIR).filter(f => /^(wave-\d+|sanctum|sanctum-space|asteroid-(stony|iron|chondrite|pallasite|carbonaceous|mesosiderite|achondrite))\.(png|jpg|jpeg|webp)$/i.test(f));
 if (files.length === 0) {
   console.error('No matching originals (wave-N / sanctum / sanctum-space / asteroid-TYPE) found.');
   process.exit(1);

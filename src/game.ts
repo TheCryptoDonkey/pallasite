@@ -301,7 +301,10 @@ function makeAsteroidShape(): number[] {
 /**
  * Wave-based asteroid type distribution. Stony only at the very start; iron
  * arrives early as the first armoured threat; chondrite swarms enter mid-game;
- * pallasite is a rare jackpot throughout but never common.
+ * pallasite is a rare jackpot throughout but never common. New mid/late types:
+ *   achondrite    (~W11) — fragile volcanic, shatters into more fragments
+ *   carbonaceous  (~W14) — dark primitive, slight sat bonus
+ *   mesosiderite  (~W18) — rare end-game armoured stony-iron mix
  */
 function pickAsteroidType(wave: number): AsteroidType {
   const r = gameRng();
@@ -317,16 +320,28 @@ function pickAsteroidType(wave: number): AsteroidType {
     if (r < 0.50) return 'chondrite';
     return 'stony';
   }
-  if (wave <= 17) {
-    if (r < 0.07) return 'pallasite';
-    if (r < 0.35) return 'iron';
+  if (wave <= 13) {
+    if (r < 0.06) return 'pallasite';
+    if (r < 0.22) return 'achondrite';
+    if (r < 0.40) return 'iron';
     if (r < 0.60) return 'chondrite';
     return 'stony';
   }
-  // Waves 18-25
-  if (r < 0.08) return 'pallasite';
-  if (r < 0.40) return 'iron';
-  if (r < 0.70) return 'chondrite';
+  if (wave <= 17) {
+    if (r < 0.07) return 'pallasite';
+    if (r < 0.18) return 'carbonaceous';
+    if (r < 0.30) return 'achondrite';
+    if (r < 0.45) return 'iron';
+    if (r < 0.65) return 'chondrite';
+    return 'stony';
+  }
+  // Waves 18-25 — full roster including the rare mesosiderite.
+  if (r < 0.07) return 'pallasite';
+  if (r < 0.13) return 'mesosiderite';
+  if (r < 0.22) return 'carbonaceous';
+  if (r < 0.32) return 'achondrite';
+  if (r < 0.48) return 'iron';
+  if (r < 0.68) return 'chondrite';
   return 'stony';
 }
 

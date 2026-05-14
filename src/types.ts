@@ -65,7 +65,14 @@ export type AsteroidSize = 'large' | 'medium' | 'small';
  *   - chondrite → fragile primitive matter, fragments into three
  *   - pallasite → rare olivine-in-iron jackpots, big sat payouts
  */
-export type AsteroidType = 'stony' | 'iron' | 'chondrite' | 'pallasite';
+export type AsteroidType =
+  | 'stony'         // generic regolith — early waves
+  | 'iron'          // Widmanstätten cross-section — armoured
+  | 'chondrite'     // chondrules in matrix — common ordinary type
+  | 'pallasite'     // olivine + iron — rare jackpot
+  | 'carbonaceous'  // CI/CM/CV — very dark primitive, fragile
+  | 'mesosiderite'  // stony-iron mix — late-wave armoured
+  | 'achondrite';   // basaltic/HED — volcanic, breaks into more
 
 /** Pointer to a 600bn council member when this asteroid is themed
  *  to a member portrait. Renderer clips the member.img inside the
@@ -129,10 +136,16 @@ export interface AsteroidTypeConfig {
 }
 
 export const ASTEROID_TYPE_CONFIG: Record<AsteroidType, AsteroidTypeConfig> = {
-  stony:     { hp: 1, satMul: 1.0, scoreMul: 1.0, breakInto: 2, hueBase: 265, glow: '#b48cff', label: 'STONY' },
-  iron:      { hp: 2, satMul: 1.5, scoreMul: 1.6, breakInto: 2, hueBase: 16,  glow: '#ff7a3a', label: 'IRON' },
-  chondrite: { hp: 1, satMul: 0.6, scoreMul: 0.8, breakInto: 3, hueBase: 195, glow: '#7fbfff', label: 'CHONDRITE' },
-  pallasite: { hp: 1, satMul: 1.0, scoreMul: 2.0, breakInto: 2, hueBase: 80,  glow: '#ffd84a', label: 'PALLASITE' },
+  stony:        { hp: 1, satMul: 1.0, scoreMul: 1.0, breakInto: 2, hueBase: 265, glow: '#b48cff', label: 'STONY' },
+  iron:         { hp: 2, satMul: 1.5, scoreMul: 1.6, breakInto: 2, hueBase: 16,  glow: '#ff7a3a', label: 'IRON' },
+  chondrite:    { hp: 1, satMul: 0.6, scoreMul: 0.8, breakInto: 3, hueBase: 195, glow: '#7fbfff', label: 'CHONDRITE' },
+  pallasite:    { hp: 1, satMul: 1.0, scoreMul: 2.0, breakInto: 2, hueBase: 80,  glow: '#ffd84a', label: 'PALLASITE' },
+  // Primitive, dark, fragile — low HP, slight sat bonus for the rarity.
+  carbonaceous: { hp: 1, satMul: 1.2, scoreMul: 1.0, breakInto: 2, hueBase: 280, glow: '#7a5aa0', label: 'CARBONACEOUS' },
+  // Stony-iron mix — armoured, decent payout for the difficulty.
+  mesosiderite: { hp: 2, satMul: 1.3, scoreMul: 1.5, breakInto: 2, hueBase: 30,  glow: '#c0884a', label: 'MESOSIDERITE' },
+  // Basaltic/HED — volcanic origin, fragile, shatters into more fragments.
+  achondrite:   { hp: 1, satMul: 0.9, scoreMul: 1.3, breakInto: 3, hueBase: 0,   glow: '#d05a3a', label: 'ACHONDRITE' },
 };
 
 export interface Bullet extends Entity {

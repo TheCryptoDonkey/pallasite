@@ -66,10 +66,15 @@ interface MeshEntry<M extends THREE.Material> {
  *  + ambient fill (see lights) keeps the unlit side readable so the
  *  rock reads as a solid body. */
 const ASTEROID_TYPE_COLOR: Record<string, number> = {
-  stony:     0xd0c0a8,
-  iron:      0xe0c898,
-  chondrite: 0xd8e4ee,
-  pallasite: 0xf0c860,
+  stony:        0xd0c0a8,
+  iron:         0xe0c898,
+  chondrite:    0xd8e4ee,
+  pallasite:    0xf0c860,
+  // New types — base colour shown until the diffuse webp finishes
+  // loading; chosen to read as the type when seen against space.
+  carbonaceous: 0x4a4858,  // very dark, primitive
+  mesosiderite: 0xc8a880,  // bronze stony-iron
+  achondrite:   0xc06848,  // basaltic red
 };
 
 /** Per-type Phong tuning — specular highlight + shininess. Real rocks
@@ -83,10 +88,17 @@ interface AsteroidTypeMaterial {
   specular: number;
 }
 const ASTEROID_TYPE_MAT: Record<string, AsteroidTypeMaterial> = {
-  stony:     { shininess: 18,  specular: 0x404040 },
-  iron:      { shininess: 50,  specular: 0x806840 },
-  chondrite: { shininess: 8,   specular: 0x202830 },
-  pallasite: { shininess: 110, specular: 0xd0a040 },
+  stony:        { shininess: 18,  specular: 0x404040 },
+  iron:         { shininess: 50,  specular: 0x806840 },
+  chondrite:    { shininess: 8,   specular: 0x202830 },
+  pallasite:    { shininess: 110, specular: 0xd0a040 },
+  // Very matte, very dark — primitive material absorbs nearly all
+  // light. Just enough specular to catch the rim light.
+  carbonaceous: { shininess: 4,   specular: 0x181820 },
+  // Semi-metallic — patches of iron sheen between stony zones.
+  mesosiderite: { shininess: 70,  specular: 0x806040 },
+  // Volcanic basalt — matte with a hint of glaze from fusion crust.
+  achondrite:   { shininess: 22,  specular: 0x4a2818 },
 };
 
 /** Per-UFO-type palette + form factor. */
@@ -813,7 +825,15 @@ export function renderOverlay(opts: {
     entry.lastSeenFrame = frameCounter;
     const bob = Math.sin(frameCounter * 0.05 + p.id) * 2;
     entry.mesh.position.set(p.pos.x, 720 - p.pos.y + bob, 0);
-    entry.mesh.rotation.set(0, frameCounter * 0.06, 0);
+    // Three-axis tumble at incommensurate frequencies — the glyph
+    // travels around the sphere in 3D rather than just spinning on Y.
+    // Per-powerup phase (p.id) so the same powerup type at different
+    // positions aren't lock-stepped.
+    entry.mesh.rotation.set(
+      frameCounter * 0.018 + p.id * 0.7,
+      frameCounter * 0.045,
+      frameCounter * 0.011 + p.id * 0.3,
+    );
     entry.mesh.visible = true;
   }
   sweepStale(scene, handle.powerupMeshes, frameCounter);
@@ -846,7 +866,7 @@ export function renderOverlay(opts: {
       group.add(hullMesh);
       // Cockpit canopy — translucent dome on top of hull, sells the
       // 3D form better than a flat extrude alone.
-      const cockpitGeo = new THREE.SphereGeometry(4.2, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2);
+      const cockpitGeo = new THREE.SphereGeometry(4.5, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2);
       cockpitGeo.rotateX(-Math.PI / 2);
       const cockpitMat = new THREE.MeshPhongMaterial({
         color: 0xb8f0ff,
@@ -861,10 +881,76 @@ export function renderOverlay(opts: {
       cockpitMesh.position.set(1, 0, 4.5);
       cockpitMesh.frustumCulled = false;
       group.add(cockpitMesh);
+      // Dorsal fin — small vertical spike behind the cockpit. Reads
+      // as a stabiliser/comms array from above.
+      const finShape = new THREE.Shape([
+        new THREE.Vector2(0, 0),
+        new THREE.Vector2(-7, 0),
+        new THREE.Vector2(-5, 5),
+        new THREE.Vector2(0, 4),
+      ]);
+      const finGeo = new THREE.ExtrudeGeometry(finShape, {
+        depth: 1.4, bevelEnabled: true, bevelSize: 0.3, bevelThickness: 0.3, bevelSegments: 1,
+      });
+      const finMat = new THREE.MeshPhongMaterial({
+        color: 0x8ad4ff,
+        shininess: 60,
+        specular: 0xffffff,
+        emissive: 0x305070,
+        emissiveIntensity: 0.4,
+      });
+      const finMesh = new THREE.Mesh(finGeo, finMat);
+      finMesh.position.set(-2, -0.7, 3);
+      finMesh.frustumCulled = false;
+      group.add(finMesh);
+      // Stub wings — short angled fins on each side of the hull.
+      const wingShape = new THREE.Shape([
+        new THREE.Vector2(0, 0),
+        new THREE.Vector2(7, 0),
+        new THREE.Vector2(5, 4),
+        new THREE.Vector2(0, 3),
+      ]);
+      const wingGeo = new THREE.ExtrudeGeometry(wingShape, {
+        depth: 1.2, bevelEnabled: true, bevelSize: 0.3, bevelThickness: 0.3, bevelSegments: 1,
+      });
+      const wingMat = new THREE.MeshPhongMaterial({
+        color: 0x6db4dc,
+        shininess: 80,
+        specular: 0xffffff,
+        emissive: 0x305070,
+        emissiveIntensity: 0.35,
+      });
+      const wingL = new THREE.Mesh(wingGeo, wingMat);
+      wingL.position.set(-8, 6, -0.5);
+      wingL.frustumCulled = false;
+      group.add(wingL);
+      const wingR = new THREE.Mesh(wingGeo, wingMat);
+      wingR.position.set(-8, -6, -0.5);
+      wingR.rotation.x = Math.PI;
+      wingR.frustumCulled = false;
+      group.add(wingR);
+      // Side engine pods — two cylinders flanking the rear thrust.
+      const podGeo = new THREE.CylinderGeometry(2.2, 2.6, 8, 12);
+      podGeo.rotateZ(Math.PI / 2);
+      const podMat = new THREE.MeshPhongMaterial({
+        color: 0x4a7eb0,
+        shininess: 100,
+        specular: 0xffffff,
+        emissive: 0xff8040,
+        emissiveIntensity: 0.45,
+      });
+      const podL = new THREE.Mesh(podGeo, podMat);
+      podL.position.set(-10, 7.5, 0);
+      podL.frustumCulled = false;
+      group.add(podL);
+      const podR = new THREE.Mesh(podGeo, podMat);
+      podR.position.set(-10, -7.5, 0);
+      podR.frustumCulled = false;
+      group.add(podR);
       // Nose laser barrel — small cylinder protruding from the bow.
-      const barrelGeo = new THREE.CylinderGeometry(1.2, 1.2, 6, 10);
+      const barrelGeo = new THREE.CylinderGeometry(1.4, 1.4, 7, 10);
       barrelGeo.rotateZ(Math.PI / 2);
-      barrelGeo.translate(18, 0, 0);
+      barrelGeo.translate(19, 0, 0);
       const barrelMat = new THREE.MeshPhongMaterial({
         color: 0x6080a0,
         shininess: 140,
@@ -875,10 +961,11 @@ export function renderOverlay(opts: {
       const barrelMesh = new THREE.Mesh(barrelGeo, barrelMat);
       barrelMesh.frustumCulled = false;
       group.add(barrelMesh);
-      // Thrust cone (existing) — same additive flame at the rear.
-      const thrustGeo = new THREE.ConeGeometry(5, 14, 12);
+      // Thrust cone — additive flame at the rear, shown only when
+      // thrusting. Larger and centred between the engine pods now.
+      const thrustGeo = new THREE.ConeGeometry(6, 16, 12);
       thrustGeo.rotateZ(Math.PI / 2);
-      thrustGeo.translate(-16, 0, 0);
+      thrustGeo.translate(-18, 0, 0);
       const thrustMat = new THREE.MeshBasicMaterial({
         color: 0xffb84a,
         transparent: true,

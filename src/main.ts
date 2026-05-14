@@ -936,10 +936,14 @@ async function boot(): Promise<void> {
       if (now - lastAt < cadence - 50) return;
 
       // Asteroid type → single-letter code matching what the stream
-      // wire expects. Pallasite-spec asteroid types are stony, iron,
-      // chondrite, pallasite.
-      const ASTEROID_TYPE_CODE: Record<string, 's' | 'i' | 'c' | 'p'> = {
+      // wire expects. Original four: s/i/c/p. Newer types use chars
+      // outside that set so the decoder stays unambiguous:
+      //   b = carbonaceous (black-ish primitive)
+      //   m = mesosiderite (stony-iron mix)
+      //   a = achondrite   (basaltic/HED)
+      const ASTEROID_TYPE_CODE: Record<string, 's' | 'i' | 'c' | 'p' | 'b' | 'm' | 'a'> = {
         stony: 's', iron: 'i', chondrite: 'c', pallasite: 'p',
+        carbonaceous: 'b', mesosiderite: 'm', achondrite: 'a',
       };
       const ASTEROID_SIZE_CODE: Record<string, 'l' | 'm' | 's'> = {
         large: 'l', medium: 'm', small: 's',
@@ -992,8 +996,11 @@ async function boot(): Promise<void> {
         .map((c) => [
           c.id ?? 0, c.pos.x, c.pos.y,
           COIN_KIND_CODE[c.kind] ?? 's',
-          c.sourceType ? ({ stony: 's', iron: 'i', chondrite: 'c', pallasite: 'p' } as const)[c.sourceType] : '',
-        ] as [number, number, number, 's' | 'd', 's' | 'i' | 'c' | 'p' | '']);
+          c.sourceType ? ({
+            stony: 's', iron: 'i', chondrite: 'c', pallasite: 'p',
+            carbonaceous: 'b', mesosiderite: 'm', achondrite: 'a',
+          } as const)[c.sourceType] : '',
+        ] as [number, number, number, 's' | 'd', 's' | 'i' | 'c' | 'p' | 'b' | 'm' | 'a' | '']);
 
       // Powerups — rare, usually 0-2 on screen. Cap at 4 anyway.
       const powerups = (state.powerups ?? [])

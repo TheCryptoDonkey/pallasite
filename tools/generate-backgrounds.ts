@@ -36,9 +36,11 @@ const onlyWave = waveArgIdx >= 0 ? parseInt(args[waveArgIdx + 1], 10) : null;
  *  cliffs, storm light, ember palette) instead of any wave. Off-axis
  *  from the wave-N flow so the file lands at originals/sanctum.png. */
 const onlySanctum = args.includes('--sanctum');
-/** --asteroids generates the four 1024×1024 photoreal asteroid-surface
- *  textures (stony, iron, chondrite, pallasite) used as filler-asteroid
- *  fills on the 600bn Sanctum wave. */
+/** --asteroids generates the per-type 1024×1024 photoreal asteroid-
+ *  surface textures used as the 600bn Sanctum filler fills AND as 3D
+ *  mesh diffuse maps. Idempotent — already-existing originals skip
+ *  unless --force is set, so re-running after adding new types only
+ *  generates the new ones. */
 const onlyAsteroids = args.includes('--asteroids');
 
 interface WavePrompt {
@@ -181,12 +183,12 @@ const SANCTUM_SPACE_PROMPT: NamedPrompt = {
   prompt: `Photorealistic deep-space astrophotography, ultra-high resolution, captured in the style of a Hubble + JWST composite mosaic. A vast cosmic vista with a warm ember nebula filling the upper-third — drifting orange and gold dust clouds with delicate filamentary structure, like a celestial forge breathing slowly. A distant golden Andromeda-like spiral galaxy hanging at upper-right at three-quarter angle, deep amber core with warm sweeping arms. Thousands of pinpoint stars scattered across deep velvet-black space, with subtle cobalt and violet ionised dust streaks in the upper-left for cool-tone balance. Soft crepuscular rays of warm light bleeding through the nebula. The lower-centre and lower-third is a dark quiet void — deep black sky for gameplay legibility on top. Cinematic, mythic, sacred, awe-inspiring, painterly. No text, no graphics, no UI elements, no spaceships, no asteroids, no characters, no figures, no logos, no planets in the foreground. Aspect 1536x1024.`,
 };
 
-/** Four photoreal close-up surface textures used as the per-type
- *  filler-asteroid fills on the 600bn Sanctum wave. Square 1024×1024
- *  so they can be clipped inside the lumpy asteroid polygons at any
- *  size without aspect distortion. Each prompt instructs the model
- *  to FILL the frame with surface texture so the polygon clip never
- *  cuts into empty background. */
+/** Photoreal close-up surface textures used as the per-type filler-
+ *  asteroid fills on the 600bn Sanctum wave AND as 3D-mesh diffuse
+ *  maps in the WebGL overlay. Square 1024×1024 so they tile cleanly
+ *  inside the lumpy asteroid polygons / wrap onto the icosphere mesh.
+ *  Each prompt instructs the model to FILL the frame with surface
+ *  texture so the clip never cuts into empty background. */
 const ASTEROID_PROMPTS: NamedPrompt[] = [
   {
     name: 'asteroid-stony',
@@ -203,6 +205,18 @@ const ASTEROID_PROMPTS: NamedPrompt[] = [
   {
     name: 'asteroid-pallasite',
     prompt: `Ultra-high resolution photorealistic close-up macro of a pallasite meteorite cut-and-polished cross-section — the iconic stony-iron type. Brilliant green-gold olivine crystals (gem-grade peridot) embedded in a dark metallic iron-nickel matrix that gleams between the gems. The peridot crystals are 5-15mm across, translucent yellow-green, refractive, catching the light with bright internal reflections and glowing edges where the light passes through. The iron matrix is dark steel grey with faint Widmanstätten etching visible. Polished mirror-like surface. Dramatic side-lighting from upper-left making the gems sparkle and pop. Scientific macro photography quality. Square 1024×1024 frame. The entire frame is the pallasite cross-section — NO edges visible, NO sky, NO background, NO text, NO logos. Pure gem-and-metal texture filling the entire square.`,
+  },
+  {
+    name: 'asteroid-carbonaceous',
+    prompt: `Ultra-high resolution photorealistic close-up macro of a carbonaceous chondrite meteorite — primitive CI/CM-group material, the darkest meteorite type known. Sooty matte black surface with a barely-visible matrix of microscopic chondrules and refractory inclusions, slightly purplish-grey undertones from carbon-rich phyllosilicates and trace organics. Tiny pale grey CAI (calcium-aluminium inclusion) flecks scattered sparingly, like dim stars. Some patches show faint hairline cracks from desiccation. Surface is dusty, light-absorbing, almost charcoal-like, with a hint of soft sheen on the higher facets. Dramatic side-lighting from upper-left bringing out the subtle texture without flattening the deep blacks. Scientific macro photography quality. Square 1024×1024 frame. The entire frame is the carbonaceous surface — NO edges visible, NO sky, NO background, NO text, NO logos. Pure dark primitive texture filling the entire square.`,
+  },
+  {
+    name: 'asteroid-mesosiderite',
+    prompt: `Ultra-high resolution photorealistic close-up macro of a mesosiderite meteorite cut-and-polished cross-section — the rare stony-iron mix. Roughly half polished iron-nickel metal (bright steel grey with faint Widmanstätten etching) interlocked with half basaltic silicate inclusions in warm bronze and pale ochre. The two phases interlock like puzzle pieces with sharp boundaries — patches of mirror-bright metal next to angular bronzy stone. Mottled patchwork appearance. Dramatic side-lighting from upper-left making the metal flash and the stone read as warm bronze. Scientific macro photography quality. Square 1024×1024 frame. The entire frame is the mesosiderite cross-section — NO edges visible, NO sky, NO background, NO text, NO logos. Pure mottled stony-iron texture filling the entire square.`,
+  },
+  {
+    name: 'asteroid-achondrite',
+    prompt: `Ultra-high resolution photorealistic close-up macro of an achondrite meteorite — basaltic HED group (eucrite/howardite/diogenite), from the asteroid Vesta. Crystalline basalt surface with visible pyroxene and plagioclase crystals 1-4mm across in interlocking igneous texture, deep volcanic red and warm rust orange with darker iron-grey crystal grains, occasional brecciated patches showing fragmented angular clasts. Slight glassy fusion-crust patches with subtle sheen where the rock has been heated. Dramatic side-lighting from upper-left bringing out the angular crystal facets and tiny shadow lines between grains. Scientific macro photography quality. Square 1024×1024 frame. The entire frame is the achondrite surface — NO edges visible, NO sky, NO background, NO text, NO logos. Pure volcanic basalt texture filling the entire square.`,
   },
 ];
 
