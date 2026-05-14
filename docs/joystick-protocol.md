@@ -1,8 +1,9 @@
 # Joystick Pairing Protocol
 
-**Status:** draft v1, pre-extraction.
+**Status:** draft v1.1, pre-extraction.
 **Location:** interim home in `asteroid-sats/docs/` until the `forgesworn/joystick` repo exists.
 **NIP candidacy:** open question, see [§ NIP candidacy](#nip-candidacy).
+**Prior art reviewed:** Rocketcrab (lobby-only, no controller protocol), SmartControllerJS (academic, defers to nipplejs), nipplejs (the actual joystick ergonomics reference). See [§ Phone Implementation Requirements](#phone-implementation-requirements).
 
 ## Abstract
 
@@ -73,6 +74,20 @@ joystick://pair
 
 The `ws` URL may be direct (host listens on a public WS) or via a broker (broker forwards by routing token).
 
+### Code fallback
+
+QR-only pairing fails when the phone camera is blocked, broken, can't focus close-up, or the user has revoked camera permission. Hosts SHOULD additionally render a short human-typeable code alongside the QR:
+
+```
+joystick://pair?code=abcd                # 4-letter [a-z], broker resolves to the same session token
+```
+
+- Brokers MUST accept `code=` and look it up against the same routing token table as a QR scan.
+- Codes are 4 lowercase letters by default (456 976 namespace, large enough for thousands of concurrent sessions per broker).
+- Codes expire when the underlying session token expires (host-configurable, default 10 minutes).
+- The joystick PWA's home screen exposes a code-entry field as a sibling to the QR scanner button.
+- Borrowed from Rocketcrab (`pages/join.tsx:23-26`).
+
 ### Phone-side flow
 
 1. Phone PWA parses QR, validates the URL.
@@ -121,9 +136,12 @@ interface Pair extends Envelope {
     expiresAt?: number;                    // hint
   };
   caps: PhoneCapabilities;
+  takeover?: boolean;                      // true = drop any prior active session with this pubkey on this host; the old WS receives bye{reason:'replaced'}
   resume?: {                               // present iff reconnecting an existing session
     sessionId: string;
     lastSeq: number;
+    lastLayoutId?: string;                 // last layout phone successfully rendered, lets host skip re-pushing identical layout
+    resumeToken?: string;                  // opaque, issued in prior pair-ack, persisted in phone localStorage to survive host crash
   };
 }
 ```
@@ -179,8 +197,10 @@ interface PairAck extends Envelope {
     | 'guest-not-allowed'
     | 'protocol-too-old'
     | 'session-not-found'  // when resume.sessionId is unknown
-    | 'already-paired';
+    | 'banned'             // host has banned this pubkey
+    | 'already-paired';    // returned only when takeover was NOT set; host refuses concurrent sessions for same pubkey
   sessionId?: string;                      // assigned by host, used for resume
+  resumeToken?: string;                    // opaque, phone persists in localStorage for cookie-style reconnect surviving host crash
   playerId?: string;                       // host-assigned slot identifier
 }
 ```
@@ -200,14 +220,37 @@ interface Layout extends Envelope {
   meta?: { name?: string; description?: string };
 }
 
+// pinned / required apply to every Control variant. See § Player Layout Overrides.
+//   pinned   = host fixes the position; player may still recolour / resize.
+//   required = this controlId MUST remain reachable in the rendered layout; player cannot hide it.
 type Control =
-  | { id: string; kind: 'dpad';   pos: Position; size?: number;                            label?: string }
-  | { id: string; kind: 'stick';  pos: Position; size?: number; deadzone?: number;         label?: string }
-  | { id: string; kind: 'button'; pos: Position; size?: number; label: string; hold?: boolean; colour?: string; icon?: string }
-  | { id: string; kind: 'swipe';  pos: Position; size?: { w: number; h: number };          label?: string }
-  | { id: string; kind: 'list';   pos: Position; size:  { w: number; h: number }; items: ListItem[]; dpadNavigable?: true }
-  | { id: string; kind: 'qrscan'; pos: Position; size?: number;                            prompt?: string }
-  | { id: string; kind: 'photo';  pos: Position; size?: number;                            prompt?: string };
+  | { id: string; kind: 'dpad';   pos: Position; size?: number; eightWay?: boolean; diagonalThreshold?: number;  label?: string; pinned?: boolean; required?: boolean }
+  | StickControl
+  | { id: string; kind: 'button'; pos: Position; size?: number; label: string; hold?: boolean; colour?: string; icon?: string;   pinned?: boolean; required?: boolean }
+  | { id: string; kind: 'swipe';  pos: Position; size?: { w: number; h: number };          label?: string;                       pinned?: boolean; required?: boolean }
+  | { id: string; kind: 'list';   pos: Position; size:  { w: number; h: number }; items: ListItem[]; dpadNavigable?: true;       pinned?: boolean; required?: boolean }
+  | { id: string; kind: 'qrscan'; pos: Position; size?: number;                            prompt?: string;                      pinned?: boolean; required?: boolean }
+  | { id: string; kind: 'photo';  pos: Position; size?: number;                            prompt?: string;                      pinned?: boolean; required?: boolean };
+
+interface StickControl {
+  id: string;
+  kind: 'stick';
+  pos: Position;
+  size?: number;                           // pad diameter in CSS px; defaults to 140 (matches asteroid-sats current MAX_RADIUS*2)
+  mode?: 'static' | 'dynamic' | 'semi';    // default 'dynamic' (origin spawns where thumb lands, modern mobile-game default)
+  threshold?: number;                      // 0..1 normalised magnitude below which no directional input is emitted; default 0.1
+  lockX?: boolean;                         // restrict to x-axis only (side-scrollers, scroll bars)
+  lockY?: boolean;                         // restrict to y-axis only
+  shape?: 'circle' | 'square';             // 'square' gives full diagonal travel at corners; default 'circle'
+  follow?: boolean;                        // outer base follows thumb when it exceeds max radius (no "ran out of pad"); default false for static, true for dynamic
+  fadeTimeMs?: number;                     // fade-in/out duration for dynamic mode; default 120
+  restOpacity?: number;                    // 0..1 opacity when stick is idle; default 0.5
+  catchDistance?: number;                  // semi-mode only: re-spawn origin if next touch lands further than this from current centre; default 60
+  hapticTick?: HapticPattern;              // emitted when crossing threshold from inside→outside; defaults to HapticProfile.dpadTick
+  label?: string;
+  pinned?: boolean;                        // host fixes the position; player may still adjust stick mode / threshold / opacity / size
+  required?: boolean;                      // this controlId MUST remain reachable in the player's layout
+}
 
 interface Position {
   x: number; y: number;                    // 0..1 normalised
@@ -377,6 +420,46 @@ interface Notify extends Envelope {
 }
 ```
 
+### Layout-Ack (phone → host)
+
+After binding all controls in an incoming `layout`, the phone replies with `layout-ack`. Hosts SHOULD wait for this before relying on the phone to handle inputs against the new `layoutId`; in practice hosts may fire-and-forget for trivial transitions, but acknowledged transitions are required for hand-off-critical moments (start of round, score commit, payment screen).
+
+```ts
+interface LayoutAck extends Envelope {
+  type: 'layout-ack';
+  layoutId: string;
+  controlsReady: string[];               // controlIds successfully bound; host can warn if missing
+  controlsUnsupported?: string[];        // controls the phone could not render (unknown kind, missing capability)
+  renderMs?: number;                     // time from receipt to ready, for host-side telemetry
+}
+```
+
+### Kick (host → phone)
+
+Host-initiated removal mid-session. Closes the WS after sending. Distinct from `bye` in that it is non-cooperative.
+
+```ts
+interface Kick extends Envelope {
+  type: 'kick';
+  reason: 'banned' | 'tier-revoked' | 'host-rule' | 'admin' | 'inactivity';
+  message?: string;                      // human-readable, surfaced to user on phone
+  banDurationMs?: number;                // 0 / omitted = session-only; >0 = host refuses re-pair from this pubkey for that long
+}
+```
+
+### Stats (both directions, optional)
+
+Rolling connection-health envelope, surfaced in host and phone UIs.
+
+```ts
+interface Stats extends Envelope {
+  type: 'stats';
+  pingMs?: number;                       // most recent round-trip
+  msgsPerSec?: number;                   // 1s rolling average from sender's side
+  packetLoss?: number;                   // 0..1, broker-side hint if available
+}
+```
+
 ### Control channel
 
 ```ts
@@ -430,18 +513,169 @@ Lower entries beyond the first three sit behind a "more options" expander so new
 
 ## Reconnect & Resume
 
-WS connections drop. Phone reconnects, sends `pair` with a `resume` block referencing the previous `sessionId` and `lastSeq`. Host either:
+WS connections drop. Three failure modes, three recovery paths:
 
-- **Resumes:** replays any host→phone messages after `lastSeq`, returns `pair-ack` with the same `sessionId`. No re-auth, since `authEvent` is still within freshness window.
-- **Refuses:** returns `pair-ack` with `reason: 'session-not-found'` if the session has been garbage-collected. Phone restarts pairing.
+### Transient WS drop, host still alive
+
+Phone reconnects, sends `pair` with `resume { sessionId, lastSeq, lastLayoutId }`. Host replays any host→phone messages after `lastSeq`, returns `pair-ack` with the same `sessionId`. No re-auth, since `authEvent` is still within freshness window. If `lastLayoutId` matches the host's current layout, host MAY skip re-sending it.
+
+### Host process crash, host restarted within session window
+
+Phone persists `{sessionId, resumeToken, lastSeq, lastLayoutId, lastAuthEvent}` in localStorage under `joystick:session:<broker-host>:<gameId>`. On reconnect, phone sends `pair` with `resume { sessionId, lastSeq, lastLayoutId, resumeToken }`. The broker, if it caches party state (recommended for shared brokers), re-spawns or re-binds a host slot from the resume token and replays. Phone is not asked to re-pair from QR. Borrowed from Rocketcrab's `lastPartyState` cookie pattern (`server/rocketcrab.ts:138-178`).
+
+### Session garbage-collected
+
+Host returns `pair-ack` with `reason: 'session-not-found'`. Phone discards local session state and restarts pairing (user re-scans QR or types code).
 
 Phone deduplicates incoming messages by `seq`. Host treats input gaps as lost input (no acknowledgement layer at v1 for inputs).
+
+### Takeover
+
+If the user pairs again from a second phone with the same pubkey (e.g. lost the first phone), the new `pair` carries `takeover: true`. Host accepts the new session, sends `bye { reason: 'replaced' }` to the old WS, and replies `pair-ack { ok: true }` to the new one. Without `takeover: true`, a second concurrent pair from the same pubkey is refused with `reason: 'already-paired'`.
 
 ## Multi-Controller Sessions
 
 Multiple phones may pair to one host. Each gets a distinct `playerId` from the host's `pair-ack`. The host distinguishes inputs by pubkey + sessionId. The protocol places no constraint on how many phones a host accepts; that is a game decision.
 
 Layouts may be per-player. A host pushing a `layout` to phone A does not affect phone B.
+
+## Phone Implementation Requirements
+
+The wire protocol is transport. These requirements describe the implementation conformance the joystick PWA MUST meet for ergonomics that survive contact with real users. Reference implementation: **nipplejs** (`https://github.com/yoannmoinet/nipplejs`) for stick behaviour; asteroid-sats' `src/touch.ts` for tap-overloaded-pad pattern.
+
+### Pointer ownership
+
+- Use the Pointer Events API throughout (`pointerdown` / `pointermove` / `pointerup` / `pointercancel`). Do NOT use `touch*` events.
+- Each `PointerEvent.pointerId` is owned by exactly one control at a time. A control claims an id on `pointerdown` inside its hit-test region and releases it on `pointerup` / `pointercancel`. A second pointer hitting the same control is rejected at the control level so dual-stick cross-talk is structurally impossible.
+- Call `setPointerCapture(pointerId)` on `pointerdown` so the control keeps tracking even if the finger slides outside its visual bounds.
+- On `visibilitychange` (PWA backgrounded), synthesise `pointercancel` for every captured pointer and release. Otherwise stuck "permanently pressed" buttons after returning from a notification.
+
+### Stick (joystick) ergonomics
+
+- **Default mode is `dynamic`.** Stick origin spawns where the user's thumb first lands. Thumb position should never be dictated by where CSS placed the pad. Static mode is for HUD-locked elements (steering wheel, fixed dpad). Semi mode for hybrid.
+- **Threshold default 0.1.** No directional events emitted until normalised magnitude exceeds threshold. Single threshold per stick, not separate heading/thrust thresholds.
+- **Follow = true by default** in dynamic mode. When thumb travels beyond max radius, outer base follows so input continues. Prevents the "ran out of pad" failure that breaks gameplay.
+- **Visual states:** outer ring (base) + inner cap (thumb). Distinct from a single knob translate. Inner cap eases back to centre over 120ms on release (not snap).
+- **Rest opacity 0.5** (configurable per-stick). Idle pad is visible but does not dominate the screen.
+- **Haptic tick on threshold crossing** inside→outside, using `HapticProfile.dpadTick` unless `stickControl.hapticTick` overrides. Phones without `navigator.vibrate` skip silently.
+- **`will-change: transform` on the inner cap** so the compositor handles per-frame translate without main-thread layout cost.
+- **Diagonal handling on dpad:** default 4-way. `eightWay: true` enables diagonals with `diagonalThreshold` (default 0.4 of pad radius) to suppress jittery diagonals.
+
+### Touch target sizing
+
+- Minimum touch target 44 CSS px (Apple HIG) / 48 CSS px (Material). Phone MUST enforce this floor on any `size` field, regardless of host's requested size. Layouts with too-small controls render larger than the host asked but report `controlsReady` honestly in `layout-ack`.
+- Stick default diameter 140px (matches asteroid-sats `MAX_RADIUS=70`).
+
+### Safe areas
+
+- All layouts respect `env(safe-area-inset-top|right|bottom|left)`. Positions normalised to viewport are interpreted within the safe-area rectangle, not the raw viewport. iPhone home-indicator and notch areas are never occupied by controls.
+- Layout body MUST set `touch-action: none` and `overscroll-behavior: contain` on its root, and `viewport-fit: cover` in the meta viewport, to defend against iOS Safari edge-swipe back-navigation and pinch-zoom while gameplay is active.
+- Phone MUST `preventDefault()` on `gesturestart`, `gesturechange`, `gestureend` while a layout is active.
+
+### Wake lock
+
+- When `layout.wakeLock === true`, phone requests `navigator.wakeLock.request('screen')` on layout-ack. Released on `bye` / next layout with `wakeLock !== true` / page hidden.
+
+### Haptic / audio activation
+
+- Both `navigator.vibrate` and `AudioContext` are gated behind a user gesture on most browsers. Phone MUST fire a one-shot zero-duration `vibrate(0)` and `audioContext.resume()` inside the first `pointerdown` after pair-ack, so subsequent host-pushed haptics and audio cues land without a re-tap.
+
+### Stats / telemetry
+
+- Phone MAY emit `stats` envelope every 5s when host has signalled `caps.statsRequested` (carried as an optional `caps.requestStats` boolean on host-side, defaulting off to save bandwidth).
+- Phone SHOULD track local "stick ran out of pad" events (touch distance > MAX_RADIUS held for >200ms) for size-tuning telemetry; emit in `stats.notes` if instrumented.
+
+### Player Layout Overrides
+
+Players are not obliged to accept host-suggested layouts as-is. The joystick PWA SHOULD let each player customise position, size, colour, opacity, and stick mode per control, per game. Overrides are local to the phone and invisible to the host: input events still carry the host's original `controlId`, so a player can move the "fire" button anywhere and the host receives `fire` regardless.
+
+**Overrideable fields by control kind:**
+
+| Field | dpad | stick | button | swipe | list | qrscan | photo |
+|-------|:----:|:-----:|:------:|:-----:|:----:|:------:|:-----:|
+| `pos` (move)            | yes¹ | yes¹ | yes¹  | yes¹ | yes¹ | yes¹ | yes¹ |
+| `size` (resize)         | yes  | yes  | yes   | yes  | yes  | yes  | yes  |
+| `colour` / `opacity`    | yes  | yes  | yes   | yes  | yes  | yes  | yes  |
+| `icon` / `label`        | -    | -    | yes   | -    | -    | -    | -    |
+| `mode` (stick variant)  | -    | yes  | -     | -    | -    | -    | -    |
+| `threshold`             | -    | yes  | -     | -    | -    | -    | -    |
+| `lockX` / `lockY`       | -    | yes  | -     | -    | -    | -    | -    |
+| `shape`                 | -    | yes  | -     | -    | -    | -    | -    |
+| `follow`                | -    | yes  | -     | -    | -    | -    | -    |
+| `restOpacity`           | -    | yes  | -     | -    | -    | -    | -    |
+| `hapticTick`            | -    | yes  | -     | -    | -    | -    | -    |
+| `eightWay`              | yes  | -    | -     | -    | -    | -    | -    |
+| `hold` semantics        | -    | -    | yes   | -    | -    | -    | -    |
+| `id` / `kind`           | NO   | NO   | NO    | NO   | NO   | NO   | NO   |
+
+¹ Only if `pinned !== true`.
+
+**Storage model:**
+
+Phone persists overrides in `localStorage` under `joystick:overrides:<gameId>:<pubkey>` as an array of partial control records keyed by `id`:
+
+```ts
+interface ControlOverride {
+  id: string;                              // matches host's Control.id; unknown ids ignored
+  pos?: Position;
+  size?: number | { w: number; h: number };
+  colour?: string;                         // CSS colour, free-form (high-contrast / colour-blind palettes welcome)
+  opacity?: number;                        // 0..1
+  icon?: string;
+  label?: string;
+  hidden?: boolean;                        // suppress rendering entirely; rejected by phone if Control.required === true
+  // stick-specific (silently ignored on non-stick controls)
+  mode?: 'static' | 'dynamic' | 'semi';
+  threshold?: number;
+  lockX?: boolean; lockY?: boolean;
+  shape?: 'circle' | 'square';
+  follow?: boolean;
+  restOpacity?: number;
+  hapticTick?: HapticPattern;
+}
+
+interface OverrideProfile {
+  name: string;                            // 'default', 'lefty', 'one-handed', 'tournament', ...
+  scope: 'game' | 'global';                // per-game overrides shadow global; global is the fallback
+  matchGamePalette?: boolean;              // when true, phone snaps player's chosen colours to nearest game-supplied swatch (per § Player Layout Overrides → colour scope)
+  overrides: ControlOverride[];
+}
+```
+
+**Application order on incoming `layout`:**
+
+1. Start from the host's layout descriptor.
+2. For each control with a player override (matching `id`): merge the override on top, except where blocked by `pinned: true` (drops `pos`) or `required: true` (drops `hidden`).
+3. If after merging any `required: true` control is no longer reachable (off-screen, hidden, or zero-sized), discard ALL overrides for that control and use host values for it. Log warning.
+4. Render. Emit `layout-ack` with `appliedOverrides: string[]` listing controlIds that received overrides (optional, useful for host-side diagnostics; omit for privacy in shared brokers).
+
+**Configurator UI requirements:**
+
+- Long-press a control to enter edit mode. Drag to reposition. Pinch to resize. Tap a swatch to recolour.
+- Slider for opacity, dropdown for stick mode (when editing a stick).
+- "Match game palette" toggle: when on, the colour picker snaps to the game's supplied palette (host MAY include a `palette: string[]` field on the layout); when off, free-form CSS colour input including high-contrast and colour-blind safe options.
+- Profile picker: switch between named profiles. Saving a profile writes to the storage key above.
+- Preview-against-live overlay: show the host's current layout faded in the background while the player drags overrides on top, so the player sees the actual gameplay context.
+
+**Cross-device portability (v1.2 candidate):**
+
+Players will be able to publish overrides to their Nostr relays as a parametrized replaceable event (proposed kind 30040, `d`-tag = gameId, content NIP-44 gift-wrapped to self for privacy). Phone fetches on pair and merges with local storage (Nostr wins on conflict). Same npub on any phone gets identical layouts. This is deferred from v1.1.
+
+### Reference behaviour table
+
+| Concern | Default | Source |
+|---------|---------|--------|
+| Stick mode | dynamic (floating origin) | nipplejs `dynamic` |
+| Threshold | 0.1 | nipplejs default |
+| Shape | circle | nipplejs default |
+| Follow | true in dynamic, false in static | nipplejs |
+| fadeTimeMs | 120 | nipplejs |
+| restOpacity | 0.5 | nipplejs |
+| Snap-back ease | 120ms cubic-bezier | nipplejs |
+| Dpad mode | 4-way | asteroid-sats current |
+| Touch target floor | 44 CSS px | Apple HIG |
+| Stick diameter | 140 CSS px | asteroid-sats `src/touch.ts` `MAX_RADIUS=70` |
+| Pointer API | Pointer Events, not Touch | asteroid-sats `src/touch.ts:187` |
 
 ## NIP Candidacy
 
@@ -474,9 +708,8 @@ Recommendation: publish Half A as a NIP once two independent implementations exi
 
 - **Encrypted broker mode:** should v1 mandate end-to-end encryption between host and phone over the broker? Adds key-derivation step in pair handshake, hides input timing/content from broker.
 - **Discovery without QR:** publish a kind-XXXX "host advertisement" to user's relay so phones can join games near them in the social graph. Requires care with location privacy.
-- **Hardware controllers:** could a Heartwood-ESP32 implement the protocol directly, behaving as a phone? Useful for kiosks / arcade cabinets / accessibility hardware. Probably yes, no changes required, but worth piloting.
 - **Replay attacks across same-origin games:** if two games are on the same origin (subpaths), the `gameId` and `appName` differ but origin matches. The `authEvent` is then reusable. Mitigation: include `gameId` in the challenge derivation.
-- **Layout transition timing:** should a `layout` message be acked by the phone so the host knows when to start sending inputs against the new layoutId? Or fire-and-forget with `layoutId` guard? Current design is the latter.
+- **Code namespace exhaustion:** 4-letter `[a-z]` = 456 976 codes. At typical session lifetime (10 min) this caps a broker at ~760 concurrent sessions before collision risk gets uncomfortable. Larger games may need 5-letter codes or a vanity-prefix scheme.
 
 ## Reference Implementation
 
@@ -501,4 +734,15 @@ Recommendation: publish Half A as a NIP once two independent implementations exi
 
 ## Changelog
 
+- **v1.1 draft, 2026-05-14:** prior-art review pass + player agency pass.
+  - **Pairing:** added 4-letter join code as fallback to QR (Rocketcrab pattern).
+  - **Pair:** added `takeover?: boolean` flag for "lost-my-phone" replacement, and `resume.lastLayoutId` / `resume.resumeToken` for host-crash-survives reconnect.
+  - **Pair-ack:** added `resumeToken` issued for cookie-style persistence; added `banned` reason.
+  - **New messages:** `layout-ack` (phone confirms layout bound), `kick` (host-initiated removal), `stats` (rolling connection health).
+  - **Stick control schema:** added `mode` (static/dynamic/semi, default dynamic), `threshold` (replaces `deadzone`), `lockX` / `lockY`, `shape`, `follow`, `fadeTimeMs`, `restOpacity`, `catchDistance`, `hapticTick`. All borrowed from nipplejs, the actual joystick-ergonomics reference.
+  - **Dpad control schema:** added `eightWay` and `diagonalThreshold`.
+  - **Player agency:** added `pinned?: boolean` and `required?: boolean` to every Control variant. New "Player Layout Overrides" subsection codifying override schema, profiles, configurator UI, and v1.2 Nostr-portable plan (kind 30040).
+  - **New section:** Phone Implementation Requirements — codifies pointer-id ownership, safe-area handling, edge-swipe / pinch-zoom defence, wake lock, haptic/audio unlock, touch target floor, snap-back animation, will-change hint, player overrides.
+  - **Reconnect & Resume:** rewritten to cover three failure modes (transient drop, host crash, GC).
+  - **Open Questions:** layout-transition-timing closed (resolved by `layout-ack`). Hardware controller closed (no protocol change needed). Added code-namespace exhaustion as a new question.
 - **v1 draft, 2026-05-14:** initial spec.

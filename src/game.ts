@@ -671,6 +671,54 @@ function spawnCouncilWave(s: GameState): void {
   }, 1_600);
 }
 
+/** Spawn N textured filler asteroids from random edges, drifting
+ *  inward. Used by the 600bn infinity mode — keeps the playfield
+ *  populated after the council ring has been cleared. Capped via
+ *  the caller; this fn itself doesn't enforce a max. */
+function spawnSanctumFillers(s: GameState, count: number): void {
+  const types: AsteroidType[] = ['pallasite', 'iron', 'stony', 'chondrite'];
+  for (let i = 0; i < count; i++) {
+    // Random asteroid mineral — pallasite ones are the visual treat
+    // (gold sparkle aura + jackpot drop), iron is the chunky armour,
+    // chondrite explodes into more children, stony is baseline.
+    // Letting all four come through gives the field real variety.
+    const t = types[Math.floor(Math.random() * types.length)];
+    // Tag the filler so other systems (HUD, music) can tell council
+    // vs filler in the future. For now it just rides the standard
+    // asteroid pipeline.
+    s.asteroids.push(spawnAsteroid('large', 1, undefined, undefined, t));
+  }
+}
+
+/** Maximum live asteroids during the 600bn infinity wave. Holds
+ *  framerate steady on mid-range mobile while still feeling busy.
+ *  Counts ALL sizes (large + medium + small fragments). */
+const SANCTUM_ASTEROID_CAP = 12;
+/** Spawn cadence on 600bn — when the count is below the cap, a new
+ *  filler drifts in every ~3s. */
+const SANCTUM_FILLER_INTERVAL_MS = 3_000;
+let sanctumNextFillerSpawn = 0;
+
+/** Tick the 600bn infinity filler spawner. Called from updateGame
+ *  while the run is in flight. Adds one asteroid every interval as
+ *  long as we're under the cap; respawn instantly if the field is
+ *  near empty to avoid a dead-screen moment. */
+function tickSanctumFillers(s: GameState, dtMs: number): void {
+  if (getFlavour() !== '600bn' || s.wave !== 1) return;
+  if (s.phase !== 'playing' && s.phase !== 'wavestart') return;
+  if (s.asteroids.length >= SANCTUM_ASTEROID_CAP) return;
+  sanctumNextFillerSpawn -= dtMs;
+  // Hard top-up when nearly empty so the player isn't left chasing a
+  // single survivor while the room idles. Below 3 we re-fill fast.
+  if (s.asteroids.length < 3 && sanctumNextFillerSpawn > 600) {
+    sanctumNextFillerSpawn = 600;
+  }
+  if (sanctumNextFillerSpawn <= 0) {
+    spawnSanctumFillers(s, 1);
+    sanctumNextFillerSpawn = SANCTUM_FILLER_INTERVAL_MS;
+  }
+}
+
 export function beginWave(s: GameState, wave: number): void {
   s.wave = wave;
   // Milestone achievements on wave entry — fired here so the badge lands
@@ -708,13 +756,14 @@ export function beginWave(s: GameState, wave: number): void {
   if (getFlavour() === '600bn' && wave === 1) {
     spawnCouncilWave(s);
     // UFO spawning kept — the 600bn UFO renders as the $600B sacred-
-    // number badge (see drawSixHundredBnLogoUfo). First spawn pulled
-    // in slightly so the badge appears during the active wave instead
-    // of late, when the council might already be half-cleared. Mines
-    // still suppressed — the council ring shouldn't have static well
-    // hazards crowding it.
+    // number badge. First spawn pulled in slightly so the badge
+    // appears during the active wave. Mines suppressed — the council
+    // ring shouldn't have static well hazards crowding it.
     s.nextUfoSpawn = 8_000;
     s.nextMineSpawn = 10 * 60 * 1000;
+    // Reset the infinity-filler timer so the first re-supply doesn't
+    // fire before the player engages the council.
+    sanctumNextFillerSpawn = SANCTUM_FILLER_INTERVAL_MS;
   } else if (setPiece) {
     setPiece.setup(s);
   } else if (wave === FINAL_WAVE) {
@@ -2188,6 +2237,8 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   // BONUS phase tick — keeps spawn density up during HYPER BLITZ and
   // flips into the EVENT HORIZON PRELUDE spawn pattern in the last 15s.
   tickBonus(s);
+  // 600bn infinity-wave filler spawner — no-op on every other path.
+  tickSanctumFillers(s, dt * 1000);
 
   // Detect the 1979 lurking exploit so coin credit can be withheld for it.
   updateLurkState(s, now);
@@ -2812,10 +2863,11 @@ export function updateGame(s: GameState, dt: number, now: number): void {
       // against the active seed — two players with the same daily
       // seed see the bonus on the same runs.
       if (getFlavour() === '600bn' && s.wave === 1) {
-        // 600bn Sanctum is a single-wave run — clearing the council
-        // ends the experience instead of warping to wave 2. The
-        // completion screen carries the FUCHS2 card + claim picker.
-        triggerCompletion(s);
+        // 600bn is an infinity wave — when the field empties we
+        // spawn a fresh batch of themed asteroids instead of warping
+        // or triggering completion. The run only ends on ship death
+        // (handled elsewhere via the lives-out → gameover path).
+        spawnSanctumFillers(s, 5);
       } else if (s.wave === 9 && gameRng() < getGameConfig().bonus_wave_chance) {
         startBonus(s);
       } else {

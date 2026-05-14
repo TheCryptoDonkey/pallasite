@@ -147,9 +147,11 @@ function attachButton(parent: HTMLElement, spec: ButtonSpec, state: GameState): 
 }
 
 /**
- * Heading-mode virtual joystick: the stick angle directly drives the ship's
- * target heading; deflection magnitude past a threshold engages thrust. One
- * intuitive motion — point where you want to go.
+ * Heading-mode virtual joystick with floating origin: the touchdown point
+ * becomes the stick centre for that gesture (nipplejs `dynamic` mode), so
+ * thumb position is never dictated by where CSS placed the pad. Stick angle
+ * drives the ship's target heading; deflection magnitude past a threshold
+ * engages thrust.
  *
  *   - Drag: sets `state.targetHeading` (game lerps ship rotation toward it
  *     at ~8 rad/s) and `state.thrustOverride` (true past THRUST_THRESHOLD).
@@ -163,9 +165,11 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState): 
   const THRUST_THRESHOLD = 0.45;  // half-push or more = engage thrust
   const TAP_TIME_MS      = 220;   // press shorter than this with no drag = fire
   const TAP_MOVE_PX      = 8;     // total movement allowed before tap is "drag"
+  const SNAP_BACK_MS     = 140;   // CSS transition 120ms + small margin to safely remove class
 
   let activeId: number | null = null;
   let originX = 0, originY = 0;
+  let padCx = 0, padCy = 0;     // pad's CSS centre, cached at pointerdown so pointermove doesn't trigger layout reads each frame
   let pressedAt = 0;
   let maxDriftPx = 0;
   let didEngage = false;  // true once we cross the heading deadzone — disables tap-fire
@@ -179,14 +183,20 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState): 
     e.preventDefault();
     activeId = e.pointerId;
     const rect = pad.getBoundingClientRect();
-    originX = rect.left + rect.width / 2;
-    originY = rect.top + rect.height / 2;
+    padCx = rect.left + rect.width / 2;
+    padCy = rect.top + rect.height / 2;
+    originX = e.clientX;
+    originY = e.clientY;
     pressedAt = performance.now();
     maxDriftPx = 0;
     didEngage = false;
     pad.setPointerCapture(e.pointerId);
     void audio.unlockAudio();
     pad.classList.add('active');
+    // Snap the knob to under the finger (no animation) so the visual centre is
+    // where the user touched, not where CSS positioned the pad.
+    knob.classList.remove('snapping');
+    knob.style.transform = `translate(${(originX - padCx).toFixed(1)}px, ${(originY - padCy).toFixed(1)}px)`;
   });
 
   pad.addEventListener('pointermove', e => {
@@ -196,9 +206,13 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState): 
     const dist = Math.hypot(dx, dy);
     if (dist > maxDriftPx) maxDriftPx = dist;
     const clipped = Math.min(dist || 1, MAX_RADIUS);
-    const kx = ((dx / (dist || 1)) * clipped);
-    const ky = ((dy / (dist || 1)) * clipped);
-    knob.style.transform = `translate(${kx.toFixed(1)}px, ${ky.toFixed(1)}px)`;
+    const clipDx = (dx / (dist || 1)) * clipped;
+    const clipDy = (dy / (dist || 1)) * clipped;
+    // Knob translate is relative to its CSS home (pad centre); compose the
+    // floating-origin offset with the clipped drag delta.
+    const knobX = (originX - padCx) + clipDx;
+    const knobY = (originY - padCy) + clipDy;
+    knob.style.transform = `translate(${knobX.toFixed(1)}px, ${knobY.toFixed(1)}px)`;
     const magnitude = clipped / MAX_RADIUS;  // 0..1
     if (magnitude > HEADING_DEADZONE) {
       didEngage = true;
@@ -216,7 +230,9 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState): 
   function release(e: PointerEvent): void {
     if (e.pointerId !== activeId) return;
     activeId = null;
+    knob.classList.add('snapping');
     knob.style.transform = '';
+    setTimeout(() => knob.classList.remove('snapping'), SNAP_BACK_MS);
     pad.classList.remove('active');
     clearMotion();
     // Tap-to-fire: short press without engaging the heading deadzone fires once.
@@ -234,4 +250,12 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState): 
   pad.addEventListener('pointercancel', release);
   pad.addEventListener('pointerleave',  release);
   pad.addEventListener('contextmenu',   e => e.preventDefault());
+
+  // PWA backgrounded mid-press: synthesise a release so the knob isn't stuck
+  // and the ship doesn't keep thrusting in the void while the user takes a call.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && activeId !== null) {
+      release({ pointerId: activeId } as PointerEvent);
+    }
+  });
 }
