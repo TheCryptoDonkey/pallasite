@@ -169,6 +169,13 @@ export function getMasterVolume(): number { return settings.master; }
 export function getMusicVolume(): number  { return settings.music; }
 export function getSfxVolume(): number    { return settings.sfx; }
 
+/** Diagnostic — current AudioContext lifecycle state, or 'none' if the
+ *  context hasn't been created yet (no user gesture has reached
+ *  getCtx()). Used by the ?dbg=audio overlay for Safari debugging. */
+export function getAudioContextState(): 'none' | AudioContextState {
+  return ctx ? ctx.state : 'none';
+}
+
 export function setMasterVolume(v: number): void {
   settings.master = clamp01(v);
   saveSettings();

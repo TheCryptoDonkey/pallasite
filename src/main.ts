@@ -791,6 +791,14 @@ async function boot(): Promise<void> {
   // would be pure data waste on a phone-grade connection.
   if (!isControllerSurface()) preloadAllTracks();
 
+  // ?dbg=audio overlay — pinned diagnostic panel showing AudioContext
+  // state + current music element state + last load failure. Enables
+  // self-serve debugging of Safari-specific music issues without
+  // needing devtools open.
+  if (!isControllerSurface() && new URLSearchParams(window.location.search).get('dbg') === 'audio') {
+    setupAudioDebugOverlay();
+  }
+
   // 600bn flavour — prime the council manifest + member avatars so
   // wave 1 (council-textured asteroids) has its portraits ready by
   // the time IGNITE fires. maybePreloadCouncil no-ops on other
@@ -1287,6 +1295,57 @@ function watchForSignerUpgrade(): void {
  * surface the update banner; on confirmation, post SKIP_WAITING + listen for
  * controllerchange to trigger a single clean reload.
  */
+/** Pinned audio diagnostic overlay activated via ?dbg=audio. Polls every
+ *  500ms to surface AudioContext state, the current track's element
+ *  state (paused, readyState, networkState, error code/message) and
+ *  the last load-failure event. The point is "tell me why Safari is
+ *  silent" without having to open Web Inspector. Lives until reload. */
+function setupAudioDebugOverlay(): void {
+  const panel = document.createElement('div');
+  panel.style.cssText = [
+    'position:fixed', 'top:8px', 'left:8px',
+    'z-index:99999', 'pointer-events:none',
+    'background:rgba(0,0,0,0.75)', 'color:#7fffea',
+    'padding:6px 8px', 'border-radius:4px',
+    'font:11px/1.35 ui-monospace,monospace',
+    'letter-spacing:0.04em', 'max-width:60vw',
+    'border:1px solid rgba(127,255,234,0.4)',
+    'white-space:pre',
+  ].join(';');
+  document.body.appendChild(panel);
+
+  let lastFailMsg = '';
+  window.addEventListener('pallasite:music-load-failed', (ev) => {
+    const d = (ev as CustomEvent<{ id: string; src: string; code?: number; msg?: string }>).detail;
+    lastFailMsg = `LOAD-FAIL ${d.id} src=${d.src} code=${d.code ?? '-'} ${d.msg ?? ''}`;
+  });
+
+  const render = (): void => {
+    const ctxState = audio.getAudioContextState();
+    const snap = (window as unknown as { __mDbg?: () => unknown }).__mDbg
+      ? (window as unknown as { __mDbg: () => unknown }).__mDbg()
+      : null;
+    void snap;
+    // Import the snapshot lazily — dynamic import keeps the static
+    // graph clean and lets Vite tree-shake if dbg is ever ripped out.
+    import('./music.js').then(({ getMusicDebugSnapshot }) => {
+      const s = getMusicDebugSnapshot();
+      panel.textContent = [
+        `audio.ctx: ${ctxState}`,
+        `track: ${s.currentId ?? '-'}`,
+        `paused: ${s.paused ?? '-'}   failed: ${s.failedFlag ?? '-'}`,
+        `readyState: ${s.readyState ?? '-'}   networkState: ${s.networkState ?? '-'}`,
+        `errCode: ${s.errorCode ?? '-'}   ${s.errorMsg ?? ''}`.trimEnd(),
+        `loaded#: ${s.loadedCount}`,
+        `src: ${s.src ?? '-'}`,
+        lastFailMsg ? `last: ${lastFailMsg}` : '',
+      ].filter(Boolean).join('\n');
+    }).catch(() => undefined);
+  };
+  render();
+  window.setInterval(render, 500);
+}
+
 function setupServiceWorker(): void {
   if (!('serviceWorker' in navigator)) return;
   navigator.serviceWorker.register('/sw.js').then(reg => {
