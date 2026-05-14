@@ -3066,6 +3066,75 @@ function drawHyperspaceEffects(ctx: CanvasRenderingContext2D, effects: Hyperspac
   }
 }
 
+// ── Offscreen asteroid indicators ───────────────────────────────────────────
+//
+// In modern-mode portrait the visible viewport is narrower than the 960×720
+// world, so when the wave is nearly cleared a stray gameplay-plane rock
+// can sit wholly off-camera and force the player to wrap-hunt for it.
+// Draw a chevron on the visible-band edge pointing toward each remaining
+// rock when only a few are left. Wrap-aware: picks the nearest copy of
+// the asteroid across the world wrap.
+
+function drawOffscreenIndicators(ctx: CanvasRenderingContext2D, state: GameState, now: number): void {
+  if (state.phase !== 'playing') return;
+  if (state.waveClearAt !== null) return;
+  const collide = state.asteroids.filter(a => a.alive && (a.depth ?? 3) === 3);
+  // Only when the wave is nearly clear — otherwise the screen would be
+  // covered in arrows during a busy frame, which is noise.
+  if (collide.length === 0 || collide.length > 3) return;
+
+  const bounds = getVisibleBoundsW();
+  const visW = bounds.right - bounds.left;
+  const visH = bounds.bottom - bounds.top;
+  // If the whole world is visible, nothing is offscreen.
+  if (visW >= WORLD_W && visH >= WORLD_H) return;
+
+  const cx = (bounds.left + bounds.right) / 2;
+  const cy = (bounds.top + bounds.bottom) / 2;
+  const halfW = visW / 2;
+  const halfH = visH / 2;
+  const margin = 32;
+
+  for (const a of collide) {
+    // Wrap-aware delta from visible-band centre to asteroid: take the
+    // shortest signed offset across the world wrap on each axis.
+    let dx = ((a.pos.x - cx) % WORLD_W + WORLD_W * 1.5) % WORLD_W - WORLD_W / 2;
+    let dy = ((a.pos.y - cy) % WORLD_H + WORLD_H * 1.5) % WORLD_H - WORLD_H / 2;
+    const wx = cx + dx;
+    const wy = cy + dy;
+    const visible = wx >= bounds.left && wx <= bounds.right && wy >= bounds.top && wy <= bounds.bottom;
+    if (visible) continue;
+
+    const angle = Math.atan2(dy, dx);
+    // Place the chevron along the ray from centre, stopping at the
+    // nearest visible-band edge minus margin so it isn't half-clipped.
+    const cosA = Math.cos(angle);
+    const sinA = Math.sin(angle);
+    const tx = cosA !== 0 ? Math.abs((halfW - margin) / cosA) : Number.POSITIVE_INFINITY;
+    const ty = sinA !== 0 ? Math.abs((halfH - margin) / sinA) : Number.POSITIVE_INFINITY;
+    const t = Math.min(tx, ty);
+    const ax = cx + cosA * t;
+    const ay = cy + sinA * t;
+
+    const pulse = 0.85 + 0.15 * Math.sin(now * 0.008);
+    const size = 14 * pulse;
+    ctx.save();
+    ctx.translate(ax, ay);
+    ctx.rotate(angle);
+    ctx.fillStyle = '#ffd84a';
+    ctx.shadowColor = '#ff8a3a';
+    ctx.shadowBlur = 14;
+    ctx.beginPath();
+    ctx.moveTo(size, 0);
+    ctx.lineTo(-size * 0.6, -size * 0.7);
+    ctx.lineTo(-size * 0.25, 0);
+    ctx.lineTo(-size * 0.6, size * 0.7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
 // ── Wave-clear pickup countdown ─────────────────────────────────────────────
 //
 // During the WAVE_CLEAR_GRACE_MS window after the last gameplay-plane
@@ -3299,6 +3368,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   drawWaveBanner(ctx, state, now);
   drawBonusBanner(ctx, state, now);
   drawWaveClearCountdown(ctx, state, now);
+  drawOffscreenIndicators(ctx, state, now);
 
   // WebGL mesh overlay — runs only if any category is currently on
   // 'mesh' tier AND the overlay module has finished loading. Lives on
