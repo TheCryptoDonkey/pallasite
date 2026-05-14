@@ -1,63 +1,93 @@
-# 600b.pallasite.app — serves the same dist as pallasite.app so the
-# 600bn Sanctum teaser (getFlavour() detects the subdomain at runtime)
-# lives at a memorable URL without a parallel build pipeline.
+# Caddy deploy patterns for forgesworn SPAs (pallasite, mysignet, veil)
 #
-# IMPORTANT: do NOT use a bare `try_files {path} /index.html`. That
-# returns the SPA index.html with content-type text/html for ANY
-# missing path, including /assets/<hash>.js. When a user has an old
-# bundle cached that tries to import a now-removed hash, Caddy hands
-# back HTML for a request expecting JS; the browser fails the module
-# load with a MIME error, AND the service worker happily caches the
-# bad response. The pair-with-phone flow has been bitten by exactly
-# this on pallasite.app. Scope the SPA fallback to navigation requests
-# only so real asset 404s return 404 cleanly.
+# Originally a snippet for adding 600b.pallasite.app as a hostname
+# alongside pallasite.app, now also documents the broader SPA pattern
+# that was rolled across pallasite.app, mysignet.app, and
+# veil.forgesworn.dev on 2026-05-14 (Caddyfile.bak.20260514-121336).
 #
-# Two ways to apply this — pick whichever fits the existing Caddyfile
-# on <deploy-host>:/etc/caddy/Caddyfile better.
+# ─── The pair-with-phone bug, for the record ─────────────────────────
+# A bare `try_files {path} /index.html` returns the SPA index.html
+# with content-type text/html for ANY missing path, including
+# /assets/<hash>.js. When a user had an old bundle cached that tried
+# to import a now-removed hash, Caddy handed back HTML for a JS
+# request; the browser failed the module load with a MIME error AND
+# the service worker happily cached the bad response. Pallasite was
+# bitten by this in May 2026. Scope the SPA fallback to navigation
+# requests only so real asset 404s return 404 cleanly.
 #
-# Option A — fold into the existing pallasite.app block. Caddy lets
-# you list multiple hostnames before the brace. Cleanest because we
-# end up with ONE site definition, two TLS certs, same root + headers.
+# A second related bug: a path-only `@hashed` matcher applies the
+# `cache-control: immutable, max-age=31536000` header to 404
+# responses too, letting browsers cache the 404 for a year. Use a
+# combined `path + file` matcher so the long cache only stamps real
+# files.
 #
-#   pallasite.app, 600b.pallasite.app {
+# ─── The canonical SPA block ─────────────────────────────────────────
+#
+#   pallasite.app, 600b.pallasite.app, watch.pallasite.app {
 #       encode gzip
-#       root * <pallasite-static-root>
+#       handle /api/* {
+#           reverse_proxy 127.0.0.1:8787
+#       }
+#       handle {
+#           root * <pallasite-static-root>
 #
-#       # SPA fallback only for navigation-shaped requests. Missing
-#       # /assets/* (or any path with a known asset extension) falls
-#       # through to file_server and returns a clean 404.
-#       @navigation {
-#           not file
+#           # SPA fallback only for navigation-shaped requests. Asset
+#           # extensions are excluded so missing /assets/<hash>.js
+#           # falls through to file_server and returns a clean 404.
+#           @spa {
+#               not path *.js *.css *.map *.png *.jpg *.jpeg *.svg *.webp *.woff *.woff2 *.opus *.mp3 *.json *.webmanifest *.ico *.txt
+#           }
+#           rewrite @spa /index.html
+#
+#           file_server
+#
+#           # Long-cache header only on real files. Without the `file`
+#           # matcher, 404s would inherit `immutable, max-age=year`.
+#           @hashed_real {
+#               path /assets/* /music/* /backgrounds/*
+#               file
+#           }
+#           header @hashed_real Cache-Control "public, max-age=31536000, immutable"
+#       }
+#   }
+#
+# ─── Minimal variant (no /api/* proxy, no /assets/* long-cache) ──────
+# Useful for static-only SPAs like mysignet.app or veil.forgesworn.dev:
+#
+#   <hostname> {
+#       root * /opt/<app>
+#       @spa {
 #           not path *.js *.css *.map *.png *.jpg *.jpeg *.svg *.webp *.woff *.woff2 *.opus *.mp3 *.json *.webmanifest *.ico *.txt
 #       }
-#       rewrite @navigation /index.html
+#       rewrite @spa /index.html
 #       file_server
 #   }
 #
-# Option B — separate block that mirrors the existing one. Use this
-# if pallasite.app has any unique directives you'd rather not share
-# (cache headers, auth, etc.).
+# ─── 600b.pallasite.app as a co-hosted alias ─────────────────────────
+# The 600bn Sanctum teaser (getFlavour() detects the subdomain at
+# runtime) shares the pallasite.app dist. Two ways to apply on the
+# existing Caddyfile at <deploy-host>:/etc/caddy/Caddyfile.
 #
-#   600b.pallasite.app {
-#       encode gzip
-#       root * <pallasite-static-root>
+# Option A — fold into the existing pallasite.app block by adding
+# 600b.pallasite.app to the hostname list before the brace. Cleanest.
 #
-#       @navigation {
-#           not file
-#           not path *.js *.css *.map *.png *.jpg *.jpeg *.svg *.webp *.woff *.woff2 *.opus *.mp3 *.json *.webmanifest *.ico *.txt
-#       }
-#       rewrite @navigation /index.html
-#       file_server
-#   }
+# Option B — separate block mirroring the structure above. Use if
+# pallasite.app has unique directives you'd rather not share.
 #
-# After editing:
+# ─── After editing ───────────────────────────────────────────────────
+#   sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 #   sudo systemctl reload caddy
-# Caddy auto-provisions a Let's Encrypt cert for 600b.pallasite.app
-# on first reload. Watch the logs to confirm:
 #   sudo journalctl -u caddy -f
 #
-# Verify the fix:
-#   curl -sI https://pallasite.app/assets/nonexistent-file.js
-# Expected: HTTP/2 404 with text/plain or similar. If it returns 200
-# with text/html, the @navigation matcher is mis-scoped — fix that
-# before redeploying any bundle hashes.
+# Caddy auto-provisions a Let's Encrypt cert for any new hostname on
+# first reload.
+#
+# ─── Verify ──────────────────────────────────────────────────────────
+#   # Asset that doesn't exist: expect HTTP/2 404
+#   curl -sI https://pallasite.app/assets/does-not-exist.js
+#
+#   # Real asset: expect HTTP/2 200 + cache-control: immutable
+#   curl -sI https://pallasite.app/assets/<real-hashed-file>.js
+#
+#   # Root: expect HTTP/2 200 + content-type text/html
+#   curl -sI https://pallasite.app/
