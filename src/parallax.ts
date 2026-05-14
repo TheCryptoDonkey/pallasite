@@ -74,12 +74,15 @@ export const DEPTH_CONFIGS: Record<number, DepthConfig> = {
   2: { sizeMul: 0.65, speedMul: 0.55, alphaMul: 0.70, meshZ: -40, collide: false },
   // Gameplay plane — fully opaque.
   3: { sizeMul: 1.00, speedMul: 1.00, alphaMul: 1.00, meshZ:   0, collide: true  },
-  // Foregrounds are CLOSER to the camera, not "out of focus" — they
-  // should occlude whatever's behind them. Keep alpha at 1.0 so a
-  // foreground rock properly hides a gameplay-plane rock it's in front
-  // of, rather than showing the other rock through itself.
-  4: { sizeMul: 1.40, speedMul: 1.35, alphaMul: 1.00, meshZ:  40, collide: false },
-  5: { sizeMul: 1.85, speedMul: 1.70, alphaMul: 1.00, meshZ:  80, collide: false },
+  // Foregrounds are CLOSER to the camera — they occlude what's behind
+  // and they HIT the ship (depth 3/4/5 are all hazards). Speed is only
+  // marginally above gameplay-plane: pre-1.0 we ran them 1.35×/1.70×
+  // for parallax-speed-cue feel, but that read as "fast rocks zooming
+  // up from off-screen and killing you" once foregrounds became
+  // hazards. Spin is bumped at spawn (in spawnAsteroid) to keep the
+  // close-and-tumbling read without the lethal velocity.
+  4: { sizeMul: 1.40, speedMul: 1.05, alphaMul: 1.00, meshZ:  40, collide: false },
+  5: { sizeMul: 1.85, speedMul: 1.20, alphaMul: 1.00, meshZ:  80, collide: false },
 };
 
 /** Decorative-asteroid spawn count per wave, by tier. */

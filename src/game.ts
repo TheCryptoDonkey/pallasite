@@ -458,12 +458,16 @@ export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?
     // centred on 0 — a chunk of asteroids would spawn near-static,
     // which on a smooth 3D mesh reads as "frozen" rather than "drifting".
     // Council members get a slower band so players can read the face;
-    // veins keep their slow drift.
+    // veins keep their slow drift. Non-gameplay depth bands get a
+    // visible spin bump so they read as "tumbling toward you" — pairs
+    // with the toned-down foreground speedMul to keep them readable.
     rotVel: (Math.random() < 0.5 ? -1 : 1) * (
       opts?.councilMember
         ? 0.25 + Math.random() * 0.25     // 0.25..0.50 rad/s — readable face
         : isVein
         ? 0.15 + Math.random() * 0.20     // 0.15..0.35 rad/s — gentle drift
+        : depth !== 3
+        ? 1.20 + Math.random() * 1.40     // 1.20..2.60 rad/s — telegraphed tumble
         : 0.50 + Math.random() * 1.00     // 0.50..1.50 rad/s — lively
     ),
     shape: makeAsteroidShape(),
