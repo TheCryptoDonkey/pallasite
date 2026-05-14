@@ -48,6 +48,12 @@ interface OverlayHandle {
   /** Singleton ship mesh — built lazily on first ship frame. */
   shipMesh: THREE.Object3D | null;
   shipThrust: THREE.Mesh | null;
+  /** Singleton shield dome — built lazily on first shield-up frame.
+   *  Faceted icosphere + edge wireframe parented under one group so a
+   *  single position.set() per frame is enough to track the ship. */
+  shieldMesh: THREE.Group | null;
+  shieldSphereMat: THREE.MeshPhongMaterial | null;
+  shieldEdgeMat: THREE.LineBasicMaterial | null;
   /** Cached canvas.width × canvas.height so setSize only fires on
    *  actual size change (always-on setSize re-clears every frame). */
   lastSizeKey: number;
@@ -517,6 +523,9 @@ export function ensureWebGLOverlay(): Promise<OverlayHandle> {
       councilTextureCache: new Map(),
       shipMesh: null,
       shipThrust: null,
+      shieldMesh: null,
+      shieldSphereMat: null,
+      shieldEdgeMat: null,
       lastSizeKey: 0,
       shipChunks: [],
       lastFrameMs: 0,
@@ -1309,6 +1318,67 @@ export function renderOverlay(opts: {
   } else if (handle.shipMesh) {
     handle.shipMesh.visible = false;
     if (handle.shipThrust) handle.shipThrust.visible = false;
+  }
+
+  // ── Shield dome ──────────────────────────────────────────────────
+  // Faceted icosphere + edge wireframe, parented to the ship's world
+  // position (NOT the ship group, so the shield doesn't roll with hull
+  // rotation — it's a sphere around the ship, not a fixed shape).
+  // Lazy-create on first activation; kept around invisible afterwards
+  // because re-creating the geometry every shield burst is wasteful.
+  if (opts.ship && opts.ship.alive && opts.ship.shieldUp && opts.ship.hyperspaceCloakMs <= 0) {
+    if (!handle.shieldMesh) {
+      const group = new THREE.Group();
+      const radius = opts.ship.radius * 2.2;
+      const sphereGeo = new THREE.IcosahedronGeometry(radius, 1);
+      const sphereMat = new THREE.MeshPhongMaterial({
+        color: 0x5b9dff,
+        emissive: 0x305070,
+        emissiveIntensity: 0.5,
+        shininess: 90,
+        specular: 0xffffff,
+        transparent: true,
+        opacity: 0.18,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const sphereMesh = new THREE.Mesh(sphereGeo, sphereMat);
+      sphereMesh.frustumCulled = false;
+      group.add(sphereMesh);
+      const edgesGeo = new THREE.EdgesGeometry(sphereGeo);
+      const edgesMat = new THREE.LineBasicMaterial({
+        color: 0xb4d8ff,
+        transparent: true,
+        opacity: 0.85,
+      });
+      const edges = new THREE.LineSegments(edgesGeo, edgesMat);
+      edges.frustumCulled = false;
+      group.add(edges);
+      scene.add(group);
+      handle.shieldMesh = group;
+      handle.shieldSphereMat = sphereMat;
+      handle.shieldEdgeMat = edgesMat;
+    }
+    const shield = handle.shieldMesh;
+    shield.visible = true;
+    shield.position.set(opts.ship.pos.x, 720 - opts.ship.pos.y, 0);
+    // Slow drift rotation — gives the dome a living-energy feel without
+    // chasing ship rotation (so the player reads it as a field, not armour).
+    shield.rotation.x += 0.004;
+    shield.rotation.y += 0.006;
+    // Final-300ms fade so the shield isn't yanked off the screen at expiry.
+    const remaining = Math.max(0, opts.ship.shieldExpiresAt - performance.now());
+    const fade = Math.min(1, remaining / 300);
+    const hit = Math.max(0, Math.min(1, opts.ship.shieldHitFlash));
+    if (handle.shieldSphereMat) {
+      handle.shieldSphereMat.opacity = (0.18 + hit * 0.45) * fade;
+      handle.shieldSphereMat.emissiveIntensity = 0.5 + hit * 1.6;
+    }
+    if (handle.shieldEdgeMat) {
+      handle.shieldEdgeMat.opacity = (0.85 + hit * 0.15) * fade;
+    }
+  } else if (handle.shieldMesh) {
+    handle.shieldMesh.visible = false;
   }
 
   // ── Ship-explosion chunks ────────────────────────────────────────

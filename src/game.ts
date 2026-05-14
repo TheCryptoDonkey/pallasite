@@ -81,6 +81,7 @@ export function makeInitialState(): GameState {
     particles: [],
     debris: [],
     shockwaveRings: [],
+    hyperspaceEffects: [],
     score: 0,
     sats: 0,
     displaySats: 0,
@@ -212,6 +213,7 @@ function makeShip(): Ship {
     shieldExpiresAt: 0,
     shieldReadyAt: 0,
     recoilOffset: 0,
+    shieldHitFlash: 0,
     lastHyperspaceAt: 0,
   };
 }
@@ -2041,6 +2043,16 @@ export function tryHyperspace(s: GameState, now: number): void {
   s.ship.lastHyperspaceAt = now;
   s.runStats.hyperspacesUsed += 1;
   markAchievement(s, 'first-warp');
+  // Collapse cinematic — fires at the departure point regardless of
+  // malfunction (the visual sells the warp ignition either way; the
+  // glitch case is tinted red so the player reads "this went wrong").
+  s.hyperspaceEffects.push({
+    x: departureX,
+    y: departureY,
+    startMs: now,
+    kind: 'collapse',
+    malfunction: s.ship.hyperspaceMalfunction,
+  });
   if (s.ship.hyperspaceMalfunction) {
     audio.warpJumpGlitch();
     // Sprinkle warning particles at the departure point so the cloak is visibly off
@@ -2125,6 +2137,16 @@ function emergeHyperspace(s: GameState): void {
   s.ship.pos = pos;
   s.ship.hyperspaceCloakMs = 0;
   s.ship.invulnerableUntil = performance.now() + 800;
+  // Emerge cinematic — expanding ring + arrival starburst at the new
+  // position. Spawned after the position lands so the ring centres on
+  // the visible ship rather than where it WAS during cloak.
+  s.hyperspaceEffects.push({
+    x: pos.x,
+    y: pos.y,
+    startMs: performance.now(),
+    kind: 'emerge',
+    malfunction: false,
+  });
 }
 
 /** Exponential ease for the HUD sat counter — higher = faster catch-up. */
@@ -2404,6 +2426,7 @@ export function updateGame(s: GameState, dt: number, now: number): void {
           shieldExpiresAt: 0,
           shieldReadyAt: 0,
           recoilOffset: 0,
+          shieldHitFlash: 0,
           lastHyperspaceAt: 0,
         };
         if (getVisualStyle('ship') === 'mesh' && isWebGLOverlayReady()) {
@@ -2452,6 +2475,12 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   // Hyperspace cloak countdown
   if (s.ship.hyperspaceCloakMs > 0) {
     s.ship.hyperspaceCloakMs -= dt * 1000;
+  }
+  // Shield hit-flash decay — exponential so the spike reads as a pulse
+  // (sharp peak, quick fade) rather than a flat ramp. Half-life ~120ms.
+  if (s.ship.shieldHitFlash > 0) {
+    s.ship.shieldHitFlash = Math.max(0, s.ship.shieldHitFlash * Math.exp(-dt * 5.5));
+    if (s.ship.shieldHitFlash < 0.005) s.ship.shieldHitFlash = 0;
   }
 
   if (s.ship.alive && s.ship.hyperspaceCloakMs <= 0) {
@@ -2803,6 +2832,7 @@ export function updateGame(s: GameState, dt: number, now: number): void {
       if (circlesHit(s.ship, m)) {
         spawnParticles(s, m.pos.x, m.pos.y, 8, '#5b9dff', 180, 320);
         audio.shieldHit();
+        s.ship.shieldHitFlash = 1;
       }
     }
   }
@@ -2839,6 +2869,7 @@ export function updateGame(s: GameState, dt: number, now: number): void {
           }
           spawnParticles(s, (s.ship.pos.x + a.pos.x) / 2, (s.ship.pos.y + a.pos.y) / 2, 10, '#5b9dff', 220, 380);
           audio.shieldHit();
+          s.ship.shieldHitFlash = 1;
         }
       }
     }
@@ -2848,6 +2879,7 @@ export function updateGame(s: GameState, dt: number, now: number): void {
         b.alive = false;
         spawnParticles(s, b.pos.x, b.pos.y, 8, '#5b9dff', 180, 320);
         audio.shieldHit();
+        s.ship.shieldHitFlash = 1;
       }
     }
   }

@@ -48,6 +48,11 @@ export interface Ship extends Entity {
    *  decayed each frame. Render nudges the ship backward along its facing by
    *  this amount, giving every shot a kick. Does not affect physics or aim. */
   recoilOffset: number;
+  /** Shield hit-flash 0..1. Set to 1 on any shield contact (asteroid bounce,
+   *  enemy bullet block, mine touch), decays exponentially per frame. The
+   *  WebGL shield mesh modulates opacity + emissive by this value so the
+   *  player sees the strike land on the dome. */
+  shieldHitFlash: number;
   /** Timestamp ms of the most recent successful hyperspace jump (0 = never).
    *  Drives the consecutive-warp malfunction roll: a warp within
    *  HYPERSPACE_CONSECUTIVE_WINDOW_MS of this stamp risks glitching, anything
@@ -587,6 +592,24 @@ export interface GameState {
    *  vein collapse). Purely visual — rendered as a stroked circle that grows
    *  and fades over ~380ms. Self-pruning in render. */
   shockwaveRings: Shockwave[];
+
+  /** Transient hyperspace cinematic effects — a collapse spawned at the
+   *  departure point on warp trigger, and an emerge spawned at the new
+   *  position when the cloak ends. Self-pruning in render. */
+  hyperspaceEffects: HyperspaceEffect[];
+}
+
+/** A single hyperspace cinematic ring (collapse on departure, emerge on
+ *  re-entry). Drawn in 2D so it works across vector/shaded/mesh tiers. */
+export interface HyperspaceEffect {
+  x: number;
+  y: number;
+  /** performance.now() at spawn. */
+  startMs: number;
+  /** 'collapse' = spiral inward (departure), 'emerge' = ring outward (arrival). */
+  kind: 'collapse' | 'emerge';
+  /** True if this warp glitched — render in red instead of cyan. */
+  malfunction: boolean;
 }
 
 /** Single radial shockwave ring. Wall-clock-driven so the visual lands even
