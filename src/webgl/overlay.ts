@@ -894,17 +894,16 @@ export function renderOverlay(opts: {
       entry.mesh.scale.set(s, s, s);
     }
     if (a.councilMember) {
-      // Medallion tumble on TWO axes at slightly different rates. Y
-      // is the main face↔back flip; X rotates the coin end-over-end
-      // so the portrait orientation (and the back-face text) shift
-      // through visible angles rather than always landing right-side-
-      // up at the same moments. Incommensurate ratio (0.6 vs 1.0)
-      // means the pose never quite repeats, so the player gets fresh
-      // angles every time round.
+      // Medallion rotation: Y axis does the full face↔back flip so
+      // both sides come round; X and Z axes WOBBLE within ±17° / ±9°
+      // (bounded sin) so the portrait + back text always read right-
+      // side-up when facing the camera. The previous unbounded X
+      // rotation flipped the image upside-down every half cycle —
+      // user couldn't read it. Wobble keeps it lively without that.
       entry.mesh.rotation.set(
-        a.rot * 0.6,
+        Math.sin(a.rot * 0.7) * 0.30,
         a.rot,
-        0,
+        Math.cos(a.rot * 0.5) * 0.15,
       );
       // Draw the portrait into the front-face canvas as soon as the
       // image lands. Cheap after the first successful draw.

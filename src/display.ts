@@ -18,6 +18,14 @@ export type DisplayMode = 'retro' | 'modern';
 const KEY = 'pallasite:displayMode';
 
 export function getDisplayMode(): DisplayMode {
+  // Fullscreen forces modern — the user explicitly asked for "full
+  // screen" so they expect the canvas to fill the viewport. Retro mode
+  // caps the canvas at 960×720 and exposes the body's wave-background
+  // around it, which reads as a coloured letterbox / "red square" in
+  // the empty space. Modern overrides that.
+  if (typeof document !== 'undefined' && document.fullscreenElement) {
+    return 'modern';
+  }
   // 600bn Sanctum always uses modern (full-viewport, no 4:3 letterbox)
   // regardless of device or saved pref — the conference deploy is
   // designed around the modern aspect, photoreal textures, etc.
