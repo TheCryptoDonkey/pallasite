@@ -726,17 +726,38 @@ function build600bnCoinMesh(u: Ufo): { group: THREE.Group; geometry: THREE.Buffe
 /** Each UFO type gets its own bespoke silhouette so the player reads
  *  the threat from shape alone, before colour. Shared helpers below
  *  build the recurring bits (rim port-hole ring, abductor beam) so
- *  per-type builders stay focused on what makes that type unique. */
+ *  per-type builders stay focused on what makes that type unique.
+ *
+ *  Each built body is wrapped in an outer Group with a baked-in x-tilt
+ *  so the orthographic camera sees a 3/4 view (looking down ONTO the
+ *  saucer) rather than a flat top-down disc. Per-frame rotation
+ *  (banking / direction tracking / wobble) operates on the outer
+ *  wrapper so the tilt survives. */
 function buildUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.Material } {
   if (getFlavour() === '600bn') return build600bnCoinMesh(u);
+
+  let built: { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.Material };
   switch (u.type) {
-    case 'elite':  return buildEliteUfoMesh(u);
-    case 'tank':   return buildTankUfoMesh(u);
-    case 'sniper': return buildSniperUfoMesh(u);
-    case 'boss':   return buildBossUfoMesh(u);
+    case 'elite':  built = buildEliteUfoMesh(u); break;
+    case 'tank':   built = buildTankUfoMesh(u); break;
+    case 'sniper': built = buildSniperUfoMesh(u); break;
+    case 'boss':   built = buildBossUfoMesh(u); break;
     case 'cruiser':
-    default:       return buildCruiserUfoMesh(u);
+    default:       built = buildCruiserUfoMesh(u); break;
   }
+
+  // Cinematic 3/4 tilt. Saucer types (cruiser/elite/tank/boss) tip
+  // forward ~32° so the dome reads "up there" and the rim+beam read
+  // "down here" — the iconic UFO silhouette instead of a roundel.
+  // Sniper is elongated so heavy tilt would flip its dorsal optic to
+  // the underside; a gentle roll exposes the side detail without
+  // hiding the barrel.
+  const inner = built.group;
+  inner.rotation.x = u.type === 'sniper' ? -0.18 : -0.55;
+  const outer = new THREE.Group();
+  outer.add(inner);
+  if (inner.userData.ringGroup) outer.userData.ringGroup = inner.userData.ringGroup;
+  return { group: outer, geometry: built.geometry, material: built.material };
 }
 
 /** Shared port-hole rim builder. Returns a Group so renderOverlay can
