@@ -99,12 +99,26 @@ let loading: Promise<OverlayHandle> | null = null;
 let frameCounter = 0;
 
 /** ── Asteroid geometry ────────────────────────────────────────────────
- *  Displaced icosphere. The 2D `shape[]` array drives the longitudinal
- *  silhouette so the 3D body echoes the 2D outline; layered octave noise
- *  on top adds crater/bump detail the flat shape array can't express.
- *  Identity is preserved across the vector → shaded → mesh tier hop. */
+ *  Displaced icosphere with three distinct displacement layers:
+ *
+ *    1. The 2D `shape[]` array drives the longitudinal silhouette so
+ *       the 3D body echoes the 2D outline the player saw on lower tiers.
+ *    2. Five octaves of trig-product noise add bumpy surface texture.
+ *    3. A crater pass carves bowl-shaped depressions at 4-6 deterministic
+ *       points on the sphere — the thing that turns "lumpy ball" into
+ *       "actual asteroid".
+ *
+ *  Plus per-asteroid asymmetric scale so no two rocks have the same
+ *  silhouette even before the shape array kicks in.
+ *
+ *  Council asteroids get a planar UV remap so their portrait reads
+ *  front-on rather than wrapping around the sphere like an equirect
+ *  projection.
+ */
 function buildAsteroidGeometry(a: Asteroid): THREE.BufferGeometry {
-  const detail = a.size === 'large' ? 4 : a.size === 'medium' ? 3 : 2;
+  // Higher detail than before — modern GPUs handle these counts easily
+  // and the silhouette is what reads "asteroid" vs "lumpy sphere".
+  const detail = a.size === 'large' ? 5 : a.size === 'medium' ? 4 : 3;
   const geo = new THREE.IcosahedronGeometry(a.radius, detail);
   const pos = geo.attributes.position as THREE.BufferAttribute;
   const n = pos.count;
@@ -113,17 +127,41 @@ function buildAsteroidGeometry(a: Asteroid): THREE.BufferGeometry {
   const seedBase = a.id != null
     ? ((a.id * 2654435761) >>> 0)
     : hashStr(`${a.pos.x | 0},${a.pos.y | 0}`);
-  // Type-keyed terrain character. Iron gets sharper craters from a
-  // stronger high-frequency band; chondrite chunks read as porous
-  // pock-marks; pallasite stays smooth (gem-like).
-  const ruggedness = a.type === 'chondrite' ? 0.22
-                   : a.type === 'iron'      ? 0.18
-                   : a.type === 'pallasite' ? 0.08
-                                            : 0.14;
+  // Type-keyed terrain character. Iron crisp, chondrite porous,
+  // pallasite gem-smooth, stony in between. Values pushed up overall
+  // — was reading as too pebble-like.
+  const ruggedness = a.type === 'chondrite' ? 0.36
+                   : a.type === 'iron'      ? 0.30
+                   : a.type === 'pallasite' ? 0.18
+                                            : 0.28;
+  // Asymmetric stretch — each asteroid is slightly ovoid, never a
+  // perfect sphere. Seed-derived so identity persists across frames.
+  const stretchX = 0.85 + ((seedBase >>> 0) & 0xff) / 0xff * 0.3;       // 0.85..1.15
+  const stretchY = 0.85 + ((seedBase >>> 8) & 0xff) / 0xff * 0.3;
+  const stretchZ = 0.85 + ((seedBase >>> 16) & 0xff) / 0xff * 0.3;
+  // Crater pass — pick 4-6 random points on the unit sphere; each
+  // carves a bowl-shaped depression. Number + position deterministic
+  // from seed so the same rock craters the same way each frame.
+  const craterCount = 4 + (seedBase & 0x3);
+  const craters: Array<{ cx: number; cy: number; cz: number; r: number; depth: number }> = [];
+  for (let c = 0; c < craterCount; c++) {
+    const s = (seedBase * (c + 1) * 2654435761) >>> 0;
+    // Random point on unit sphere via cylindrical mapping.
+    const theta = ((s & 0xffff) / 0xffff) * Math.PI * 2;
+    const z01 = ((s >>> 16) & 0xffff) / 0xffff * 2 - 1;       // -1..1
+    const rxy = Math.sqrt(1 - z01 * z01);
+    craters.push({
+      cx: Math.cos(theta) * rxy,
+      cy: Math.sin(theta) * rxy,
+      cz: z01,
+      r: 0.18 + ((s >>> 4) & 0xff) / 0xff * 0.20,             // 0.18..0.38 of sphere
+      depth: 0.10 + ((s >>> 12) & 0xff) / 0xff * 0.18,        // 0.10..0.28
+    });
+  }
   for (let i = 0; i < n; i++) {
-    const x = pos.getX(i);
-    const y = pos.getY(i);
-    const z = pos.getZ(i);
+    let x = pos.getX(i);
+    let y = pos.getY(i);
+    let z = pos.getZ(i);
     // Longitudinal angle drives shape[] sampling — links 3D silhouette
     // to the 2D one the player has been seeing.
     const ang = Math.atan2(y, x);
@@ -133,24 +171,57 @@ function buildAsteroidGeometry(a: Asteroid): THREE.BufferGeometry {
     const i1 = (i0 + 1) % shapeN;
     const blend = f - Math.floor(f);
     const shapeR = shape[i0] * (1 - blend) + shape[i1] * blend;
-    // Layered octave noise — three frequencies with halving amplitude.
-    // Coordinates are normalised to unit-sphere space (x/r) so the
-    // noise pattern is independent of asteroid size and reads
-    // consistently across small/medium/large fragments.
+    // Five-octave layered noise. Unit-sphere coords so the pattern is
+    // size-independent and small fragments echo their parent.
     const r0 = Math.hypot(x, y, z) || 1;
     const ux = x / r0, uy = y / r0, uz = z / r0;
     const seedOff = (seedBase ^ (i * 2654435761)) >>> 0;
-    const phase1 = (seedOff & 0x3ff) * 0.01;
-    const phase2 = ((seedOff >> 10) & 0x3ff) * 0.011;
-    const phase3 = ((seedOff >> 20) & 0x3ff) * 0.013;
-    const n1 = Math.sin(ux * 3.1 + phase1) * Math.sin(uy * 3.0 + phase2) * Math.sin(uz * 3.3 + phase3);
-    const n2 = Math.sin(ux * 6.7 + phase2) * Math.sin(uy * 7.1 + phase3) * Math.sin(uz * 6.9 + phase1);
-    const n3 = Math.sin(ux * 13.0 + phase3) * Math.sin(uy * 12.5 + phase1) * Math.sin(uz * 13.5 + phase2);
-    const bumps = n1 * 0.5 + n2 * 0.3 + n3 * 0.2;
-    const scale = shapeR + bumps * ruggedness;
-    pos.setXYZ(i, x * scale, y * scale, z * scale);
+    const p1 = (seedOff & 0x3ff) * 0.01;
+    const p2 = ((seedOff >> 10) & 0x3ff) * 0.011;
+    const p3 = ((seedOff >> 20) & 0x3ff) * 0.013;
+    const n1 = Math.sin(ux * 2.7 + p1) * Math.sin(uy * 2.5 + p2) * Math.sin(uz * 2.9 + p3);
+    const n2 = Math.sin(ux * 5.3 + p2) * Math.sin(uy * 5.7 + p3) * Math.sin(uz * 5.1 + p1);
+    const n3 = Math.sin(ux * 10.5 + p3) * Math.sin(uy * 11.1 + p1) * Math.sin(uz * 10.7 + p2);
+    const n4 = Math.sin(ux * 21.0 + p1) * Math.sin(uy * 20.3 + p2) * Math.sin(uz * 21.7 + p3);
+    const n5 = Math.sin(ux * 42.0 + p2) * Math.sin(uy * 41.7 + p3) * Math.sin(uz * 42.3 + p1);
+    const bumps = n1 * 0.5 + n2 * 0.25 + n3 * 0.13 + n4 * 0.07 + n5 * 0.05;
+    // Crater pass — for each crater, distance from this vertex (as a
+    // unit-direction) to the crater centre. Inside crater radius,
+    // carve a smoothstep bowl.
+    let craterDepth = 0;
+    for (const c of craters) {
+      const d = Math.hypot(ux - c.cx, uy - c.cy, uz - c.cz);
+      if (d < c.r) {
+        const t2 = d / c.r;                  // 0 at centre, 1 at rim
+        const fall = 1 - t2 * t2 * (3 - 2 * t2);  // smoothstep falloff
+        craterDepth = Math.max(craterDepth, c.depth * fall);
+      }
+    }
+    const scale = shapeR + bumps * ruggedness - craterDepth;
+    x *= scale * stretchX;
+    y *= scale * stretchY;
+    z *= scale * stretchZ;
+    pos.setXYZ(i, x, y, z);
   }
   geo.computeVertexNormals();
+
+  // Council asteroids: planar UV mapping from the +Z hemisphere so the
+  // portrait reads as a face stamped on the front of the rock rather
+  // than wrapping around the sphere. ClampToEdge then ensures the back
+  // face shows the texture's edge pixels, not a mirrored portrait.
+  if (a.councilMember) {
+    const uv = geo.attributes.uv as THREE.BufferAttribute;
+    const maxExtent = a.radius * 1.5;
+    for (let i = 0; i < n; i++) {
+      const x = pos.getX(i);
+      const y = pos.getY(i);
+      // Project onto the XY plane. Range [-1, 1] → UV [0, 1].
+      const u = (x / maxExtent) * 0.5 + 0.5;
+      const v = 0.5 - (y / maxExtent) * 0.5;
+      uv.setXY(i, u, v);
+    }
+    uv.needsUpdate = true;
+  }
   return geo;
 }
 
@@ -368,20 +439,6 @@ function build600bnCoinMesh(u: Ufo): { group: THREE.Group; geometry: THREE.Buffe
   group.add(mesh);
   group.add(rimTop);
   group.add(rimBot);
-  // Additive halo behind the coin — sits in the world-Z=0 plane (the
-  // coin tumbles in front/behind this plane). Glow-against-space read.
-  const haloGeo = new THREE.RingGeometry(r * 1.1, r * 1.45, 48);
-  const haloMat = new THREE.MeshBasicMaterial({
-    color: 0xffd84a,
-    transparent: true,
-    opacity: 0.4,
-    blending: THREE.AdditiveBlending,
-    side: THREE.DoubleSide,
-    depthWrite: false,
-  });
-  const halo = new THREE.Mesh(haloGeo, haloMat);
-  halo.frustumCulled = false;
-  group.add(halo);
   return { group, geometry: geo, material: capMat };
 }
 
@@ -533,12 +590,16 @@ export function renderOverlay(opts: {
     entry.lastSeenFrame = frameCounter;
     entry.mesh.position.set(u.pos.x, 720 - u.pos.y, 0);
     if (getFlavour() === '600bn') {
-      // Coin tumbles around the Y (vertical) axis — the cylinder is
-      // built upright, so a Y spin shows face → edge → back face →
-      // edge → face. That's the "real coin in zero-g" read. Slight
-      // X tilt so neither face is ever perfectly edge-on (the visible
-      // sliver always reads as a coin, not a line).
-      entry.mesh.rotation.set(0.35, frameCounter * 0.025, 0);
+      // Proper zero-g tumble. Y is the fast face-revealing spin (the
+      // cylinder is built upright so Y shows face → edge → back); X
+      // and Z drift slower so the coin tumbles end-over-end and
+      // sideways as it spins. Three incommensurate frequencies =
+      // never repeats exactly.
+      entry.mesh.rotation.set(
+        frameCounter * 0.011,
+        frameCounter * 0.027,
+        frameCounter * 0.007,
+      );
     } else {
       // Saucer: banking roll on direction + small sin-wave hover.
       entry.mesh.rotation.y = u.dir * 0.25;
