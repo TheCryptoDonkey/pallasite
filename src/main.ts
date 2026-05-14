@@ -692,11 +692,14 @@ async function boot(): Promise<void> {
       canvas.style.imageRendering = 'auto';
       const ctx = canvas.getContext('2d')!;
       const isPortrait = vh > vw;
-      // Portrait zooms OUT (cover * 0.65) for breathing room on phones.
-      // Landscape stays at plain contain — zooming in makes cropY true with
-      // visW > WORLD_W, which triggers the horizontal gutter ghost and the
-      // player sees their ship doubled near the world's left/right edges.
-      const PORTRAIT_ZOOM = 0.55;
+      // Portrait modern fills the screen — pure cover-scale, no zoom-out.
+      // The 0.55 / 0.65 / 0.85 zoom-outs that crept in over the previous
+      // few days made the playfield read as letterboxed instead of using
+      // the whole screen; the user wanted the original full-fill back.
+      // Landscape stays at plain contain — zooming in makes cropY true
+      // with visW > WORLD_W, which triggers the horizontal gutter ghost
+      // and the player sees their ship doubled near the wrap edges.
+      const PORTRAIT_ZOOM = 1.0;
       const scale = isPortrait
         ? Math.max(vw / 960, vh / 720) * PORTRAIT_ZOOM
         : Math.min(vw / 960, vh / 720);
