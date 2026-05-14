@@ -244,6 +244,15 @@ function intensityTargetFromState(state: GameState): number {
  * Boss ping fires every BOSS_PING_INTERVAL_MS while wave 25 boss is alive.
  * Intensity drone updates its target gain from the live rock count.
  */
+/** Intensity drone kill-switch. Disabled because the per-frame
+ *  cancelScheduledValues + linearRampToValueAtTime pattern in
+ *  setIntensityTargetGain hammers the Web Audio scheduler. Desktop
+ *  Chrome shrugs it off; iOS Safari chokes — music plays for a few
+ *  seconds and then degrades / cuts out. Re-enable once the
+ *  scheduling is throttled to ~5Hz with a delta gate, or moved to a
+ *  pre-recorded stem that doesn't need ramp scheduling. */
+const INTENSITY_DRONE_ENABLED = false;
+
 export function stemsTickForState(state: GameState, nowMs: number): void {
   // Only fire stems while the simulation is actually running. Title, pause,
   // death replay, game over, and warp transitions all suppress -- otherwise
@@ -251,15 +260,17 @@ export function stemsTickForState(state: GameState, nowMs: number): void {
   if (state.phase !== 'playing' && state.phase !== 'wavestart') {
     nextComboPulseAt = 0;
     nextBossPingAt = 0;
-    setIntensityTargetGain(0);
+    if (INTENSITY_DRONE_ENABLED) setIntensityTargetGain(0);
     return;
   }
 
-  // Intensity drone tracks the playfield's collide-asteroid count, smoothed
-  // each frame. Lazy-init on first frame of play so the AudioContext is
-  // already user-unlocked by the time we reach for it.
-  ensureIntensityStem();
-  setIntensityTargetGain(intensityTargetFromState(state));
+  if (INTENSITY_DRONE_ENABLED) {
+    // Intensity drone tracks the playfield's collide-asteroid count, smoothed
+    // each frame. Lazy-init on first frame of play so the AudioContext is
+    // already user-unlocked by the time we reach for it.
+    ensureIntensityStem();
+    setIntensityTargetGain(intensityTargetFromState(state));
+  }
 
   if (state.combo >= 2) {
     if (nextComboPulseAt === 0) nextComboPulseAt = nowMs;
@@ -289,5 +300,5 @@ export function stemsTickForState(state: GameState, nowMs: number): void {
 export function stemsStop(): void {
   nextComboPulseAt = 0;
   nextBossPingAt = 0;
-  setIntensityTargetGain(0);
+  if (INTENSITY_DRONE_ENABLED) setIntensityTargetGain(0);
 }
