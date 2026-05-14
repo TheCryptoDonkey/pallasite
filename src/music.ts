@@ -21,12 +21,21 @@ interface Track {
   trim?: number;
   /** Stings (hull-breached) play once — looping default is true. */
   loop?: boolean;
+  /** Seconds to seek into the track on first play. Used for slow-orbit
+   *  (and any other track with a long ambient intro) so the climactic
+   *  section lands during the wave's playable window instead of after
+   *  the player has died. Loop-back also seeks here, so subsequent
+   *  loops skip the intro too. */
+  startAt?: number;
 }
 
 const TRACKS: Record<string, Track> = {
   // ── Originals (waves 1-25, title, warp, death, victory) ──────────
   'pallasite-idle':  { src: '/music/pallasite-idle.opus',  id: 'pallasite-idle' },
-  'slow-orbit':      { src: '/music/slow-orbit.opus',      id: 'slow-orbit' },
+  // 8-minute ambient piece — climax starts ~3:40 in. Seek past the
+  // intro so wave 1's playable window catches the energy rather than
+  // the slow build (which the player almost never hears).
+  'slow-orbit':      { src: '/music/slow-orbit.opus',      id: 'slow-orbit', startAt: 200 },
   'tighter-orbits':  { src: '/music/tighter-orbits.opus',  id: 'tighter-orbits' },
   'cascade':         { src: '/music/cascade.opus',         id: 'cascade' },
   'warp-transition': { src: '/music/warp-transition.opus', id: 'warp-transition' },
@@ -105,6 +114,25 @@ function load(track: Track): Loaded {
   gain.connect(dest);
   const entry: Loaded = { el, src, gain, failed: false };
   el.addEventListener('error', () => { entry.failed = true; });
+  // Honour startAt — seek into the track once metadata arrives so the
+  // first play starts mid-track. timeupdate watches for the natural
+  // loop point so subsequent loops also skip back to startAt instead
+  // of replaying the slow intro.
+  if (track.startAt && track.startAt > 0) {
+    const target = track.startAt;
+    el.addEventListener('loadedmetadata', () => {
+      if (el.currentTime < target) {
+        try { el.currentTime = target; } catch { /* ignore */ }
+      }
+    });
+    if (track.loop !== false) {
+      el.addEventListener('timeupdate', () => {
+        if (el.duration > 0 && el.currentTime >= el.duration - 0.1) {
+          try { el.currentTime = target; } catch { /* ignore */ }
+        }
+      });
+    }
+  }
   loaded.set(track.id, entry);
   return entry;
 }
@@ -404,11 +432,22 @@ export function musicWarmUpAll(skipId?: string): void {
     if (id === skipId) continue;
     try {
       const entry = load(TRACKS[id]);
+      const track = TRACKS[id];
       entry.el.muted = true;
       const p = entry.el.play();
       const cleanup = (): void => {
+        // If musicSetTrackForState picked this track between the muted
+        // play() and the cleanup callback resolving, DO NOT pause it —
+        // that would kill the real play we just kicked off, leaving
+        // the wave silent. This was the wave-1-silence bug.
+        if (currentId === id) {
+          try { entry.el.muted = false; } catch { /* ignore */ }
+          return;
+        }
         try { entry.el.pause(); } catch { /* ignore */ }
-        try { entry.el.currentTime = 0; } catch { /* ignore */ }
+        // Restore to startAt (not 0) so the next real play picks up
+        // mid-track for tracks that opt into it (slow-orbit).
+        try { entry.el.currentTime = track.startAt ?? 0; } catch { /* ignore */ }
         try { entry.el.muted = false; } catch { /* ignore */ }
       };
       if (p && typeof p.then === 'function') p.then(cleanup, cleanup);
