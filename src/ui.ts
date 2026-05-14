@@ -9881,7 +9881,11 @@ function renderSanctumAttract(state: GameState): void {
   playBtn.style.cssText += 'font-size:1.4rem;padding:14px 48px;letter-spacing:0.28em;background:rgba(255,138,58,0.18);border-color:#ff8a3a;color:#ffd84a;text-shadow:0 0 12px rgba(255,138,58,0.6);';
   playBtn.addEventListener('click', () => {
     void audio.unlockAudio();
-    onStartCb?.();
+    // Route directly to the dedicated Sanctum surface — full
+    // standalone game loop, music, and claim flow live there. The
+    // main game-loop integration path was racy at the conference
+    // surface; the preview-as-game is more reliable for the teaser.
+    window.location.assign('/sanctum');
   });
 
   // Footer — party promo links straight to 600.wtf.
