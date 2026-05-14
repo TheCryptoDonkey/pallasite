@@ -187,7 +187,26 @@ export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequent
     if (track.loop === false) {
       try { entry.el.currentTime = 0; } catch { /* will play from 0 anyway */ }
     }
-    void entry.el.play().catch(() => { /* autoplay block — caller will retry on unlock */ });
+    // Retry the play() up to 2 times on rejection. Safari desktop
+    // sometimes drops the first play() call when phase changes (e.g.
+    // title → wavestart on 600bn fires crossfade to the-cult before
+    // the AudioContext has fully transitioned from suspended → running
+    // — Chrome shrugs it off, Safari leaves the element silent). A
+    // 200ms backoff retry lets the context catch up and the second
+    // play() lands. Capped so a genuinely failed load (404, codec
+    // unsupported) doesn't spin forever.
+    const attemptPlay = (attempts: number): void => {
+      if (currentId !== id) return;
+      const p = entry.el.play();
+      if (p && typeof p.catch === 'function') {
+        p.catch(() => {
+          if (attempts < 2 && currentId === id) {
+            window.setTimeout(() => attemptPlay(attempts + 1), 200);
+          }
+        });
+      }
+    };
+    attemptPlay(0);
     rampGainTo(entry.gain, trim, fadeMs);
   };
   // Mark currentId immediately so memoisation in musicSetTrackForState matches
