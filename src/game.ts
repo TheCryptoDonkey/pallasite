@@ -11,7 +11,7 @@ import type {
 import { recordStreamEvent } from './stream-session.js';
 import { getGameConfig } from './faucet.js';
 import { getFlavour } from './flavour.js';
-import { getCouncil, loadCouncil } from './sanctum-avatars.js';
+import { getCouncil } from './sanctum-avatars.js';
 import {
   waveName, FINAL_WAVE, ASTEROID_TYPE_CONFIG,
   REPLAY_RECORD_INTERVAL_MS, REPLAY_BUFFER_FRAMES, REPLAY_TOTAL_WALL_MS, REPLAY_EXPLOSION_WALL_MS,
@@ -614,61 +614,75 @@ function makeCurtainCruiser(s: GameState, dir: 1 | -1): Ufo {
  *  maybePreloadCouncil; if it hasn't resolved yet we still spawn the
  *  asteroids (their textures fill in once the image arrives via the
  *  avatar-loader cache). */
-function spawnCouncilWave(s: GameState): void {
-  const members = getCouncil();
-  if (members.length === 0) {
-    // Manifest fallback — never expected to fire now that the roster
-    // is inlined in sanctum-avatars, but keeps the wave playable if
-    // someone tampers with the module.
-    void loadCouncil();
-    for (let i = 0; i < 6; i++) s.asteroids.push(spawnAsteroid('large', 1));
-    return;
+// ── 600bn council cycling + run stats ───────────────────────────────
+// The wave now opens as a normal asteroid run (just textured fillers)
+// and council members are introduced one at a time from a shuffled
+// queue. Every member appears at least once before the cycle re-shuffles.
+// councilSpawned / councilDefeated drive the end-of-run stats card.
+type CouncilMemberRecord = ReturnType<typeof getCouncil>[number];
+let sanctumCouncilQueue: CouncilMemberRecord[] = [];
+const sanctumCouncilSpawned = new Set<string>();
+let sanctumCouncilDefeated = 0;
+let sanctumNextCouncilSpawn = 0;
+const SANCTUM_COUNCIL_INTERVAL_MS = 9_000;
+
+/** End-of-run readout fields populated through the run. Reset in
+ *  beginWave so each fresh ignite starts clean. Public so the UI
+ *  module can render the stats below the FUCHS2 card. */
+export interface SanctumRunStats {
+  startedAt: number;      // performance.now() when the wave began
+  councilDefeated: number;
+  councilSpawned: number;
+  councilTotal: number;
+  asteroidsDestroyed: number;
+}
+const sanctumStats: SanctumRunStats = {
+  startedAt: 0, councilDefeated: 0, councilSpawned: 0, councilTotal: 0, asteroidsDestroyed: 0,
+};
+
+export function getSanctumStats(): Readonly<SanctumRunStats> {
+  // Sync the live counters into the snapshot before returning.
+  sanctumStats.councilDefeated = sanctumCouncilDefeated;
+  sanctumStats.councilSpawned = sanctumCouncilSpawned.size;
+  return sanctumStats;
+}
+
+function fisherYates<T>(arr: readonly T[]): T[] {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
   }
-  const cx = WORLD_W / 2;
-  const cy = WORLD_H / 2;
-  const ringR = Math.min(WORLD_W, WORLD_H) * 0.32;
-  // Phase 1 (0 → ~1.5s): perfect ring, fast clockwise rotation so the
-  // council reads as a unified circle for the wave-start beat.
-  // Phase 2 (~1.5s onward): scatterCouncil() reassigns each asteroid
-  // a random outward velocity so the formation breaks into chaotic
-  // orbits and the wave reads like an asteroid fight.
-  const initialOrbit = 70;  // px/s tangent — visibly rotating, not drifting
-  const spawned: Asteroid[] = [];
-  for (let i = 0; i < members.length; i++) {
-    const m = members[i];
-    const angle = -Math.PI / 2 + (i / members.length) * Math.PI * 2;
-    const x = cx + Math.cos(angle) * ringR;
-    const y = cy + Math.sin(angle) * ringR;
-    const vx = -Math.sin(angle) * initialOrbit;
-    const vy =  Math.cos(angle) * initialOrbit;
-    const ast = spawnAsteroid('large', 1, { x, y }, { x: vx, y: vy }, m.asteroidType, {
-      councilMember: { name: m.name, role: m.role, archetype: m.archetype, img: m.img, pubkey: m.pubkey, asteroidType: m.asteroidType },
-    });
-    // Guaranteed visible tumble — boost rotVel above the default
-    // ±0.8 rad/s with a sign that alternates so adjacent slots spin
-    // opposite directions. Reads as "council in motion" rather than
-    // the occasional near-zero spin the standard random can give.
-    ast.rotVel = ((i % 2 === 0) ? 1 : -1) * (1.4 + Math.random() * 0.8);
-    s.asteroids.push(ast);
-    spawned.push(ast);
+  return a;
+}
+
+/** Spawn ONE council member at a random edge, drifting inward. Drawn
+ *  from the shuffled queue; once empty, re-shuffle the full roster
+ *  so the cycle continues. */
+function spawnNextCouncilMember(s: GameState): void {
+  const roster = getCouncil();
+  if (roster.length === 0) return;
+  if (sanctumCouncilQueue.length === 0) {
+    sanctumCouncilQueue = fisherYates(roster);
   }
-  // Scatter after the visible ring rotation has read. setTimeout is
-  // safe — beginWave runs sync, the asteroids land in s.asteroids
-  // immediately, and the scatter just reassigns velocities on the
-  // ones still alive. If the player has already shot some, those are
-  // dead/replaced by fragments and skipped naturally.
-  window.setTimeout(() => {
-    for (const a of spawned) {
-      if (!a.alive) continue;
-      const ang = Math.random() * Math.PI * 2;
-      const speed = 60 + Math.random() * 70;  // 60-130 px/s wandering pace
-      a.vel.x = Math.cos(ang) * speed;
-      a.vel.y = Math.sin(ang) * speed;
-      // Keep the strong tumble post-scatter — sign flips randomly,
-      // magnitude stays in the "obviously rotating" band.
-      a.rotVel = (Math.random() < 0.5 ? -1 : 1) * (1.2 + Math.random() * 1.0);
-    }
-  }, 1_600);
+  const m = sanctumCouncilQueue.pop()!;
+  sanctumCouncilSpawned.add(m.name);
+  // Edge spawn — pick a side and aim roughly toward the centre with
+  // a random ±60° spread for variety.
+  const side = Math.floor(Math.random() * 4);
+  let x = 0, y = 0;
+  if (side === 0) { x = Math.random() * WORLD_W; y = -40; }
+  else if (side === 1) { x = WORLD_W + 40; y = Math.random() * WORLD_H; }
+  else if (side === 2) { x = Math.random() * WORLD_W; y = WORLD_H + 40; }
+  else { x = -40; y = Math.random() * WORLD_H; }
+  const inward = Math.atan2(WORLD_H / 2 - y, WORLD_W / 2 - x);
+  const ang = inward + (Math.random() - 0.5) * (Math.PI / 3);
+  const speed = 55 + Math.random() * 50;
+  const ast = spawnAsteroid('large', 1, { x, y }, { x: Math.cos(ang) * speed, y: Math.sin(ang) * speed }, m.asteroidType, {
+    councilMember: { name: m.name, role: m.role, archetype: m.archetype, img: m.img, pubkey: m.pubkey, asteroidType: m.asteroidType },
+  });
+  ast.rotVel = (Math.random() < 0.5 ? -1 : 1) * (1.2 + Math.random() * 1.0);
+  s.asteroids.push(ast);
 }
 
 /** Spawn N textured filler asteroids from random edges, drifting
@@ -706,16 +720,27 @@ let sanctumNextFillerSpawn = 0;
 function tickSanctumFillers(s: GameState, dtMs: number): void {
   if (getFlavour() !== '600bn' || s.wave !== 1) return;
   if (s.phase !== 'playing' && s.phase !== 'wavestart') return;
-  if (s.asteroids.length >= SANCTUM_ASTEROID_CAP) return;
-  sanctumNextFillerSpawn -= dtMs;
-  // Hard top-up when nearly empty so the player isn't left chasing a
-  // single survivor while the room idles. Below 3 we re-fill fast.
-  if (s.asteroids.length < 3 && sanctumNextFillerSpawn > 600) {
-    sanctumNextFillerSpawn = 600;
+  // Filler spawn (textured non-council rocks) — keeps the field
+  // populated baseline while the council cycle runs alongside.
+  if (s.asteroids.length < SANCTUM_ASTEROID_CAP) {
+    sanctumNextFillerSpawn -= dtMs;
+    if (s.asteroids.length < 3 && sanctumNextFillerSpawn > 600) {
+      sanctumNextFillerSpawn = 600;
+    }
+    if (sanctumNextFillerSpawn <= 0) {
+      spawnSanctumFillers(s, 1);
+      sanctumNextFillerSpawn = SANCTUM_FILLER_INTERVAL_MS;
+    }
   }
-  if (sanctumNextFillerSpawn <= 0) {
-    spawnSanctumFillers(s, 1);
-    sanctumNextFillerSpawn = SANCTUM_FILLER_INTERVAL_MS;
+  // Council cycle — independent timer. One member drifts in every
+  // ~9s from the shuffled queue. Skips when the playfield is at the
+  // entity cap so a busy moment doesn't compound.
+  if (s.asteroids.length < SANCTUM_ASTEROID_CAP) {
+    sanctumNextCouncilSpawn -= dtMs;
+    if (sanctumNextCouncilSpawn <= 0) {
+      spawnNextCouncilMember(s);
+      sanctumNextCouncilSpawn = SANCTUM_COUNCIL_INTERVAL_MS;
+    }
   }
 }
 
@@ -754,16 +779,25 @@ export function beginWave(s: GameState, wave: number): void {
   // fragments still wearing the face. No mines, no UFO timer (set
   // below). The 'pallasite' type is used so each break drops sats.
   if (getFlavour() === '600bn' && wave === 1) {
-    spawnCouncilWave(s);
+    // 600bn flow: opens as a normal asteroid run (textured fillers)
+    // and cycles council members in one at a time. Fresh ignite =
+    // fresh stats; reset everything.
+    sanctumCouncilQueue = [];
+    sanctumCouncilSpawned.clear();
+    sanctumCouncilDefeated = 0;
+    sanctumNextCouncilSpawn = 5_000;          // first member drifts in ~5s after ignite
+    sanctumNextFillerSpawn = SANCTUM_FILLER_INTERVAL_MS;
+    sanctumStats.startedAt = performance.now();
+    sanctumStats.councilDefeated = 0;
+    sanctumStats.councilSpawned = 0;
+    sanctumStats.councilTotal = getCouncil().length;
+    sanctumStats.asteroidsDestroyed = 0;
+    // Opening field of textured fillers — "normal game" entry beat.
+    spawnSanctumFillers(s, 6);
     // UFO spawning kept — the 600bn UFO renders as the $600B sacred-
-    // number badge. First spawn pulled in slightly so the badge
-    // appears during the active wave. Mines suppressed — the council
-    // ring shouldn't have static well hazards crowding it.
+    // number badge. Mines suppressed.
     s.nextUfoSpawn = 8_000;
     s.nextMineSpawn = 10 * 60 * 1000;
-    // Reset the infinity-filler timer so the first re-supply doesn't
-    // fire before the player engages the council.
-    sanctumNextFillerSpawn = SANCTUM_FILLER_INTERVAL_MS;
   } else if (setPiece) {
     setPiece.setup(s);
   } else if (wave === FINAL_WAVE) {
@@ -3138,6 +3172,17 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
     bumpTrauma(s, 0.12);
     audio.comboTick(Math.min(COMBO_MAX, s.combo + 1));
     toastNow(s, `+${trickLabels.join(' + ')}`);
+  }
+
+  // 600bn run-stats hooks. Bump on every break so the end-of-run
+  // panel can show total asteroids destroyed; council members are
+  // counted on their smallest-size death (when the asteroid is
+  // genuinely gone, not fragmenting).
+  if (getFlavour() === '600bn') {
+    sanctumStats.asteroidsDestroyed += 1;
+    if (a.councilMember && a.size === 'small') {
+      sanctumCouncilDefeated += 1;
+    }
   }
 
   maybeExtraLife(s);

@@ -816,8 +816,30 @@ function bakeAsteroidTexture(type: AsteroidType): HTMLCanvasElement {
 function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): void {
   if (!a.alive) return;
   const style = getAsteroidStyle(a.type);
+  // 600bn filler rocks (textured, no member portrait, not a vein)
+  // get the "awesome 3D tumbling" treatment: drop shadow under,
+  // camera-fixed rim light + terminator shading on top, neutral
+  // outline (no per-type tint). Council members and main-game
+  // asteroids skip this.
+  const is600bnFiller = !a.councilMember && !a.isVein && getFlavour() === '600bn';
   ctx.save();
   ctx.translate(a.pos.x, a.pos.y);
+  // 600bn drop shadow — drawn in the translated-but-NOT-rotated
+  // frame so the shadow stays put on the "floor" regardless of how
+  // the rock tumbles. Soft radial gradient offset down-right.
+  if (is600bnFiller) {
+    const sx = a.radius * 0.18;
+    const sy = a.radius * 0.24;
+    const sr = a.radius * 1.05;
+    const sg = ctx.createRadialGradient(sx, sy, a.radius * 0.2, sx, sy, sr);
+    sg.addColorStop(0, 'rgba(0,0,0,0.48)');
+    sg.addColorStop(0.6, 'rgba(0,0,0,0.22)');
+    sg.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = sg;
+    ctx.beginPath();
+    ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+    ctx.fill();
+  }
   // Vein halo — outer pulsing gold ring drawn BEFORE the rotate so the
   // halo doesn't spin with the asteroid. Reads as a fixed corona around
   // a slowly-rotating prize. Heavy bloom + sin-driven scale.
@@ -843,11 +865,22 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
     ctx.restore();
   }
   ctx.rotate(a.rot);
-  ctx.lineWidth = a.type === 'iron' ? 2.0 : (a.isVein ? 2.4 : 1.4);
-  const lightness = 60 + a.hue * 0.2;
-  ctx.strokeStyle = a.isVein ? '#ffd84a' : `hsl(${style.hueBase}, 70%, ${lightness}%)`;
-  ctx.shadowColor = a.isVein ? '#ffd84a' : style.glow;
-  ctx.shadowBlur = a.isVein ? 22 : (a.type === 'pallasite' ? 14 : 8);
+  // 600bn drops the per-type tint on every non-vein asteroid
+  // (fillers AND council members) — the texture/portrait inside
+  // carries the visual identity; an outline tint just fights it.
+  const is600bnAsteroid = !a.isVein && getFlavour() === '600bn';
+  if (is600bnAsteroid) {
+    ctx.lineWidth = 1.0;
+    ctx.strokeStyle = 'rgba(50, 40, 32, 0.85)';
+    ctx.shadowColor = 'rgba(0,0,0,0)';
+    ctx.shadowBlur = 0;
+  } else {
+    ctx.lineWidth = a.type === 'iron' ? 2.0 : (a.isVein ? 2.4 : 1.4);
+    const lightness = 60 + a.hue * 0.2;
+    ctx.strokeStyle = a.isVein ? '#ffd84a' : `hsl(${style.hueBase}, 70%, ${lightness}%)`;
+    ctx.shadowColor = a.isVein ? '#ffd84a' : style.glow;
+    ctx.shadowBlur = a.isVein ? 22 : (a.type === 'pallasite' ? 14 : 8);
+  }
 
   const n = a.shape.length;
   ctx.beginPath();
@@ -868,7 +901,7 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   // canvas-baked fallback while the webp decodes. Council members
   // skip this branch (their portrait fill comes below). Main flavour
   // keeps the canonical line-art look untouched.
-  if (!a.councilMember && getFlavour() === '600bn' && !a.isVein) {
+  if (is600bnFiller) {
     const photoreal = getAsteroidPhotoreal(a.type);
     const tex = photoreal ?? bakeAsteroidTexture(a.type);
     ctx.save();
@@ -885,11 +918,33 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
     }
     ctx.closePath();
     ctx.clip();
-    // The polygon is drawn in the rotated frame (ctx.rotate(a.rot)
-    // happened upstream), so drawing the texture here in the same
-    // frame means it tumbles with the rock.
+    // Texture draws in the rotated frame so it tumbles with the rock.
     const d = a.radius * 2.05;
     ctx.drawImage(tex, -d / 2, -d / 2, d, d);
+    // Camera-fixed rim light + terminator shading. Counter-rotate
+    // so light direction stays "upper-left" regardless of tumble —
+    // that's what makes the rock read as a solid 3D body rather
+    // than a flat textured disc spinning in place.
+    ctx.rotate(-a.rot);
+    const lr = a.radius * 1.15;
+    const litGrd = ctx.createRadialGradient(-a.radius * 0.4, -a.radius * 0.45, a.radius * 0.1, -a.radius * 0.4, -a.radius * 0.45, lr);
+    litGrd.addColorStop(0, 'rgba(255, 240, 220, 0.55)');
+    litGrd.addColorStop(0.45, 'rgba(255, 240, 220, 0.18)');
+    litGrd.addColorStop(1, 'rgba(255, 240, 220, 0)');
+    ctx.fillStyle = litGrd;
+    ctx.globalCompositeOperation = 'screen';
+    ctx.beginPath();
+    ctx.arc(0, 0, lr, 0, Math.PI * 2);
+    ctx.fill();
+    const shadeGrd = ctx.createRadialGradient(a.radius * 0.5, a.radius * 0.55, a.radius * 0.1, a.radius * 0.5, a.radius * 0.55, a.radius * 1.4);
+    shadeGrd.addColorStop(0, 'rgba(0,0,0,0.55)');
+    shadeGrd.addColorStop(0.5, 'rgba(0,0,0,0.25)');
+    shadeGrd.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = shadeGrd;
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.beginPath();
+    ctx.arc(0, 0, a.radius * 1.4, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   }
 
@@ -923,8 +978,9 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
     }
   }
 
-  // Iron: inner armour ring while hp > 1 — strips off after the first hit
-  if (a.type === 'iron' && a.hp > 1) {
+  // Iron: inner armour ring while hp > 1 — strips off after the first hit.
+  // Skipped on 600bn (textured + council faces don't need an extra ring).
+  if (a.type === 'iron' && a.hp > 1 && getFlavour() !== '600bn') {
     ctx.lineWidth = 1.0;
     ctx.globalAlpha = 0.55;
     ctx.beginPath();
@@ -961,8 +1017,10 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
     ctx.restore();
   }
 
-  // Pallasite: olivine sparkle dots — animated, signals jackpot
-  if (a.type === 'pallasite') {
+  // Pallasite: olivine sparkle dots — animated, signals jackpot.
+  // Suppressed on 600bn so the photoreal surface / council portrait
+  // reads cleanly.
+  if (a.type === 'pallasite' && getFlavour() !== '600bn') {
     const count = a.size === 'large' ? 7 : a.size === 'medium' ? 4 : 2;
     for (let i = 0; i < count; i++) {
       const t = now * 0.001 + i * 0.7;
@@ -982,8 +1040,9 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
     ctx.globalAlpha = 1;
   }
 
-  // Chondrite: short crystal accents at every other vertex — brittle look
-  if (a.type === 'chondrite') {
+  // Chondrite: short crystal accents at every other vertex — brittle look.
+  // Suppressed on 600bn (texture already reads as brittle stone).
+  if (a.type === 'chondrite' && getFlavour() !== '600bn') {
     ctx.lineWidth = 0.8;
     ctx.globalAlpha = 0.55;
     ctx.strokeStyle = '#cfeaff';
