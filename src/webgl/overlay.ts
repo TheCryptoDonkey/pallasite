@@ -69,19 +69,20 @@ const ASTEROID_TYPE_COLOR: Record<string, number> = {
   pallasite: 0xf0c860,
 };
 
-/** Per-type Phong tuning — specular highlight + shininess. Emissive
- *  dropped entirely (was reading as "ghostly/see-through" because it
- *  brightened the rock regardless of view angle). Higher shininess
- *  across the board so the rocks read as solid lit bodies with
- *  distinct highlight points. */
+/** Per-type Phong tuning — specular highlight + shininess. Real rocks
+ *  are mostly matte; only pallasite (olivine inclusions) reads as
+ *  gem-like. Previous values were too high across the board and were
+ *  producing per-facet specular hotspots that read as a ball of shards
+ *  rather than a solid lit body. Pallasite kept at 110 because that
+ *  one was already landing well. */
 interface AsteroidTypeMaterial {
   shininess: number;
   specular: number;
 }
 const ASTEROID_TYPE_MAT: Record<string, AsteroidTypeMaterial> = {
-  stony:     { shininess: 60,  specular: 0x707070 },
-  iron:      { shininess: 140, specular: 0xc0a880 },
-  chondrite: { shininess: 35,  specular: 0x506070 },
+  stony:     { shininess: 18,  specular: 0x404040 },
+  iron:      { shininess: 50,  specular: 0x806840 },
+  chondrite: { shininess: 8,   specular: 0x202830 },
   pallasite: { shininess: 110, specular: 0xd0a040 },
 };
 
@@ -116,9 +117,12 @@ let frameCounter = 0;
  *  projection.
  */
 function buildAsteroidGeometry(a: Asteroid): THREE.BufferGeometry {
-  // Higher detail than before — modern GPUs handle these counts easily
-  // and the silhouette is what reads "asteroid" vs "lumpy sphere".
-  const detail = a.size === 'large' ? 5 : a.size === 'medium' ? 4 : 3;
+  // Detail dropped from 5/4/3 (up to 10242 verts) to 3/2/2 (642/162/162).
+  // Combined with the continuous-noise fix below, fewer verts read as
+  // SMOOTHER, not rougher — the previous high-detail meshes were just
+  // producing per-vertex spike chaos. Real game-ready asteroid models
+  // (the reference packs you linked) sit around 1–3k tris.
+  const detail = a.size === 'large' ? 3 : a.size === 'medium' ? 2 : 2;
   const geo = new THREE.IcosahedronGeometry(a.radius, detail);
   const pos = geo.attributes.position as THREE.BufferAttribute;
   const n = pos.count;
@@ -127,43 +131,49 @@ function buildAsteroidGeometry(a: Asteroid): THREE.BufferGeometry {
   const seedBase = a.id != null
     ? ((a.id * 2654435761) >>> 0)
     : hashStr(`${a.pos.x | 0},${a.pos.y | 0}`);
-  // Type-keyed terrain character. Iron crisp, chondrite porous,
-  // pallasite gem-smooth, stony in between. Values pushed up overall
-  // — was reading as too pebble-like.
-  const ruggedness = a.type === 'chondrite' ? 0.36
-                   : a.type === 'iron'      ? 0.30
-                   : a.type === 'pallasite' ? 0.18
-                                            : 0.28;
-  // Asymmetric stretch — each asteroid is slightly ovoid, never a
-  // perfect sphere. Seed-derived so identity persists across frames.
+  // Gentler ruggedness than before. With the continuous-noise fix the
+  // same numeric value reads as smooth lumps where it previously read
+  // as spike-balls; we can back off and still look "rocky" rather than
+  // "ball of glass shards".
+  const ruggedness = a.type === 'chondrite' ? 0.20
+                   : a.type === 'iron'      ? 0.16
+                   : a.type === 'pallasite' ? 0.10
+                                            : 0.16;
   const stretchX = 0.85 + ((seedBase >>> 0) & 0xff) / 0xff * 0.3;       // 0.85..1.15
   const stretchY = 0.85 + ((seedBase >>> 8) & 0xff) / 0xff * 0.3;
   const stretchZ = 0.85 + ((seedBase >>> 16) & 0xff) / 0xff * 0.3;
-  // Crater pass — pick 4-6 random points on the unit sphere; each
-  // carves a bowl-shaped depression. Number + position deterministic
-  // from seed so the same rock craters the same way each frame.
-  const craterCount = 4 + (seedBase & 0x3);
+  // CRITICAL: per-asteroid noise phase offsets, computed ONCE outside
+  // the per-vertex loop. The previous code derived these from a seed
+  // that included the vertex index — so adjacent vertices used
+  // completely different sine phases and ended up independently
+  // displaced, producing a ball of spikes instead of a continuous
+  // lumpy surface. Pulling them out makes the noise function
+  // continuous across the sphere.
+  const p1 = (seedBase & 0x3ff) * 0.01;
+  const p2 = ((seedBase >>> 10) & 0x3ff) * 0.011;
+  const p3 = ((seedBase >>> 20) & 0x3ff) * 0.013;
+  // Crater pass — bowl depressions at 3-6 deterministic points.
+  // Depths roughly halved (was 0.10–0.28) so they read as visible
+  // dimples rather than gouges.
+  const craterCount = 3 + (seedBase & 0x3);
   const craters: Array<{ cx: number; cy: number; cz: number; r: number; depth: number }> = [];
   for (let c = 0; c < craterCount; c++) {
     const s = (seedBase * (c + 1) * 2654435761) >>> 0;
-    // Random point on unit sphere via cylindrical mapping.
     const theta = ((s & 0xffff) / 0xffff) * Math.PI * 2;
-    const z01 = ((s >>> 16) & 0xffff) / 0xffff * 2 - 1;       // -1..1
+    const z01 = ((s >>> 16) & 0xffff) / 0xffff * 2 - 1;
     const rxy = Math.sqrt(1 - z01 * z01);
     craters.push({
       cx: Math.cos(theta) * rxy,
       cy: Math.sin(theta) * rxy,
       cz: z01,
-      r: 0.18 + ((s >>> 4) & 0xff) / 0xff * 0.20,             // 0.18..0.38 of sphere
-      depth: 0.10 + ((s >>> 12) & 0xff) / 0xff * 0.18,        // 0.10..0.28
+      r: 0.22 + ((s >>> 4) & 0xff) / 0xff * 0.18,             // 0.22..0.40
+      depth: 0.08 + ((s >>> 12) & 0xff) / 0xff * 0.10,        // 0.08..0.18
     });
   }
   for (let i = 0; i < n; i++) {
     let x = pos.getX(i);
     let y = pos.getY(i);
     let z = pos.getZ(i);
-    // Longitudinal angle drives shape[] sampling — links 3D silhouette
-    // to the 2D one the player has been seeing.
     const ang = Math.atan2(y, x);
     const t = (ang / (Math.PI * 2) + 1) % 1;
     const f = t * shapeN;
@@ -171,29 +181,21 @@ function buildAsteroidGeometry(a: Asteroid): THREE.BufferGeometry {
     const i1 = (i0 + 1) % shapeN;
     const blend = f - Math.floor(f);
     const shapeR = shape[i0] * (1 - blend) + shape[i1] * blend;
-    // Five-octave layered noise. Unit-sphere coords so the pattern is
-    // size-independent and small fragments echo their parent.
+    // Three-octave continuous noise — big lumps, medium bumps, small
+    // surface roughness. Dropped the 21/42-Hz octaves entirely; on a
+    // 642-vert sphere those were just spatial aliasing.
     const r0 = Math.hypot(x, y, z) || 1;
     const ux = x / r0, uy = y / r0, uz = z / r0;
-    const seedOff = (seedBase ^ (i * 2654435761)) >>> 0;
-    const p1 = (seedOff & 0x3ff) * 0.01;
-    const p2 = ((seedOff >> 10) & 0x3ff) * 0.011;
-    const p3 = ((seedOff >> 20) & 0x3ff) * 0.013;
-    const n1 = Math.sin(ux * 2.7 + p1) * Math.sin(uy * 2.5 + p2) * Math.sin(uz * 2.9 + p3);
-    const n2 = Math.sin(ux * 5.3 + p2) * Math.sin(uy * 5.7 + p3) * Math.sin(uz * 5.1 + p1);
-    const n3 = Math.sin(ux * 10.5 + p3) * Math.sin(uy * 11.1 + p1) * Math.sin(uz * 10.7 + p2);
-    const n4 = Math.sin(ux * 21.0 + p1) * Math.sin(uy * 20.3 + p2) * Math.sin(uz * 21.7 + p3);
-    const n5 = Math.sin(ux * 42.0 + p2) * Math.sin(uy * 41.7 + p3) * Math.sin(uz * 42.3 + p1);
-    const bumps = n1 * 0.5 + n2 * 0.25 + n3 * 0.13 + n4 * 0.07 + n5 * 0.05;
-    // Crater pass — for each crater, distance from this vertex (as a
-    // unit-direction) to the crater centre. Inside crater radius,
-    // carve a smoothstep bowl.
+    const n1 = Math.sin(ux * 2.0 + p1) * Math.sin(uy * 1.7 + p2) * Math.sin(uz * 2.3 + p3);
+    const n2 = Math.sin(ux * 4.3 + p2) * Math.sin(uy * 4.7 + p3) * Math.sin(uz * 4.1 + p1);
+    const n3 = Math.sin(ux * 8.5 + p3) * Math.sin(uy * 8.1 + p1) * Math.sin(uz * 8.7 + p2);
+    const bumps = n1 * 0.55 + n2 * 0.30 + n3 * 0.15;
     let craterDepth = 0;
     for (const c of craters) {
       const d = Math.hypot(ux - c.cx, uy - c.cy, uz - c.cz);
       if (d < c.r) {
-        const t2 = d / c.r;                  // 0 at centre, 1 at rim
-        const fall = 1 - t2 * t2 * (3 - 2 * t2);  // smoothstep falloff
+        const t2 = d / c.r;
+        const fall = 1 - t2 * t2 * (3 - 2 * t2);
         craterDepth = Math.max(craterDepth, c.depth * fall);
       }
     }
@@ -242,10 +244,18 @@ function getDiffuseTexture(h: OverlayHandle, type: string): THREE.Texture | null
   return h.diffuseCache.get(type) ?? null;
 }
 
-function kickDiffuseLoad(h: OverlayHandle, type: string, attachTo: THREE.MeshPhongMaterial): void {
+function kickDiffuseLoad(h: OverlayHandle, type: string, attachTo: THREE.MeshPhongMaterial, isCouncil: boolean): void {
   const existing = h.diffuseCache.get(type);
   if (existing) {
-    attachTo.map = existing;
+    if (!isCouncil) {
+      // Council members get their portrait as the diffuse; the rock
+      // texture must NOT be attached or it would stomp the portrait
+      // when this load completes after the portrait one (current code
+      // path used to do exactly that).
+      attachTo.map = existing;
+      attachTo.bumpMap = existing;
+      attachTo.bumpScale = 0.35;
+    }
     attachTo.needsUpdate = true;
     return;
   }
@@ -255,8 +265,16 @@ function kickDiffuseLoad(h: OverlayHandle, type: string, attachTo: THREE.MeshPho
     tex.wrapS = THREE.RepeatWrapping;
     tex.wrapT = THREE.RepeatWrapping;
     h.diffuseCache.set(type, tex);
-    attachTo.map = tex;
-    attachTo.needsUpdate = true;
+    if (!isCouncil) {
+      attachTo.map = tex;
+      // Bump-mapping the diffuse gives free micro-detail: the
+      // luminance variation in the rock webp drives surface height
+      // perturbation under lighting. Subtle bumpScale because the
+      // textures have strong colour contrast that would over-bump.
+      attachTo.bumpMap = tex;
+      attachTo.bumpScale = 0.35;
+      attachTo.needsUpdate = true;
+    }
   });
 }
 
@@ -282,17 +300,20 @@ function getCouncilTexture(h: OverlayHandle, name: string): THREE.Texture | null
   return tex;
 }
 
-/** Per-frame retry — if a council asteroid's material doesn't have a
- *  portrait map yet (because the image hadn't decoded when the mesh
- *  was built), try again. Cheap when nothing's pending. */
+/** Per-frame retry — make sure a council asteroid is showing its
+ *  portrait. Previously bailed early if mat.map was already set, but
+ *  that left a window where kickDiffuseLoad's callback could complete
+ *  AFTER the portrait was attached and stomp the portrait with the
+ *  rock texture (the per-frame retry would then refuse to fix it).
+ *  Now: if the cached portrait texture isn't the current map, set it. */
 function attachCouncilTextureWhenReady(
   h: OverlayHandle,
   mat: THREE.MeshPhongMaterial,
   name: string,
 ): void {
-  if (mat.map) return;
   const tex = getCouncilTexture(h, name);
   if (!tex) return;
+  if (mat.map === tex) return;
   mat.map = tex;
   mat.color = new THREE.Color(0xffffff);
   mat.needsUpdate = true;
@@ -328,7 +349,7 @@ export function ensureWebGLOverlay(): Promise<OverlayHandle> {
     const sun = new THREE.DirectionalLight(0xfff2da, 1.8);
     sun.position.set(-200, -200, 300);
     scene.add(sun);
-    const ambient = new THREE.AmbientLight(0xa8b0b8, 0.85);
+    const ambient = new THREE.AmbientLight(0xa8b0b8, 1.0);
     scene.add(ambient);
     const rim = new THREE.DirectionalLight(0x80a0ff, 0.5);
     rim.position.set(250, 250, 200);
@@ -356,15 +377,20 @@ export function getReadyOverlay(): OverlayHandle | null {
 /** ── 600bn coin UFO ──────────────────────────────────────────────────
  *  On 600bn flavour the 2D path renders every UFO as the $600B sacred
  *  number badge (drawSixHundredBnLogoUfo). For 3D parity we build a
- *  gold coin: thick cylinder + canvas-rendered wordmark texture on
- *  both faces + bright specular so it catches the key light. */
-let sixHundredBnFaceTexture: THREE.CanvasTexture | null = null;
-function getSixHundredBnFaceTexture(): THREE.CanvasTexture {
-  if (sixHundredBnFaceTexture) return sixHundredBnFaceTexture;
-  const c = document.createElement('canvas');
-  c.width = 256; c.height = 256;
-  const ctx = c.getContext('2d')!;
-  // Radial gold gradient — brighter centre fades to deep gold edge.
+ *  gold coin with TWO different faces:
+ *
+ *    - obverse: the "600/000/000/000" sacred-number wordmark
+ *    - reverse: a clock face permanently fixed at 4:20pm, the
+ *      time-lock motif (and a wink to the conference crowd)
+ *
+ *  As the coin tumbles in 3D both faces flash past — players catch
+ *  one or the other depending on the moment of the rotation. */
+let sixHundredBnWordmarkTexture: THREE.CanvasTexture | null = null;
+let sixHundredBnClockTexture: THREE.CanvasTexture | null = null;
+
+/** Paint the shared coin base (gold gradient disc + rim). Both faces
+ *  start from this so the obverse and reverse read as the same coin. */
+function paintCoinBase(ctx: CanvasRenderingContext2D): void {
   const grad = ctx.createRadialGradient(128, 128, 8, 128, 128, 128);
   grad.addColorStop(0, '#fff6c0');
   grad.addColorStop(0.5, '#ffd84a');
@@ -373,12 +399,19 @@ function getSixHundredBnFaceTexture(): THREE.CanvasTexture {
   ctx.beginPath();
   ctx.arc(128, 128, 124, 0, Math.PI * 2);
   ctx.fill();
-  // Outer rim stroke for the "coin edge" feel.
   ctx.strokeStyle = '#5a3a00';
   ctx.lineWidth = 6;
   ctx.beginPath();
   ctx.arc(128, 128, 121, 0, Math.PI * 2);
   ctx.stroke();
+}
+
+function getSixHundredBnFaceTexture(): THREE.CanvasTexture {
+  if (sixHundredBnWordmarkTexture) return sixHundredBnWordmarkTexture;
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 256;
+  const ctx = c.getContext('2d')!;
+  paintCoinBase(ctx);
   // 4-line sacred number wordmark — same canonical layout as the 2D
   // game-over card.
   ctx.fillStyle = '#0a0418';
@@ -393,7 +426,80 @@ function getSixHundredBnFaceTexture(): THREE.CanvasTexture {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = THREE.ClampToEdgeWrapping;
   tex.wrapT = THREE.ClampToEdgeWrapping;
-  sixHundredBnFaceTexture = tex;
+  sixHundredBnWordmarkTexture = tex;
+  return tex;
+}
+
+/** Clock face fixed at 4:20pm. Minute hand on the "4" (120° from top),
+ *  hour hand at 130° (4 + 20/60 hours = 4.333 × 30°/hour). Reads as
+ *  "time-locked" iconography; the 4:20 reading is a deliberate
+ *  conference-crowd wink. */
+function getSixHundredBnClockTexture(): THREE.CanvasTexture {
+  if (sixHundredBnClockTexture) return sixHundredBnClockTexture;
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 256;
+  const ctx = c.getContext('2d')!;
+  paintCoinBase(ctx);
+  // Hour ticks — 12 around the dial, cardinals (12/3/6/9) drawn bolder.
+  ctx.strokeStyle = '#0a0418';
+  ctx.lineCap = 'butt';
+  for (let h = 0; h < 12; h++) {
+    const angle = (h / 12) * Math.PI * 2 - Math.PI / 2;
+    const isCardinal = h % 3 === 0;
+    const r1 = isCardinal ? 92 : 102;
+    const r2 = 115;
+    ctx.lineWidth = isCardinal ? 7 : 3;
+    ctx.beginPath();
+    ctx.moveTo(128 + Math.cos(angle) * r1, 128 + Math.sin(angle) * r1);
+    ctx.lineTo(128 + Math.cos(angle) * r2, 128 + Math.sin(angle) * r2);
+    ctx.stroke();
+  }
+  // Roman numerals at the cardinals — gives the coin a heritage feel
+  // rather than wristwatch.
+  ctx.fillStyle = '#0a0418';
+  ctx.font = 'bold 22px Georgia, serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('XII', 128, 38);
+  ctx.fillText('III', 218, 128);
+  ctx.fillText('VI',  128, 218);
+  ctx.fillText('IX',   38, 128);
+  // "TIME LOCKED" wordmark above centre.
+  ctx.font = 'bold 13px ui-monospace, monospace';
+  ctx.fillStyle = '#3a2400';
+  ctx.fillText('TIME LOCKED', 128, 78);
+  // Hands at 4:20. Canvas angle = degrees-clockwise-from-top minus 90°.
+  const handAngle = (degFromTop: number): number => (degFromTop - 90) * Math.PI / 180;
+  ctx.strokeStyle = '#0a0418';
+  ctx.lineCap = 'round';
+  // Minute hand — long, thin — at 4 (= 20 min = 120° from top).
+  const minA = handAngle(120);
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.moveTo(128, 128);
+  ctx.lineTo(128 + Math.cos(minA) * 78, 128 + Math.sin(minA) * 78);
+  ctx.stroke();
+  // Hour hand — short, thick — at 4 + 20 min = 130° from top.
+  const hourA = handAngle(130);
+  ctx.lineWidth = 8;
+  ctx.beginPath();
+  ctx.moveTo(128, 128);
+  ctx.lineTo(128 + Math.cos(hourA) * 52, 128 + Math.sin(hourA) * 52);
+  ctx.stroke();
+  // Centre boss.
+  ctx.fillStyle = '#0a0418';
+  ctx.beginPath();
+  ctx.arc(128, 128, 7, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#ffd84a';
+  ctx.beginPath();
+  ctx.arc(128, 128, 3, 0, Math.PI * 2);
+  ctx.fill();
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  sixHundredBnClockTexture = tex;
   return tex;
 }
 
@@ -408,10 +514,17 @@ function build600bnCoinMesh(u: Ufo): { group: THREE.Group; geometry: THREE.Buffe
     shininess: 200,
     specular: 0xfff0a0,
   });
-  // Faces carry the 4-line wordmark texture.
-  const capMat = new THREE.MeshPhongMaterial({
+  // Obverse: "600/000/000/000" wordmark.
+  const obverseMat = new THREE.MeshPhongMaterial({
     color: 0xffffff,
     map: getSixHundredBnFaceTexture(),
+    shininess: 220,
+    specular: 0xffffff,
+  });
+  // Reverse: clock face frozen at 4:20pm (time-lock motif).
+  const reverseMat = new THREE.MeshPhongMaterial({
+    color: 0xffffff,
+    map: getSixHundredBnClockTexture(),
     shininess: 220,
     specular: 0xffffff,
   });
@@ -434,12 +547,12 @@ function build600bnCoinMesh(u: Ufo): { group: THREE.Group; geometry: THREE.Buffe
   rimBot.rotation.x = Math.PI / 2;
   rimBot.position.y = -h / 2;
   rimBot.frustumCulled = false;
-  const mesh = new THREE.Mesh(geo, [sideMat, capMat, capMat]);
+  const mesh = new THREE.Mesh(geo, [sideMat, obverseMat, reverseMat]);
   mesh.frustumCulled = false;
   group.add(mesh);
   group.add(rimTop);
   group.add(rimBot);
-  return { group, geometry: geo, material: capMat };
+  return { group, geometry: geo, material: obverseMat };
 }
 
 /** Build a UFO mesh once per type. Saucer body (squashed cylinder) +
@@ -541,15 +654,23 @@ export function renderOverlay(opts: {
         shininess: matCfg.shininess,
         specular: matCfg.specular,
       });
-      // Council members get their portrait as the diffuse map.
-      // Photoreal type texture is loaded as a fallback so the rock is
-      // never blank if the portrait hasn't decoded yet — once the
-      // image is ready, attachCouncilTextureWhenReady (run per frame
-      // below) swaps the portrait in.
+      // Non-council asteroids: rock texture + bumpMap from same. The
+      // bumpMap uses the texture's luminance as height — gives free
+      // surface micro-detail under lighting that geometry alone can't
+      // (and shouldn't) provide.
+      // Council members: skip the rock texture entirely so the
+      // portrait isn't competing for the diffuse slot. The portrait
+      // attaches via attachCouncilTextureWhenReady once decoded.
+      const isCouncil = !!a.councilMember;
       const cachedTypeMap = getDiffuseTexture(handle, a.type);
-      if (cachedTypeMap) material.map = cachedTypeMap;
-      else kickDiffuseLoad(handle, a.type, material);
-      if (a.councilMember) {
+      if (cachedTypeMap && !isCouncil) {
+        material.map = cachedTypeMap;
+        material.bumpMap = cachedTypeMap;
+        material.bumpScale = 0.35;
+      } else if (!cachedTypeMap) {
+        kickDiffuseLoad(handle, a.type, material, isCouncil);
+      }
+      if (isCouncil && a.councilMember) {
         const portrait = getCouncilTexture(handle, a.councilMember.name);
         if (portrait) {
           material.map = portrait;
