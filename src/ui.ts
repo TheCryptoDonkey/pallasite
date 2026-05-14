@@ -8317,14 +8317,16 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
   // →red) plus peak-hold caps with decay echo classic VU meters, strong
   // bloom on bar tops makes the bass kicks read.
   //
-  // Skipped entirely on iOS PWA: the underlying game canvas + WebGL
-  // overlay are already drawing at 60fps beneath the music player, and
-  // adding a third 60fps canvas with shadow blur + analyser tap +
-  // sparks while the AudioContext is also decoding music has been
-  // observed to choke the main thread badly enough that audio drops
-  // out and touch events stop firing (PWA on iPhone). Track list works
-  // fine without the viz.
-  const skipViz = isIosSafari() && isStandalone();
+  // Lightweight mode on iOS PWA: the underlying game canvas + WebGL
+  // overlay are already drawing at 60fps beneath the music player.
+  // Stacking a third 60fps canvas with ~200 shadowBlur calls per frame
+  // plus sparks plus the analyser tap on top of the AudioContext
+  // decoding music chokes the iOS PWA main thread badly enough that
+  // audio drops out and touch events stop firing. The lightweight
+  // mode drops shadowBlur entirely (the most expensive Safari op),
+  // skips sparks, halves the bar count, and throttles the RAF loop
+  // to ~20fps — the bars and waveform still read.
+  const lightweightViz = isIosSafari() && isStandalone();
   const vizSticky = el('div', { parent: overlay });
   vizSticky.style.cssText = [
     'position:sticky', 'top:-8px',  // -8px so the rounded corners overlap the overlay padding
@@ -8335,15 +8337,14 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
     'backdrop-filter:blur(6px)',
     'border-radius:10px',
     'display:flex', 'justify-content:center',
-    skipViz ? 'display:none' : '',
-  ].filter(Boolean).join(';');
+  ].join(';');
   const canvas = el('canvas', { parent: vizSticky, attrs: { width: '960', height: '360' } }) as HTMLCanvasElement;
   // Shrink the viz on phones so the 20-row track list isn't pushed
   // below the fold. 110px is enough for the bar pattern to read; the
   // 172px desktop version stays via the min() ceiling.
   canvas.style.cssText = 'width:100%;max-width:460px;height:min(172px, 22vh);border-radius:6px;background:radial-gradient(ellipse at 50% 100%, rgba(180,140,255,0.18), rgba(0,0,0,0.7));';
 
-  const BAR_COUNT = 96;
+  const BAR_COUNT = lightweightViz ? 32 : 96;
   const peaks = new Float32Array(BAR_COUNT);
   const smoothed = new Float32Array(BAR_COUNT);  // smoothed bar values, fluid rise/fall
   const PEAK_DECAY = 0.014;
@@ -8428,9 +8429,11 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
       const barH = v * (baseline - 6);
       const y = baseline - barH;
 
-      // Main bar.
+      // Main bar. shadowBlur is the costliest Canvas2D op on Safari —
+      // a single overlay with ~200 blurred fills per frame chokes iOS,
+      // so the lightweight path zeroes it.
       cctx.shadowColor = '#ff8a3a';
-      cctx.shadowBlur = 14 + v * 26;
+      cctx.shadowBlur = lightweightViz ? 0 : (14 + v * 26);
       cctx.fillStyle = barGrad;
       cctx.fillRect(x, y, barW, barH);
 
@@ -8445,13 +8448,15 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
 
       // Peak-hold cap — bright thin bar that lingers above as the bar falls.
       const peakY = baseline - peaks[i] * (baseline - 6) - 2;
-      cctx.shadowBlur = 14;
+      cctx.shadowBlur = lightweightViz ? 0 : 14;
       cctx.shadowColor = '#fff5d8';
       cctx.fillStyle = '#fff5d8';
       cctx.fillRect(x, peakY, barW, 2);
 
       // Spark burst on a fresh peak (raw amplitude high AND newly so).
-      if (raw > 0.78 && Math.random() < 0.18) {
+      // Skipped on lightweight: ~200 sparks/sec each with shadowBlur is
+      // the second-heaviest cost after the bar blurs.
+      if (!lightweightViz && raw > 0.78 && Math.random() < 0.18) {
         const cx = x + barW / 2;
         const cy = peakY;
         for (let k = 0; k < 2; k++) {
@@ -8490,7 +8495,7 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
     cctx.lineWidth = 1.6;
     cctx.strokeStyle = `rgba(120, 240, 255, ${0.55 + bass * 0.45})`;
     cctx.shadowColor = '#7ff0ff';
-    cctx.shadowBlur = 12 + bass * 18;
+    cctx.shadowBlur = lightweightViz ? 0 : (12 + bass * 18);
     cctx.beginPath();
     const tStride = Math.max(1, Math.floor(time.length / w));
     for (let x = 0; x < w; x++) {
@@ -8507,10 +8512,15 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
     cctx.fillStyle = 'rgba(255, 255, 255, 0.10)';
     cctx.fillRect(0, baseline, w, 1);
 
-    requestAnimationFrame(drawViz);
+    // Throttle to ~20fps on iOS PWA so the underlying canvases get
+    // breathing room. Desktop / Android keep the smooth 60fps path.
+    if (lightweightViz) {
+      window.setTimeout(() => requestAnimationFrame(drawViz), 50);
+    } else {
+      requestAnimationFrame(drawViz);
+    }
   };
-  // Skip the RAF loop entirely on iOS PWA — see skipViz comment above.
-  if (!skipViz) requestAnimationFrame(drawViz);
+  requestAnimationFrame(drawViz);
 
   // Buttons go ABOVE the list so STOP + BACK are reachable without
   // scrolling past 20+ rows on a phone. Previously they sat at the
