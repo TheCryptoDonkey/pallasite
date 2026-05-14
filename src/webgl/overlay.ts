@@ -20,12 +20,14 @@
  *      each frame.
  *
  * Coordinate system:
- *   The world is 960×720 with Y down (screen convention). Our
- *   OrthographicCamera frustum maps (left=0, right=960, top=0,
- *   bottom=720) so mesh positions can be passed in raw world pixels.
- *   Mesh rotation in three.js follows right-hand: rotating +Z therefore
- *   rotates counter-clockwise as drawn, matching how the 2D context
- *   reads `a.rot` when y is down.
+ *   The world is 960×720 with Y down (screen convention). The
+ *   OrthographicCamera uses three.js's standard Y-up frustum
+ *   (top > bottom) — flipping the frustum the other way looked
+ *   correct mathematically but tripped three.js's per-mesh frustum
+ *   culling, which silently skipped every draw. Instead we flip the
+ *   Y axis at the mesh layer: mesh.position.y = WORLD_H - a.pos.y.
+ *   Rotation is negated so the apparent spin direction matches the
+ *   2D path (which reads a.rot in Y-down space).
  */
 
 import * as THREE from 'three';
@@ -179,17 +181,24 @@ export function ensureWebGLOverlay(): Promise<OverlayHandle> {
       canvas,
       alpha: true,
       antialias: true,
-      premultipliedAlpha: false,
     });
     renderer.setClearColor(0x000000, 0);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     const scene = new THREE.Scene();
-    // OrthographicCamera frustum maps (0,0)→(960,720) so mesh positions
-    // are raw world pixels. Y-down convention preserved by passing
-    // top=0, bottom=720 (flipped from three.js default).
-    const camera = new THREE.OrthographicCamera(0, 960, 0, 720, 0.1, 1000);
+    // Standard three.js Y-up frustum (top=720, bottom=0). World pixel
+    // (0, 0) is top-left in screen space; mesh positions flip Y so a
+    // world (x, y) lands at mesh (x, WORLD_H - y).
+    const camera = new THREE.OrthographicCamera(0, 960, 720, 0, 0.1, 1000);
     camera.position.set(0, 0, 500);
     camera.lookAt(0, 0, 0);
+    console.info('[webgl-overlay] init', {
+      canvasW: canvas.width,
+      canvasH: canvas.height,
+      cssW: canvas.style.width,
+      cssH: canvas.style.height,
+      pixelRatio: renderer.getPixelRatio(),
+      isContextLost: renderer.getContext().isContextLost?.(),
+    });
     // Lights — directional key from upper-left, neutral ambient fill,
     // soft rim from below-right so the silhouette doesn't read flat.
     // Brighter than the first pass — Phong materials want enough fill
@@ -270,6 +279,19 @@ export function renderOverlay(opts: {
   renderer.setScissor(vpX, vpY, vpW, vpH);
   renderer.setScissorTest(true);
   frameCounter += 1;
+  // One-shot diagnostic on first render — surfaces viewport math +
+  // scene contents so a "nothing visible" report is debuggable
+  // without devtools-level digging.
+  if (frameCounter === 1) {
+    console.info('[webgl-overlay] first render', {
+      viewport: { x: vpX, y: vpY, w: vpW, h: vpH },
+      canvas: { w: canvas.width, h: canvas.height, classes: canvas.className, display: getComputedStyle(canvas).display },
+      asteroids: opts.asteroids.length,
+      ship: opts.ship ? 'yes' : 'no',
+      dpr: opts.dpr,
+      scale: opts.scale,
+    });
+  }
   // Materialise / refresh each asteroid's mesh. Asteroids without an
   // id (very rare — only wire-bound replay frames omit it) are skipped
   // here and will fall through to the 2D shaded fallback path.
@@ -303,11 +325,11 @@ export function renderOverlay(opts: {
       handle.asteroidMeshes.set(a.id, entry);
     }
     entry.lastSeenFrame = frameCounter;
-    entry.mesh.position.set(a.pos.x, a.pos.y, 0);
-    // Rotation: a.rot rotates the 2D silhouette around its centre. In
-    // mesh space we rotate around +Z. We also drift around X+Y so the
-    // 3D body reads as actually tumbling, not just spinning in plane.
-    entry.mesh.rotation.z = a.rot;
+    // Y inverted so screen-Y-down world coords land correctly in the
+    // Y-up frustum. Rotation negated for the same reason — keeps the
+    // apparent spin direction matching the 2D path.
+    entry.mesh.position.set(a.pos.x, 720 - a.pos.y, 0);
+    entry.mesh.rotation.z = -a.rot;
     entry.mesh.rotation.x = a.rot * 0.55;
     entry.mesh.rotation.y = a.rot * 0.37;
     entry.mesh.visible = true;
@@ -380,8 +402,9 @@ export function renderOverlay(opts: {
     }
     const group = handle.shipMesh;
     group.visible = true;
-    group.position.set(opts.ship.pos.x, opts.ship.pos.y, 0);
-    group.rotation.set(0, 0, opts.ship.rot);
+    // Y-inverted to match the Y-up frustum (see asteroid path).
+    group.position.set(opts.ship.pos.x, 720 - opts.ship.pos.y, 0);
+    group.rotation.set(0, 0, -opts.ship.rot);
     if (handle.shipThrust) {
       handle.shipThrust.visible = !!opts.ship.thrusting;
       // Flame breathes — scale jitter to read as a flickering plume.
