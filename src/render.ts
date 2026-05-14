@@ -46,55 +46,72 @@ const stars: { x: number; y: number; r: number; flickerPhase: number; depth: num
   }
 })();
 
-// ── Bitcoin glyph cache — pre-rendered ₿ at 4 sizes ─────────────────
-// Pre-rendering to offscreen canvases means the per-frame star pass
-// uses drawImage instead of fillText + shadowBlur, which is ~10× faster.
-// 600bn flavour-only — main flavour uses cheap arc fills.
+// ── Bitcoin coin cache — pre-rendered outlined ₿ at 4 sizes ─────────
+// Matches the main-game sat-coin look: outlined gold circle with a
+// gold ₿ glyph inside. Pre-rendered to offscreen canvases at module
+// load so the per-frame pass uses drawImage instead of arc/stroke +
+// fillText + shadowBlur — ~10× faster than the inline equivalent.
 const BTC_TIERS = 4;
 const btcCanvases: HTMLCanvasElement[] = [];
 function ensureBtcCanvases(): void {
   if (btcCanvases.length > 0) return;
-  const sizes = [10, 16, 22, 30];
+  const sizes = [9, 13, 18, 24];
   for (const size of sizes) {
-    const pad = 10;
+    const pad = 8;
+    const dim = size * 2 + pad * 2;
     const c = document.createElement('canvas');
-    c.width = size + pad * 2;
-    c.height = size + pad * 2;
+    c.width = dim;
+    c.height = dim;
     const x = c.getContext('2d');
     if (!x) continue;
+    const cx = dim / 2;
+    const cy = dim / 2;
+    // Outlined circle — same #ffd84a gold as the in-game sat coin,
+    // plus a soft glow that bakes once.
+    x.strokeStyle = '#ffd84a';
+    x.shadowColor = '#ffd84a';
+    x.shadowBlur = 6;
+    x.lineWidth = Math.max(1.2, size * 0.12);
+    x.beginPath();
+    x.arc(cx, cy, size, 0, Math.PI * 2);
+    x.stroke();
+    // ₿ glyph inside the circle — same colour, slightly bigger than
+    // the original coin's `radius + 2` so it reads at distance.
+    x.shadowBlur = 0;
+    x.fillStyle = '#ffd84a';
+    x.font = `bold ${size + 2}px ui-monospace, monospace`;
     x.textAlign = 'center';
     x.textBaseline = 'middle';
-    x.font = `bold ${size}px ui-monospace, monospace`;
-    // Outer glow
-    x.shadowColor = '#ff8a3a';
-    x.shadowBlur = 8;
-    x.fillStyle = '#ffd84a';
-    x.fillText('₿', c.width / 2, c.height / 2);
-    // Inner sharp pass on top of the glow for a bright core
-    x.shadowBlur = 0;
-    x.fillStyle = '#fff5d8';
-    x.fillText('₿', c.width / 2, c.height / 2);
+    x.fillText('₿', cx, cy);
     btcCanvases.push(c);
   }
 }
 
 function drawStars(ctx: CanvasRenderingContext2D, t: number): void {
   // 600bn flavour swaps the starfield for a parallax-drifting bitcoin
-  // rain. Each star carries a fixed (vx, vy) and position-at-time-t is
-  // computed as (x0 + vx*t/1000) % WORLD_W — stateless, no per-frame
-  // mutation. drawImage from a pre-rendered canvas is ~10× faster
-  // than fillText + shadowBlur and the motion sells the "alive" feel.
+  // coin rain. Each star carries a fixed (vx, vy); position-at-time
+  // is computed as (x0 + vx*t/1000) wrapped on edges — stateless,
+  // no per-frame mutation. drawImage from a pre-rendered canvas is
+  // ~10× faster than the inline path. Density halved compared to the
+  // main-flavour starfield + lower max alpha so the canvas doesn't
+  // feel cluttered while the actual gameplay is in flight.
   const isBtc = getFlavour() === '600bn';
   if (isBtc) ensureBtcCanvases();
   ctx.save();
-  for (const s of stars) {
+  // On 600bn render only every other star (55 visible from a pool of
+  // ~110) for a calmer field. Stepping by 2 keeps the depth spread
+  // even rather than clustering by index.
+  const step = isBtc ? 2 : 1;
+  for (let i = 0; i < stars.length; i += step) {
+    const s = stars[i];
     const flick = 0.5 + 0.5 * Math.sin(t * 0.001 + s.flickerPhase);
-    ctx.globalAlpha = (0.25 + s.depth * 0.6) * (0.55 + flick * 0.45);
+    // Lower alpha ceiling on 600bn so the field reads as "ambient
+    // background rain" rather than competing with the gameplay layer.
+    const alphaScale = isBtc ? 0.45 : 1;
+    ctx.globalAlpha = (0.25 + s.depth * 0.6) * (0.55 + flick * 0.45) * alphaScale;
     if (isBtc) {
-      // Parallax position — modular arithmetic gives seamless wrap.
       const tx = (((s.x + s.vx * t * 0.001) % WORLD_W) + WORLD_W) % WORLD_W;
       const ty = (((s.y + s.vy * t * 0.001) % WORLD_H) + WORLD_H) % WORLD_H;
-      // Pick a glyph tier from the depth (0..1 → 0..BTC_TIERS-1).
       const tier = Math.min(BTC_TIERS - 1, Math.floor(s.depth * BTC_TIERS));
       const c = btcCanvases[tier];
       if (c) ctx.drawImage(c, tx - c.width / 2, ty - c.height / 2);

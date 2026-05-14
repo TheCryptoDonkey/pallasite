@@ -9949,10 +9949,87 @@ function renderFuchs2Card(overlay: HTMLElement): void {
   url.style.cssText = 'font:bold 12px ui-monospace,monospace;color:#ffd84a;letter-spacing:0.2em;margin-top:4px;';
 }
 
+/** Stripped 600bn game-over — drops the kofi tip / honours / streak /
+ *  replay-status / endorse buttons and shows only the bits that matter
+ *  for the conference funnel: score + sats, FUCHS2 party card with QR,
+ *  the claim picker (lud16 / LNURL-w / balance) via maybePublishScore,
+ *  PLAY AGAIN, and a footer link to 600.wtf. Idle auto-skip to title
+ *  is suppressed — the party card should sit until the player taps. */
+function renderSanctumGameOver(
+  state: GameState,
+  opts: { headerText: string; subText?: string; isCompletion?: boolean },
+): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+  overlay.style.background = 'rgba(6, 2, 1, 0.92)';
+
+  // Header — "$600B WAVE COMPLETE" on a clear; "GAME OVER" on a death.
+  const headerText = opts.isCompletion ? '$600B WAVE COMPLETE' : opts.headerText;
+  const header = el('h2', { parent: overlay, text: headerText });
+  header.style.cssText = 'font-family:ui-monospace,monospace;letter-spacing:0.22em;color:#ffd84a;text-shadow:0 0 16px rgba(255,138,58,0.7);margin:0 0 6px;';
+
+  if (opts.subText) {
+    const sub = el('p', { parent: overlay, text: opts.subText });
+    sub.style.cssText = 'font-size:1.05rem;color:var(--hud-yellow);letter-spacing:0.22em;margin:0 0 8px;';
+  }
+
+  // Score + sats summary — the only stats that matter for the teaser.
+  const stats = el('div', { parent: overlay });
+  stats.style.cssText = 'display:flex;gap:32px;font:bold 16px ui-monospace,monospace;letter-spacing:0.18em;margin:6px 0 4px;';
+  stats.innerHTML = `
+    <span style="color:#3afc7c;">${state.sats} SATS</span>
+    <span style="color:rgba(255,245,216,0.85);">${state.score.toLocaleString()} PTS</span>
+  `;
+
+  // FUCHS2 party card — the whole point of the conference funnel.
+  renderFuchs2Card(overlay);
+
+  // Claim flow — reuse the main-game machinery (handles auth, three-
+  // way picker, sat credit). room=600bn is stamped server-side via
+  // the buildPayload flavour check.
+  const publishWrap = el('div', { parent: overlay });
+  publishWrap.style.cssText = 'width:100%;display:flex;flex-direction:column;align-items:center;margin-top:6px;';
+  void maybePublishScore(state, publishWrap);
+
+  // Action row — PLAY AGAIN restarts wave 1; BACK returns to the
+  // attract screen so the player can choose to leave or replay.
+  const row = el('div', { className: 'menu-row', parent: overlay });
+  row.style.cssText = 'margin-top:18px;gap:12px;';
+
+  const playBtn = el('button', { className: 'menu-btn', parent: row, text: 'PLAY AGAIN ▶' }) as HTMLButtonElement;
+  playBtn.style.cssText += 'font-size:1.05rem;padding:12px 24px;letter-spacing:0.22em;background:rgba(255,216,74,0.18);border-color:#ffd84a;color:#ffd84a;text-shadow:0 0 8px rgba(255,216,74,0.5);';
+  playBtn.addEventListener('click', () => {
+    void audio.unlockAudio();
+    onStartCb?.();
+  });
+
+  const backBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'BACK TO TITLE' }) as HTMLButtonElement;
+  backBtn.style.cssText += 'font-size:0.95rem;padding:12px 24px;letter-spacing:0.2em;';
+  backBtn.addEventListener('click', () => {
+    state.phase = 'title';
+    renderAttract(state);
+  });
+
+  // Footer — party link as a discreet line beneath the row.
+  const partyLink = el('a', { parent: overlay, text: '600.wtf · PRAGUE PARTY 11 JUNE ↗' }) as HTMLAnchorElement;
+  partyLink.href = 'https://600.wtf';
+  partyLink.target = '_blank';
+  partyLink.rel = 'noopener noreferrer';
+  partyLink.style.cssText = 'font:11px ui-monospace,monospace;color:rgba(255,216,74,0.7);letter-spacing:0.2em;margin-top:18px;text-decoration:none;';
+}
+
 function renderRunCredits(
   state: GameState,
   opts: { headerText: string; subText?: string; isCompletion?: boolean; idleSeconds?: number },
 ): void {
+  // 600bn flavour gets a focused conference-funnel game-over instead
+  // of the standard run credits — no kofi tip, no honours, no replay
+  // badge, no endorse buttons. Just stats + FUCHS2 + claim + replay.
+  if (getFlavour() === '600bn') {
+    renderSanctumGameOver(state, opts);
+    return;
+  }
   const idleSeconds = opts.idleSeconds ?? 45;
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
