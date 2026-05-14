@@ -187,24 +187,22 @@ export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequent
     if (track.loop === false) {
       try { entry.el.currentTime = 0; } catch { /* will play from 0 anyway */ }
     }
-    // Retry the play() up to 2 times on rejection. Safari desktop
-    // sometimes drops the first play() call when phase changes (e.g.
-    // title → wavestart on 600bn fires crossfade to the-cult before
-    // the AudioContext has fully transitioned from suspended → running
-    // — Chrome shrugs it off, Safari leaves the element silent). A
-    // 200ms backoff retry lets the context catch up and the second
-    // play() lands. Capped so a genuinely failed load (404, codec
-    // unsupported) doesn't spin forever.
+    // Verify-state retry. Safari can resolve play() while leaving the
+    // element paused (autoplay-race: AudioContext was still
+    // transitioning suspended → running when play() was called, so
+    // the element decoder was suspended, but the promise resolved
+    // anyway). A .catch retry won't fire — we have to check
+    // el.paused directly after a delay and re-play if it didn't take.
+    // Capped so a genuinely unplayable track doesn't spin forever.
     const attemptPlay = (attempts: number): void => {
       if (currentId !== id) return;
-      const p = entry.el.play();
-      if (p && typeof p.catch === 'function') {
-        p.catch(() => {
-          if (attempts < 2 && currentId === id) {
-            window.setTimeout(() => attemptPlay(attempts + 1), 200);
-          }
-        });
-      }
+      try { void entry.el.play().catch(() => undefined); } catch { /* ignore */ }
+      window.setTimeout(() => {
+        if (currentId !== id) return;
+        if (entry.el.paused && !entry.failed && attempts < 4) {
+          attemptPlay(attempts + 1);
+        }
+      }, 250);
     };
     attemptPlay(0);
     rampGainTo(entry.gain, trim, fadeMs);
@@ -354,6 +352,9 @@ function trackForState(state: GameState): string | null {
  * state differs from what's playing, crossfades. Pause uses ducking on top.
  */
 let lastPhase: string | null = null;
+let lastVerifyMs = 0;
+const VERIFY_INTERVAL_MS = 1000;
+
 export function musicSetTrackForState(state: GameState): void {
   // Title rotation hook — on phase TRANSITION into 'title', pick a
   // fresh track from the idle pool. Done here (in the once-per-frame
@@ -369,6 +370,26 @@ export function musicSetTrackForState(state: GameState): void {
     if (upcoming) preloadTrack(upcoming);
   }
   lastPhase = state.phase;
+
+  // Stuck-paused recovery — once per second, verify the current track's
+  // element is actually playing. Safari can leave an element silently
+  // paused after an autoplay race even though currentId is set and
+  // crossfadeTo's memo thinks everything is fine. The retry inside
+  // crossfadeTo handles the initial race, but a long-tail recovery
+  // here catches any post-pause-resume / visibility-recovery gaps.
+  // Skipped for paused / non-playing phases (death replay, gameover
+  // hull-breached transitions, etc.) which deliberately allow paused.
+  const nowMs = performance.now();
+  if (nowMs - lastVerifyMs > VERIFY_INTERVAL_MS) {
+    lastVerifyMs = nowMs;
+    if (currentId && state.phase !== 'paused' && state.phase !== 'deathreplay') {
+      const entry = loaded.get(currentId);
+      if (entry && !entry.failed && entry.el.paused) {
+        try { void entry.el.play().catch(() => undefined); } catch { /* ignore */ }
+      }
+    }
+  }
+
   // Pause ducks rather than switches; key the memo on phase+wave so we still
   // crossfade correctly when the wave changes during a paused mid-game.
   const isPaused = state.phase === 'paused';
