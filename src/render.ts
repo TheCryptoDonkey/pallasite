@@ -1236,6 +1236,9 @@ function drawSixHundredBnLogoUfo(ctx: CanvasRenderingContext2D, u: Ufo, now: num
 
 function drawUfo(ctx: CanvasRenderingContext2D, u: Ufo, now: number): void {
   if (!u.alive) return;
+  // MESH-tier ships also cover UFOs — the WebGL overlay draws a 3D
+  // saucer above this canvas. Skip the 2D path when ready.
+  if (getVisualStyle('ship') === 'mesh' && isWebGLOverlayReady()) return;
   const r = u.radius;
   // 600bn flavour swap — UFO renders as the canonical 4-line sacred
   // number ($600B logo), rotating slowly. The hitbox + behaviour are
@@ -3105,9 +3108,14 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // While the overlay is still loading the renderer is a no-op and
   // the 2D path renders shaded fallbacks (see drawAsteroid).
   if (isWebGLOverlayReady()) {
+    // Ship tier drives both the player ship AND the UFOs — they're
+    // both "vehicles" and grouping them keeps the settings UI to four
+    // categories rather than introducing a fifth row.
+    const shipTier = getVisualStyle('ship');
     callWebGLOverlay({
       asteroids: getVisualStyle('asteroid') === 'mesh' ? state.asteroids : [],
-      ship: getVisualStyle('ship') === 'mesh' ? state.ship : null,
+      ufos: shipTier === 'mesh' ? state.ufos : [],
+      ship: shipTier === 'mesh' ? state.ship : null,
       dpr: renderMode.dpr,
       scale: renderMode.scale,
       tx: renderMode.tx,
