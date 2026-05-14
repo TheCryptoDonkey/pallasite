@@ -244,6 +244,44 @@ export interface GameScoreFrame {
   p?: number;
 }
 
+/**
+ * Spectator view — host → phone.
+ *
+ * Some games support more paired phones than they have player slots.
+ * Phones beyond the player cap become spectators: they receive a
+ * stripped-down ControllerSpec (typically just a CHEER button) plus
+ * periodic SpectatorViewFrame updates with the current leaderboard
+ * so the audience can follow along on their device.
+ *
+ * The leaderboard is opaque to the SDK; games supply whatever shape
+ * fits their model (score, position, tournament total). The pad
+ * renders it as a compact card above the controls.
+ */
+export interface SpectatorRow {
+  /** Player slot the row represents. */
+  p: number;
+  /** Short label (e.g. "P2 · ANNA"). */
+  label: string;
+  /** Primary numeric score for this game / round. */
+  score: number;
+  /** Optional secondary score (e.g. cross-game tournament total). */
+  tournamentTotal?: number;
+  /** CSS colour for the row accent stripe. */
+  colour: string;
+}
+
+export interface SpectatorViewFrame {
+  type: 'spectator-view';
+  /** Headline (e.g. "TANK ROYALE · ROUND 4"). */
+  title: string;
+  /** Current standings — caller orders by relevance. */
+  leaderboard: SpectatorRow[];
+  /** Optional one-line highlight ("P2 just won the round!"). */
+  highlight?: string;
+  /** Player slot to target. Must be set in multi-player mode. */
+  p?: number;
+}
+
 /** Pairing token — encoded into the QR-code URL. */
 export interface PairingToken {
   sessionId: string;
