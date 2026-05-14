@@ -1,5 +1,10 @@
 # Pallasite controller WebSocket relay
 
+> **Note:** Active source has moved to `forgesworn/joystick` at `packages/broker/`.
+> This directory is kept here for a one-week transition window as a rollback path.
+> The asteroid-sats deploy workflow no longer rsyncs this directory; the broker
+> is deployed from the joystick repo's own workflow.
+
 Tiny Node service that pairs phone controllers with the big-screen
 game host. Bypasses the higher-latency Nostr publish/subscribe path
 used in v1 of the phone-as-controller MVP.
