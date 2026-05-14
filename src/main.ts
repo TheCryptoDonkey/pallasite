@@ -30,7 +30,7 @@ import * as audio from './audio.js';
 import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicSetMuted, musicResetElements, musicWarmUpAll } from './music.js';
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
-import { getDisplayMode, setDisplayMode } from './display.js';
+import { getDisplayMode, applyDisplayMode } from './display.js';
 import { warmWebGLIfPreviouslyEnabled } from './visual-style.js';
 import { checkForUpdate, querySwVersion } from './version.js';
 import type { GameState } from './types.js';
@@ -621,18 +621,18 @@ function loop(now: number): void {
 async function boot(): Promise<void> {
   // Lock in stored difficulty as the default for any auto-launched run
   lockInDifficulty(getStoredDifficulty());
-  // Mirror the stored display mode to a body data-attr so any CSS that wants
-  // to react (currently nothing, but cheap to seed for future use) can match it.
-  setDisplayMode(getDisplayMode());
-  // Fullscreen entry/exit toggles display mode — getDisplayMode() returns
-  // 'modern' while document.fullscreenElement is set. Mirror the new value
-  // to the body attribute + re-run fit() so the canvas resizes to match.
-  // Without this, fullscreen leaves the retro 960×720 canvas centred with
-  // the wave-N body background bleeding through the letterbox area —
-  // visible as a "red square" especially during screen shake / hits when
-  // the canvas translates against the static body bg.
+  // Mirror the active display mode to a body data-attr so CSS can react.
+  // applyDisplayMode (not setDisplayMode) — fullscreen + 600bn flavour
+  // force modern dynamically, and we don't want those transient
+  // computed values to overwrite the user's saved retro preference.
+  applyDisplayMode(getDisplayMode());
+  // Fullscreen entry/exit re-applies the mode + re-runs fit() so the
+  // canvas resizes to match. Without this, fullscreen leaves the retro
+  // 960×720 canvas centred with the wave-N body background bleeding
+  // through the letterbox area — visible as a "red square" during
+  // screen shake / hits when the canvas translates against the bg.
   document.addEventListener('fullscreenchange', () => {
-    setDisplayMode(getDisplayMode());
+    applyDisplayMode(getDisplayMode());
     fit();
   });
   // Kick off WebGL overlay load if the player had a mesh-tier category

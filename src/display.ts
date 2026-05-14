@@ -13,6 +13,8 @@
  * CSS display size differ.
  */
 
+import { getFlavour } from './flavour.js';
+
 export type DisplayMode = 'retro' | 'modern';
 
 const KEY = 'pallasite:displayMode';
@@ -29,8 +31,10 @@ export function getDisplayMode(): DisplayMode {
   // 600bn Sanctum always uses modern (full-viewport, no 4:3 letterbox)
   // regardless of device or saved pref — the conference deploy is
   // designed around the modern aspect, photoreal textures, etc.
-  if (typeof window !== 'undefined'
-      && window.location.hostname.toLowerCase().startsWith('600b.')) {
+  // Uses getFlavour() so all three 600bn subdomains (600b. / 600bn. /
+  // 600.) are covered; the previous local hostname check only matched
+  // 600b. and left 600bn.pallasite.app stuck in retro.
+  if (getFlavour() === '600bn') {
     return 'modern';
   }
   try {
@@ -46,7 +50,18 @@ export function getDisplayMode(): DisplayMode {
   return 'retro';
 }
 
+/** Save the user's explicit preference AND apply it. Persists to
+ *  localStorage so subsequent sessions honour the choice. Called from
+ *  the settings UI toggle. */
 export function setDisplayMode(m: DisplayMode): void {
   try { localStorage.setItem(KEY, m); } catch { /* ignore */ }
+  applyDisplayMode(m);
+}
+
+/** Mirror a computed mode to the body data-attribute without touching
+ *  the saved preference. Used by boot + the fullscreenchange listener
+ *  so a transient fullscreen entry doesn't permanently overwrite the
+ *  user's "I prefer retro" choice. */
+export function applyDisplayMode(m: DisplayMode): void {
   if (typeof document !== 'undefined') document.body.dataset.display = m;
 }
