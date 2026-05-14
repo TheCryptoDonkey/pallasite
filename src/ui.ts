@@ -56,6 +56,7 @@ import {
   triggerInstall, tryEnterFullscreen, hasFullscreenAPI,
   isInstallHintDismissed, dismissInstallHint,
 } from './install-fullscreen.js';
+import { type ParallaxTier, getParallaxTier, setParallaxTier } from './parallax.js';
 import { followUser, shareCompletion, endorseSubject, rankFromWave } from './social.js';
 import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipient } from './zap.js';
@@ -9074,6 +9075,46 @@ export function renderSettings(onBack: () => void): void {
     }
   }
   paintStyle();
+
+  // ── PARALLAX ───────────────────────────────────────────────────────────
+  // Three-state toggle: OFF (current behaviour, no depth bands),
+  // SUBTLE (default — a handful of decorative rocks drift in the
+  // background/foreground), DRAMATIC (richer depth, more decorative
+  // rocks per wave). Collision behaviour on the gameplay plane is
+  // independent of this setting.
+  const parallaxHeading = el('p', { parent: overlay, text: 'PARALLAX DEPTH' });
+  parallaxHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
+  const parallaxRow = el('div', { parent: overlay });
+  parallaxRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;min-width:340px;';
+  el('label', { parent: parallaxRow, text: 'DEPTH BANDS' })
+    .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
+  const parallaxBtnWrap = el('div', { parent: parallaxRow });
+  parallaxBtnWrap.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;';
+  const parallaxOpts: ReadonlyArray<{ value: ParallaxTier; label: string }> = [
+    { value: 'off',      label: 'OFF' },
+    { value: 'subtle',   label: 'SUBTLE' },
+    { value: 'dramatic', label: 'DRAMATIC' },
+  ];
+  const parallaxBtns = new Map<ParallaxTier, HTMLButtonElement>();
+  const paintParallax = (): void => {
+    const cur = getParallaxTier();
+    for (const [tier, btn] of parallaxBtns) {
+      const on = tier === cur;
+      btn.style.background = on ? 'rgba(255,216,74,0.18)' : 'rgba(20,12,36,0.6)';
+      btn.style.color = on ? '#ffd84a' : 'rgba(220,210,255,0.7)';
+      btn.style.borderColor = on ? '#ffd84a' : 'rgba(180,140,255,0.45)';
+    }
+  };
+  for (const o of parallaxOpts) {
+    const btn = el('button', { className: 'menu-btn secondary', parent: parallaxBtnWrap, text: o.label }) as HTMLButtonElement;
+    btn.style.cssText += 'font-size:0.72rem;padding:6px 14px;letter-spacing:0.14em;';
+    btn.addEventListener('click', () => {
+      setParallaxTier(o.value);
+      paintParallax();
+    });
+    parallaxBtns.set(o.value, btn);
+  }
+  paintParallax();
 
   // ── ACCESSIBILITY ───────────────────────────────────────────────────────
   // Three independent axes:

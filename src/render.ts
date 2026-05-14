@@ -20,6 +20,7 @@ import { getActiveSkin } from './skins.js';
 import { getMemberImage } from './sanctum-avatars.js';
 import { getFlavour } from './flavour.js';
 import { getVisualStyle, isWebGLOverlayReady, callWebGLOverlay } from './visual-style.js';
+import { DEPTH_CONFIGS } from './parallax.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
 
@@ -3058,7 +3059,22 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     for (const dy of ghostYs) {
       const isGhost = dx !== 0 || dy !== 0;
       if (isGhost) { ctx.save(); ctx.translate(dx, dy); }
-      for (const a of state.asteroids) drawAsteroid(ctx, a, now);
+      // Parallax depth sort: render back→front so the gameplay plane
+      // overlays decoration cleanly. Stable sort keeps spawn order
+      // within a band for repeatable visuals. Non-3 bands get a global
+      // alpha multiplier from DEPTH_CONFIGS so distance reads as fade.
+      const sortedAsteroids = state.asteroids.slice().sort((p, q) => (p.depth ?? 3) - (q.depth ?? 3));
+      for (const a of sortedAsteroids) {
+        const dCfg = DEPTH_CONFIGS[a.depth ?? 3];
+        if (dCfg && dCfg.alphaMul !== 1) {
+          ctx.save();
+          ctx.globalAlpha *= dCfg.alphaMul;
+          drawAsteroid(ctx, a, now);
+          ctx.restore();
+        } else {
+          drawAsteroid(ctx, a, now);
+        }
+      }
       for (const m of state.mines) drawMine(ctx, m, now);
       // UFOs and mines don't wrap — they traverse the world (or sit
       // stationary) without crossing the wrap cycle. Drawing them in

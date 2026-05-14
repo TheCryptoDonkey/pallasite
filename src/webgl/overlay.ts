@@ -25,6 +25,7 @@ import type { Asteroid, PowerUp, PowerUpType, Ship, Ufo } from '../types.js';
 import { POWERUP_CONFIG, POWERUP_RADIUS } from '../types.js';
 import { getMemberImage } from '../sanctum-avatars.js';
 import { getFlavour } from '../flavour.js';
+import { DEPTH_CONFIGS } from '../parallax.js';
 
 interface OverlayHandle {
   renderer: THREE.WebGLRenderer;
@@ -869,7 +870,22 @@ export function renderOverlay(opts: {
       handle.asteroidMeshes.set(a.id, entry);
     }
     entry.lastSeenFrame = frameCounter;
-    entry.mesh.position.set(a.pos.x, 720 - a.pos.y, 0);
+    // Parallax z-offset — non-3 depth bands render behind/in-front of
+    // the gameplay plane. Camera is at z=500, scene origin at z=0; depth
+    // 1 sits at z=-80 (behind everything), depth 5 at z=+80 (in front).
+    const depthCfg = DEPTH_CONFIGS[a.depth ?? 3];
+    const zOffset = depthCfg?.meshZ ?? 0;
+    entry.mesh.position.set(a.pos.x, 720 - a.pos.y, zOffset);
+    // Per-band alpha — opaque on the gameplay plane, fading on
+    // decorative bands. material may be a single MeshPhongMaterial
+    // (asteroid) or part of an array (council medallion) — we own the
+    // single one we stashed in entry.material.
+    const alphaMul = depthCfg?.alphaMul ?? 1;
+    if (alphaMul !== 1 && 'opacity' in entry.material) {
+      const mat = entry.material as THREE.MeshPhongMaterial;
+      mat.transparent = true;
+      mat.opacity = alphaMul;
+    }
     // Live radius can shift mid-life (council shrink-on-hit); scale
     // the mesh to match without re-building the GPU buffer.
     if (a.radius !== entry.builtRadius) {

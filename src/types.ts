@@ -92,6 +92,13 @@ export interface CouncilMemberRef {
 export interface Asteroid extends Entity {
   size: AsteroidSize;
   type: AsteroidType;
+  /** Parallax depth band. 1-2 = background (behind gameplay plane,
+   *  no collision, smaller + dimmer + slower). 3 = gameplay plane
+   *  (default — full collision with player, bullets, and other depth-3
+   *  asteroids). 4-5 = foreground (in front of gameplay, no collision,
+   *  larger + dimmer + faster). Defaults to 3 for any spawn that
+   *  doesn't pass an explicit depth. */
+  depth: number;
   /** Optional 600bn council-member tagging — only set during the
    *  600bn Sanctum wave; main-game asteroids leave this undefined. */
   councilMember?: CouncilMemberRef;
