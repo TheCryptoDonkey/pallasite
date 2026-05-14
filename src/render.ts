@@ -580,13 +580,50 @@ function drawHyperspaceMalfunction(ctx: CanvasRenderingContext2D, ship: Ship, no
 }
 
 // ── Asteroid 3D textures ─────────────────────────────────────────────
-// Pre-baked off-screen canvases per mineral type, drawn ONCE at module
-// load (lazy). drawAsteroid clips them inside the lumpy polygon at
-// runtime — combined with the rotating frame this reads as a 3D-shaded
-// rock tumbling through space, much richer than the previous line-art
-// outline. Cost per frame: one drawImage per asteroid (cheap, same as
-// the council portrait pipeline). Only activates on 600bn flavour so
-// the campaign's canonical line-art look is untouched.
+// Two-tier texture pipeline:
+//   1. Photoreal — 1024×1024 gpt-image-2 surface shots (stony craters,
+//      iron Widmanstätten, chondrite chondrules, pallasite olivine).
+//      Lazy-loaded as HTMLImageElement on 600bn flavour boot. Preferred
+//      when available.
+//   2. Procedural fallback — canvas-baked radial-shaded textures with
+//      synthetic features. Renders instantly while the photoreal
+//      decodes; also covers the case where the webp 404s.
+//
+// drawAsteroid uses whichever is ready; once the photoreal lands the
+// procedural is invisible. Cost per frame: one drawImage per asteroid
+// (cheap, same as the council portrait pipeline). Only activates on
+// 600bn flavour — the campaign keeps its canonical line-art look.
+
+const asteroidPhotoreal: Map<AsteroidType, HTMLImageElement> = new Map();
+const asteroidPhotorealStarted = new Set<AsteroidType>();
+
+/** Lazy-load the per-type photoreal surface webp on first request.
+ *  Returns null until the image has decoded; drawAsteroid then falls
+ *  back to the procedural canvas in the meantime. */
+function getAsteroidPhotoreal(type: AsteroidType): HTMLImageElement | null {
+  if (!asteroidPhotorealStarted.has(type)) {
+    asteroidPhotorealStarted.add(type);
+    const img = new Image();
+    img.onload = () => { asteroidPhotoreal.set(type, img); };
+    // onerror just leaves the map unset → procedural fallback stays.
+    img.src = `/backgrounds/asteroid-${type}.webp`;
+  }
+  return asteroidPhotoreal.get(type) ?? null;
+}
+
+/** Boot hook — kick all four photoreal loads at module init on 600bn
+ *  so the textures decode in parallel with other asset loads, well
+ *  before the first asteroid is drawn. No-op on main flavour (those
+ *  asteroids use the canonical line-art look). */
+function maybePreloadAsteroidPhotoreal(): void {
+  if (typeof window === 'undefined') return;
+  if (getFlavour() !== '600bn') return;
+  for (const t of ['stony', 'iron', 'chondrite', 'pallasite'] as const) {
+    void getAsteroidPhotoreal(t);
+  }
+}
+maybePreloadAsteroidPhotoreal();
+
 const ASTEROID_TEXTURE_SIZE = 128;
 const asteroidTextureCache = new Map<AsteroidType, HTMLCanvasElement>();
 
@@ -825,13 +862,15 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   ctx.closePath();
   ctx.stroke();
 
-  // 600bn non-council asteroids get a pre-baked 3D-style texture
+  // 600bn non-council asteroids get a photoreal surface texture
   // clipped inside the lumpy polygon — gives the field filler rocks
-  // the "awesome 3D tumbling through space" look. Council members
+  // the "awesome 3D tumbling through space" look. Photoreal first;
+  // canvas-baked fallback while the webp decodes. Council members
   // skip this branch (their portrait fill comes below). Main flavour
   // keeps the canonical line-art look untouched.
   if (!a.councilMember && getFlavour() === '600bn' && !a.isVein) {
-    const tex = bakeAsteroidTexture(a.type);
+    const photoreal = getAsteroidPhotoreal(a.type);
+    const tex = photoreal ?? bakeAsteroidTexture(a.type);
     ctx.save();
     // Re-trace polygon path for the clip (the prior stroke consumed
     // the previous path).

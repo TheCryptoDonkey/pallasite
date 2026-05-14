@@ -36,9 +36,9 @@ if (!existsSync(SRC_DIR)) {
 
 mkdirSync(OUT_DIR, { recursive: true });
 
-const files = readdirSync(SRC_DIR).filter(f => /^(wave-\d+|sanctum|sanctum-space)\.(png|jpg|jpeg|webp)$/i.test(f));
+const files = readdirSync(SRC_DIR).filter(f => /^(wave-\d+|sanctum|sanctum-space|asteroid-(stony|iron|chondrite|pallasite))\.(png|jpg|jpeg|webp)$/i.test(f));
 if (files.length === 0) {
-  console.error('No wave-N.png, sanctum.png, or sanctum-space.png originals found.');
+  console.error('No matching originals (wave-N / sanctum / sanctum-space / asteroid-TYPE) found.');
   process.exit(1);
 }
 
@@ -65,7 +65,7 @@ for (const file of files) {
     });
     continue;
   }
-  const namedMatch = file.match(/^(sanctum(?:-space)?)\./i);
+  const namedMatch = file.match(/^(sanctum(?:-space)?|asteroid-(?:stony|iron|chondrite|pallasite))\./i);
   if (namedMatch) {
     if (onlyWave !== null) continue;
     const name = namedMatch[1].toLowerCase();

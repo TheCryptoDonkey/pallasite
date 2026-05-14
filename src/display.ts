@@ -18,6 +18,13 @@ export type DisplayMode = 'retro' | 'modern';
 const KEY = 'pallasite:displayMode';
 
 export function getDisplayMode(): DisplayMode {
+  // 600bn Sanctum always uses modern (full-viewport, no 4:3 letterbox)
+  // regardless of device or saved pref — the conference deploy is
+  // designed around the modern aspect, photoreal textures, etc.
+  if (typeof window !== 'undefined'
+      && window.location.hostname.toLowerCase().startsWith('600b.')) {
+    return 'modern';
+  }
   try {
     const v = localStorage.getItem(KEY);
     if (v === 'modern' || v === 'retro') return v;
