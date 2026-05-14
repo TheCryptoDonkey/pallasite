@@ -3137,58 +3137,8 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     });
   }
 
-  // Council labels — drawn AFTER the WebGL pass so they overlay the
-  // mesh-rendered asteroids cleanly. Each member gets a small chip
-  // with NAME + ROLE · ARCHETYPE so players can recognise who they're
-  // engaging beyond just the portrait stretched on the rock.
-  for (const a of state.asteroids) {
-    if (a.alive && a.councilMember) drawCouncilLabel(ctx, a);
-  }
-}
-
-/** Floating chip below a council asteroid: NAME on top, ROLE ·
- *  ARCHETYPE on second line. Gold border so it reads as "Council"
- *  hierarchy without needing a separate legend. */
-function drawCouncilLabel(ctx: CanvasRenderingContext2D, a: Asteroid): void {
-  const m = a.councilMember;
-  if (!m) return;
-  const nameText = m.name.toUpperCase();
-  const roleText = m.archetype
-    ? `${m.role} · ${m.archetype.toUpperCase()}`
-    : m.role;
-  ctx.save();
-  ctx.translate(a.pos.x, a.pos.y);
-  ctx.font = 'bold 11px ui-monospace, monospace';
-  const nameW = ctx.measureText(nameText).width;
-  ctx.font = '9px ui-monospace, monospace';
-  const roleW = ctx.measureText(roleText).width;
-  const padX = 10;
-  const w = Math.max(nameW, roleW) + padX * 2;
-  const h = 30;
-  const yOff = a.radius + 10;
-  // Chip background.
-  ctx.fillStyle = 'rgba(8, 4, 24, 0.82)';
-  ctx.strokeStyle = '#ffd84a';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  if (typeof ctx.roundRect === 'function') {
-    ctx.roundRect(-w / 2, yOff, w, h, 5);
-  } else {
-    ctx.rect(-w / 2, yOff, w, h);
-  }
-  ctx.fill();
-  ctx.stroke();
-  // Name in gold.
-  ctx.fillStyle = '#ffd84a';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.font = 'bold 11px ui-monospace, monospace';
-  ctx.fillText(nameText, 0, yOff + 9);
-  // Role + archetype in dimmer gold.
-  ctx.fillStyle = '#d8c08a';
-  ctx.font = '9px ui-monospace, monospace';
-  ctx.fillText(roleText, 0, yOff + 22);
-  ctx.restore();
+  // Council label chip removed — the medallion now shows name + role
+  // on its own faces, so an external chip is redundant noise.
 }
 
 /** BONUS banner — large 'B · O · N · U · S' intro for the first ~3s,

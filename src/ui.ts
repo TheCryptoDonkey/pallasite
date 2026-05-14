@@ -51,6 +51,11 @@ import { type Difficulty, getStoredDifficulty, setStoredDifficulty, lockInDiffic
 import { getStoredDailyPref, setStoredDailyPref, todayUTC, getActiveSeed } from './seed.js';
 import { getStoredMode, setStoredMode, MODE_LIST, type RunMode } from './mode.js';
 import { DEV } from './credits.js';
+import {
+  isStandalone, isIosSafari, isMobileViewport, canInstallNow,
+  triggerInstall, tryEnterFullscreen, hasFullscreenAPI,
+  isInstallHintDismissed, dismissInstallHint,
+} from './install-fullscreen.js';
 import { followUser, shareCompletion, endorseSubject, rankFromWave } from './social.js';
 import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipient } from './zap.js';
@@ -895,6 +900,82 @@ export function renderTitle(state: GameState): void {
 // the universal claim destination flow are layered on top in follow-up
 // commits. This commit is scaffolding only — visual redesign comes later.
 
+/** Top-right utility chip strip on the attract screens. Always shows
+ *  a SETTINGS chip. Conditionally shows INSTALL (Android Chrome with
+ *  a captured beforeinstallprompt) or a Share-menu hint (iOS Safari).
+ *  Once the page is running standalone, the install surfaces go away.
+ *  `rerender` is the parent's render fn — called after a dismiss so
+ *  the strip re-paints without the hint chip. */
+function mountAttractUtilityChips(overlay: HTMLElement, rerender: () => void): void {
+  const strip = el('div', { parent: overlay });
+  strip.style.cssText = [
+    'position:absolute', 'top:14px', 'right:14px',
+    'display:flex', 'gap:8px', 'flex-wrap:wrap',
+    'justify-content:flex-end', 'max-width:60%',
+    'z-index:5',
+  ].join(';');
+
+  const chipStyle = [
+    'font:bold 11px ui-monospace,monospace',
+    'letter-spacing:0.16em',
+    'padding:6px 12px',
+    'background:rgba(20,12,36,0.78)',
+    'border:1px solid rgba(255,216,74,0.5)',
+    'color:#ffd84a',
+    'border-radius:3px',
+    'cursor:pointer',
+    'text-decoration:none',
+  ].join(';');
+
+  // SETTINGS — always. Opens the standard panel; closing returns to
+  // whichever attract called us via rerender (the panel restores the
+  // overlay so we'd be wiped otherwise).
+  const settingsChip = el('button', { parent: strip, text: '⚙ SETTINGS' });
+  settingsChip.style.cssText = chipStyle;
+  settingsChip.addEventListener('click', () => {
+    void audio.unlockAudio();
+    renderSettings(rerender);
+  });
+
+  // Install / fullscreen surfaces only matter on mobile and only when
+  // we're not already in a standalone window.
+  if (isMobileViewport() && !isStandalone()) {
+    if (canInstallNow()) {
+      // Android Chrome path — replay the captured beforeinstallprompt.
+      const installChip = el('button', { parent: strip, text: '📲 INSTALL' });
+      installChip.style.cssText = chipStyle;
+      installChip.style.color = '#8cffb4';
+      installChip.style.borderColor = 'rgba(140,255,180,0.55)';
+      installChip.addEventListener('click', () => {
+        void triggerInstall().then((accepted) => {
+          if (accepted) rerender();
+        });
+      });
+    } else if (isIosSafari() && !isInstallHintDismissed()) {
+      // iOS Safari can't be triggered programmatically. Surface a
+      // dismissable hint that points at the Share menu.
+      const iosChip = el('button', { parent: strip, text: '🏠 ADD TO HOME · TAP ⎙' });
+      iosChip.style.cssText = chipStyle;
+      iosChip.style.color = '#8cffb4';
+      iosChip.style.borderColor = 'rgba(140,255,180,0.55)';
+      iosChip.title = 'Tap the Share icon in Safari, then "Add to Home Screen" for fullscreen.';
+      iosChip.addEventListener('click', () => {
+        dismissInstallHint();
+        rerender();
+      });
+    } else if (hasFullscreenAPI()) {
+      // Non-installable mobile (e.g. Android Chrome without an install
+      // prompt yet, or iOS Chrome). Offer fullscreen as a fallback so
+      // there's at least SOMETHING the player can tap for more screen.
+      const fsChip = el('button', { parent: strip, text: '⛶ FULLSCREEN' });
+      fsChip.style.cssText = chipStyle;
+      fsChip.addEventListener('click', () => {
+        tryEnterFullscreen();
+      });
+    }
+  }
+}
+
 export function renderAttract(state: GameState): void {
   // 600bn flavour gets its own bespoke attract screen — sacred number
   // wordmark, single PLAY to drop straight into the Sanctum, no auth
@@ -906,6 +987,13 @@ export function renderAttract(state: GameState): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
+
+  // Top utility chip strip — SETTINGS always, INSTALL when prompt
+  // available (Android Chrome), iOS Safari Share-menu hint when not
+  // already standalone. Positioned absolute so it doesn't disturb the
+  // logo/PLAY centring; only renders on attract because that's where
+  // first-time visitors land.
+  mountAttractUtilityChips(overlay, () => renderAttract(state));
 
   // Logo — same wordmark as the previous title.
   const titleLogo = el('img', { parent: overlay });
@@ -1014,6 +1102,10 @@ export function renderAttract(state: GameState): void {
   playBtn.style.cssText += 'font-size:1.4rem;padding:14px 48px;letter-spacing:0.28em;background:rgba(255,216,74,0.18);border-color:#ffd84a;color:#ffd84a;text-shadow:0 0 12px rgba(255,216,74,0.6);';
   playBtn.addEventListener('click', () => {
     void audio.unlockAudio();
+    // Fullscreen MUST be requested in the same user-gesture tick. Sync
+    // call (fire-and-forget) keeps the gesture chain alive. Silently
+    // no-ops on iOS Safari which lacks the API.
+    tryEnterFullscreen();
     if (state.session) {
       // Returning visitor with an identity — go straight to mission
       // select. The auth step is only for first-time visitors.
@@ -9993,6 +10085,7 @@ function renderSanctumAttract(state: GameState): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
+  mountAttractUtilityChips(overlay, () => renderSanctumAttract(state));
 
   // 4-line sacred number wordmark — same canon as game-over card.
   const number = el('div', { parent: overlay });
@@ -10018,6 +10111,7 @@ function renderSanctumAttract(state: GameState): void {
   playBtn.style.cssText += 'font-size:1.4rem;padding:14px 48px;letter-spacing:0.28em;background:rgba(255,138,58,0.18);border-color:#ff8a3a;color:#ffd84a;text-shadow:0 0 12px rgba(255,138,58,0.6);';
   playBtn.addEventListener('click', () => {
     void audio.unlockAudio();
+    tryEnterFullscreen();
     // Standard Pallasite wave-1 entry — same ship/HUD/IGNITE banner
     // as the campaign. The 600bn theme is layered into wave 1 via
     // beginWave (council-member asteroids) + trackForState (the-cult
