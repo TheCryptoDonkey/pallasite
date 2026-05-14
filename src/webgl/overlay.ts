@@ -51,6 +51,24 @@ interface OverlayHandle {
   /** Cached canvas.width × canvas.height so setSize only fires on
    *  actual size change (always-on setSize re-clears every frame). */
   lastSizeKey: number;
+  /** Live ship-explosion chunk meshes — flies outward + tumbles + fades.
+   *  Spawned by spawnShipMeshExplosion(), ticked per frame in
+   *  renderOverlay, removed when ttl <= 0. */
+  shipChunks: ShipChunk[];
+  /** Wall-clock ms of the previous renderOverlay call; used to derive
+   *  dt for the chunk physics tick (renderOverlay doesn't take a dt
+   *  argument from callers). */
+  lastFrameMs: number;
+}
+
+interface ShipChunk {
+  mesh: THREE.Mesh;
+  geometry: THREE.BufferGeometry;
+  material: THREE.MeshPhongMaterial;
+  vel: { x: number; y: number; z: number };
+  rotVel: { x: number; y: number; z: number };
+  ttl: number;
+  maxTtl: number;
 }
 
 interface MeshEntry<M extends THREE.Material> {
@@ -500,6 +518,8 @@ export function ensureWebGLOverlay(): Promise<OverlayHandle> {
       shipMesh: null,
       shipThrust: null,
       lastSizeKey: 0,
+      shipChunks: [],
+      lastFrameMs: 0,
     };
     canvas.classList.add('is-active');
     return handle;
@@ -803,6 +823,163 @@ function buildPowerupMesh(p: PowerUp): { mesh: THREE.Mesh; geometry: THREE.Buffe
   const mesh = new THREE.Mesh(geo, mat);
   mesh.frustumCulled = false;
   return { mesh, geometry: geo, material: mat };
+}
+
+// ── Ship-mesh explosion ──────────────────────────────────────────────
+// On death we shatter the ship into a fixed roster of fragment meshes
+// loosely matching the parts that build the live ship (hull wedges,
+// cockpit dome half, fin, wings, engine pods, barrel, plus a few
+// generic shards). Each chunk flies outward from its local-space
+// offset, tumbles, and fades. Ticked in renderOverlay below.
+
+/** Fragment specs — the geometry / colour / local-space anchor of each
+ *  chunk a destroyed ship breaks into. Anchors mirror the ship mesh
+ *  layout so the explosion reads as the ship coming apart, not as a
+ *  generic debris cloud. Colours pulled from the ship material palette
+ *  plus an orange engine-flare colour. */
+interface ShipChunkSpec {
+  build: () => THREE.BufferGeometry;
+  colour: number;
+  emissive: number;
+  emissiveIntensity: number;
+  offsetX: number;
+  offsetY: number;
+  offsetZ: number;
+}
+
+let SHIP_CHUNK_SPECS: ReadonlyArray<ShipChunkSpec> | null = null;
+function getShipChunkSpecs(): ReadonlyArray<ShipChunkSpec> {
+  if (SHIP_CHUNK_SPECS) return SHIP_CHUNK_SPECS;
+  SHIP_CHUNK_SPECS = [
+    // Front nose wedge
+    { build: () => new THREE.ConeGeometry(4, 9, 4),
+      colour: 0x9be7ff, emissive: 0x4080a0, emissiveIntensity: 0.5,
+      offsetX: 12, offsetY: 0, offsetZ: 0 },
+    // Mid-hull box
+    { build: () => new THREE.BoxGeometry(8, 7, 5),
+      colour: 0x9be7ff, emissive: 0x4080a0, emissiveIntensity: 0.5,
+      offsetX: 2, offsetY: 0, offsetZ: 0 },
+    // Tail hull box
+    { build: () => new THREE.BoxGeometry(7, 6, 5),
+      colour: 0x6db4dc, emissive: 0x305070, emissiveIntensity: 0.45,
+      offsetX: -7, offsetY: 0, offsetZ: 0 },
+    // Cockpit dome (half-sphere)
+    { build: () => new THREE.SphereGeometry(4, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+      colour: 0xb8f0ff, emissive: 0x4080a0, emissiveIntensity: 0.55,
+      offsetX: 1, offsetY: 0, offsetZ: 4 },
+    // Dorsal fin
+    { build: () => new THREE.BoxGeometry(6, 1.4, 4),
+      colour: 0x8ad4ff, emissive: 0x305070, emissiveIntensity: 0.45,
+      offsetX: -3, offsetY: 0, offsetZ: 3 },
+    // Wing left
+    { build: () => new THREE.BoxGeometry(6, 1.2, 3),
+      colour: 0x6db4dc, emissive: 0x305070, emissiveIntensity: 0.4,
+      offsetX: -6, offsetY: 8, offsetZ: 0 },
+    // Wing right
+    { build: () => new THREE.BoxGeometry(6, 1.2, 3),
+      colour: 0x6db4dc, emissive: 0x305070, emissiveIntensity: 0.4,
+      offsetX: -6, offsetY: -8, offsetZ: 0 },
+    // Engine pod left
+    { build: () => new THREE.CylinderGeometry(2.0, 2.4, 7, 10),
+      colour: 0x4a7eb0, emissive: 0xff8040, emissiveIntensity: 0.7,
+      offsetX: -10, offsetY: 7.5, offsetZ: 0 },
+    // Engine pod right
+    { build: () => new THREE.CylinderGeometry(2.0, 2.4, 7, 10),
+      colour: 0x4a7eb0, emissive: 0xff8040, emissiveIntensity: 0.7,
+      offsetX: -10, offsetY: -7.5, offsetZ: 0 },
+    // Nose barrel
+    { build: () => new THREE.CylinderGeometry(1.3, 1.3, 6, 8),
+      colour: 0x6080a0, emissive: 0xff8040, emissiveIntensity: 0.75,
+      offsetX: 18, offsetY: 0, offsetZ: 0 },
+    // Generic shards x4 — small cubes/tetrahedra for variety
+    { build: () => new THREE.TetrahedronGeometry(2.2, 0),
+      colour: 0x9be7ff, emissive: 0x4080a0, emissiveIntensity: 0.5,
+      offsetX: 5, offsetY: 4, offsetZ: 2 },
+    { build: () => new THREE.TetrahedronGeometry(2.0, 0),
+      colour: 0x6db4dc, emissive: 0x305070, emissiveIntensity: 0.4,
+      offsetX: -2, offsetY: -5, offsetZ: 1 },
+    { build: () => new THREE.BoxGeometry(2.4, 2.4, 2.4),
+      colour: 0x8ad4ff, emissive: 0x4080a0, emissiveIntensity: 0.45,
+      offsetX: 8, offsetY: -3, offsetZ: -1 },
+    { build: () => new THREE.OctahedronGeometry(2.0, 0),
+      colour: 0xffb84a, emissive: 0xff8040, emissiveIntensity: 0.8,
+      offsetX: -12, offsetY: 0, offsetZ: 0 },
+  ];
+  return SHIP_CHUNK_SPECS;
+}
+
+/** Shatter the ship at the given world position. Each chunk inherits a
+ *  fraction of the ship's velocity (so a ship dying mid-thrust scatters
+ *  forward) plus an outward kick from its local-space anchor (so chunks
+ *  fly away from the explosion centre, not collapse inward). */
+export function spawnShipMeshExplosion(pos: { x: number; y: number }, shipVel: { x: number; y: number }, rot: number): void {
+  if (!handle) return;
+  const { scene } = handle;
+  const cosR = Math.cos(rot);
+  const sinR = Math.sin(rot);
+  const specs = getShipChunkSpecs();
+  for (const spec of specs) {
+    const geometry = spec.build();
+    const material = new THREE.MeshPhongMaterial({
+      color: spec.colour,
+      shininess: 80,
+      specular: 0xffffff,
+      emissive: spec.emissive,
+      emissiveIntensity: spec.emissiveIntensity,
+      transparent: true,
+      opacity: 1,
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.frustumCulled = false;
+    // Rotate the local-space anchor into world space, place mesh.
+    // Y in mesh-world is inverted vs game-world (mesh y = 720 - game y).
+    const localX = spec.offsetX;
+    const localY = spec.offsetY;
+    const worldDX = localX * cosR - localY * sinR;
+    const worldDY = localX * sinR + localY * cosR;
+    mesh.position.set(pos.x + worldDX, 720 - (pos.y + worldDY), spec.offsetZ);
+    mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+    // Outward direction in world space. Anchor's distance from ship
+    // origin sets the kick magnitude — peripheral parts fly faster.
+    const distLocal = Math.hypot(localX, localY) || 1;
+    const dirX = worldDX / distLocal;
+    // Note the Y flip: outward in *mesh* space (game-y inverted) needs
+    // a flipped y on the velocity vector too so chunks fly away from
+    // the visible explosion centre, not toward it.
+    const dirY = -worldDY / distLocal;
+    const kick = 90 + Math.random() * 130;
+    scene.add(mesh);
+    handle.shipChunks.push({
+      mesh,
+      geometry,
+      material,
+      vel: {
+        x: dirX * kick + shipVel.x * 0.5,
+        y: dirY * kick - shipVel.y * 0.5,
+        z: (Math.random() - 0.5) * 60,
+      },
+      rotVel: {
+        x: (Math.random() - 0.5) * 9,
+        y: (Math.random() - 0.5) * 9,
+        z: (Math.random() - 0.5) * 9,
+      },
+      ttl: 1500 + Math.random() * 600,
+      maxTtl: 2100,
+    });
+  }
+}
+
+/** Drop every live chunk now. Called on final-life cleanup before the
+ *  death-replay re-spawns its own explosion, so the previous live death
+ *  doesn't leak into the replay's first frame. */
+export function clearShipChunks(): void {
+  if (!handle) return;
+  for (const c of handle.shipChunks) {
+    handle.scene.remove(c.mesh);
+    c.geometry.dispose();
+    c.material.dispose();
+  }
+  handle.shipChunks.length = 0;
 }
 
 export function renderOverlay(opts: {
@@ -1132,6 +1309,46 @@ export function renderOverlay(opts: {
   } else if (handle.shipMesh) {
     handle.shipMesh.visible = false;
     if (handle.shipThrust) handle.shipThrust.visible = false;
+  }
+
+  // ── Ship-explosion chunks ────────────────────────────────────────
+  // Wall-clock dt — renderOverlay isn't fed a dt by callers. Clamp on
+  // the first frame (when lastFrameMs is 0) so a freshly-loaded overlay
+  // doesn't burn a huge dt and instantly age out every chunk.
+  if (handle.shipChunks.length > 0) {
+    const nowMs = performance.now();
+    const rawDt = handle.lastFrameMs === 0 ? 0.016 : (nowMs - handle.lastFrameMs) / 1000;
+    const dt = Math.min(0.05, Math.max(0, rawDt));
+    for (let i = handle.shipChunks.length - 1; i >= 0; i--) {
+      const c = handle.shipChunks[i];
+      c.mesh.position.x += c.vel.x * dt;
+      c.mesh.position.y += c.vel.y * dt;
+      c.mesh.position.z += c.vel.z * dt;
+      c.mesh.rotation.x += c.rotVel.x * dt;
+      c.mesh.rotation.y += c.rotVel.y * dt;
+      c.mesh.rotation.z += c.rotVel.z * dt;
+      // Mild outward expansion damping so chunks don't sail off-screen
+      // too quickly — they should hang in the explosion zone briefly.
+      c.vel.x *= Math.exp(-0.5 * dt);
+      c.vel.y *= Math.exp(-0.5 * dt);
+      c.vel.z *= Math.exp(-0.5 * dt);
+      c.ttl -= dt * 1000;
+      // Fade in the last 40% of life — readable longer if the chunk
+      // happened to be in shadow at full alpha.
+      const fadeStart = c.maxTtl * 0.4;
+      if (c.ttl < fadeStart) {
+        c.material.opacity = Math.max(0, c.ttl / fadeStart);
+      }
+      if (c.ttl <= 0) {
+        scene.remove(c.mesh);
+        c.geometry.dispose();
+        c.material.dispose();
+        handle.shipChunks.splice(i, 1);
+      }
+    }
+    handle.lastFrameMs = nowMs;
+  } else {
+    handle.lastFrameMs = 0;
   }
 
   renderer.render(scene, camera);
