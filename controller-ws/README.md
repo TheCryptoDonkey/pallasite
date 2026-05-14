@@ -1,5 +1,11 @@
 # Pallasite controller WebSocket relay
 
+> **Note (2026-05-14):** This directory is a one-week rollback path.
+> The canonical broker source has moved out of this repo. Edits made
+> here no longer deploy to production. Track changes upstream and
+> delete this directory after the rollback window has passed (target
+> 2026-05-21).
+
 Tiny Node service that pairs phone controllers with the big-screen
 game host. Bypasses the higher-latency Nostr publish/subscribe path
 used in v1 of the phone-as-controller MVP.
