@@ -125,7 +125,21 @@ function load(track: Track): Loaded {
   src.connect(gain);
   gain.connect(dest);
   const entry: Loaded = { el, src, gain, failed: false };
-  el.addEventListener('error', () => { entry.failed = true; });
+  el.addEventListener('error', () => {
+    entry.failed = true;
+    // Surface the failure visibly + in console so a Safari-specific
+    // 404 / unsupported-codec / CORS rejection on the-cult or a wave
+    // track doesn't manifest as inexplicable silence. Most failures
+    // are MediaError codes 1-4 (aborted, network, decode, src unsupported).
+    const code = el.error?.code;
+    const msg = el.error?.message;
+    console.warn('[music] load failed', { id: track.id, src: track.src, code, msg });
+    try {
+      window.dispatchEvent(new CustomEvent('pallasite:music-load-failed', {
+        detail: { id: track.id, src: track.src, code, msg },
+      }));
+    } catch { /* ignore */ }
+  });
   // Honour startAt — seek into the track once metadata arrives so the
   // first play starts mid-track. timeupdate watches for the natural
   // loop point so subsequent loops also skip back to startAt instead
@@ -562,6 +576,35 @@ export function listTracks(): readonly TrackInfo[] { return TRACK_INFO; }
 /** Currently-active track id, or null when silent. Used by the music
  *  player UI to highlight the active row. */
 export function currentTrackId(): string | null { return currentId; }
+
+/** Diagnostic — snapshot of the currently-playing track's element
+ *  state. Used by the ?dbg=audio overlay for Safari debugging where
+ *  music silently fails to play and we need to know why. */
+export interface MusicDebugSnapshot {
+  currentId: string | null;
+  src: string | null;
+  paused: boolean | null;
+  readyState: number | null;
+  networkState: number | null;
+  errorCode: number | null;
+  errorMsg: string | null;
+  failedFlag: boolean | null;
+  loadedCount: number;
+}
+export function getMusicDebugSnapshot(): MusicDebugSnapshot {
+  const entry = currentId ? loaded.get(currentId) : null;
+  return {
+    currentId,
+    src: entry ? entry.el.currentSrc || null : null,
+    paused: entry ? entry.el.paused : null,
+    readyState: entry ? entry.el.readyState : null,
+    networkState: entry ? entry.el.networkState : null,
+    errorCode: entry ? entry.el.error?.code ?? null : null,
+    errorMsg: entry ? entry.el.error?.message ?? null : null,
+    failedFlag: entry ? entry.failed : null,
+    loadedCount: loaded.size,
+  };
+}
 
 /** Crossfade to a track id without going through the state-driven memo
  *  path. Used by the music-player easter egg.
