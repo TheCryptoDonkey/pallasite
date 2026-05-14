@@ -17,7 +17,7 @@ import { getCachedGhost, ghostScoreAt, ghostPoseAt } from './ghost.js';
 import { getActiveSeed } from './seed.js';
 import { getAsteroidStyle, shouldReduceMotion } from './a11y.js';
 import { getActiveSkin } from './skins.js';
-import { renderSanctumScene } from './sanctum-render.js';
+import { getMemberImage } from './sanctum-avatars.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
 
@@ -601,6 +601,33 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   }
   ctx.closePath();
   ctx.stroke();
+
+  // 600bn council-textured asteroids — clip the member portrait inside
+  // the lumpy outline we just stroked. Falls back to the standard rock
+  // render if the manifest hasn't loaded the image yet (the asteroid
+  // still reads as a rock with the right shape).
+  if (a.councilMember) {
+    const img = getMemberImage(a.councilMember.name);
+    if (img) {
+      ctx.save();
+      // Re-trace path to clip (closePath isn't recorded for clip
+      // independently of stroke).
+      ctx.beginPath();
+      for (let i = 0; i < n; i++) {
+        const angle = (Math.PI * 2 * i) / n;
+        const r = a.radius * a.shape[i] * 0.96;
+        const x = Math.cos(angle) * r;
+        const y = Math.sin(angle) * r;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.clip();
+      const d = a.radius * 2.1;
+      ctx.drawImage(img, -d / 2, -d / 2, d, d);
+      ctx.restore();
+    }
+  }
 
   // Iron: inner armour ring while hp > 1 — strips off after the first hit
   if (a.type === 'iron' && a.hp > 1) {
@@ -2319,15 +2346,6 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
 
   if (state.phase === 'deathreplay') {
     drawReplay(ctx, state, now);
-    return;
-  }
-
-  // 600bn Sanctum runs a separate render path — body background is the
-  // Madeira webp, the canvas draws the council ring + Stone + racoo +
-  // Bullbear + ship + bullets via sanctum-render. The wave-background /
-  // star-field / wrap-ghost passes would visually clash, so early-return.
-  if (state.phase === 'sanctum') {
-    renderSanctumScene(ctx, state, now);
     return;
   }
 

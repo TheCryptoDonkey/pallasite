@@ -67,9 +67,24 @@ export type AsteroidSize = 'large' | 'medium' | 'small';
  */
 export type AsteroidType = 'stony' | 'iron' | 'chondrite' | 'pallasite';
 
+/** Pointer to a 600bn council member when this asteroid is themed
+ *  to a member portrait. Renderer clips the member.img inside the
+ *  asteroid's lumpy outline. Preserved across breakAsteroid splits
+ *  so child fragments carry the same face. */
+export interface CouncilMemberRef {
+  name: string;
+  role: string;
+  archetype: string;
+  img: string;
+  pubkey?: string;
+}
+
 export interface Asteroid extends Entity {
   size: AsteroidSize;
   type: AsteroidType;
+  /** Optional 600bn council-member tagging — only set during the
+   *  600bn Sanctum wave; main-game asteroids leave this undefined. */
+  councilMember?: CouncilMemberRef;
   /** HP remaining. Drops by 1 per hit; breaks at 0. Set per type × size. */
   hp: number;
   /** Initial HP at spawn — used for milestone math (vein power-up drops at

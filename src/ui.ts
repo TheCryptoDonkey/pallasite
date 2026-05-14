@@ -9584,11 +9584,10 @@ async function maybePublishScore(
         sats_claimed: state.sats,
         cheated: state.cheatedThisRun,
         ...(seed ? { daily_seed: seed } : {}),
-        // Flag Sanctum runs so the faucet enforces the daily_cap_600bn
-        // budget + appends the ['t','600bn'] tag on the kind 30762
-        // score event. state.sanctum is set by startSanctumRun and
-        // survives through gameover; absent on every standard-game claim.
-        ...(state.sanctum ? { room: '600bn' as const } : {}),
+        // Flag 600bn-flavour runs so the faucet enforces the
+        // daily_cap_600bn budget + appends the ['t','600bn'] tag on
+        // the kind 30762 score event.
+        ...(getFlavour() === '600bn' ? { room: '600bn' as const } : {}),
         telemetry,
       },
     };
@@ -9881,11 +9880,11 @@ function renderSanctumAttract(state: GameState): void {
   playBtn.style.cssText += 'font-size:1.4rem;padding:14px 48px;letter-spacing:0.28em;background:rgba(255,138,58,0.18);border-color:#ff8a3a;color:#ffd84a;text-shadow:0 0 12px rgba(255,138,58,0.6);';
   playBtn.addEventListener('click', () => {
     void audio.unlockAudio();
-    // Route directly to the dedicated Sanctum surface — full
-    // standalone game loop, music, and claim flow live there. The
-    // main game-loop integration path was racy at the conference
-    // surface; the preview-as-game is more reliable for the teaser.
-    window.location.assign('/sanctum');
+    // Standard Pallasite wave-1 entry — same ship/HUD/IGNITE banner
+    // as the campaign. The 600bn theme is layered into wave 1 via
+    // beginWave (council-member asteroids) + trackForState (the-cult
+    // music) + a flavour check on the game-over recap (FUCHS2 card).
+    onStartCb?.();
   });
 
   // Footer — party promo links straight to 600.wtf.
@@ -9976,10 +9975,9 @@ function renderRunCredits(
     sub.style.cssText = 'font-size:1.1rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:-10px 0 4px;';
   }
 
-  // 600bn Sanctum runs land here too — surface the FUCHS2 party card
-  // above the claim picker so every Sanctum game-over funnels traffic
-  // back to the canonical 600.wtf URL.
-  if (state.sanctum) {
+  // 600bn flavour runs surface the FUCHS2 party card above the claim
+  // picker so every Sanctum game-over funnels traffic back to 600.wtf.
+  if (getFlavour() === '600bn') {
     renderFuchs2Card(overlay);
   }
 
