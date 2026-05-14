@@ -88,6 +88,18 @@ export function getCouncil(): readonly ReadonlyMember[] {
   return cached ?? [];
 }
 
+/** Look up a member's cached HTMLImageElement by name. Returns null
+ *  if the council manifest hasn't loaded yet or the member's image
+ *  failed. Used by render.ts to texture council-themed asteroids
+ *  with the member's portrait. */
+export function getMemberImage(name: string): HTMLImageElement | null {
+  if (!cached) return null;
+  for (const m of cached) {
+    if (m.name === name) return m.ready ? m.image : null;
+  }
+  return null;
+}
+
 /** Per-asteroid lumpy outline — deterministic per `seed` so the same
  *  member keeps the same silhouette across frames. Returns 12 points
  *  in [angle, radius-multiplier] pairs, packed flat. */

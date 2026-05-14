@@ -14,6 +14,18 @@ import { getMusicDestination } from './audio.js';
 import type { GameState } from './types.js';
 import { getFlavour } from './flavour.js';
 
+/** Override hook for flavour-specific wave music. When 600bn flavour
+ *  is active, wave 1 swaps to the-cult.opus instead of slow-orbit.
+ *  Returns null when no override applies. */
+function flavourTrackOverride(state: GameState): string | null {
+  if (getFlavour() === '600bn' && state.wave === 1) {
+    if (state.phase === 'wavestart' || state.phase === 'playing' || state.phase === 'paused') {
+      return 'the-cult';
+    }
+  }
+  return null;
+}
+
 interface Track {
   id: string;
   src: string;
@@ -269,6 +281,10 @@ export function musicNotifyClaimSuccess(): void {
 
 /** Map (phase, wave) to a track id. */
 function trackForState(state: GameState): string | null {
+  // 600bn flavour overrides for the Sanctum wave — the-cult plays
+  // through wavestart + playing + paused.
+  const override = flavourTrackOverride(state);
+  if (override) return override;
   switch (state.phase) {
     case 'title':
       return currentTitleTrack;

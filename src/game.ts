@@ -11,7 +11,7 @@ import type {
 import { recordStreamEvent } from './stream-session.js';
 import { getGameConfig } from './faucet.js';
 import { getFlavour } from './flavour.js';
-import { startSanctumRun, updateSanctumLoop } from './sanctum-loop.js';
+import { getCouncil, loadCouncil } from './sanctum-avatars.js';
 import {
   waveName, FINAL_WAVE, ASTEROID_TYPE_CONFIG,
   REPLAY_RECORD_INTERVAL_MS, REPLAY_BUFFER_FRAMES, REPLAY_TOTAL_WALL_MS, REPLAY_EXPLOSION_WALL_MS,
@@ -199,15 +199,12 @@ function makeShip(): Ship {
 }
 
 export function startGame(s: GameState): void {
-  // 600bn Sanctum branch — on the 600b.pallasite.app flavour the
-  // entire campaign is replaced by a single 240s teaser. The Sanctum
-  // module owns full state setup (entities, ship reset, sat counters);
-  // we dispatch and early-return so none of the wave-1/UFO/difficulty
-  // wiring below runs. Main-flavour startGame is unchanged below.
-  if (getFlavour() === '600bn') {
-    startSanctumRun(s, performance.now());
-    return;
-  }
+  // 600bn flavour now runs through the standard Pallasite startGame +
+  // beginWave path. beginWave(s, 1) detects flavour=600bn and spawns
+  // council-member-textured asteroids instead of the wave-1 default.
+  // That keeps the ship/HUD/IGNITE banner/claim flow identical to the
+  // campaign — the 600bn theme is layered into the existing pipeline
+  // rather than running a parallel game loop.
 
   // Defensive re-lock — the title-screen IGNITE path also locks, but the
   // gameover SPAWN AGAIN and completion IGNITE AGAIN buttons jump straight
@@ -333,7 +330,7 @@ function pickAsteroidType(wave: number): AsteroidType {
   return 'stony';
 }
 
-export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?: Vec2, type?: AsteroidType, opts?: { vein?: boolean }): Asteroid {
+export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?: Vec2, type?: AsteroidType, opts?: { vein?: boolean; councilMember?: import('./types.js').CouncilMemberRef }): Asteroid {
   const mods = currentMods();
   const isVein = opts?.vein === true;
   // Veins are oversized and drift slowly — they're a fixed-position target,
@@ -387,6 +384,7 @@ export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?
     shape: makeAsteroidShape(),
     hue: Math.random() * 60 - 30,
     isVein,
+    ...(opts?.councilMember ? { councilMember: opts.councilMember } : {}),
   };
 }
 
@@ -593,6 +591,40 @@ function makeCurtainCruiser(s: GameState, dir: 1 | -1): Ufo {
   return makeEdgeUfo('cruiser', dir);
 }
 
+/** Spawn the 600bn council as a ring of large member-textured asteroids
+ *  around the world centre. Used only by beginWave when getFlavour() is
+ *  '600bn' and wave === 1. Council manifest is kicked off at boot via
+ *  maybePreloadCouncil; if it hasn't resolved yet we still spawn the
+ *  asteroids (their textures fill in once the image arrives via the
+ *  avatar-loader cache). */
+function spawnCouncilWave(s: GameState): void {
+  const members = getCouncil();
+  if (members.length === 0) {
+    // Manifest hasn't resolved yet — kick it off and spawn standard
+    // asteroids as a temporary stand-in so the player isn't dropped
+    // into an empty wave. Once loaded, subsequent runs work normally.
+    void loadCouncil();
+    for (let i = 0; i < 6; i++) s.asteroids.push(spawnAsteroid('large', 1));
+    return;
+  }
+  const cx = WORLD_W / 2;
+  const cy = WORLD_H / 2;
+  const ringR = Math.min(WORLD_W, WORLD_H) * 0.32;
+  const orbitSpeed = 24;  // px/s tangent speed for the gentle clockwise drift
+  for (let i = 0; i < members.length; i++) {
+    const m = members[i];
+    const angle = -Math.PI / 2 + (i / members.length) * Math.PI * 2;
+    const x = cx + Math.cos(angle) * ringR;
+    const y = cy + Math.sin(angle) * ringR;
+    // Tangent velocity = perpendicular to radial, drifting clockwise.
+    const vx = -Math.sin(angle) * orbitSpeed;
+    const vy =  Math.cos(angle) * orbitSpeed;
+    s.asteroids.push(spawnAsteroid('large', 1, { x, y }, { x: vx, y: vy }, 'pallasite', {
+      councilMember: { name: m.name, role: m.role, archetype: m.archetype, img: m.img, pubkey: m.pubkey },
+    }));
+  }
+}
+
 export function beginWave(s: GameState, wave: number): void {
   s.wave = wave;
   // Milestone achievements on wave entry — fired here so the badge lands
@@ -623,7 +655,17 @@ export function beginWave(s: GameState, wave: number): void {
     s.ship.invulnerableUntil = performance.now() + SHIP_INVULN_MS;
   }
   const setPiece = WAVE_SET_PIECES[wave];
-  if (setPiece) {
+  // 600bn flavour overrides wave 1 with the council ring — every
+  // asteroid is a member-textured large that splits into smaller
+  // fragments still wearing the face. No mines, no UFO timer (set
+  // below). The 'pallasite' type is used so each break drops sats.
+  if (getFlavour() === '600bn' && wave === 1) {
+    spawnCouncilWave(s);
+    // Push UFO + mine timers out far enough that they don't disturb
+    // the council-clear before the run ends naturally.
+    s.nextUfoSpawn = 10 * 60 * 1000;
+    s.nextMineSpawn = 10 * 60 * 1000;
+  } else if (setPiece) {
     setPiece.setup(s);
   } else if (wave === FINAL_WAVE) {
     // Wave 25: BOSS arena — spawn boss + lighter asteroid garnish
@@ -2060,14 +2102,10 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   // play back up; main.ts caps dt at 50ms so any drift is minor.
   if (now < s.hitStopUntil) return;
 
-  // 600bn Sanctum runs an entirely separate simulation loop — ship
-  // input + bullet motion + sanctum-entity collisions + end-of-run
-  // hand-off all live in sanctum-loop.ts. Early-return here so the
-  // wave/UFO/asteroid logic further down never touches a sanctum run.
-  if (s.phase === 'sanctum') {
-    updateSanctumLoop(s, dt, now);
-    return;
-  }
+  // 600bn Sanctum is now layered into the standard wave-1 pipeline
+  // (council-themed asteroids spawned by beginWave). The parallel
+  // 'sanctum' phase from the previous iteration is no longer reached
+  // — startGame no longer routes there. Branch left out intentionally.
   s.elapsed += dt * 1000;
 
   // HUD ticker eases toward s.sats every frame regardless of phase, so the
@@ -2670,7 +2708,12 @@ export function updateGame(s: GameState, dt: number, now: number): void {
       // run). Uses gameRng so daily-seed runs are deterministic
       // against the active seed — two players with the same daily
       // seed see the bonus on the same runs.
-      if (s.wave === 9 && gameRng() < getGameConfig().bonus_wave_chance) {
+      if (getFlavour() === '600bn' && s.wave === 1) {
+        // 600bn Sanctum is a single-wave run — clearing the council
+        // ends the experience instead of warping to wave 2. The
+        // completion screen carries the FUCHS2 card + claim picker.
+        triggerCompletion(s);
+      } else if (s.wave === 9 && gameRng() < getGameConfig().bonus_wave_chance) {
         startBonus(s);
       } else {
         startWarp(s);
@@ -2911,7 +2954,11 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
       const angle = baseAngle + offset;
       const speed = Math.hypot(a.vel.x, a.vel.y) * 1.2;
       const vel: Vec2 = { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed };
-      s.asteroids.push(spawnAsteroid(childSize, s.wave, { x: a.pos.x, y: a.pos.y }, vel, a.type));
+      // Preserve the council-member ref so child fragments carry the
+      // same face all the way down to the smallest size. Sat drops on
+      // the small break still come from the normal coin-spawn path.
+      s.asteroids.push(spawnAsteroid(childSize, s.wave, { x: a.pos.x, y: a.pos.y }, vel, a.type,
+        a.councilMember ? { councilMember: a.councilMember } : undefined));
     }
   }
 

@@ -728,6 +728,16 @@ async function boot(): Promise<void> {
   // would be pure data waste on a phone-grade connection.
   if (!isControllerSurface()) preloadAllTracks();
 
+  // 600bn flavour — prime the council manifest + member avatars so
+  // wave 1 (council-textured asteroids) has its portraits ready by
+  // the time IGNITE fires. maybePreloadCouncil no-ops on other
+  // flavours.
+  if (!isControllerSurface()) {
+    void import('./sanctum-avatars.js').then(({ maybePreloadCouncil }) => {
+      maybePreloadCouncil();
+    });
+  }
+
   // Touch controls — buttons reveal themselves on first real touch
   setupTouchControls(state, tryHyperspace, tryActivateShield);
 
@@ -1060,14 +1070,11 @@ async function boot(): Promise<void> {
       // a "not authorised" message and a back link.
       renderAdminV2Panel(state);
     } else if (path === '/sanctum-preview' || path === '/sanctum') {
-      // 600bn Sanctum standalone surface — full self-contained game
-      // loop (its own canvas, its own loop, its own claim flow). The
-      // attract's ENTER button routes here, replacing the main-game
-      // integration which was racy at the conference surface. Lazy-
-      // imported so the main bundle never pays the cost.
-      void import('./sanctum-preview.js').then(({ renderSanctumPreview }) => {
-        void renderSanctumPreview();
-      });
+      // Legacy standalone Sanctum surfaces — the parallel game-loop
+      // approach didn't feel like Pallasite, so the 600bn experience
+      // is now layered into wave 1 of the standard campaign instead.
+      // Redirect old URLs to root where the 600bn attract picks up.
+      window.location.replace('/');
     }
   }
 
