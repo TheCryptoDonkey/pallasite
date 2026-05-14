@@ -58,6 +58,12 @@ import { markAchievement, resetRunAchievements } from './achievements.js';
 import { gameRng } from './seed.js';
 import { haptic } from './haptics.js';
 import { markSkinUnlocked } from './skins.js';
+import {
+  getVisualStyle,
+  isWebGLOverlayReady,
+  callWebGLShipExplosion,
+  callWebGLClearShipChunks,
+} from './visual-style.js';
 
 // ── Initial state ─────────────────────────────────────────────────────────────
 
@@ -2383,7 +2389,11 @@ export function updateGame(s: GameState, dt: number, now: number): void {
           recoilOffset: 0,
           lastHyperspaceAt: 0,
         };
-        spawnShipDebris(s, fauxShip);
+        if (getVisualStyle('ship') === 'mesh' && isWebGLOverlayReady()) {
+          callWebGLShipExplosion(dr.explosionAt, dr.explosionShip.vel, dr.explosionShip.rot);
+        } else {
+          spawnShipDebris(s, fauxShip);
+        }
       }
     }
     // Particles + debris physics tick (so the explosion animates regardless
@@ -3502,11 +3512,17 @@ function killShip(s: GameState): void {
   haptic('rumble');
   // Layered explosion: ship-green burst + yellow flash + white sparks +
   // line-segment debris. Bigger and more cinematic than the old 30-particle
-  // single-colour puff.
+  // single-colour puff. When the ship style is MESH and the WebGL overlay
+  // is ready, shatter into 3D chunk meshes instead of the 2D line fan —
+  // the chunks live in the overlay scene and tumble themselves.
   spawnParticles(s, deathPos.x, deathPos.y, 42, '#58ff58', 280, 1100);
   spawnParticles(s, deathPos.x, deathPos.y, 22, '#ffd84a', 200,  700);
   spawnParticles(s, deathPos.x, deathPos.y, 18, '#ffffff', 380,  450);
-  spawnShipDebris(s, s.ship);
+  if (getVisualStyle('ship') === 'mesh' && isWebGLOverlayReady()) {
+    callWebGLShipExplosion(deathPos, s.ship.vel, s.ship.rot);
+  } else {
+    spawnShipDebris(s, s.ship);
+  }
   s.lives -= 1;
   s.runStats.livesLost += 1;
   if (s.lives <= 0) {
@@ -3531,6 +3547,9 @@ function killShip(s: GameState): void {
       // particles+debris when it reaches the impact frame.
       s.particles = [];
       s.debris = [];
+      // Drop any WebGL ship-explosion chunks left over from the live death
+      // too — the replay re-fires the mesh explosion at its impact frame.
+      callWebGLClearShipChunks();
       startDeathReplay(s, 'gameover');
     } else {
       s.phase = 'gameover';

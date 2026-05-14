@@ -128,10 +128,25 @@ export interface WebGLOverlayCall {
   ty: number;
 }
 let overlayRenderFn: ((opts: WebGLOverlayCall) => void) | null = null;
+let overlayShipExplosionFn: ((pos: { x: number; y: number }, vel: { x: number; y: number }, rot: number) => void) | null = null;
+let overlayClearShipChunksFn: (() => void) | null = null;
 let overlayReady = false;
 export function isWebGLOverlayReady(): boolean { return overlayReady; }
 export function callWebGLOverlay(opts: WebGLOverlayCall): void {
   overlayRenderFn?.(opts);
+}
+/** Trigger the WebGL ship-mesh explosion. Safe to call even if the
+ *  overlay hasn't loaded yet — silently no-ops. Callers should still
+ *  gate on isWebGLOverlayReady() so the 2D-debris fallback runs when
+ *  WebGL isn't available. */
+export function callWebGLShipExplosion(pos: { x: number; y: number }, vel: { x: number; y: number }, rot: number): void {
+  overlayShipExplosionFn?.(pos, vel, rot);
+}
+/** Drop any live ship-explosion chunks. Called when the final-life
+ *  cleanup wipes particle/debris pools so the death replay starts
+ *  from a clean overlay too. */
+export function callWebGLClearShipChunks(): void {
+  overlayClearShipChunksFn?.();
 }
 
 let warmStarted = false;
@@ -142,6 +157,8 @@ async function warmWebGL(): Promise<void> {
     const mod = await import('./webgl/overlay.js');
     await mod.ensureWebGLOverlay();
     overlayRenderFn = mod.renderOverlay;
+    overlayShipExplosionFn = mod.spawnShipMeshExplosion;
+    overlayClearShipChunksFn = mod.clearShipChunks;
     overlayReady = true;
   } catch (e) {
     // If three.js fails to load (offline, sw bug, etc.), render code
