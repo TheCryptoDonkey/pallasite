@@ -1,18 +1,16 @@
 /**
  * 600bn Sanctum — member avatar texture loader.
  *
- * Fetches `/600bn/council.json` (the canonical member manifest) on first
- * call, loads each member's avatar as an HTMLImageElement, and exposes a
- * draw helper that renders an avatar as a circular asteroid sprite with
- * a thin ember ring (per 600bn palette canon — orange/gold/ember).
+ * Council roster is BAKED INTO THE BUNDLE (not async-fetched) so the
+ * 11 members are available synchronously the moment the page boots.
+ * Previously this fetched /600bn/council.json on first call, which
+ * meant fast IGNITE clicks saw an empty roster and the spawn helper
+ * fell back to standard asteroids. Inline manifest = always populated.
  *
- * Idempotent: concurrent boot races share a single promise. Lazy-imported
- * by the Sanctum module when getFlavour() === '600bn', so the main game
- * never pays the import or fetch cost.
- *
- * Failure mode: a member whose image 404s renders as a dark fill with a
- * yellow "?" glyph. Council manifest failure logs and falls back to an
- * empty roster so the level can degrade gracefully.
+ * Avatar images still load asynchronously via new Image(); the polygon
+ * outline draws immediately and the texture pops in once the JPEG/PNG
+ * decode finishes. A member whose image 404s renders the polygon with
+ * the standard rock fill — no broken state.
  */
 
 import { getFlavour } from './flavour.js';
@@ -34,66 +32,82 @@ interface LoadedMember extends CouncilMember {
 
 export type ReadonlyMember = Readonly<LoadedMember>;
 
-const COUNCIL_URL = '/600bn/council.json';
-let cached: LoadedMember[] | null = null;
-let loadingPromise: Promise<LoadedMember[]> | null = null;
+/** Canonical 11-member council roster + portrait paths + hex pubkeys.
+ *  Mirrors public/600bn/council.json — that file stays in place so
+ *  external tooling can still hit it, but the runtime is driven by
+ *  this inline copy so spawn-time has zero async dependency. */
+const COUNCIL_ROSTER: CouncilMember[] = [
+  { name: 'dni',           role: 'CEO', archetype: 'The Signal Bearer',     img: '/600bn/img/dni2.jpg',             pubkey: '1c94c0b44577edf41509d473a92d9f7b6bc04e3ae07f705e709c2999b1d3e074' },
+  { name: 'nind',          role: 'CCS', archetype: 'The Architect',         img: '/600bn/img/nind.jpg',             pubkey: 'cb33c1d6d3381b3117059cc292b5a8cc868a01ddf84f0c630318042a7b58454a' },
+  { name: 'michael1011',   role: 'CTO', archetype: 'The Machine Whisperer', img: '/600bn/img/m2.png',               pubkey: '3dcc157a0304ec26ea131a0f4e576e2da67ff5c66980949c55bd7f0bb1b5efa1' },
+  { name: 'sat',           role: 'CMO', archetype: 'The Signal Amplifier',  img: '/600bn/img/sat2.jpg',             pubkey: '67aa1421e1d47146e4a91212a12c63752da7279202e0d6393fdfd05b2db4226f' },
+  { name: 'flx',           role: 'CWO', archetype: 'The Chaos Engineer',    img: '/600bn/img/flx.jpg',              pubkey: '872b60fdd8ec73ce1323d9798057384fb9836500d9b7201594c71ae3fce2b680' },
+  { name: 'shillie',       role: 'CDO', archetype: 'The Wave Rider',        img: '/600bn/img/quillie2.jpg',         pubkey: '547d0c9e272e5b379a386812722b56661e46688e7f738191f77473aad969a354' },
+  { name: 'arbadacarba',   role: 'CMO', archetype: 'The Strategist',        img: '/600bn/img/arbadacarba.jpg',      pubkey: '9a83779e75080556c656d4d418d02a4d7edbe288a2f9e6dd2b48799ec935184c' },
+  { name: 'benarc',        role: 'CVO', archetype: 'Vision Crafter',        img: '/600bn/img/benarc.jpg',           pubkey: 'e9e4276490374a0daf7759fd5f475deff6ffb9b0fc5fa98c902b5f4b2fe3bba2' },
+  { name: 'tobo',          role: 'CDO', archetype: 'The Connector',         img: '/600bn/img/tobo.jpg',             pubkey: '1cf75683d02b4ec0aa4d2127ff45d335fe2ef5a884b5794775d608bace006a16' },
+  { name: 'BlackCoffee',   role: 'CHO', archetype: 'The Shadow Operator',   img: '/600bn/img/blackcoffee600bn.jpg', pubkey: '683211bd155c7b764e4b99ba263a151d81209be7a566a2bb1971dc1bbd3b715e' },
+  { name: 'TheCryptoDonkey', role: 'CIO', archetype: 'The Pathfinder',      img: '/600bn/img/thecryptodonkey.png',  pubkey: 'da19f1cd34beca44be74da4b306d9d1dd86b6343cef94ce22c49c6f59816e5bd' },
+];
 
-/** Fetch the council manifest + preload all member avatars.
- *  Idempotent — first call kicks off the work, subsequent calls return
- *  the same promise. */
+/** Pre-populated roster — every member present synchronously at module
+ *  load. Images get filled in lazily by loadImage() as they decode. */
+const cached: LoadedMember[] = COUNCIL_ROSTER.map((m) => ({ ...m, image: null, ready: false }));
+let imagesKicked = false;
+
+/** Kick off image loads for every member (idempotent). Called from
+ *  loadCouncil + maybePreloadCouncil so portraits arrive in cache by
+ *  the time wave 1's first frame draws. Spawn-time doesn't wait —
+ *  the polygon still draws with the canonical rock fill until the
+ *  image lands. */
+function kickImageLoads(): void {
+  if (imagesKicked) return;
+  imagesKicked = true;
+  for (const m of cached) loadImage(m);
+}
+
+/** Compatibility shim — older callers awaited the promise. Now it
+ *  resolves with the always-populated roster after kicking off image
+ *  decoding. Useful when the caller wants to wait for textures (e.g.
+ *  the static preview surface), but most call sites use getCouncil()
+ *  directly. */
 export async function loadCouncil(): Promise<readonly ReadonlyMember[]> {
-  if (cached) return cached;
-  if (loadingPromise) return loadingPromise;
-  loadingPromise = (async () => {
-    try {
-      const resp = await fetch(COUNCIL_URL);
-      if (!resp.ok) throw new Error(`council manifest ${resp.status}`);
-      const json = (await resp.json()) as { members: CouncilMember[] };
-      const members: LoadedMember[] = json.members.map((m) => ({
-        ...m,
-        image: null,
-        ready: false,
-      }));
-      await Promise.all(members.map((m) => loadImage(m)));
-      cached = members;
-      return members;
-    } catch (err) {
-      console.warn('[sanctum-avatars] council load failed', err);
-      cached = [];
-      return cached;
+  kickImageLoads();
+  await Promise.all(cached.map((m) => new Promise<void>((resolve) => {
+    if (m.ready) { resolve(); return; }
+    const img = m.image;
+    if (img) {
+      if (img.complete) { resolve(); return; }
+      img.addEventListener('load', () => resolve(), { once: true });
+      img.addEventListener('error', () => resolve(), { once: true });
+      return;
     }
-  })();
-  return loadingPromise;
+    resolve();
+  })));
+  return cached;
 }
 
-function loadImage(m: LoadedMember): Promise<void> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      m.image = img;
-      m.ready = true;
-      resolve();
-    };
-    img.onerror = () => {
-      // Leave m.ready = false so the draw helper renders the fallback glyph.
-      resolve();
-    };
-    img.src = m.img;
-  });
+function loadImage(m: LoadedMember): void {
+  if (m.image) return;
+  const img = new Image();
+  m.image = img;
+  img.onload = () => { m.ready = true; };
+  img.onerror = () => { /* leave m.ready=false; renderer falls back */ };
+  img.src = m.img;
 }
 
-/** Snapshot of the currently-loaded council. Empty until loadCouncil()
- *  has resolved at least once. */
+/** Snapshot of the council roster. Always returns the 11 members
+ *  synchronously — images may not be loaded yet, in which case
+ *  getMemberImage returns null and the renderer draws the polygon
+ *  with the standard rock fill. */
 export function getCouncil(): readonly ReadonlyMember[] {
-  return cached ?? [];
+  return cached;
 }
 
 /** Look up a member's cached HTMLImageElement by name. Returns null
- *  if the council manifest hasn't loaded yet or the member's image
- *  failed. Used by render.ts to texture council-themed asteroids
- *  with the member's portrait. */
+ *  until the image has finished decoding; render.ts falls back to
+ *  the polygon rock fill in the meantime. */
 export function getMemberImage(name: string): HTMLImageElement | null {
-  if (!cached) return null;
   for (const m of cached) {
     if (m.name === name) return m.ready ? m.image : null;
   }
@@ -215,9 +229,10 @@ export function drawAvatarAsteroid(
 }
 
 /**
- * Boot hook — start council loading early if we're on the 600bn flavour
- * so the avatars are warm in cache by the time the player taps PLAY. Safe
- * to call unconditionally; no-ops on other flavours. */
+ * Boot hook — start image loads early if we're on the 600bn flavour
+ * so portraits are warm by the time wave 1 draws. No-op on other
+ * flavours. The roster itself is already populated synchronously at
+ * module load. */
 export function maybePreloadCouncil(): void {
-  if (getFlavour() === '600bn') void loadCouncil();
+  if (getFlavour() === '600bn') kickImageLoads();
 }
