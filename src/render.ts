@@ -7,7 +7,7 @@
  */
 
 import type {
-  GameState, Ship, Asteroid, AsteroidType, Bullet, Coin, Particle, Ufo, Mine, PowerUp, ReplaySnapshot, Debris, Shockwave,
+  GameState, Ship, Asteroid, AsteroidType, Bullet, Coin, Particle, Ufo, Mine, PowerUp, ReplaySnapshot, Debris, Shockwave, HyperspaceEffect,
 } from './types.js';
 import {
   WORLD_W, WORLD_H, WARP_MS, waveName, waveSubtitle, waveTagline, POWERUP_CONFIG,
@@ -366,6 +366,10 @@ function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: nu
 
 function drawShield(ctx: CanvasRenderingContext2D, ship: Ship, now: number): void {
   if (!ship.shieldUp || !ship.alive) return;
+  // 3D shield dome renders on the WebGL overlay — skip the 2D path entirely
+  // when ship-tier is mesh and the overlay is ready so the player sees the
+  // faceted dome alone, not both at once.
+  if (getVisualStyle('ship') === 'mesh' && isWebGLOverlayReady()) return;
   const remaining = Math.max(0, ship.shieldExpiresAt - now);
   const fade = Math.min(1, remaining / 300);  // fade out in last 300ms
   const r = ship.radius * 2.2 + Math.sin(now * 0.012) * 1.5;
@@ -2924,7 +2928,7 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
       invulnerableUntil: 0, thrustFrame: now / 80,
       hyperspaceReadyAt: 0, hyperspaceCloakMs: 0, hyperspaceMalfunction: false,
       shieldUp: false, shieldExpiresAt: 0, shieldReadyAt: 0, recoilOffset: 0,
-      lastHyperspaceAt: 0,
+      shieldHitFlash: 0, lastHyperspaceAt: 0,
     };
     drawShip(ctx, fauxShip, now);
   }
@@ -2963,6 +2967,95 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
     ctx.fillText('×0.4', WORLD_W - 24, WORLD_H - 36);
   }
   ctx.restore();
+}
+
+// ── Hyperspace cinematic ────────────────────────────────────────────────────
+//
+// Two transient effects: a 'collapse' at the departure point (inward spiral
+// + contracting ring + central pinch flash) and an 'emerge' at the arrival
+// point (expanding ring + outward starburst + central flash). Drawn in 2D so
+// it works across all visual tiers. Self-prunes each frame.
+
+function drawHyperspaceEffects(ctx: CanvasRenderingContext2D, effects: HyperspaceEffect[], now: number): void {
+  const COLLAPSE_MS = 350;
+  const EMERGE_MS = 400;
+  for (const e of effects) {
+    const lifeMs = e.kind === 'collapse' ? COLLAPSE_MS : EMERGE_MS;
+    const age = (now - e.startMs) / lifeMs;
+    if (age >= 1 || age < 0) continue;
+    const accent = e.malfunction ? '#ff4040' : (e.kind === 'collapse' ? '#7fdfff' : '#9be7ff');
+    const white = '#ffffff';
+    ctx.save();
+    ctx.translate(e.x, e.y);
+    ctx.strokeStyle = accent;
+    ctx.shadowColor = accent;
+    if (e.kind === 'collapse') {
+      // Inward spiral lines + contracting ring + central pinch at end.
+      const ease = age * age;
+      const ringR = 70 * (1 - ease);
+      ctx.globalAlpha = (1 - age) * 0.9;
+      ctx.shadowBlur = 14;
+      ctx.lineWidth = 2;
+      for (let i = 0; i < 10; i++) {
+        const a = (Math.PI * 2 * i) / 10 + age * 4;
+        const outerR = 70 + (1 - age) * 30;
+        const innerR = Math.max(0, ringR);
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * outerR, Math.sin(a) * outerR);
+        ctx.lineTo(Math.cos(a) * innerR, Math.sin(a) * innerR);
+        ctx.stroke();
+      }
+      if (ringR > 0.5) {
+        ctx.beginPath();
+        ctx.arc(0, 0, ringR, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      if (age > 0.7) {
+        const flash = (age - 0.7) / 0.3;
+        ctx.globalAlpha = flash;
+        ctx.fillStyle = white;
+        ctx.shadowBlur = 22;
+        ctx.beginPath();
+        ctx.arc(0, 0, 8 + flash * 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else {
+      // Emerge: expanding ring + outward starburst + central white flash.
+      const ease = 1 - Math.pow(1 - age, 2.5);
+      const ringR = 6 + 75 * ease;
+      ctx.globalAlpha = (1 - age) * 0.9;
+      ctx.shadowBlur = 16;
+      ctx.lineWidth = 2 + (1 - age) * 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, ringR, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.lineWidth = 1.5;
+      for (let i = 0; i < 8; i++) {
+        const a = (Math.PI * 2 * i) / 8 + age * 0.6;
+        const r0 = 12 + ringR * 0.4;
+        const r1 = ringR + 6;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * r0, Math.sin(a) * r0);
+        ctx.lineTo(Math.cos(a) * r1, Math.sin(a) * r1);
+        ctx.stroke();
+      }
+      if (age < 0.4) {
+        const flash = 1 - age / 0.4;
+        ctx.globalAlpha = flash;
+        ctx.fillStyle = white;
+        ctx.shadowBlur = 22;
+        ctx.beginPath();
+        ctx.arc(0, 0, 14 * flash + 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+  // Prune dead effects — walk backward so splice indices stay stable.
+  for (let i = effects.length - 1; i >= 0; i--) {
+    const lifeMs = effects[i].kind === 'collapse' ? 350 : 400;
+    if ((now - effects[i].startMs) >= lifeMs) effects.splice(i, 1);
+  }
 }
 
 // ── Shockwave rings (transient post-shatter effect) ─────────────────────────
@@ -3139,6 +3232,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   drawParticles(ctx, state.particles);
   drawDebris(ctx, state.debris);
   drawShockwaves(ctx, state.shockwaveRings, now);
+  drawHyperspaceEffects(ctx, state.hyperspaceEffects, now);
 
   ctx.restore();
 
