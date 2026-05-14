@@ -17,6 +17,7 @@ import { getCachedGhost, ghostScoreAt, ghostPoseAt } from './ghost.js';
 import { getActiveSeed } from './seed.js';
 import { getAsteroidStyle, shouldReduceMotion } from './a11y.js';
 import { getActiveSkin } from './skins.js';
+import { renderSanctumScene } from './sanctum-render.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
 
@@ -2326,11 +2327,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // Bullbear + ship + bullets via sanctum-render. The wave-background /
   // star-field / wrap-ghost passes would visually clash, so early-return.
   if (state.phase === 'sanctum') {
-    // Lazy-imported chunk so the sanctum render module only loads when
-    // a sanctum run is actually being drawn (zero impact on main-flavour).
-    void import('./sanctum-render.js').then(({ renderSanctumScene }) => {
-      renderSanctumScene(ctx, state, now);
-    });
+    renderSanctumScene(ctx, state, now);
     return;
   }
 
