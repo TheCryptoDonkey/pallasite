@@ -73,10 +73,36 @@ export interface ControllerSpec {
 }
 
 /** Frame the PWA sends over the data channel. The `k` field is a slot
- *  name (or a slot-name + suffix for joystick sub-events). */
+ *  name (or a slot-name + suffix for joystick sub-events). The optional
+ *  `p` field is set by the broker in multi-player mode (see WelcomeFrame). */
 export interface ControllerInputFrame {
   k: string;
   v: string;
+  /** Player slot (multi-player mode only). Broker injects on phone→host
+   *  frames; hosts may set on host→phone frames to target one phone, omit
+   *  to broadcast to all paired phones. */
+  p?: number;
+}
+
+/**
+ * Multi-player wire additions. The broker opts a session into multi-player
+ * mode when the host connects with the ?multi=1 URL param. In single-player
+ * mode (default) the broker forwards frames verbatim and peer-up / peer-down
+ * carry no `p` field. In multi-player mode:
+ *
+ *   - Each phone is assigned a player slot 0..N-1 on connect.
+ *   - Broker sends the phone a WelcomeFrame on connect with the slot.
+ *   - Phone-to-host JSON frames have `p:<slot>` injected by the broker.
+ *   - Host-to-phone frames may include `p:<slot>` to target one player,
+ *     or omit `p` to broadcast to all paired phones.
+ *   - peer-up / peer-down to the host carry `p:<slot>`.
+ *   - Phones receive `host-up` / `host-down` (no `p`) when the host
+ *     (re-)connects or drops, mirroring single-mode's peer-up/down.
+ */
+export interface WelcomeFrame {
+  type: 'welcome';
+  /** Player slot assigned by the broker for this phone. */
+  p: number;
 }
 
 /**
