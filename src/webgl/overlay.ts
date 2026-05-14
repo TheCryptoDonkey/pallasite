@@ -723,133 +723,449 @@ function build600bnCoinMesh(u: Ufo): { group: THREE.Group; geometry: THREE.Buffe
 
 /** Build a UFO mesh once per type. Saucer body (squashed cylinder) +
  *  hemisphere dome + emissive cockpit ring + glow underglow. */
+/** Each UFO type gets its own bespoke silhouette so the player reads
+ *  the threat from shape alone, before colour. Shared helpers below
+ *  build the recurring bits (rim port-hole ring, abductor beam) so
+ *  per-type builders stay focused on what makes that type unique. */
 function buildUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.Material } {
-  // 600bn flavour: every UFO is the $600B coin (matches the 2D path).
   if (getFlavour() === '600bn') return build600bnCoinMesh(u);
+  switch (u.type) {
+    case 'elite':  return buildEliteUfoMesh(u);
+    case 'tank':   return buildTankUfoMesh(u);
+    case 'sniper': return buildSniperUfoMesh(u);
+    case 'boss':   return buildBossUfoMesh(u);
+    case 'cruiser':
+    default:       return buildCruiserUfoMesh(u);
+  }
+}
+
+/** Shared port-hole rim builder. Returns a Group so renderOverlay can
+ *  spin it independently of the parent hull's banking roll. */
+function buildRimRing(bodyR: number, glow: number, portCount: number, portR: number, ringZ: number): THREE.Group {
+  const ring = new THREE.Group();
+  const mat = new THREE.MeshBasicMaterial({ color: glow, transparent: true, opacity: 0.95 });
+  const geo = new THREE.SphereGeometry(portR, 10, 8);
+  for (let i = 0; i < portCount; i++) {
+    const angle = (Math.PI * 2 * i) / portCount;
+    const port = new THREE.Mesh(geo, mat);
+    port.position.set(Math.cos(angle) * bodyR, Math.sin(angle) * bodyR, ringZ);
+    port.frustumCulled = false;
+    ring.add(port);
+  }
+  return ring;
+}
+
+/** Shared abductor-beam cone tapering down from the underbelly. */
+function buildAbductorBeam(bodyR: number, glow: number, topZ: number, height: number, opacity: number): THREE.Mesh {
+  const geo = new THREE.ConeGeometry(bodyR * 0.7, height, 18, 1, true);
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(0, 0, topZ - height * 0.5);
+  const mat = new THREE.MeshBasicMaterial({
+    color: glow,
+    transparent: true,
+    opacity,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false;
+  return mesh;
+}
+
+/** Cruiser — the canonical Roswell saucer. Two-tier hull, dome,
+ *  antenna spike + glowing tip, rotating rim of 10 port-holes,
+ *  abductor beam. Reads as "basic enemy scout". */
+function buildCruiserUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.Material } {
   const palette = UFO_PALETTE[u.type];
   const group = new THREE.Group();
   const bodyR = u.radius * palette.scale;
-
-  // Upper hull — flatter than before so the silhouette reads "saucer"
-  // not "barrel". Slight taper top→bottom (narrower top) so the dome
-  // appears to sit in a bevel rather than perched on a flat disc.
   const bodyH = bodyR * 0.22;
+
   const bodyGeo = new THREE.CylinderGeometry(bodyR * 0.85, bodyR, bodyH, 32);
   bodyGeo.rotateX(Math.PI / 2);
   const bodyMat = new THREE.MeshPhongMaterial({
-    color: palette.body,
-    shininess: 60,
-    specular: 0xa0a0a0,
-    emissive: palette.glow,
-    emissiveIntensity: 0.18,
+    color: palette.body, shininess: 60, specular: 0xa0a0a0,
+    emissive: palette.glow, emissiveIntensity: 0.18,
   });
-  const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
-  bodyMesh.frustumCulled = false;
-  group.add(bodyMesh);
+  group.add(setupMesh(new THREE.Mesh(bodyGeo, bodyMat)));
 
-  // Lower hull — wider rim flaring out under the body, tapering into
-  // a flat underside. Sells the classic two-tier saucer profile.
   const baseGeo = new THREE.CylinderGeometry(bodyR, bodyR * 0.6, bodyH * 0.65, 32);
   baseGeo.rotateX(Math.PI / 2);
   baseGeo.translate(0, 0, -bodyH * 0.6);
-  const baseMesh = new THREE.Mesh(baseGeo, bodyMat);
-  baseMesh.frustumCulled = false;
-  group.add(baseMesh);
+  group.add(setupMesh(new THREE.Mesh(baseGeo, bodyMat)));
 
-  // Equator ring — 10 port-hole lights orbiting the rim. Held in its
-  // own group so the per-frame update can spin it independently of
-  // the hull's banking roll. Stored on userData so renderOverlay can
-  // grab it without re-traversing the scene each frame.
-  const ringGroup = new THREE.Group();
-  const PORT_COUNT = 10;
-  const portR = bodyR * 0.07;
-  const portMat = new THREE.MeshBasicMaterial({
-    color: palette.glow,
-    transparent: true,
-    opacity: 0.95,
-  });
-  const portGeoShared = new THREE.SphereGeometry(portR, 10, 8);
-  for (let i = 0; i < PORT_COUNT; i++) {
-    const angle = (Math.PI * 2 * i) / PORT_COUNT;
-    const port = new THREE.Mesh(portGeoShared, portMat);
-    port.position.set(Math.cos(angle) * bodyR * 0.95, Math.sin(angle) * bodyR * 0.95, -bodyH * 0.05);
-    port.frustumCulled = false;
-    ringGroup.add(port);
-  }
+  const ringGroup = buildRimRing(bodyR * 0.95, palette.glow, 10, bodyR * 0.07, -bodyH * 0.05);
   group.add(ringGroup);
 
-  // Dome — translucent hemisphere on top, brighter emissive so it
-  // reads as the lit cockpit canopy. Higher segment count for a
-  // smoother specular highlight at typical screen sizes.
   const domeR = bodyR * 0.55;
   const domeGeo = new THREE.SphereGeometry(domeR, 20, 14, 0, Math.PI * 2, 0, Math.PI / 2);
   domeGeo.rotateX(-Math.PI / 2);
   domeGeo.translate(0, 0, bodyH * 0.4);
   const domeMat = new THREE.MeshPhongMaterial({
-    color: palette.dome,
-    shininess: 200,
-    specular: 0xffffff,
-    emissive: palette.glow,
-    emissiveIntensity: 0.55,
-    transparent: true,
-    opacity: 0.82,
+    color: palette.dome, shininess: 200, specular: 0xffffff,
+    emissive: palette.glow, emissiveIntensity: 0.55,
+    transparent: true, opacity: 0.82,
   });
-  const domeMesh = new THREE.Mesh(domeGeo, domeMat);
-  domeMesh.frustumCulled = false;
-  group.add(domeMesh);
+  group.add(setupMesh(new THREE.Mesh(domeGeo, domeMat)));
 
-  // Antenna spike on top of the dome — thin tapered cylinder pointing
-  // straight up out of the saucer plane.
   const antennaH = bodyR * 0.42;
   const antennaGeo = new THREE.CylinderGeometry(bodyR * 0.02, bodyR * 0.045, antennaH, 8);
   antennaGeo.rotateX(Math.PI / 2);
   antennaGeo.translate(0, 0, bodyH * 0.4 + domeR + antennaH * 0.5);
-  const antennaMat = new THREE.MeshPhongMaterial({
-    color: 0x909090,
-    shininess: 100,
-    specular: 0xffffff,
-    emissive: palette.glow,
-    emissiveIntensity: 0.1,
-  });
-  const antennaMesh = new THREE.Mesh(antennaGeo, antennaMat);
-  antennaMesh.frustumCulled = false;
-  group.add(antennaMesh);
+  group.add(setupMesh(new THREE.Mesh(antennaGeo, new THREE.MeshPhongMaterial({
+    color: 0x909090, shininess: 100, specular: 0xffffff,
+    emissive: palette.glow, emissiveIntensity: 0.1,
+  }))));
 
-  // Antenna tip — small glowing bulb at the top of the spike.
   const tipGeo = new THREE.SphereGeometry(bodyR * 0.075, 10, 8);
   tipGeo.translate(0, 0, bodyH * 0.4 + domeR + antennaH + bodyR * 0.04);
-  const tipMat = new THREE.MeshBasicMaterial({
-    color: palette.glow,
-    transparent: true,
-    opacity: 0.95,
-    blending: THREE.AdditiveBlending,
-  });
-  const tipMesh = new THREE.Mesh(tipGeo, tipMat);
-  tipMesh.frustumCulled = false;
-  group.add(tipMesh);
+  group.add(setupMesh(new THREE.Mesh(tipGeo, new THREE.MeshBasicMaterial({
+    color: palette.glow, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending,
+  }))));
 
-  // Abductor beam — translucent cone tapering DOWN from the underside,
-  // additive-blended so it lifts the dark space behind. The classic
-  // tractor-beam silhouette under a flying saucer.
-  const beamH = bodyR * 1.25;
-  const beamGeo = new THREE.ConeGeometry(bodyR * 0.7, beamH, 18, 1, true);
-  beamGeo.rotateX(-Math.PI / 2);  // point along -Z (downward)
-  beamGeo.translate(0, 0, -bodyH * 0.6 - beamH * 0.5);
-  const beamMat = new THREE.MeshBasicMaterial({
-    color: palette.glow,
-    transparent: true,
-    opacity: 0.18,
-    blending: THREE.AdditiveBlending,
-    side: THREE.DoubleSide,
-    depthWrite: false,
-  });
-  const beamMesh = new THREE.Mesh(beamGeo, beamMat);
-  beamMesh.frustumCulled = false;
-  group.add(beamMesh);
+  group.add(setupMesh(buildAbductorBeam(bodyR, palette.glow, -bodyH * 0.6, bodyR * 1.25, 0.18)));
 
-  // Stash the rim ring for renderOverlay's per-frame spin update.
   group.userData.ringGroup = ringGroup;
   return { group, geometry: bodyGeo, material: bodyMat };
+}
+
+/** Elite — angular aggressor. Hexagonal hull, 6 outward spikes around
+ *  the rim, single sensor eye on top (no dome), twin underbelly
+ *  weapon pods. Reads as "this one is sharper". */
+function buildEliteUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.Material } {
+  const palette = UFO_PALETTE[u.type];
+  const group = new THREE.Group();
+  const bodyR = u.radius * palette.scale;
+  const bodyH = bodyR * 0.26;
+
+  // Hexagonal hull — radial 6-sided cylinder reads as a war-machine
+  // gem rather than the cruiser's smooth saucer.
+  const bodyGeo = new THREE.CylinderGeometry(bodyR * 0.8, bodyR, bodyH, 6);
+  bodyGeo.rotateX(Math.PI / 2);
+  const bodyMat = new THREE.MeshPhongMaterial({
+    color: palette.body, shininess: 90, specular: 0xff8060,
+    emissive: palette.glow, emissiveIntensity: 0.25,
+    flatShading: true,
+  });
+  group.add(setupMesh(new THREE.Mesh(bodyGeo, bodyMat)));
+
+  // Six outward spikes at the hex corners — cones lying flat in the
+  // hull plane, points radiating away from centre.
+  const spikeL = bodyR * 0.55;
+  const spikeR = bodyR * 0.18;
+  const spikeGeo = new THREE.ConeGeometry(spikeR, spikeL, 6);
+  for (let i = 0; i < 6; i++) {
+    const angle = (Math.PI * 2 * i) / 6 + Math.PI / 6;  // offset so spikes align with hex corners
+    const spike = new THREE.Mesh(spikeGeo, bodyMat);
+    spike.frustumCulled = false;
+    spike.position.set(Math.cos(angle) * bodyR * 1.0, Math.sin(angle) * bodyR * 1.0, 0);
+    spike.rotation.set(0, 0, angle - Math.PI / 2);  // tilt cones outward in XY plane
+    group.add(spike);
+  }
+
+  // Single sensor eye on top — half-sphere of bright emissive glow.
+  const eyeR = bodyR * 0.4;
+  const eyeGeo = new THREE.SphereGeometry(eyeR, 16, 12);
+  eyeGeo.translate(0, 0, bodyH * 0.45 + eyeR * 0.4);
+  const eyeMat = new THREE.MeshPhongMaterial({
+    color: palette.dome, shininess: 240, specular: 0xffffff,
+    emissive: palette.glow, emissiveIntensity: 1.4,
+    transparent: true, opacity: 0.9,
+  });
+  group.add(setupMesh(new THREE.Mesh(eyeGeo, eyeMat)));
+
+  // Eye inner core — small bright point at the centre so the "pupil"
+  // reads even when the player is offset from the sensor's gaze axis.
+  const pupilGeo = new THREE.SphereGeometry(eyeR * 0.3, 10, 8);
+  pupilGeo.translate(0, 0, bodyH * 0.45 + eyeR * 0.4);
+  group.add(setupMesh(new THREE.Mesh(pupilGeo, new THREE.MeshBasicMaterial({
+    color: 0xffffff, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending,
+  }))));
+
+  // Twin underbelly weapon pods — short cylinders flanking the
+  // centreline, glowing tips suggesting charged barrels.
+  const podR = bodyR * 0.14;
+  const podL = bodyR * 0.5;
+  for (const sign of [-1, 1]) {
+    const podGeo = new THREE.CylinderGeometry(podR, podR * 0.85, podL, 12);
+    podGeo.rotateX(Math.PI / 2);
+    podGeo.translate(sign * bodyR * 0.55, 0, -bodyH * 0.45);
+    group.add(setupMesh(new THREE.Mesh(podGeo, new THREE.MeshPhongMaterial({
+      color: 0x301010, shininess: 80, specular: 0x808080,
+      emissive: palette.glow, emissiveIntensity: 0.4,
+    }))));
+    const tipGeo = new THREE.SphereGeometry(podR * 0.95, 10, 8);
+    tipGeo.translate(sign * bodyR * 0.55, 0, -bodyH * 0.45 - podL * 0.5);
+    group.add(setupMesh(new THREE.Mesh(tipGeo, new THREE.MeshBasicMaterial({
+      color: palette.glow, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending,
+    }))));
+  }
+
+  return { group, geometry: bodyGeo, material: bodyMat };
+}
+
+/** Tank — heavy gunship. Thick wide armoured plate hull with 4 cardinal
+ *  armour pauldrons, central turret on top with 4 protruding gun
+ *  barrels. No dome — armoured cap instead. Reads as "this one shoots
+ *  hard and doesn't budge". */
+function buildTankUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.Material } {
+  const palette = UFO_PALETTE[u.type];
+  const group = new THREE.Group();
+  const bodyR = u.radius * palette.scale;
+  const bodyH = bodyR * 0.32;  // thicker than cruiser
+
+  // Thick octagonal hull plate.
+  const bodyGeo = new THREE.CylinderGeometry(bodyR * 0.95, bodyR, bodyH, 8);
+  bodyGeo.rotateX(Math.PI / 2);
+  const bodyMat = new THREE.MeshPhongMaterial({
+    color: palette.body, shininess: 30, specular: 0x606060,
+    emissive: palette.glow, emissiveIntensity: 0.15,
+    flatShading: true,
+  });
+  group.add(setupMesh(new THREE.Mesh(bodyGeo, bodyMat)));
+
+  // 4 cardinal armour pauldrons — boxes attached to the hull edges.
+  const paulW = bodyR * 0.45;
+  const paulD = bodyR * 0.3;
+  const paulH = bodyH * 1.4;
+  for (let i = 0; i < 4; i++) {
+    const angle = (Math.PI / 2) * i;
+    const paulGeo = new THREE.BoxGeometry(paulW, paulD, paulH);
+    paulGeo.translate(Math.cos(angle) * bodyR * 0.95, Math.sin(angle) * bodyR * 0.95, 0);
+    const paul = new THREE.Mesh(paulGeo, bodyMat);
+    paul.frustumCulled = false;
+    paul.rotation.z = angle;
+    group.add(paul);
+  }
+
+  // Heavy turret on top — wide squat cylinder.
+  const turretR = bodyR * 0.55;
+  const turretH = bodyH * 0.9;
+  const turretGeo = new THREE.CylinderGeometry(turretR * 0.9, turretR, turretH, 16);
+  turretGeo.rotateX(Math.PI / 2);
+  turretGeo.translate(0, 0, bodyH * 0.45 + turretH * 0.4);
+  const turretMat = new THREE.MeshPhongMaterial({
+    color: 0x4a1818, shininess: 50, specular: 0x808080,
+    emissive: palette.glow, emissiveIntensity: 0.2,
+  });
+  group.add(setupMesh(new THREE.Mesh(turretGeo, turretMat)));
+
+  // Turret cap — flat disc on top of the turret, slightly emissive.
+  const capGeo = new THREE.CylinderGeometry(turretR, turretR * 0.95, bodyH * 0.18, 16);
+  capGeo.rotateX(Math.PI / 2);
+  capGeo.translate(0, 0, bodyH * 0.45 + turretH + bodyH * 0.08);
+  group.add(setupMesh(new THREE.Mesh(capGeo, new THREE.MeshPhongMaterial({
+    color: palette.dome, shininess: 100, specular: 0xffffff,
+    emissive: palette.glow, emissiveIntensity: 0.6,
+  }))));
+
+  // 4 gun barrels protruding in cardinal directions from the central
+  // turret. The "always pointed at you" silhouette.
+  const barrelL = bodyR * 0.45;
+  const barrelR = bodyR * 0.09;
+  for (let i = 0; i < 4; i++) {
+    const angle = (Math.PI / 2) * i;
+    const bGeo = new THREE.CylinderGeometry(barrelR, barrelR, barrelL, 10);
+    bGeo.rotateZ(Math.PI / 2);  // lay along X
+    bGeo.translate(barrelL * 0.5, 0, bodyH * 0.45 + turretH * 0.4);
+    const barrel = new THREE.Mesh(bGeo, turretMat);
+    barrel.frustumCulled = false;
+    barrel.rotation.z = angle;
+    group.add(barrel);
+  }
+
+  // Slow-glow rim slits — 8 narrow emissive bars around the equator
+  // suggest armoured viewports rather than a full port-hole ring.
+  const ringGroup = buildRimRing(bodyR * 0.92, palette.glow, 8, bodyR * 0.05, -bodyH * 0.1);
+  group.add(ringGroup);
+
+  // Heavy underbelly base plate — wide flat cylinder, looks anchored.
+  const baseGeo = new THREE.CylinderGeometry(bodyR * 0.8, bodyR * 0.5, bodyH * 0.55, 16);
+  baseGeo.rotateX(Math.PI / 2);
+  baseGeo.translate(0, 0, -bodyH * 0.7);
+  group.add(setupMesh(new THREE.Mesh(baseGeo, bodyMat)));
+
+  group.userData.ringGroup = ringGroup;
+  return { group, geometry: bodyGeo, material: bodyMat };
+}
+
+/** Sniper — elongated rail-ship. NOT a saucer. Capsule body along the
+ *  +X axis (forward), long thin barrel forward, twin fins, sensor
+ *  optic at the muzzle, tail thruster. Reads as "this thing aims and
+ *  shoots from far away". */
+function buildSniperUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.Material } {
+  const palette = UFO_PALETTE[u.type];
+  const group = new THREE.Group();
+  const bodyR = u.radius * palette.scale;
+
+  // Capsule hull — cylinder along +X with hemispheres at each end.
+  const hullL = bodyR * 1.6;
+  const hullR = bodyR * 0.35;
+  const hullGeo = new THREE.CylinderGeometry(hullR, hullR, hullL, 16);
+  hullGeo.rotateZ(Math.PI / 2);  // lay along X
+  const hullMat = new THREE.MeshPhongMaterial({
+    color: palette.body, shininess: 110, specular: 0xc0fff0,
+    emissive: palette.glow, emissiveIntensity: 0.25,
+  });
+  group.add(setupMesh(new THREE.Mesh(hullGeo, hullMat)));
+
+  // Rear cap — half-sphere closing the back of the capsule.
+  const rearGeo = new THREE.SphereGeometry(hullR, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2);
+  rearGeo.rotateZ(Math.PI / 2);
+  rearGeo.translate(-hullL * 0.5, 0, 0);
+  group.add(setupMesh(new THREE.Mesh(rearGeo, hullMat)));
+
+  // Front cap — half-sphere closing the muzzle end.
+  const frontGeo = new THREE.SphereGeometry(hullR, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2);
+  frontGeo.rotateZ(-Math.PI / 2);
+  frontGeo.translate(hullL * 0.5, 0, 0);
+  group.add(setupMesh(new THREE.Mesh(frontGeo, hullMat)));
+
+  // Long thin sniper barrel — extends forward from the front cap.
+  const barrelL = bodyR * 1.4;
+  const barrelR = bodyR * 0.09;
+  const barrelGeo = new THREE.CylinderGeometry(barrelR * 0.85, barrelR, barrelL, 12);
+  barrelGeo.rotateZ(Math.PI / 2);
+  barrelGeo.translate(hullL * 0.5 + hullR + barrelL * 0.5, 0, 0);
+  group.add(setupMesh(new THREE.Mesh(barrelGeo, new THREE.MeshPhongMaterial({
+    color: 0x404a4a, shininess: 80, specular: 0xffffff,
+    emissive: palette.glow, emissiveIntensity: 0.15,
+  }))));
+
+  // Muzzle glow — small additive sphere at the very tip of the barrel.
+  const muzzleR = barrelR * 1.4;
+  const muzzleGeo = new THREE.SphereGeometry(muzzleR, 10, 8);
+  muzzleGeo.translate(hullL * 0.5 + hullR + barrelL + muzzleR * 0.6, 0, 0);
+  group.add(setupMesh(new THREE.Mesh(muzzleGeo, new THREE.MeshBasicMaterial({
+    color: palette.glow, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending,
+  }))));
+
+  // Twin fins — small flat plates on left and right of the hull.
+  const finW = bodyR * 0.7;
+  const finH = bodyR * 0.35;
+  for (const sign of [-1, 1]) {
+    const finGeo = new THREE.BoxGeometry(finW, 0.06 * bodyR, finH);
+    finGeo.translate(-hullL * 0.05, sign * (hullR + finW * 0.4), 0);
+    group.add(setupMesh(new THREE.Mesh(finGeo, hullMat)));
+  }
+
+  // Top sensor optic — small glowing cyan dot on the dorsal hull.
+  const optR = bodyR * 0.12;
+  const optGeo = new THREE.SphereGeometry(optR, 10, 8);
+  optGeo.translate(hullL * 0.2, 0, hullR * 0.95);
+  group.add(setupMesh(new THREE.Mesh(optGeo, new THREE.MeshBasicMaterial({
+    color: 0xffffff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending,
+  }))));
+
+  // Tail thruster — small cone glowing at the rear, additive blend.
+  const thrR = hullR * 0.6;
+  const thrL = bodyR * 0.4;
+  const thrGeo = new THREE.ConeGeometry(thrR, thrL, 10);
+  thrGeo.rotateZ(-Math.PI / 2);
+  thrGeo.translate(-hullL * 0.5 - hullR - thrL * 0.4, 0, 0);
+  group.add(setupMesh(new THREE.Mesh(thrGeo, new THREE.MeshBasicMaterial({
+    color: palette.glow, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending,
+  }))));
+
+  return { group, geometry: hullGeo, material: hullMat };
+}
+
+/** Boss — massive multi-tier carrier. Large saucer base with 18
+ *  port-holes, double-tier dome with inner core, crown of 4 spires,
+ *  triple-cone abductor beam. The wave-25 finale silhouette. */
+function buildBossUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.Material } {
+  const palette = UFO_PALETTE[u.type];
+  const group = new THREE.Group();
+  const bodyR = u.radius * palette.scale;
+  const bodyH = bodyR * 0.24;
+
+  // Main hull plate — wide and slightly thicker than cruiser.
+  const bodyGeo = new THREE.CylinderGeometry(bodyR * 0.85, bodyR, bodyH, 36);
+  bodyGeo.rotateX(Math.PI / 2);
+  const bodyMat = new THREE.MeshPhongMaterial({
+    color: palette.body, shininess: 80, specular: 0xc08040,
+    emissive: palette.glow, emissiveIntensity: 0.25,
+  });
+  group.add(setupMesh(new THREE.Mesh(bodyGeo, bodyMat)));
+
+  // Lower flared rim — wider than cruiser to sell the mass.
+  const baseGeo = new THREE.CylinderGeometry(bodyR * 1.05, bodyR * 0.5, bodyH * 0.7, 36);
+  baseGeo.rotateX(Math.PI / 2);
+  baseGeo.translate(0, 0, -bodyH * 0.6);
+  group.add(setupMesh(new THREE.Mesh(baseGeo, bodyMat)));
+
+  // Upper deck — smaller disc above the main hull, like a layered cake.
+  const deckGeo = new THREE.CylinderGeometry(bodyR * 0.55, bodyR * 0.7, bodyH * 0.6, 24);
+  deckGeo.rotateX(Math.PI / 2);
+  deckGeo.translate(0, 0, bodyH * 0.55);
+  group.add(setupMesh(new THREE.Mesh(deckGeo, bodyMat)));
+
+  // 18 port-holes orbiting the main rim — more than the cruiser, sold
+  // as "bigger ship, more crew".
+  const ringGroup = buildRimRing(bodyR * 0.98, palette.glow, 18, bodyR * 0.06, -bodyH * 0.05);
+  group.add(ringGroup);
+
+  // Outer translucent dome — the public-facing canopy.
+  const domeR = bodyR * 0.45;
+  const domeGeo = new THREE.SphereGeometry(domeR, 24, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+  domeGeo.rotateX(-Math.PI / 2);
+  domeGeo.translate(0, 0, bodyH * 0.85);
+  const domeMat = new THREE.MeshPhongMaterial({
+    color: palette.dome, shininess: 220, specular: 0xffffff,
+    emissive: palette.glow, emissiveIntensity: 0.7,
+    transparent: true, opacity: 0.7,
+    depthWrite: false,
+  });
+  group.add(setupMesh(new THREE.Mesh(domeGeo, domeMat)));
+
+  // Inner core — bright emissive sphere visible through the dome.
+  // Sells the "alien core powering this thing" idea.
+  const coreR = bodyR * 0.22;
+  const coreGeo = new THREE.SphereGeometry(coreR, 14, 10);
+  coreGeo.translate(0, 0, bodyH * 0.85 + coreR * 0.4);
+  group.add(setupMesh(new THREE.Mesh(coreGeo, new THREE.MeshBasicMaterial({
+    color: palette.glow, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending,
+  }))));
+
+  // Crown of 4 spires — vertical glowing pillars around the dome.
+  const spireR = bodyR * 0.04;
+  const spireH = bodyR * 0.55;
+  for (let i = 0; i < 4; i++) {
+    const angle = (Math.PI / 2) * i + Math.PI / 4;
+    const spireGeo = new THREE.CylinderGeometry(spireR, spireR * 1.5, spireH, 8);
+    spireGeo.rotateX(Math.PI / 2);
+    spireGeo.translate(Math.cos(angle) * bodyR * 0.45, Math.sin(angle) * bodyR * 0.45, bodyH * 0.55 + spireH * 0.5);
+    group.add(setupMesh(new THREE.Mesh(spireGeo, new THREE.MeshPhongMaterial({
+      color: 0x602030, shininess: 100, specular: 0xffffff,
+      emissive: palette.glow, emissiveIntensity: 0.9,
+    }))));
+    // Spire tip — small bright bulb.
+    const tipGeo = new THREE.SphereGeometry(spireR * 2, 8, 6);
+    tipGeo.translate(Math.cos(angle) * bodyR * 0.45, Math.sin(angle) * bodyR * 0.45, bodyH * 0.55 + spireH + spireR);
+    group.add(setupMesh(new THREE.Mesh(tipGeo, new THREE.MeshBasicMaterial({
+      color: palette.glow, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending,
+    }))));
+  }
+
+  // Triple abductor beam — central wide cone + 2 narrower side cones.
+  group.add(setupMesh(buildAbductorBeam(bodyR, palette.glow, -bodyH * 0.6, bodyR * 1.6, 0.16)));
+  for (const sign of [-1, 1]) {
+    const sideBeam = buildAbductorBeam(bodyR * 0.4, palette.glow, -bodyH * 0.6, bodyR * 1.1, 0.14);
+    sideBeam.position.x = sign * bodyR * 0.4;
+    group.add(setupMesh(sideBeam));
+  }
+
+  group.userData.ringGroup = ringGroup;
+  return { group, geometry: bodyGeo, material: bodyMat };
+}
+
+/** Shared mesh setup — frustumCulled = false for everything inside the
+ *  saucers since the scene is small enough that culling per-piece
+ *  costs more than the skipped draw saves. */
+function setupMesh<T extends THREE.Object3D>(m: T): T {
+  m.frustumCulled = false;
+  return m;
 }
 
 /** Build a powerup mesh: a spinning sphere with the glyph painted at
@@ -1202,12 +1518,48 @@ export function renderOverlay(opts: {
         frameCounter * 0.007,
       );
     } else {
-      // Saucer: banking roll on direction + small sin-wave hover.
-      entry.mesh.rotation.y = u.dir * 0.25;
-      entry.mesh.rotation.z = Math.sin(frameCounter * 0.04 + u.id) * 0.08;
-      // Rim ring spins independently of the hull — the iconic "saucer
-      // hubcap" lights orbiting the equator. Speed is type-tagged via
-      // id so multiple UFOs on screen don't pulse in lockstep.
+      // Per-type idle motion. Each silhouette earns its own "personality"
+      // so the threat reads from movement as well as shape.
+      switch (u.type) {
+        case 'sniper': {
+          // Nose tracks direction of travel — the barrel always points
+          // along the dir vector. No bank/hover; this is a rail-gun,
+          // not a saucer.
+          entry.mesh.rotation.set(0, 0, -u.dir);
+          break;
+        }
+        case 'tank': {
+          // Slow z-axis turret sweep + mild banking. The 4 cardinal gun
+          // barrels rotate around the centre so they appear to scan.
+          entry.mesh.rotation.y = u.dir * 0.15;
+          entry.mesh.rotation.z = frameCounter * 0.012;
+          break;
+        }
+        case 'elite': {
+          // Predatory wobble — slow z-spin layered on the banking roll.
+          // The spikes catch light at different angles as it shimmies.
+          entry.mesh.rotation.y = u.dir * 0.22;
+          entry.mesh.rotation.z = frameCounter * 0.018 + Math.sin(frameCounter * 0.05 + u.id) * 0.12;
+          break;
+        }
+        case 'boss': {
+          // Big, slow, imposing. Less bank than cruiser; the carrier
+          // doesn't dance.
+          entry.mesh.rotation.y = u.dir * 0.14;
+          entry.mesh.rotation.z = Math.sin(frameCounter * 0.02 + u.id) * 0.05;
+          break;
+        }
+        case 'cruiser':
+        default: {
+          // Classic saucer: banking roll on direction + small sin-wave hover.
+          entry.mesh.rotation.y = u.dir * 0.25;
+          entry.mesh.rotation.z = Math.sin(frameCounter * 0.04 + u.id) * 0.08;
+          break;
+        }
+      }
+      // Rim port-hole ring spins independently of the hull bank/turret
+      // sweep. Only saucer types stash a ringGroup (cruiser / tank /
+      // boss). Speed tagged via id so multiple UFOs don't pulse in lockstep.
       const ringGroup = (entry.mesh as THREE.Group).userData?.ringGroup as THREE.Group | undefined;
       if (ringGroup) ringGroup.rotation.z = frameCounter * 0.06 + u.id * 0.3;
     }
