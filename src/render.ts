@@ -23,44 +23,81 @@ import { getFlavour } from './flavour.js';
 // ── Stars ─────────────────────────────────────────────────────────────────────
 
 const STAR_COUNT = 110;
-const stars: { x: number; y: number; r: number; flickerPhase: number; depth: number }[] = [];
+const stars: { x: number; y: number; r: number; flickerPhase: number; depth: number; vx: number; vy: number }[] = [];
 
 (function initStars() {
   for (let i = 0; i < STAR_COUNT; i++) {
     const depth = Math.random();
+    // Parallax drift — deeper stars move faster (closer to camera).
+    // vx/vy are in world-units per second; px/s. Angle picked once;
+    // direction has a slight downward bias so the field reads as
+    // "rain of sats falling past the camera" rather than directionless.
+    const speed = 6 + depth * 28;
+    const ang = Math.PI / 2 + (Math.random() - 0.5) * 1.4;  // mostly downward, ±40°
     stars.push({
       x: Math.random() * WORLD_W,
       y: Math.random() * WORLD_H,
       r: 0.5 + depth * 1.6,
       flickerPhase: Math.random() * Math.PI * 2,
       depth,
+      vx: Math.cos(ang) * speed,
+      vy: Math.sin(ang) * speed,
     });
   }
 })();
 
-function drawStars(ctx: CanvasRenderingContext2D, t: number): void {
-  // 600bn flavour swaps the starfield for floating bitcoin glyphs —
-  // each "star" becomes a tiny ₿ symbol that fades + sways with the
-  // same flickerPhase as the original star points. Cheap (text draw
-  // per star, same iteration count) and reads as "we're stacking sats".
-  const isBtc = getFlavour() === '600bn';
-  ctx.save();
-  if (isBtc) {
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
+// ── Bitcoin glyph cache — pre-rendered ₿ at 4 sizes ─────────────────
+// Pre-rendering to offscreen canvases means the per-frame star pass
+// uses drawImage instead of fillText + shadowBlur, which is ~10× faster.
+// 600bn flavour-only — main flavour uses cheap arc fills.
+const BTC_TIERS = 4;
+const btcCanvases: HTMLCanvasElement[] = [];
+function ensureBtcCanvases(): void {
+  if (btcCanvases.length > 0) return;
+  const sizes = [10, 16, 22, 30];
+  for (const size of sizes) {
+    const pad = 10;
+    const c = document.createElement('canvas');
+    c.width = size + pad * 2;
+    c.height = size + pad * 2;
+    const x = c.getContext('2d');
+    if (!x) continue;
+    x.textAlign = 'center';
+    x.textBaseline = 'middle';
+    x.font = `bold ${size}px ui-monospace, monospace`;
+    // Outer glow
+    x.shadowColor = '#ff8a3a';
+    x.shadowBlur = 8;
+    x.fillStyle = '#ffd84a';
+    x.fillText('₿', c.width / 2, c.height / 2);
+    // Inner sharp pass on top of the glow for a bright core
+    x.shadowBlur = 0;
+    x.fillStyle = '#fff5d8';
+    x.fillText('₿', c.width / 2, c.height / 2);
+    btcCanvases.push(c);
   }
+}
+
+function drawStars(ctx: CanvasRenderingContext2D, t: number): void {
+  // 600bn flavour swaps the starfield for a parallax-drifting bitcoin
+  // rain. Each star carries a fixed (vx, vy) and position-at-time-t is
+  // computed as (x0 + vx*t/1000) % WORLD_W — stateless, no per-frame
+  // mutation. drawImage from a pre-rendered canvas is ~10× faster
+  // than fillText + shadowBlur and the motion sells the "alive" feel.
+  const isBtc = getFlavour() === '600bn';
+  if (isBtc) ensureBtcCanvases();
+  ctx.save();
   for (const s of stars) {
     const flick = 0.5 + 0.5 * Math.sin(t * 0.001 + s.flickerPhase);
     ctx.globalAlpha = (0.25 + s.depth * 0.6) * (0.55 + flick * 0.45);
     if (isBtc) {
-      // Size scales with depth so distant ₿s read smaller. Gold/ember
-      // palette to match the 600bn brand voice.
-      const size = 6 + s.depth * 14;
-      ctx.font = `bold ${size}px ui-monospace, monospace`;
-      ctx.fillStyle = '#ffd84a';
-      ctx.shadowColor = '#ff8a3a';
-      ctx.shadowBlur = 4 + s.depth * 6;
-      ctx.fillText('₿', s.x, s.y);
+      // Parallax position — modular arithmetic gives seamless wrap.
+      const tx = (((s.x + s.vx * t * 0.001) % WORLD_W) + WORLD_W) % WORLD_W;
+      const ty = (((s.y + s.vy * t * 0.001) % WORLD_H) + WORLD_H) % WORLD_H;
+      // Pick a glyph tier from the depth (0..1 → 0..BTC_TIERS-1).
+      const tier = Math.min(BTC_TIERS - 1, Math.floor(s.depth * BTC_TIERS));
+      const c = btcCanvases[tier];
+      if (c) ctx.drawImage(c, tx - c.width / 2, ty - c.height / 2);
     } else {
       ctx.fillStyle = '#cfd6ff';
       ctx.beginPath();
