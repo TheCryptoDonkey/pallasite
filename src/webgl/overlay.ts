@@ -728,52 +728,127 @@ function buildUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeome
   if (getFlavour() === '600bn') return build600bnCoinMesh(u);
   const palette = UFO_PALETTE[u.type];
   const group = new THREE.Group();
-  // Body — flat disc (squashed cylinder). Radius scaled by type.
   const bodyR = u.radius * palette.scale;
-  const bodyH = bodyR * 0.32;
-  const bodyGeo = new THREE.CylinderGeometry(bodyR, bodyR * 0.85, bodyH, 24);
-  bodyGeo.rotateX(Math.PI / 2);  // lay flat in XY plane (face camera)
+
+  // Upper hull — flatter than before so the silhouette reads "saucer"
+  // not "barrel". Slight taper top→bottom (narrower top) so the dome
+  // appears to sit in a bevel rather than perched on a flat disc.
+  const bodyH = bodyR * 0.22;
+  const bodyGeo = new THREE.CylinderGeometry(bodyR * 0.85, bodyR, bodyH, 32);
+  bodyGeo.rotateX(Math.PI / 2);
   const bodyMat = new THREE.MeshPhongMaterial({
     color: palette.body,
-    shininess: 50,
-    specular: 0x808080,
+    shininess: 60,
+    specular: 0xa0a0a0,
     emissive: palette.glow,
-    emissiveIntensity: 0.25,
+    emissiveIntensity: 0.18,
   });
   const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
   bodyMesh.frustumCulled = false;
   group.add(bodyMesh);
-  // Dome — half-sphere on top
+
+  // Lower hull — wider rim flaring out under the body, tapering into
+  // a flat underside. Sells the classic two-tier saucer profile.
+  const baseGeo = new THREE.CylinderGeometry(bodyR, bodyR * 0.6, bodyH * 0.65, 32);
+  baseGeo.rotateX(Math.PI / 2);
+  baseGeo.translate(0, 0, -bodyH * 0.6);
+  const baseMesh = new THREE.Mesh(baseGeo, bodyMat);
+  baseMesh.frustumCulled = false;
+  group.add(baseMesh);
+
+  // Equator ring — 10 port-hole lights orbiting the rim. Held in its
+  // own group so the per-frame update can spin it independently of
+  // the hull's banking roll. Stored on userData so renderOverlay can
+  // grab it without re-traversing the scene each frame.
+  const ringGroup = new THREE.Group();
+  const PORT_COUNT = 10;
+  const portR = bodyR * 0.07;
+  const portMat = new THREE.MeshBasicMaterial({
+    color: palette.glow,
+    transparent: true,
+    opacity: 0.95,
+  });
+  const portGeoShared = new THREE.SphereGeometry(portR, 10, 8);
+  for (let i = 0; i < PORT_COUNT; i++) {
+    const angle = (Math.PI * 2 * i) / PORT_COUNT;
+    const port = new THREE.Mesh(portGeoShared, portMat);
+    port.position.set(Math.cos(angle) * bodyR * 0.95, Math.sin(angle) * bodyR * 0.95, -bodyH * 0.05);
+    port.frustumCulled = false;
+    ringGroup.add(port);
+  }
+  group.add(ringGroup);
+
+  // Dome — translucent hemisphere on top, brighter emissive so it
+  // reads as the lit cockpit canopy. Higher segment count for a
+  // smoother specular highlight at typical screen sizes.
   const domeR = bodyR * 0.55;
-  const domeGeo = new THREE.SphereGeometry(domeR, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2);
+  const domeGeo = new THREE.SphereGeometry(domeR, 20, 14, 0, Math.PI * 2, 0, Math.PI / 2);
   domeGeo.rotateX(-Math.PI / 2);
   domeGeo.translate(0, 0, bodyH * 0.4);
   const domeMat = new THREE.MeshPhongMaterial({
     color: palette.dome,
-    shininess: 120,
+    shininess: 200,
     specular: 0xffffff,
     emissive: palette.glow,
-    emissiveIntensity: 0.6,
+    emissiveIntensity: 0.55,
     transparent: true,
-    opacity: 0.85,
+    opacity: 0.82,
   });
   const domeMesh = new THREE.Mesh(domeGeo, domeMat);
   domeMesh.frustumCulled = false;
   group.add(domeMesh);
-  // Underglow — small additive sphere below body so the UFO reads as
-  // hovering/lit from beneath.
-  const glowGeo = new THREE.SphereGeometry(bodyR * 0.7, 12, 8);
-  const glowMat = new THREE.MeshBasicMaterial({
+
+  // Antenna spike on top of the dome — thin tapered cylinder pointing
+  // straight up out of the saucer plane.
+  const antennaH = bodyR * 0.42;
+  const antennaGeo = new THREE.CylinderGeometry(bodyR * 0.02, bodyR * 0.045, antennaH, 8);
+  antennaGeo.rotateX(Math.PI / 2);
+  antennaGeo.translate(0, 0, bodyH * 0.4 + domeR + antennaH * 0.5);
+  const antennaMat = new THREE.MeshPhongMaterial({
+    color: 0x909090,
+    shininess: 100,
+    specular: 0xffffff,
+    emissive: palette.glow,
+    emissiveIntensity: 0.1,
+  });
+  const antennaMesh = new THREE.Mesh(antennaGeo, antennaMat);
+  antennaMesh.frustumCulled = false;
+  group.add(antennaMesh);
+
+  // Antenna tip — small glowing bulb at the top of the spike.
+  const tipGeo = new THREE.SphereGeometry(bodyR * 0.075, 10, 8);
+  tipGeo.translate(0, 0, bodyH * 0.4 + domeR + antennaH + bodyR * 0.04);
+  const tipMat = new THREE.MeshBasicMaterial({
     color: palette.glow,
     transparent: true,
-    opacity: 0.35,
+    opacity: 0.95,
     blending: THREE.AdditiveBlending,
   });
-  const glowMesh = new THREE.Mesh(glowGeo, glowMat);
-  glowMesh.frustumCulled = false;
-  glowMesh.position.z = -bodyH * 0.3;
-  glowMesh.scale.set(1, 1, 0.4);
-  group.add(glowMesh);
+  const tipMesh = new THREE.Mesh(tipGeo, tipMat);
+  tipMesh.frustumCulled = false;
+  group.add(tipMesh);
+
+  // Abductor beam — translucent cone tapering DOWN from the underside,
+  // additive-blended so it lifts the dark space behind. The classic
+  // tractor-beam silhouette under a flying saucer.
+  const beamH = bodyR * 1.25;
+  const beamGeo = new THREE.ConeGeometry(bodyR * 0.7, beamH, 18, 1, true);
+  beamGeo.rotateX(-Math.PI / 2);  // point along -Z (downward)
+  beamGeo.translate(0, 0, -bodyH * 0.6 - beamH * 0.5);
+  const beamMat = new THREE.MeshBasicMaterial({
+    color: palette.glow,
+    transparent: true,
+    opacity: 0.18,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const beamMesh = new THREE.Mesh(beamGeo, beamMat);
+  beamMesh.frustumCulled = false;
+  group.add(beamMesh);
+
+  // Stash the rim ring for renderOverlay's per-frame spin update.
+  group.userData.ringGroup = ringGroup;
   return { group, geometry: bodyGeo, material: bodyMat };
 }
 
@@ -1130,6 +1205,11 @@ export function renderOverlay(opts: {
       // Saucer: banking roll on direction + small sin-wave hover.
       entry.mesh.rotation.y = u.dir * 0.25;
       entry.mesh.rotation.z = Math.sin(frameCounter * 0.04 + u.id) * 0.08;
+      // Rim ring spins independently of the hull — the iconic "saucer
+      // hubcap" lights orbiting the equator. Speed is type-tagged via
+      // id so multiple UFOs on screen don't pulse in lockstep.
+      const ringGroup = (entry.mesh as THREE.Group).userData?.ringGroup as THREE.Group | undefined;
+      if (ringGroup) ringGroup.rotation.z = frameCounter * 0.06 + u.id * 0.3;
     }
     entry.mesh.visible = true;
   }
