@@ -36,9 +36,9 @@ if (!existsSync(SRC_DIR)) {
 
 mkdirSync(OUT_DIR, { recursive: true });
 
-const files = readdirSync(SRC_DIR).filter(f => /^(wave-\d+|sanctum)\.(png|jpg|jpeg|webp)$/i.test(f));
+const files = readdirSync(SRC_DIR).filter(f => /^(wave-\d+|sanctum|sanctum-space)\.(png|jpg|jpeg|webp)$/i.test(f));
 if (files.length === 0) {
-  console.error('No wave-N.png or sanctum.png originals found.');
+  console.error('No wave-N.png, sanctum.png, or sanctum-space.png originals found.');
   process.exit(1);
 }
 
@@ -65,16 +65,15 @@ for (const file of files) {
     });
     continue;
   }
-  if (/^sanctum\./i.test(file)) {
-    // --wave N is wave-only; sanctum only runs in the unfiltered pass
-    // so a `optimise-backgrounds -- --wave 7` doesn't accidentally
-    // touch the Sanctum file.
+  const namedMatch = file.match(/^(sanctum(?:-space)?)\./i);
+  if (namedMatch) {
     if (onlyWave !== null) continue;
+    const name = namedMatch[1].toLowerCase();
     jobs.push({
-      label: 'sanctum',
+      label: name,
       order: Infinity,
       src: join(SRC_DIR, file),
-      dst: join(OUT_DIR, 'sanctum.webp'),
+      dst: join(OUT_DIR, `${name}.webp`),
     });
   }
 }
