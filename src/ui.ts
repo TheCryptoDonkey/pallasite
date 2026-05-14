@@ -33,7 +33,7 @@ import {
   type VoteSubmitResult,
 } from './jury.js';
 import { renderLegalFooter, openTermsModal } from './legal.js';
-import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow } from './game.js';
+import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow, getSanctumStats } from './game.js';
 import * as audio from './audio.js';
 import { listTracks, currentTrackId, musicPreviewPlay, musicForceRefresh, musicStop, musicNotifyClaimSuccess, musicWarmUpAll } from './music.js';
 import { getMusicAnalyser } from './audio.js';
@@ -5699,7 +5699,10 @@ export function renderControllerPage(state: GameState): void {
   // joysticks were unreachable past the phone case lip on most phones.
   pad.style.cssText = `position:absolute;left:14px;top:50%;transform:translateY(-50%);width:${JOY_SIZE};height:${JOY_SIZE};border-radius:50%;background:radial-gradient(circle, rgba(140,255,180,0.10) 0%, rgba(140,255,180,0.04) 60%, rgba(140,255,180,0) 100%);border:2px solid rgba(140,255,180,0.35);touch-action:none;-webkit-tap-highlight-color:transparent;display:none;`;
   const knob = el('div', { parent: pad });
-  knob.style.cssText = 'position:absolute;left:50%;top:50%;width:38%;height:38%;margin:-19% 0 0 -19%;border-radius:50%;background:radial-gradient(circle, rgba(140,255,180,0.45) 0%, rgba(91,255,140,0.18) 70%);border:2px solid rgba(140,255,180,0.75);box-shadow:0 0 18px rgba(140,255,180,0.4);transform:translate(0,0);transition:transform 60ms ease-out;';
+  // No always-on transition; drag updates are per-frame and need to be instant.
+  // The snap-back transition is applied at release time and cleared after.
+  // will-change keeps the knob on its own compositor layer for smooth translate.
+  knob.style.cssText = 'position:absolute;left:50%;top:50%;width:38%;height:38%;margin:-19% 0 0 -19%;border-radius:50%;background:radial-gradient(circle, rgba(140,255,180,0.45) 0%, rgba(91,255,140,0.18) 70%);border:2px solid rgba(140,255,180,0.75);box-shadow:0 0 18px rgba(140,255,180,0.4);transform:translate(0,0);will-change:transform;';
   slotEls.set('joyL', pad);
 
   // ── D-pad (left thumb, menu mode) — replaces the joystick when the
@@ -5845,8 +5848,13 @@ export function renderControllerPage(state: GameState): void {
   });
 
   // ── Joystick interaction (always built; visible iff joyL in spec) ──
+  // Floating-origin stick (nipplejs `dynamic` mode): the touchdown point IS
+  // the stick centre for that gesture, not the CSS-anchored pad centre, so
+  // thumb position doesn't have to land on the pad bullseye.
   let joyActive = false;
+  let joyActiveId: number | null = null;
   let joyOriginX = 0, joyOriginY = 0;
+  let joyPadCx = 0, joyPadCy = 0;     // pad CSS centre, cached on pointerdown
   let joyMaxRadius = 100;
   let joyPressedAt = 0;
   let joyMaxDrift = 0;
@@ -5854,6 +5862,7 @@ export function renderControllerPage(state: GameState): void {
   let lastHeadingSendAt = 0;
   let thrustingNow = false;
   let joyTapSlot: string | null = null;
+  const JOY_SNAP_BACK_MS = 140;       // CSS transition 120ms + margin to clear transition style
 
   const sendThrust = (on: boolean): void => {
     if (thrustingNow === on) return;
@@ -5871,26 +5880,35 @@ export function renderControllerPage(state: GameState): void {
   pad.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     joyActive = true;
+    joyActiveId = e.pointerId;
     const rect = pad.getBoundingClientRect();
-    joyOriginX = rect.left + rect.width / 2;
-    joyOriginY = rect.top + rect.height / 2;
+    joyPadCx = rect.left + rect.width / 2;
+    joyPadCy = rect.top + rect.height / 2;
+    joyOriginX = e.clientX;
+    joyOriginY = e.clientY;
     joyMaxRadius = (rect.width / 2) * JOY_RADIUS_SCALE;
     joyPressedAt = performance.now();
     joyMaxDrift = 0;
     joyDidEngage = false;
-    // Look up tapAction from the live spec, if any.
     joyTapSlot = client?.spec?.slots?.joyL?.tapAction ?? null;
     pad.setPointerCapture(e.pointerId);
+    // Snap the knob under the finger immediately, no transition.
+    knob.style.transition = 'none';
+    knob.style.transform = `translate(${(joyOriginX - joyPadCx).toFixed(1)}px, ${(joyOriginY - joyPadCy).toFixed(1)}px)`;
   });
   pad.addEventListener('pointermove', (e) => {
-    if (!joyActive) return;
+    if (!joyActive || e.pointerId !== joyActiveId) return;
     const dx = e.clientX - joyOriginX;
     const dy = e.clientY - joyOriginY;
     const dist = Math.hypot(dx, dy);
     if (dist > joyMaxDrift) joyMaxDrift = dist;
     const clipped = Math.min(dist || 1, joyMaxRadius);
-    const kx = (dx / (dist || 1)) * clipped;
-    const ky = (dy / (dist || 1)) * clipped;
+    const clipDx = (dx / (dist || 1)) * clipped;
+    const clipDy = (dy / (dist || 1)) * clipped;
+    // Knob translate is relative to its CSS home (pad centre); compose the
+    // floating-origin offset with the clipped drag delta.
+    const kx = (joyOriginX - joyPadCx) + clipDx;
+    const ky = (joyOriginY - joyPadCy) + clipDy;
     knob.style.transform = `translate(${kx.toFixed(1)}px, ${ky.toFixed(1)}px)`;
     const magnitude = clipped / joyMaxRadius;
     if (magnitude > JOY_HEADING_DEADZONE) {
@@ -5907,11 +5925,17 @@ export function renderControllerPage(state: GameState): void {
       sendThrust(false);
     }
   });
-  const joyRelease = (): void => {
+  const joyRelease = (e?: PointerEvent): void => {
     if (!joyActive) return;
+    if (e && e.pointerId !== joyActiveId) return;
     joyActive = false;
+    joyActiveId = null;
     const heldMs = performance.now() - joyPressedAt;
+    // Animated snap-back to centre. Transition is cleared after the animation
+    // so the next gesture's instant per-frame translate isn't interpolated.
+    knob.style.transition = 'transform 120ms cubic-bezier(0.2, 0.9, 0.3, 1)';
     knob.style.transform = 'translate(0px, 0px)';
+    window.setTimeout(() => { knob.style.transition = 'none'; }, JOY_SNAP_BACK_MS);
     sendThrust(false);
     client?.sendInput('joyL-end', '1');
     if (!joyDidEngage && heldMs < JOY_TAP_TIME_MS && joyMaxDrift < JOY_TAP_MOVE_PX) {
@@ -5932,6 +5956,15 @@ export function renderControllerPage(state: GameState): void {
   };
   pad.addEventListener('pointerup', joyRelease);
   pad.addEventListener('pointercancel', joyRelease);
+
+  // PWA backgrounded mid-press: synthesise a release so the knob isn't
+  // stuck and the host isn't told the user is still thrusting while
+  // they take a call or accept a notification.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && joyActive) {
+      joyRelease();
+    }
+  });
 
   // ── Bind press/release on every standard button slot ───────────────
   // Each slot is hold-style by default (presses send '1', releases '0').
@@ -9984,6 +10017,36 @@ function renderSanctumGameOver(
 
   // FUCHS2 party card — the whole point of the conference funnel.
   renderFuchs2Card(overlay);
+
+  // Run-stats panel — sits beneath the party card so the player has
+  // a beat of "here's what you did" before the action row. Time
+  // formatted mm:ss; council shown as X/11 so the cycle is legible.
+  const sr = getSanctumStats();
+  const elapsedMs = sr.startedAt > 0 ? Math.max(0, performance.now() - sr.startedAt) : 0;
+  const totalSeconds = Math.floor(elapsedMs / 1000);
+  const mm = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+  const ss = String(totalSeconds % 60).padStart(2, '0');
+  const statsPanel = el('div', { parent: overlay });
+  statsPanel.style.cssText = [
+    'display:flex', 'gap:24px', 'flex-wrap:wrap', 'justify-content:center',
+    'padding:10px 16px', 'margin:10px 0 0',
+    'background:rgba(8,4,2,0.6)',
+    'border:1px solid rgba(255,216,74,0.25)',
+    'border-radius:6px',
+    'font:11px ui-monospace,monospace',
+    'letter-spacing:0.18em',
+    'color:rgba(255,245,216,0.85)',
+    'max-width:420px', 'width:100%',
+  ].join(';');
+  const statCell = (label: string, value: string): string =>
+    `<div style="display:flex;flex-direction:column;align-items:center;gap:2px;">`
+    + `<span style="font-size:9px;color:rgba(255,216,74,0.55);">${label}</span>`
+    + `<span style="font-size:15px;color:#ffd84a;text-shadow:0 0 6px rgba(255,138,58,0.4);">${value}</span>`
+    + `</div>`;
+  statsPanel.innerHTML =
+    statCell('TIME', `${mm}:${ss}`)
+    + statCell('COUNCIL', `${sr.councilDefeated}/${sr.councilTotal || 11}`)
+    + statCell('ASTEROIDS', String(sr.asteroidsDestroyed));
 
   // Action row — PLAY AGAIN restarts wave 1; BACK returns to the
   // attract screen so the player can choose to leave or replay.
