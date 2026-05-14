@@ -631,10 +631,14 @@ async function boot(): Promise<void> {
   // 960×720 canvas centred with the wave-N body background bleeding
   // through the letterbox area — visible as a "red square" during
   // screen shake / hits when the canvas translates against the bg.
-  document.addEventListener('fullscreenchange', () => {
+  // Listen on BOTH the standard and webkit-prefixed events because
+  // Safari only fires the prefixed one.
+  const onFullscreenToggle = (): void => {
     applyDisplayMode(getDisplayMode());
     fit();
-  });
+  };
+  document.addEventListener('fullscreenchange', onFullscreenToggle);
+  document.addEventListener('webkitfullscreenchange', onFullscreenToggle);
   // Kick off WebGL overlay load if the player had a mesh-tier category
   // selected last session. Fire-and-forget — render loop uses 2D
   // shaded fallbacks while three.js streams in.
