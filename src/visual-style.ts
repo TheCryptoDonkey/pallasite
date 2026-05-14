@@ -18,6 +18,7 @@
  */
 
 import { getFlavour } from './flavour.js';
+import type { Asteroid, Ship } from './types.js';
 
 export type VisualTier = 'vector' | 'shaded' | 'mesh';
 export type VisualCategory = 'asteroid' | 'ship' | 'bullet' | 'particle';
@@ -75,30 +76,78 @@ function save(s: State): void {
   try { window.dispatchEvent(new CustomEvent('pallasite:visualStyle')); } catch { /* ignore */ }
 }
 
-/** Read the effective tier for a category. 'mesh' is downgraded to 'shaded'
- *  at the boundary so render code only ever has to handle two paths until
- *  the WebGL layer ships. */
-export function getVisualStyle(cat: VisualCategory): Exclude<VisualTier, 'mesh'> {
-  const t = load()[cat];
-  return t === 'mesh' ? 'shaded' : t;
-}
-
-/** Read the raw stored tier (including 'mesh'). For the settings UI only —
- *  render code should use getVisualStyle which downgrades unimplemented
- *  tiers. */
-export function getVisualStyleRaw(cat: VisualCategory): VisualTier {
+/** Read the effective tier for a category. Returns the raw stored value
+ *  including 'mesh'. Render code is responsible for falling back to
+ *  'shaded' if the WebGL overlay hasn't loaded yet (call
+ *  getReadyOverlay() and downgrade locally). */
+export function getVisualStyle(cat: VisualCategory): VisualTier {
   return load()[cat];
 }
 
+/** Alias retained for the settings UI / clarity at call sites. */
+export const getVisualStyleRaw = getVisualStyle;
+
+/** Set a category's tier. If the new tier is 'mesh', kick off the
+ *  WebGL overlay dynamic-load so it's ready by the next frame (or one
+ *  shortly after). Fire-and-forget — render code falls back to shaded
+ *  while the load resolves. */
 export function setVisualStyle(cat: VisualCategory, tier: VisualTier): void {
   const next = { ...load(), [cat]: tier };
   save(next);
+  if (tier === 'mesh') void warmWebGL();
 }
 
 /** Set every category to the same tier. Used by the quick-pick row in the
  *  settings panel. */
 export function setAllVisualStyles(tier: VisualTier): void {
   save({ asteroid: tier, ship: tier, bullet: tier, particle: tier });
+  if (tier === 'mesh') void warmWebGL();
+}
+
+/** Boot-time warm-up: if any category is already on 'mesh' from a
+ *  previous session, start the WebGL load immediately. Called from
+ *  main.ts; safe to call repeatedly (the loader is idempotent). */
+export function warmWebGLIfPreviouslyEnabled(): void {
+  const s = load();
+  if (s.asteroid === 'mesh' || s.ship === 'mesh' || s.bullet === 'mesh' || s.particle === 'mesh') {
+    void warmWebGL();
+  }
+}
+
+/** Sync accessors render.ts uses each frame. Resolve to no-ops until the
+ *  dynamic-imported overlay module has finished loading. Keeps render.ts
+ *  free of any static reference to webgl/overlay.ts, which lets Vite
+ *  split three.js into its own chunk. */
+export interface WebGLOverlayCall {
+  asteroids: ReadonlyArray<Asteroid>;
+  ship: Ship | null;
+  dpr: number;
+  scale: number;
+  tx: number;
+  ty: number;
+}
+let overlayRenderFn: ((opts: WebGLOverlayCall) => void) | null = null;
+let overlayReady = false;
+export function isWebGLOverlayReady(): boolean { return overlayReady; }
+export function callWebGLOverlay(opts: WebGLOverlayCall): void {
+  overlayRenderFn?.(opts);
+}
+
+let warmStarted = false;
+async function warmWebGL(): Promise<void> {
+  if (warmStarted) return;
+  warmStarted = true;
+  try {
+    const mod = await import('./webgl/overlay.js');
+    await mod.ensureWebGLOverlay();
+    overlayRenderFn = mod.renderOverlay;
+    overlayReady = true;
+  } catch (e) {
+    // If three.js fails to load (offline, sw bug, etc.), render code
+    // keeps falling back to shaded — no game-breaking failure mode.
+    console.warn('[visual-style] WebGL overlay load failed', e);
+    warmStarted = false;
+  }
 }
 
 /** True iff every category is set to the same tier — used by the quick-pick

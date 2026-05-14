@@ -48,7 +48,8 @@ body[data-display="modern"] {
   background-image: none !important;
   background-color: transparent;
 }
-body[data-display="modern"] #game {
+body[data-display="modern"] #game,
+body[data-display="modern"] #game3d {
   top: 0;
   left: 0;
   transform: none;
@@ -74,6 +75,23 @@ body[data-display="modern"] #game {
     0 0 60px rgba(91, 109, 255, 0.15);
   border-radius: 12px;
 }
+
+/* WebGL mesh overlay — sits flush over #game, no chrome of its own.
+   Transparent background so the 2D layer (HUD, background, coins,
+   non-mesh entities) shows through. Display starts hidden; the WebGL
+   overlay module sets display:block once any entity needs mesh rendering. */
+#game3d {
+  display: none;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: transparent;
+  border-radius: 12px;
+  pointer-events: none;  /* never intercepts gameplay input */
+  image-rendering: auto;
+}
+#game3d.is-active { display: block; }
 
 #ui-root {
   position: absolute;

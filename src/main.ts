@@ -31,6 +31,7 @@ import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicResetElem
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, setDisplayMode } from './display.js';
+import { warmWebGLIfPreviouslyEnabled } from './visual-style.js';
 import { checkForUpdate, querySwVersion } from './version.js';
 import type { GameState } from './types.js';
 import { DOWN_DOUBLE_TAP_WINDOW_MS } from './types.js';
@@ -38,6 +39,10 @@ import { DOWN_DOUBLE_TAP_WINDOW_MS } from './types.js';
 const PAUSE_DUCK = 0.3;
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
+// WebGL mesh overlay — lazily initialised by visual-style.ts when any
+// entity needs mesh rendering. Sized + positioned in lockstep with the
+// main canvas via fit() below.
+const overlay3d = document.getElementById('game3d') as HTMLCanvasElement | null;
 const state: GameState = makeInitialState();
 
 /** Timestamp of the most recent ArrowDown keydown — used for double-tap detection. */
@@ -600,6 +605,10 @@ async function boot(): Promise<void> {
   // Mirror the stored display mode to a body data-attr so any CSS that wants
   // to react (currently nothing, but cheap to seed for future use) can match it.
   setDisplayMode(getDisplayMode());
+  // Kick off WebGL overlay load if the player had a mesh-tier category
+  // selected last session. Fire-and-forget — render loop uses 2D
+  // shaded fallbacks while three.js streams in.
+  warmWebGLIfPreviouslyEnabled();
 
   // Resize canvas to fit viewport in BOTH dimensions while preserving 4:3
   // aspect — internal pixel resolution stays 960×720 (× dpr) so the game
@@ -660,6 +669,12 @@ async function boot(): Promise<void> {
       const tx = (vw - 960 * scale) / 2;
       const ty = (vh - 720 * scale) / 2;
       ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * tx, dpr * ty);
+      if (overlay3d) {
+        overlay3d.width = canvas.width;
+        overlay3d.height = canvas.height;
+        overlay3d.style.width = vw + 'px';
+        overlay3d.style.height = vh + 'px';
+      }
       setRenderMode({ kind: 'modern', vw, vh, dpr, scale, tx, ty, insets });
       return;
     }
@@ -676,6 +691,12 @@ async function boot(): Promise<void> {
     canvas.style.imageRendering = 'pixelated';
     const ctx = canvas.getContext('2d')!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (overlay3d) {
+      overlay3d.width = canvas.width;
+      overlay3d.height = canvas.height;
+      overlay3d.style.width = w + 'px';
+      overlay3d.style.height = h + 'px';
+    }
     setRenderMode({ kind: 'retro', vw: w, vh: h, dpr, scale: 1, tx: 0, ty: 0, insets: { top: 0, right: 0, bottom: 0, left: 0 } });
   }
   // Expose to the settings panel — flipping the mode needs to re-fit.
