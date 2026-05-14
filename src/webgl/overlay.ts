@@ -48,32 +48,61 @@ interface OverlayHandle {
    *  only position/rotation/visibility change per frame. */
   shipMesh: THREE.Object3D | null;
   shipThrust: THREE.Mesh | null;
+  /** Cached `canvas.width * 1e5 + canvas.height` so setSize is only
+   *  called when the backing store actually changes (otherwise three.js
+   *  re-clears the canvas every frame). */
+  lastSizeKey: number;
 }
 
 interface AsteroidMeshEntry {
   mesh: THREE.Mesh;
   geometry: THREE.BufferGeometry;
-  material: THREE.MeshStandardMaterial;
+  material: THREE.MeshPhongMaterial;
   lastSeenFrame: number;
 }
+
+/** Per-type fallback base colour used while the diffuse texture is
+ *  still loading (and as a tint multiplier once it has). Values picked
+ *  to read bright against the dark space background so the player
+ *  never sees the asteroids vanish at toggle time. */
+const ASTEROID_TYPE_COLOR: Record<string, number> = {
+  stony:     0xb0a090,
+  iron:      0xc8a878,
+  chondrite: 0xb8c8d8,
+  pallasite: 0xe8c060,
+};
 
 let handle: OverlayHandle | null = null;
 let loading: Promise<OverlayHandle> | null = null;
 let frameCounter = 0;
 
 /** Build (or fetch from cache) a diffuse texture for an asteroid type.
- *  The webp files already exist at /backgrounds/asteroid-{type}.webp from
- *  the SHADED tier work — we just bind them to a three.js Texture. */
-function getDiffuseTexture(h: OverlayHandle, type: string): THREE.Texture {
-  const cached = h.diffuseCache.get(type);
-  if (cached) return cached;
+ *  The webp files already exist at /backgrounds/asteroid-{type}.webp
+ *  from the SHADED tier work. We start without binding the texture to
+ *  any material (which would render dark / unlit until the image
+ *  decodes); the load callback below attaches it to every material in
+ *  this type's cache, so newly-built meshes also inherit it via the
+ *  cache hit. */
+function getDiffuseTexture(h: OverlayHandle, type: string): THREE.Texture | null {
+  return h.diffuseCache.get(type) ?? null;
+}
+
+function kickDiffuseLoad(h: OverlayHandle, type: string, attachTo: THREE.MeshPhongMaterial): void {
+  const existing = h.diffuseCache.get(type);
+  if (existing) {
+    attachTo.map = existing;
+    attachTo.needsUpdate = true;
+    return;
+  }
   const loader = new THREE.TextureLoader();
-  const tex = loader.load(`/backgrounds/asteroid-${type}.webp`);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  h.diffuseCache.set(type, tex);
-  return tex;
+  loader.load(`/backgrounds/asteroid-${type}.webp`, (tex) => {
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    h.diffuseCache.set(type, tex);
+    attachTo.map = tex;
+    attachTo.needsUpdate = true;
+  });
 }
 
 /** Build a displaced-icosphere geometry for the given asteroid identity.
@@ -161,12 +190,18 @@ export function ensureWebGLOverlay(): Promise<OverlayHandle> {
     const camera = new THREE.OrthographicCamera(0, 960, 0, 720, 0.1, 1000);
     camera.position.set(0, 0, 500);
     camera.lookAt(0, 0, 0);
-    // Lights — directional from upper-left, soft ambient fill.
-    const sun = new THREE.DirectionalLight(0xfff2da, 1.4);
+    // Lights — directional key from upper-left, neutral ambient fill,
+    // soft rim from below-right so the silhouette doesn't read flat.
+    // Brighter than the first pass — Phong materials want enough fill
+    // to push unlit faces above the dark space backdrop.
+    const sun = new THREE.DirectionalLight(0xfff2da, 1.6);
     sun.position.set(-200, -200, 300);
     scene.add(sun);
-    const ambient = new THREE.AmbientLight(0x6080a0, 0.55);
+    const ambient = new THREE.AmbientLight(0xa0a8b0, 0.8);
     scene.add(ambient);
+    const rim = new THREE.DirectionalLight(0x80a0ff, 0.45);
+    rim.position.set(250, 250, 200);
+    scene.add(rim);
     handle = {
       renderer,
       scene,
@@ -176,6 +211,7 @@ export function ensureWebGLOverlay(): Promise<OverlayHandle> {
       diffuseCache: new Map(),
       shipMesh: null,
       shipThrust: null,
+      lastSizeKey: 0,
     };
     canvas.classList.add('is-active');
     return handle;
@@ -211,9 +247,15 @@ export function renderOverlay(opts: {
 }): void {
   if (!handle) return;
   const { renderer, scene, camera, canvas } = handle;
-  // Match renderer drawing-buffer size to the canvas backing store. We
-  // set canvas.width/height in main.ts's fit(), so just read those.
-  if (renderer.domElement.width !== canvas.width || renderer.domElement.height !== canvas.height) {
+  // Match renderer drawing-buffer size to the canvas backing store.
+  // fit() in main.ts sets canvas.width/height directly when the
+  // viewport resizes; three.js doesn't observe that change, so we
+  // cache the last-known size and call setSize only when it actually
+  // moves. (Always-on setSize would re-clear the canvas every frame
+  // — visible flicker on some browsers.)
+  const sizeKey = canvas.width * 100000 + canvas.height;
+  if (sizeKey !== handle.lastSizeKey) {
+    handle.lastSizeKey = sizeKey;
     renderer.setSize(canvas.width, canvas.height, false);
   }
   // Mirror the 2D setTransform. Canvas pixel rect for the 960×720
@@ -236,11 +278,18 @@ export function renderOverlay(opts: {
     let entry = handle.asteroidMeshes.get(a.id);
     if (!entry) {
       const geometry = buildAsteroidGeometry(a);
-      const material = new THREE.MeshStandardMaterial({
-        map: getDiffuseTexture(handle, a.type),
-        roughness: 0.95,
-        metalness: a.type === 'iron' ? 0.35 : 0.05,
+      const baseColor = ASTEROID_TYPE_COLOR[a.type] ?? 0xb0a090;
+      const cachedMap = getDiffuseTexture(handle, a.type);
+      const material = new THREE.MeshPhongMaterial({
+        color: baseColor,
+        map: cachedMap,
+        shininess: a.type === 'iron' ? 60 : 18,
+        specular: a.type === 'iron' ? 0x806040 : 0x303030,
       });
+      // Lazy-load the diffuse map if not in cache; until it lands the
+      // material's `color` is what the player sees — readably bright
+      // even against the dark space backdrop.
+      if (!cachedMap) kickDiffuseLoad(handle, a.type, material);
       const mesh = new THREE.Mesh(geometry, material);
       scene.add(mesh);
       entry = { mesh, geometry, material, lastSeenFrame: frameCounter };
@@ -290,12 +339,15 @@ export function renderOverlay(opts: {
         { depth: 4, bevelEnabled: true, bevelSize: 1.2, bevelThickness: 1.2, bevelSegments: 2 },
       );
       hullGeo.translate(0, 0, -2);
-      const hullMat = new THREE.MeshStandardMaterial({
+      // Phong rather than Standard — no env map to reflect from, so
+      // metallic PBR would render dark. Bright emissive keeps the
+      // hull readable against any background.
+      const hullMat = new THREE.MeshPhongMaterial({
         color: 0x9be7ff,
-        metalness: 0.4,
-        roughness: 0.45,
+        shininess: 80,
+        specular: 0xffffff,
         emissive: 0x4080a0,
-        emissiveIntensity: 0.35,
+        emissiveIntensity: 0.5,
       });
       const hullMesh = new THREE.Mesh(hullGeo, hullMat);
       group.add(hullMesh);
