@@ -54,6 +54,12 @@ interface OverlayHandle {
    *  called when the backing store actually changes (otherwise three.js
    *  re-clears the canvas every frame). */
   lastSizeKey: number;
+  /** TEMPORARY: spinning magenta debug cube at world center. Renders
+   *  whenever the overlay is alive, regardless of game state. Lets
+   *  the user verify "is the WebGL canvas actually visible?" without
+   *  needing to inspect anything. Remove after the asteroid path is
+   *  proven working. */
+  debugCube: THREE.Mesh | null;
 }
 
 interface AsteroidMeshEntry {
@@ -221,7 +227,21 @@ export function ensureWebGLOverlay(): Promise<OverlayHandle> {
       shipMesh: null,
       shipThrust: null,
       lastSizeKey: 0,
+      debugCube: null,
     };
+    // Debug cube — always-visible magenta box at world center, so the
+    // user can confirm the canvas/viewport pipeline is working without
+    // any per-entity logic involvement.
+    const debugGeo = new THREE.BoxGeometry(120, 120, 120);
+    const debugMat = new THREE.MeshBasicMaterial({ color: 0xff00ff });
+    const debugCube = new THREE.Mesh(debugGeo, debugMat);
+    debugCube.frustumCulled = false;
+    debugCube.position.set(480, 360, 0);
+    scene.add(debugCube);
+    handle.debugCube = debugCube;
+    // Expose handle on window so the user can introspect it via
+    // devtools without needing source-map access.
+    (window as unknown as { __pallasiteWebGL?: unknown }).__pallasiteWebGL = handle;
     canvas.classList.add('is-active');
     return handle;
   })();
@@ -279,14 +299,21 @@ export function renderOverlay(opts: {
   renderer.setScissor(vpX, vpY, vpW, vpH);
   renderer.setScissorTest(true);
   frameCounter += 1;
-  // One-shot diagnostic on first render — surfaces viewport math +
-  // scene contents so a "nothing visible" report is debuggable
-  // without devtools-level digging.
-  if (frameCounter === 1) {
-    console.info('[webgl-overlay] first render', {
+  // Spin the debug cube so it's obviously alive (not a static image
+  // someone slipped in via CSS). Roughly 1 rotation/sec at 60fps.
+  if (handle.debugCube) {
+    handle.debugCube.rotation.y += 0.1;
+    handle.debugCube.rotation.x += 0.05;
+  }
+  // Diagnostic log every 60 frames so it's visible whenever devtools
+  // is opened, not just on the first frame.
+  if (frameCounter % 60 === 1) {
+    console.info('[webgl-overlay] render', {
+      frame: frameCounter,
       viewport: { x: vpX, y: vpY, w: vpW, h: vpH },
       canvas: { w: canvas.width, h: canvas.height, classes: canvas.className, display: getComputedStyle(canvas).display },
       asteroids: opts.asteroids.length,
+      asteroidMeshes: handle.asteroidMeshes.size,
       ship: opts.ship ? 'yes' : 'no',
       dpr: opts.dpr,
       scale: opts.scale,
