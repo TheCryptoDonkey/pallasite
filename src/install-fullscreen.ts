@@ -101,17 +101,28 @@ export async function triggerInstall(): Promise<boolean> {
  *  when the API is missing (iOS Safari). */
 export function tryEnterFullscreen(): void {
   if (typeof document === 'undefined') return;
-  const docEl = document.documentElement;
-  if (!docEl.requestFullscreen) return;
-  if (document.fullscreenElement) return;
-  docEl.requestFullscreen().catch(() => { /* user rejected or API blocked */ });
+  const docEl = document.documentElement as HTMLElement & {
+    webkitRequestFullscreen?: () => Promise<void>;
+  };
+  const d = document as Document & { webkitFullscreenElement?: Element };
+  if (d.fullscreenElement || d.webkitFullscreenElement) return;
+  // Standard first, webkit-prefixed for Safari fallback.
+  if (docEl.requestFullscreen) {
+    docEl.requestFullscreen().catch(() => { /* user rejected / blocked */ });
+  } else if (docEl.webkitRequestFullscreen) {
+    try { docEl.webkitRequestFullscreen(); } catch { /* ignore */ }
+  }
 }
 
 /** True iff requestFullscreen is callable. Use to decide whether to
  *  show a "TAP FOR FULLSCREEN" button at all. */
 export function hasFullscreenAPI(): boolean {
   if (typeof document === 'undefined') return false;
-  return typeof document.documentElement.requestFullscreen === 'function';
+  const docEl = document.documentElement as HTMLElement & {
+    webkitRequestFullscreen?: () => Promise<void>;
+  };
+  return typeof docEl.requestFullscreen === 'function'
+      || typeof docEl.webkitRequestFullscreen === 'function';
 }
 
 const INSTALL_HINT_DISMISSED_KEY = 'pallasite:installHintDismissed';

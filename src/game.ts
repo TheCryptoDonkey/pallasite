@@ -3214,36 +3214,43 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
 }
 
 function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boolean; isCarom?: boolean; isWrap?: boolean }): void {
-  // Decorative (non-gameplay-plane) rocks pop cleanly — visual
-  // satisfaction without disrupting gameplay economy. No coin drop,
-  // no score, no fragments. Particle burst sized to the rock so the
-  // pop reads as a deliberate disintegration rather than the rock
-  // glitching out of the scene.
-  if ((a.depth ?? 3) !== 3 && !a.councilMember && !a.isVein) {
-    a.alive = false;
-    const cfg = ASTEROID_TYPE_CONFIG[a.type];
-    const sizeBoost = a.size === 'large' ? 22 : a.size === 'medium' ? 16 : 10;
-    spawnParticles(s, a.pos.x, a.pos.y, sizeBoost, cfg.glow, 180, 420);
-    // Second burst in white so the dust catches the eye even when
-    // the rock was on a dim background band.
-    spawnParticles(s, a.pos.x, a.pos.y, Math.floor(sizeBoost * 0.4), '#fff5d8', 220, 360);
-    audio.hit();
-    return;
-  }
-  // Council members shrink rather than fragment. The medallion stays
-  // single throughout — players chip a sculpture down one tier at a
-  // time. Final small-size break flows through the normal path below
-  // so the coin drop + stats hooks still fire on defeat.
-  if (a.councilMember && a.size !== 'small') {
+  // Two shrink-rather-than-fragment cases:
+  //   - Council members on the gameplay plane (chip a sculpture down).
+  //   - Decoratives on non-gameplay depth bands (the player's bullet
+  //     just chipped a big foreground rock; one-shot disappear felt
+  //     glitchy because the visual size promised more impact).
+  // Both want "shrink with a chunky pop, repeat until small, then
+  // final death". Final small-size break flows through the normal
+  // path below — for councils that means coins + stats, for
+  // decoratives that means the clean-pop branch further down.
+  const isDecorativeBand = (a.depth ?? 3) !== 3;
+  const shouldShrink = a.size !== 'small'
+    && !a.isVein
+    && (a.councilMember !== undefined || isDecorativeBand);
+  if (shouldShrink) {
     const newSize: AsteroidSize = a.size === 'large' ? 'medium' : 'small';
     a.size = newSize;
-    a.radius = RADIUS_PER_SIZE[newSize];
+    const depthMul = DEPTH_CONFIGS[a.depth ?? 3]?.sizeMul ?? 1;
+    a.radius = RADIUS_PER_SIZE[newSize] * depthMul;
     a.hp = 1;
     a.hpMax = 1;
     a.hitFlash = 1.5;
     audio.hit();
-    spawnParticles(s, a.pos.x, a.pos.y, 14, '#ffd84a', 200, 460);
-    bumpTrauma(s, 0.15);
+    const colour = a.councilMember ? '#ffd84a' : (ASTEROID_TYPE_CONFIG[a.type]?.glow ?? '#fff5d8');
+    spawnParticles(s, a.pos.x, a.pos.y, 16, colour, 200, 460);
+    spawnParticles(s, a.pos.x, a.pos.y, 6, '#fff5d8', 220, 380);
+    bumpTrauma(s, a.councilMember ? 0.15 : 0.08);
+    return;
+  }
+  // Decorative final death (size === 'small' or already shrunk through).
+  // Pop cleanly: no coin drop, no score, no fragments. Particle burst
+  // sized to read against dim background bands.
+  if (isDecorativeBand && !a.councilMember && !a.isVein) {
+    a.alive = false;
+    const cfg = ASTEROID_TYPE_CONFIG[a.type];
+    spawnParticles(s, a.pos.x, a.pos.y, 12, cfg.glow, 200, 420);
+    spawnParticles(s, a.pos.x, a.pos.y, 5, '#fff5d8', 240, 360);
+    audio.hit();
     return;
   }
   a.alive = false;

@@ -24,9 +24,12 @@ export function getDisplayMode(): DisplayMode {
   // screen" so they expect the canvas to fill the viewport. Retro mode
   // caps the canvas at 960×720 and exposes the body's wave-background
   // around it, which reads as a coloured letterbox / "red square" in
-  // the empty space. Modern overrides that.
-  if (typeof document !== 'undefined' && document.fullscreenElement) {
-    return 'modern';
+  // the empty space. Modern overrides that. Check both the standard
+  // and webkit-prefixed APIs because Safari only exposes the prefixed
+  // one (`webkitFullscreenElement` / `webkitfullscreenchange`).
+  if (typeof document !== 'undefined') {
+    const d = document as Document & { webkitFullscreenElement?: Element };
+    if (d.fullscreenElement || d.webkitFullscreenElement) return 'modern';
   }
   // 600bn Sanctum always uses modern (full-viewport, no 4:3 letterbox)
   // regardless of device or saved pref — the conference deploy is
