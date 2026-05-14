@@ -600,9 +600,9 @@ function makeCurtainCruiser(s: GameState, dir: 1 | -1): Ufo {
 function spawnCouncilWave(s: GameState): void {
   const members = getCouncil();
   if (members.length === 0) {
-    // Manifest hasn't resolved yet — kick it off and spawn standard
-    // asteroids as a temporary stand-in so the player isn't dropped
-    // into an empty wave. Once loaded, subsequent runs work normally.
+    // Manifest fallback — never expected to fire now that the roster
+    // is inlined in sanctum-avatars, but keeps the wave playable if
+    // someone tampers with the module.
     void loadCouncil();
     for (let i = 0; i < 6; i++) s.asteroids.push(spawnAsteroid('large', 1));
     return;
@@ -610,19 +610,41 @@ function spawnCouncilWave(s: GameState): void {
   const cx = WORLD_W / 2;
   const cy = WORLD_H / 2;
   const ringR = Math.min(WORLD_W, WORLD_H) * 0.32;
-  const orbitSpeed = 24;  // px/s tangent speed for the gentle clockwise drift
+  // Phase 1 (0 → ~1.5s): perfect ring, fast clockwise rotation so the
+  // council reads as a unified circle for the wave-start beat.
+  // Phase 2 (~1.5s onward): scatterCouncil() reassigns each asteroid
+  // a random outward velocity so the formation breaks into chaotic
+  // orbits and the wave reads like an asteroid fight.
+  const initialOrbit = 70;  // px/s tangent — visibly rotating, not drifting
+  const spawned: Asteroid[] = [];
   for (let i = 0; i < members.length; i++) {
     const m = members[i];
     const angle = -Math.PI / 2 + (i / members.length) * Math.PI * 2;
     const x = cx + Math.cos(angle) * ringR;
     const y = cy + Math.sin(angle) * ringR;
-    // Tangent velocity = perpendicular to radial, drifting clockwise.
-    const vx = -Math.sin(angle) * orbitSpeed;
-    const vy =  Math.cos(angle) * orbitSpeed;
-    s.asteroids.push(spawnAsteroid('large', 1, { x, y }, { x: vx, y: vy }, 'pallasite', {
+    const vx = -Math.sin(angle) * initialOrbit;
+    const vy =  Math.cos(angle) * initialOrbit;
+    const ast = spawnAsteroid('large', 1, { x, y }, { x: vx, y: vy }, 'pallasite', {
       councilMember: { name: m.name, role: m.role, archetype: m.archetype, img: m.img, pubkey: m.pubkey },
-    }));
+    });
+    s.asteroids.push(ast);
+    spawned.push(ast);
   }
+  // Scatter after the visible ring rotation has read. setTimeout is
+  // safe — beginWave runs sync, the asteroids land in s.asteroids
+  // immediately, and the scatter just reassigns velocities on the
+  // ones still alive. If the player has already shot some, those are
+  // dead/replaced by fragments and skipped naturally.
+  window.setTimeout(() => {
+    for (const a of spawned) {
+      if (!a.alive) continue;
+      const ang = Math.random() * Math.PI * 2;
+      const speed = 60 + Math.random() * 70;  // 60-130 px/s wandering pace
+      a.vel.x = Math.cos(ang) * speed;
+      a.vel.y = Math.sin(ang) * speed;
+      a.rotVel = (Math.random() - 0.5) * 1.4;
+    }
+  }, 1_600);
 }
 
 export function beginWave(s: GameState, wave: number): void {
@@ -661,9 +683,13 @@ export function beginWave(s: GameState, wave: number): void {
   // below). The 'pallasite' type is used so each break drops sats.
   if (getFlavour() === '600bn' && wave === 1) {
     spawnCouncilWave(s);
-    // Push UFO + mine timers out far enough that they don't disturb
-    // the council-clear before the run ends naturally.
-    s.nextUfoSpawn = 10 * 60 * 1000;
+    // UFO spawning kept — the 600bn UFO renders as the $600B sacred-
+    // number badge (see drawSixHundredBnLogoUfo). First spawn pulled
+    // in slightly so the badge appears during the active wave instead
+    // of late, when the council might already be half-cleared. Mines
+    // still suppressed — the council ring shouldn't have static well
+    // hazards crowding it.
+    s.nextUfoSpawn = 8_000;
     s.nextMineSpawn = 10 * 60 * 1000;
   } else if (setPiece) {
     setPiece.setup(s);
@@ -723,7 +749,12 @@ export function beginWave(s: GameState, wave: number): void {
   // the standard 4s wavestart could otherwise be half over by the time
   // they click WATCH. Skip-window still applies if the player wants to
   // jump in immediately.
-  const wavestartMs = wave === 1 ? WAVESTART_MS_WAVE1 : WAVESTART_MS;
+  // 600bn flavour gets a longer wavestart on wave 1 so the player has
+  // time to read the canonical lore line before the action starts.
+  // Skip-on-input still works after WAVESTART_SKIP_AFTER_MS.
+  const wavestartMs = wave === 1
+    ? (getFlavour() === '600bn' ? 9_000 : WAVESTART_MS_WAVE1)
+    : WAVESTART_MS;
   setTimeout(() => {
     audio.setMusicDuck(1);
     if (s.phase === 'wavestart' || s.phase === 'warp') s.phase = 'playing';

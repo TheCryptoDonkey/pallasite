@@ -18,6 +18,7 @@ import { getActiveSeed } from './seed.js';
 import { getAsteroidStyle, shouldReduceMotion } from './a11y.js';
 import { getActiveSkin } from './skins.js';
 import { getMemberImage } from './sanctum-avatars.js';
+import { getFlavour } from './flavour.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
 
@@ -38,14 +39,34 @@ const stars: { x: number; y: number; r: number; flickerPhase: number; depth: num
 })();
 
 function drawStars(ctx: CanvasRenderingContext2D, t: number): void {
+  // 600bn flavour swaps the starfield for floating bitcoin glyphs —
+  // each "star" becomes a tiny ₿ symbol that fades + sways with the
+  // same flickerPhase as the original star points. Cheap (text draw
+  // per star, same iteration count) and reads as "we're stacking sats".
+  const isBtc = getFlavour() === '600bn';
   ctx.save();
+  if (isBtc) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+  }
   for (const s of stars) {
     const flick = 0.5 + 0.5 * Math.sin(t * 0.001 + s.flickerPhase);
     ctx.globalAlpha = (0.25 + s.depth * 0.6) * (0.55 + flick * 0.45);
-    ctx.fillStyle = '#cfd6ff';
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
-    ctx.fill();
+    if (isBtc) {
+      // Size scales with depth so distant ₿s read smaller. Gold/ember
+      // palette to match the 600bn brand voice.
+      const size = 6 + s.depth * 14;
+      ctx.font = `bold ${size}px ui-monospace, monospace`;
+      ctx.fillStyle = '#ffd84a';
+      ctx.shadowColor = '#ff8a3a';
+      ctx.shadowBlur = 4 + s.depth * 6;
+      ctx.fillText('₿', s.x, s.y);
+    } else {
+      ctx.fillStyle = '#cfd6ff';
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
   ctx.restore();
 }
@@ -603,15 +624,16 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   ctx.stroke();
 
   // 600bn council-textured asteroids — clip the member portrait inside
-  // the lumpy outline we just stroked. Falls back to the standard rock
-  // render if the manifest hasn't loaded the image yet (the asteroid
-  // still reads as a rock with the right shape).
-  if (a.councilMember) {
+  // the lumpy outline. Only renders on large + medium sizes; smalls
+  // skip the texture (the face wouldn't read at that pixel count and
+  // the drawImage+clip is the per-frame hot path during a busy fight).
+  if (a.councilMember && a.size !== 'small') {
     const img = getMemberImage(a.councilMember.name);
     if (img) {
       ctx.save();
-      // Re-trace path to clip (closePath isn't recorded for clip
-      // independently of stroke).
+      // Re-trace polygon path for the clip — closePath consumed by
+      // the prior stroke. Slightly inset so the stroked outline stays
+      // visible on top of the texture.
       ctx.beginPath();
       for (let i = 0; i < n; i++) {
         const angle = (Math.PI * 2 * i) / n;
@@ -754,9 +776,74 @@ function drawEngineGlow(ctx: CanvasRenderingContext2D, dir: 1 | -1, x: number, y
   ctx.restore();
 }
 
+/** Render the 600bn UFO swap — a rotating circular badge with the
+ *  canonical $600B 4-line wordmark. Same radius + hit-flash as the
+ *  standard UFO, so collisions feel identical. */
+function drawSixHundredBnLogoUfo(ctx: CanvasRenderingContext2D, u: Ufo, now: number): void {
+  const r = u.radius;
+  ctx.save();
+  ctx.translate(u.pos.x, u.pos.y);
+
+  // Outer ember corona — pulsing, fixed (doesn't rotate with the badge).
+  const pulse = 0.7 + 0.3 * Math.sin(now * 0.004);
+  const corona = ctx.createRadialGradient(0, 0, r * 0.5, 0, 0, r * 1.7);
+  corona.addColorStop(0, `rgba(255, 138, 58, ${0.35 * pulse})`);
+  corona.addColorStop(1, 'rgba(255, 138, 58, 0)');
+  ctx.fillStyle = corona;
+  ctx.beginPath();
+  ctx.arc(0, 0, r * 1.7, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Badge body — black disc with gold ring outline.
+  ctx.fillStyle = '#0a0418';
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.lineWidth = 2.2;
+  ctx.strokeStyle = '#ffd84a';
+  ctx.shadowColor = '#ff8a3a';
+  ctx.shadowBlur = 14;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // 4-line sacred number, rotating with the badge.
+  ctx.rotate(now * 0.0008);
+  const size = Math.floor(r * 0.36);
+  ctx.font = `bold ${size}px ui-monospace, monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#ffd84a';
+  ctx.shadowColor = '#ff8a3a';
+  ctx.shadowBlur = 6;
+  const lineH = size * 0.95;
+  ctx.fillText('600', 0, -lineH * 1.5);
+  ctx.fillText('000', 0, -lineH * 0.5);
+  ctx.fillText('000', 0,  lineH * 0.5);
+  ctx.fillText('000', 0,  lineH * 1.5);
+
+  // Hit-flash overlay.
+  if (u.hitFlash > 0) {
+    ctx.rotate(-now * 0.0008);  // unrotate so flash is round
+    ctx.globalAlpha = u.hitFlash * 0.6;
+    ctx.fillStyle = '#fff5d8';
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
 function drawUfo(ctx: CanvasRenderingContext2D, u: Ufo, now: number): void {
   if (!u.alive) return;
   const r = u.radius;
+  // 600bn flavour swap — UFO renders as the canonical 4-line sacred
+  // number ($600B logo), rotating slowly. The hitbox + behaviour are
+  // unchanged; just the silhouette is replaced.
+  if (getFlavour() === '600bn') {
+    drawSixHundredBnLogoUfo(ctx, u, now);
+    return;
+  }
   // Per-phase boss palette override — escalates from baseline red+gold
   // through enraged orange-red into a critical hot-white core. Non-boss
   // and phase-1 boss use the static lookup.
@@ -1651,17 +1738,27 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState, now: number): void
   // WAVE — top-centre, the focal point. Specimen name underneath pulls the
   // pallasite lore into the running HUD instead of leaving it only in the
   // wavestart cinematic. Boss arena (wave 25) gets its own treatment.
-  ctx.fillStyle = '#5b9dff';
-  ctx.shadowColor = '#5b9dff';
+  // 600bn flavour overrides the HUD wave label so the centre column
+  // reads as the canonical $600B wave rather than a numbered campaign
+  // entry. Keeps the column position + font sizes identical so layout
+  // stays stable.
+  const is600bn = getFlavour() === '600bn';
+  ctx.fillStyle = is600bn ? '#ffd84a' : '#5b9dff';
+  ctx.shadowColor = is600bn ? '#ff8a3a' : '#5b9dff';
   ctx.shadowBlur = 8;
   ctx.textAlign = 'center';
-  ctx.fillText('WAVE', w / 2, topY);
-  ctx.fillText(pad(s.wave, 2), w / 2, topY + 26);
+  if (is600bn) {
+    ctx.fillText('$600B', w / 2, topY);
+    ctx.fillText('WAVE', w / 2, topY + 26);
+  } else {
+    ctx.fillText('WAVE', w / 2, topY);
+    ctx.fillText(pad(s.wave, 2), w / 2, topY + 26);
+  }
   ctx.shadowBlur = 0;
   ctx.font = 'bold 13px ui-monospace, monospace';
   ctx.fillStyle = '#fff5d8';
   ctx.letterSpacing = '0.18em' as unknown as string;
-  ctx.fillText(waveName(s.wave).toUpperCase(), w / 2, topY + 56);
+  ctx.fillText(is600bn ? 'THE SIGNAL' : waveName(s.wave).toUpperCase(), w / 2, topY + 56);
   ctx.letterSpacing = '0em' as unknown as string;
 
   ctx.font = '24px ui-monospace, monospace';
@@ -1848,24 +1945,37 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState, now: number
   ctx.stroke();
   ctx.globalAlpha = alpha;
 
-  // Wave number — bigger, more confident
-  ctx.font = 'bold 72px ui-monospace, monospace';
-  ctx.fillStyle = '#5b9dff';
-  ctx.shadowColor = '#5b9dff';
-  ctx.shadowBlur = 22;
-  ctx.fillText(`WAVE ${s.wave}`, WORLD_W / 2, WORLD_H / 2 - 30);
+  // Wave number — bigger, more confident. 600bn flavour swaps the
+  // 'WAVE N' label for the canonical sacred-number wordmark.
+  const isBnWave = getFlavour() === '600bn' && s.wave === 1;
+  if (isBnWave) {
+    ctx.font = 'bold 64px ui-monospace, monospace';
+    ctx.fillStyle = '#ffd84a';
+    ctx.shadowColor = '#ff8a3a';
+    ctx.shadowBlur = 26;
+    ctx.fillText('THE $600B WAVE', WORLD_W / 2, WORLD_H / 2 - 30);
+  } else {
+    ctx.font = 'bold 72px ui-monospace, monospace';
+    ctx.fillStyle = '#5b9dff';
+    ctx.shadowColor = '#5b9dff';
+    ctx.shadowBlur = 22;
+    ctx.fillText(`WAVE ${s.wave}`, WORLD_W / 2, WORLD_H / 2 - 30);
+  }
 
-  // Pallasite specimen name — heraldic yellow
+  // Sub-name — pallasite specimen for campaign waves, council label
+  // for the 600bn flavour.
   ctx.font = 'bold 28px ui-monospace, monospace';
   ctx.fillStyle = '#ffd84a';
   ctx.shadowColor = '#ffd84a';
   ctx.shadowBlur = 14;
   ctx.letterSpacing = '0.18em' as unknown as string;
-  ctx.fillText(waveName(s.wave), WORLD_W / 2, WORLD_H / 2 + 38);
+  ctx.fillText(isBnWave ? 'COUNCIL OF 600' : waveName(s.wave), WORLD_W / 2, WORLD_H / 2 + 38);
 
-  // One-line specimen lore — bright cream over a darker backing strip so it
-  // reads against any wave image. Was soft purple, hard to read on warm bgs.
-  const lore = waveSubtitle(s.wave);
+  // One-line lore — pallasite history for campaign, 600B canon for
+  // the Sanctum wave.
+  const lore = isBnWave
+    ? 'Madeira to Prague · The signal carries the stone'
+    : waveSubtitle(s.wave);
   if (lore) {
     ctx.font = '16px ui-monospace, monospace';
     ctx.fillStyle = '#fff5d8';
@@ -1877,14 +1987,14 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState, now: number
     ctx.shadowOffsetY = 0;
   }
 
-  // Tactical tagline — heraldic blue, ties visually to the WAVE number above
-  // so the eye reads warm-tone lore (yellow + cream) and cool-tone system
-  // (blue + blue) as two distinct registers.
-  const tagline = waveTagline(s.wave);
+  // Tactical tagline — 600bn gets the anchor line.
+  const tagline = isBnWave
+    ? 'We stack. We build. We meme. We repeat.'
+    : waveTagline(s.wave);
   if (tagline) {
     ctx.font = '14px ui-monospace, monospace';
-    ctx.fillStyle = '#7da5d4';
-    ctx.shadowColor = '#5b9dff';
+    ctx.fillStyle = isBnWave ? '#ffb060' : '#7da5d4';
+    ctx.shadowColor = isBnWave ? '#ff8a3a' : '#5b9dff';
     ctx.shadowBlur = 6;
     ctx.letterSpacing = '0.10em' as unknown as string;
     ctx.fillText(tagline, WORLD_W / 2, WORLD_H / 2 + 102);
