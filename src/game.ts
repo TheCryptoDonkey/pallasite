@@ -777,13 +777,15 @@ function spawnSanctumFillers(s: GameState, count: number): void {
   }
 }
 
-/** Maximum live asteroids during the 600bn infinity wave. Holds
- *  framerate steady on mid-range mobile while still feeling busy.
- *  Counts ALL sizes (large + medium + small fragments). */
-const SANCTUM_ASTEROID_CAP = 12;
+/** Maximum live asteroids during the 600bn infinity wave. Counts ALL
+ *  sizes (large + medium + small fragments) — a single large break can
+ *  spawn up to 4-7 children, so the cap needs headroom or filler/council
+ *  spawns immediately stall. 18 holds framerate on mid-range mobile and
+ *  keeps the playfield busy after big breaks. */
+const SANCTUM_ASTEROID_CAP = 18;
 /** Spawn cadence on 600bn — when the count is below the cap, a new
- *  filler drifts in every ~3s. */
-const SANCTUM_FILLER_INTERVAL_MS = 3_000;
+ *  filler drifts in every ~1.8s. */
+const SANCTUM_FILLER_INTERVAL_MS = 1_800;
 let sanctumNextFillerSpawn = 0;
 
 /** Tick the 600bn infinity filler spawner. Called from updateGame
@@ -866,7 +868,7 @@ export function beginWave(s: GameState, wave: number): void {
     sanctumStats.councilTotal = getCouncil().length;
     sanctumStats.asteroidsDestroyed = 0;
     // Opening field of textured fillers — "normal game" entry beat.
-    spawnSanctumFillers(s, 6);
+    spawnSanctumFillers(s, 10);
     // UFO spawning kept — the 600bn UFO renders as the $600B sacred-
     // number badge. Mines suppressed.
     s.nextUfoSpawn = 8_000;
@@ -3266,9 +3268,12 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
     // Carry bullet momentum into the surviving piece. The chunk just lost
     // mass, so the laser's impulse should push it along the shot direction
     // instead of leaving a stationary post-shrink rock floating in place.
-    // Smaller surviving sizes accept proportionally more kick.
+    // Smaller surviving sizes accept proportionally more kick. Factors are
+    // tuned conservatively — at BULLET_SPEED=520, a small-size kick of 0.12
+    // adds ~62 px/s, enough to read as directional without rocketing the
+    // chunk across the screen.
     if (opts?.bulletVel) {
-      const kick = newSize === 'small' ? 0.28 : 0.20;
+      const kick = newSize === 'small' ? 0.12 : 0.08;
       a.vel.x += opts.bulletVel.x * kick;
       a.vel.y += opts.bulletVel.y * kick;
     }
@@ -3374,7 +3379,9 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
     // parent produces near-stationary kids whose only motion is the spread
     // offset around a zero-length vector. With it, the shot's direction
     // dominates when the parent was slow and adds to it when the parent was fast.
-    const childSizeFactor = childSize === 'medium' ? 0.18 : 0.26;
+    // Factors are tuned conservatively (small=0.10 adds ~52 px/s at
+    // BULLET_SPEED=520) so children read as kicked debris, not racing rounds.
+    const childSizeFactor = childSize === 'medium' ? 0.07 : 0.10;
     const bulletKickX = opts?.bulletVel ? opts.bulletVel.x * childSizeFactor : 0;
     const bulletKickY = opts?.bulletVel ? opts.bulletVel.y * childSizeFactor : 0;
     for (let i = 0; i < count; i++) {
