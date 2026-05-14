@@ -65,7 +65,7 @@ for (const file of files) {
     });
     continue;
   }
-  const namedMatch = file.match(/^(sanctum(?:-space)?|asteroid-(?:stony|iron|chondrite|pallasite))\./i);
+  const namedMatch = file.match(/^(sanctum(?:-space)?|asteroid-(?:stony|iron|chondrite|pallasite|carbonaceous|mesosiderite|achondrite))\./i);
   if (namedMatch) {
     if (onlyWave !== null) continue;
     const name = namedMatch[1].toLowerCase();
