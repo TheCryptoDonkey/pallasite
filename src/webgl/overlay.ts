@@ -291,6 +291,13 @@ export function renderOverlay(opts: {
       // even against the dark space backdrop.
       if (!cachedMap) kickDiffuseLoad(handle, a.type, material);
       const mesh = new THREE.Mesh(geometry, material);
+      // Frustum culling is broken with our Y-flipped projection
+      // (top=0, bottom=720). The math renders correctly, but
+      // three.js's Frustum.intersectsBox computes inverted plane
+      // normals on the Y axis, so every mesh classifies as "outside"
+      // and is silently skipped. Bypass per-mesh — the scene is
+      // small enough that no-culling has zero perf cost.
+      mesh.frustumCulled = false;
       scene.add(mesh);
       entry = { mesh, geometry, material, lastSeenFrame: frameCounter };
       handle.asteroidMeshes.set(a.id, entry);
@@ -350,6 +357,7 @@ export function renderOverlay(opts: {
         emissiveIntensity: 0.5,
       });
       const hullMesh = new THREE.Mesh(hullGeo, hullMat);
+      hullMesh.frustumCulled = false;
       group.add(hullMesh);
       // Thrust plume — separate mesh, toggled per frame, additive
       // material so it reads as fire rather than plastic.
@@ -363,6 +371,7 @@ export function renderOverlay(opts: {
         blending: THREE.AdditiveBlending,
       });
       const thrustMesh = new THREE.Mesh(thrustGeo, thrustMat);
+      thrustMesh.frustumCulled = false;
       thrustMesh.visible = false;
       group.add(thrustMesh);
       scene.add(group);
