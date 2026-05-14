@@ -186,19 +186,40 @@ function kickDiffuseLoad(h: OverlayHandle, type: string, attachTo: THREE.MeshPho
 
 /** Build (or fetch from cache) a council member's portrait texture.
  *  getMemberImage returns the pre-baked 128px canvas from
- *  sanctum-avatars; we wrap it in a CanvasTexture so three.js can
- *  sample it on the rock. */
+ *  sanctum-avatars; we wrap it in a CanvasTexture. Returns null if
+ *  the image hasn't decoded yet (caller retries on subsequent
+ *  frames via attachCouncilTextureWhenReady). */
 function getCouncilTexture(h: OverlayHandle, name: string): THREE.Texture | null {
   const cached = h.councilTextureCache.get(name);
   if (cached) return cached;
   const img = getMemberImage(name);
   if (!img) return null;
-  const tex = new THREE.CanvasTexture(img instanceof HTMLCanvasElement ? img : img);
+  const tex = new THREE.CanvasTexture(img);
   tex.colorSpace = THREE.SRGBColorSpace;
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
+  // ClampToEdge keeps the portrait from repeating across the sphere
+  // surface; sphere UVs already wrap longitudinally so the back of
+  // the rock shows the seam, not a tiled face.
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.needsUpdate = true;
   h.councilTextureCache.set(name, tex);
   return tex;
+}
+
+/** Per-frame retry — if a council asteroid's material doesn't have a
+ *  portrait map yet (because the image hadn't decoded when the mesh
+ *  was built), try again. Cheap when nothing's pending. */
+function attachCouncilTextureWhenReady(
+  h: OverlayHandle,
+  mat: THREE.MeshPhongMaterial,
+  name: string,
+): void {
+  if (mat.map) return;
+  const tex = getCouncilTexture(h, name);
+  if (!tex) return;
+  mat.map = tex;
+  mat.color = new THREE.Color(0xffffff);
+  mat.needsUpdate = true;
 }
 
 /** Trigger async load of three.js + scene construction. Idempotent. */
@@ -352,21 +373,19 @@ export function renderOverlay(opts: {
         emissive: matCfg.emissive,
         emissiveIntensity: matCfg.emissiveIntensity,
       });
-      // Council members get their portrait as the diffuse map (matches
-      // the 2D shaded path where the face fills the polygon). Non-
-      // council fillers use the photoreal type texture.
+      // Council members get their portrait as the diffuse map.
+      // Photoreal type texture is loaded as a fallback so the rock is
+      // never blank if the portrait hasn't decoded yet — once the
+      // image is ready, attachCouncilTextureWhenReady (run per frame
+      // below) swaps the portrait in.
+      const cachedTypeMap = getDiffuseTexture(handle, a.type);
+      if (cachedTypeMap) material.map = cachedTypeMap;
+      else kickDiffuseLoad(handle, a.type, material);
       if (a.councilMember) {
         const portrait = getCouncilTexture(handle, a.councilMember.name);
         if (portrait) {
           material.map = portrait;
-          material.color = new THREE.Color(0xffffff);  // don't tint portraits
-        }
-      } else {
-        const cachedMap = getDiffuseTexture(handle, a.type);
-        if (cachedMap) {
-          material.map = cachedMap;
-        } else {
-          kickDiffuseLoad(handle, a.type, material);
+          material.color = new THREE.Color(0xffffff);
         }
       }
       const mesh = new THREE.Mesh(geometry, material);
@@ -381,6 +400,12 @@ export function renderOverlay(opts: {
     entry.mesh.rotation.x = a.rot * 0.55;
     entry.mesh.rotation.y = a.rot * 0.37;
     entry.mesh.visible = true;
+    // If this is a council asteroid and the portrait wasn't ready at
+    // mesh-build time, try again now. Cheap once the texture has been
+    // attached (the map check short-circuits).
+    if (a.councilMember) {
+      attachCouncilTextureWhenReady(handle, entry.material, a.councilMember.name);
+    }
   }
   sweepStale(scene, handle.asteroidMeshes, frameCounter);
 
