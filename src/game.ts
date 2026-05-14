@@ -2748,7 +2748,7 @@ export function updateGame(s: GameState, dt: number, now: number): void {
         const isCarom = b.caromHit;
         const isWrap = b.wrapped;
         b.hasLanded = true;
-        damageAsteroid(s, a, { isCarom, isWrap, bulletVel: b.vel });
+        damageAsteroid(s, a, { isCarom, isWrap, bulletVel: b.vel, bulletPos: b.pos });
         // Pierce: if the asteroid actually broke and the bullet has pierce
         // left, the bullet survives to seek a second target. Iron-large takes
         // two hits to break, so a pierce shot only travels through fully
@@ -3203,7 +3203,7 @@ function runAsteroidCollisions(s: GameState): void {
  * Apply one bullet's worth of damage to an asteroid. Iron at large size has hp=2
  * — first hit flashes and dents, second hit fragments. All other cases are 1hp.
  */
-function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; isWrap?: boolean; bulletVel?: Vec2 }): void {
+function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; isWrap?: boolean; bulletVel?: Vec2; bulletPos?: Vec2 }): void {
   a.hp -= 1;
   a.hitFlash = 1;
   // Tiny momentum transfer on the non-fatal hit — even iron-large surviving
@@ -3213,6 +3213,41 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
     const massBias = a.size === 'large' ? 0.05 : a.size === 'medium' ? 0.08 : 0.12;
     a.vel.x += opts.bulletVel.x * massBias;
     a.vel.y += opts.bulletVel.y * massBias;
+  }
+  // Council edge ergonomics: when the ship is hugging a screen edge and the
+  // player lands a bullet on a council asteroid, apply an angular impulse
+  // (2D cross product of impact-offset × bullet force, matching real space
+  // physics — off-centre hits spin, dead-on hits don't) plus a gentle push
+  // in the away-from-ship direction. Reads as "I knocked it back into the
+  // room" when you're cornered; does nothing when you're mid-field.
+  if (a.councilMember && opts?.bulletPos && opts?.bulletVel) {
+    const EDGE_PX = 90;
+    const shipAtEdge = s.ship.pos.x < EDGE_PX
+                    || s.ship.pos.x > WORLD_W - EDGE_PX
+                    || s.ship.pos.y < EDGE_PX
+                    || s.ship.pos.y > WORLD_H - EDGE_PX;
+    if (shipAtEdge) {
+      // Lever arm: asteroid centre → impact point. Sign of (r × F)_z picks
+      // which side of the rock got hit, so spin direction matches physics.
+      const rx = opts.bulletPos.x - a.pos.x;
+      const ry = opts.bulletPos.y - a.pos.y;
+      const bspeed = Math.hypot(opts.bulletVel.x, opts.bulletVel.y) || 1;
+      const fx = opts.bulletVel.x / bspeed;
+      const fy = opts.bulletVel.y / bspeed;
+      const cross = rx * fy - ry * fx;
+      // Normalise by radius so large and small council pieces spin at a
+      // comparable visual rate. 3.0 picks ~half a rotation per second on a
+      // glancing tangent hit; a dead-on shot contributes ~zero.
+      a.rotVel += (cross / Math.max(1, a.radius)) * 3.0;
+      // Gentle push away from the ship in straight-line distance. 35 px/s
+      // is enough to read but not so much that the council escapes pursuit.
+      const dx = a.pos.x - s.ship.pos.x;
+      const dy = a.pos.y - s.ship.pos.y;
+      const ddist = Math.hypot(dx, dy) || 1;
+      const PUSH = 35;
+      a.vel.x += (dx / ddist) * PUSH;
+      a.vel.y += (dy / ddist) * PUSH;
+    }
   }
   if (a.hp <= 0) {
     breakAsteroid(s, a, opts);
