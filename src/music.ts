@@ -104,14 +104,45 @@ let lastAppliedKey = '';  // memoised state→track key so musicSetTrackForState
 
 const DEFAULT_FADE_MS = 800;
 
+/** Safari treats `.opus` files served without a `Content-Type: audio/ogg`
+ *  header as MEDIA_ERR_SRC_NOT_SUPPORTED (MediaError code 4) — silent
+ *  music for the whole session. Side-load the file via fetch + Blob and
+ *  re-issue it with an explicit `audio/ogg` MIME so Safari treats it as
+ *  standard OGG-Opus regardless of the server's response header.
+ *  Detection: Safari includes "Safari" but NOT "Chrome/Chromium/Android"
+ *  in the user-agent. */
+function isSafariMimeWorkaroundNeeded(): boolean {
+  const ua = navigator.userAgent;
+  return /Safari/.test(ua) && !/Chrome|Chromium|CriOS|FxiOS|Android/.test(ua);
+}
+
 function load(track: Track): Loaded {
   const cached = loaded.get(track.id);
   if (cached) return cached;
   const dest = getMusicDestination();
   const ctx = dest.context as AudioContext;
-  const el = new Audio(track.src);
+  const el = new Audio();
   el.loop = track.loop !== false;
   el.preload = 'auto';
+  // Safari needs the Blob/MIME workaround; everyone else gets the direct
+  // src so we don't pay the fetch+memory cost without need.
+  if (isSafariMimeWorkaroundNeeded()) {
+    fetch(track.src)
+      .then(r => r.ok ? r.arrayBuffer() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(buf => {
+        const blob = new Blob([buf], { type: 'audio/ogg' });
+        el.src = URL.createObjectURL(blob);
+      })
+      .catch(e => {
+        // Fall back to direct src — if the fetch itself failed, the
+        // server can't serve the file at all and the error event will
+        // surface the underlying problem via the existing handler.
+        console.warn('[music] Safari blob workaround failed, falling back', track.id, e);
+        el.src = track.src;
+      });
+  } else {
+    el.src = track.src;
+  }
   // Don't set crossOrigin — the music files are same-origin so it's
   // redundant, AND on iOS Safari setting it without matching CORS
   // response headers from the server taints the MediaElementSource and
