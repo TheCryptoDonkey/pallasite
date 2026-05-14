@@ -1,14 +1,25 @@
 /**
- * 600bn Sanctum — static debug preview at /sanctum-preview.
+ * 600bn Sanctum — standalone game surface at /sanctum (and the
+ * legacy /sanctum-preview alias for first-pass viewers).
  *
- * Mounts a standalone canvas, loads the council manifest + avatars,
- * and renders the Sanctum entity layout in a slow orbit. No input,
- * no gameplay, no audio — purely a visual sanity check before the
- * level is wired into the main game loop.
+ * Self-contained loop: own canvas, own simulation, own audio, own
+ * game-over screen. Lives separately from the main game's
+ * updateGame / render pipeline because the conference surface needs
+ * a hard-isolated runtime — no chance of bleeding back into the
+ * standard Pallasite campaign.
  *
- * Lazy-imported by main.ts when window.location.pathname is
- * '/sanctum-preview'. Skipped on every other path so the main game's
- * boot path doesn't take a hit.
+ * What it does:
+ *   - Mounts a centred 960x720 canvas with ember-glow border
+ *   - Loads the council manifest + 11 member avatars
+ *   - Plays the-cult.opus on first click (audio-context unlock)
+ *   - Drives the 240s tickSanctum simulation + render
+ *   - Click-to-hit collision for the four entity classes
+ *   - On time-up OR Bullbear-defeat: full-screen FUCHS2 game-over
+ *     overlay with sacred number, party banner, QR to 600.wtf, and
+ *     a PLAY AGAIN button that resets the run
+ *
+ * No claim flow yet — sat-credit hand-off is a follow-up. For now the
+ * teaser is "play the level, look at the party card, click through".
  */
 
 import {
@@ -17,18 +28,20 @@ import {
   renderSanctum,
   SANCTUM_WORLD_W,
   SANCTUM_WORLD_H,
+  SANCTUM_TOTAL_MS,
   applyMemberHit,
   applyStoneHit,
   applyRacooHit,
   applyBullbearHit,
   applyMeteorHit,
+  isSanctumComplete,
   type SanctumState,
 } from './sanctum.js';
 import { loadCouncil } from './sanctum-avatars.js';
+import * as audio from './audio.js';
+import { crossfadeTo, musicStop } from './music.js';
+import QRCode from 'qrcode';
 
-/** Tear down the main game's DOM chrome so the preview owns the screen.
- *  The main canvas + ui-root are hidden (not removed) so a manual back-
- *  navigation lands on a sane state without a reload. */
 function hideMainChrome(): void {
   const canvas = document.getElementById('game');
   const ui = document.getElementById('ui-root');
@@ -39,10 +52,6 @@ function hideMainChrome(): void {
   document.body.style.background = 'radial-gradient(ellipse at center, #2a1408 0%, #060201 70%)';
 }
 
-/** Try to load the Sanctum WebP background (Madeira volcanic / storm
- *  light). Generated separately via `pnpm gen-backgrounds -- --sanctum`
- *  + optimise-backgrounds. Until it lands, the gradient fallback in
- *  hideMainChrome() remains. */
 function applySanctumBackgroundIfPresent(): void {
   const img = new Image();
   img.onload = () => {
@@ -51,13 +60,15 @@ function applySanctumBackgroundIfPresent(): void {
     document.body.style.backgroundPosition = 'center';
     document.body.style.backgroundAttachment = 'fixed';
   };
-  // 404 is the expected pre-generation state — leave the gradient.
-  img.onerror = () => { /* silent */ };
+  img.onerror = () => { /* silent — gradient fallback stays */ };
   img.src = '/backgrounds/sanctum.webp';
 }
 
-/** Build the preview surface — canvas + footer caption. */
-function mountPreview(): HTMLCanvasElement {
+function mountPreview(): { canvas: HTMLCanvasElement; wrap: HTMLDivElement } {
+  // Tear down any prior mount so a PLAY AGAIN re-entry starts clean.
+  const existing = document.getElementById('sanctum-preview-root');
+  if (existing) existing.remove();
+
   const wrap = document.createElement('div');
   wrap.id = 'sanctum-preview-root';
   wrap.style.cssText = [
@@ -78,25 +89,30 @@ function mountPreview(): HTMLCanvasElement {
     'border-radius:6px',
     'box-shadow:0 0 60px rgba(255,138,58,0.25)',
     'background:#060201',
+    'cursor:crosshair',
   ].join(';');
   wrap.appendChild(canvas);
 
   const caption = document.createElement('div');
   caption.style.cssText = 'font:13px ui-monospace,monospace;color:rgba(255,216,74,0.85);letter-spacing:0.18em;text-align:center;';
-  caption.innerHTML = 'SANCTUM PREVIEW · COUNCIL OF 600 · FUCHS2 PRAGUE · 11 JUNE<br><span style="font-size:11px;color:rgba(255,245,216,0.55);letter-spacing:0.08em;">click a council member to dry-run a hit · refresh to reset</span>';
+  caption.innerHTML = 'THE SANCTUM · 240 SECONDS · COUNCIL · STONE · RACOO · BULLBEAR<br><span style="font-size:11px;color:rgba(255,245,216,0.55);letter-spacing:0.08em;">click any entity to land a hit · refresh to reset</span>';
   wrap.appendChild(caption);
 
-  return canvas;
+  return { canvas, wrap };
 }
 
-/** Bind click-to-hit so the preview can demo the hit-flash + role
- *  banner animation. Doesn't break anything (no sat plumbing), just
- *  flashes the appropriate member. */
-/** Click-to-hit dry-run for every entity type in the preview. Picks
- *  the topmost entity under the cursor in z-order (Bullbear → racoo →
- *  council → stone → meteors) so what you click is what you hit. */
-function bindClickHit(canvas: HTMLCanvasElement, state: SanctumState): void {
+/** Click-to-hit. First click also unlocks audio + starts the music. */
+function bindClickHit(
+  canvas: HTMLCanvasElement,
+  state: SanctumState,
+  onFirstClick: () => void,
+): void {
+  let firstClick = true;
   canvas.addEventListener('click', (e) => {
+    if (firstClick) {
+      firstClick = false;
+      onFirstClick();
+    }
     const rect = canvas.getBoundingClientRect();
     const sx = (e.clientX - rect.left) / rect.width;
     const sy = (e.clientY - rect.top) / rect.height;
@@ -107,54 +123,224 @@ function bindClickHit(canvas: HTMLCanvasElement, state: SanctumState): void {
       const dy = cy - y;
       return dx * dx + dy * dy < r * r;
     };
-    // Bullbear (top z) first.
     if (state.bullbear && hit(state.bullbear.x, state.bullbear.y, state.bullbear.r)) {
-      applyBullbearHit(state.bullbear);
+      const drop = applyBullbearHit(state.bullbear);
+      if (drop > 0) {
+        state.satsEarned += drop;
+        state.score += 4200;
+      }
       return;
     }
     if (state.racoo && hit(state.racoo.x, state.racoo.y, state.racoo.r)) {
-      applyRacooHit(state.racoo);
+      const drop = applyRacooHit(state.racoo);
+      if (drop > 0) {
+        state.satsEarned += drop;
+        state.score += 600;
+      }
       return;
     }
     for (const m of state.council) {
       if (m.dead) continue;
       if (hit(m.x, m.y, m.r)) {
-        applyMemberHit(m);
+        const drop = applyMemberHit(m);
+        if (drop > 0) {
+          state.satsEarned += drop;
+          state.score += 100;
+        }
         return;
       }
     }
     if (state.stone && !state.stone.shattering && hit(state.stone.x, state.stone.y, state.stone.r)) {
-      applyStoneHit(state);
+      const drop = applyStoneHit(state);
+      if (drop > 0) {
+        state.satsEarned += drop;
+        state.score += 2100;
+      }
       return;
     }
     for (const meteor of state.meteors) {
       if (hit(meteor.x, meteor.y, meteor.r)) {
         applyMeteorHit(meteor);
+        state.score += 25;
         return;
       }
     }
   });
 }
 
-export async function renderSanctumPreview(): Promise<void> {
-  hideMainChrome();
+/** Full-screen game-over overlay with FUCHS2 party card + PLAY AGAIN. */
+function renderGameOverOverlay(state: SanctumState, onReplay: () => void): void {
+  const overlay = document.createElement('div');
+  overlay.id = 'sanctum-gameover';
+  overlay.style.cssText = [
+    'position:fixed', 'inset:0',
+    'display:flex', 'flex-direction:column',
+    'align-items:center', 'justify-content:center',
+    'gap:16px', 'padding:20px',
+    'background:rgba(6,2,1,0.92)',
+    'backdrop-filter:blur(8px)',
+    'z-index:1000',
+    'animation:fade-in 600ms ease',
+  ].join(';');
+  document.body.appendChild(overlay);
+
+  const header = document.createElement('h1');
+  header.textContent = state.bullbearDefeated ? 'BULLBEAR DOWN' : 'TIME UP';
+  header.style.cssText = 'font:bold 38px ui-monospace,monospace;color:#ffd84a;letter-spacing:0.22em;margin:0;text-shadow:0 0 16px rgba(255,138,58,0.7);';
+  overlay.appendChild(header);
+
+  const stats = document.createElement('div');
+  stats.style.cssText = 'display:flex;gap:32px;font:bold 16px ui-monospace,monospace;letter-spacing:0.18em;';
+  stats.innerHTML = `
+    <span style="color:#3afc7c;">${state.satsEarned} SATS</span>
+    <span style="color:rgba(255,245,216,0.85);">${state.score.toLocaleString()} PTS</span>
+  `;
+  overlay.appendChild(stats);
+
+  // FUCHS2 card.
+  const card = document.createElement('div');
+  card.style.cssText = [
+    'display:flex', 'flex-direction:column', 'align-items:center',
+    'gap:8px', 'padding:20px 28px', 'margin:12px 0',
+    'background:linear-gradient(180deg, rgba(255,138,58,0.12), rgba(40,16,8,0.85))',
+    'border:1px solid rgba(255,216,74,0.5)', 'border-radius:8px',
+    'max-width:440px', 'width:90%',
+    'box-shadow:0 0 30px rgba(255,138,58,0.25)',
+  ].join(';');
+  overlay.appendChild(card);
+
+  const number = document.createElement('div');
+  number.style.cssText = 'font:bold 22px ui-monospace,monospace;color:#ffd84a;letter-spacing:0.16em;line-height:1.1;text-align:center;text-shadow:0 0 12px rgba(255,138,58,0.5);';
+  number.innerHTML = '600<br>000<br>000<br>000';
+  card.appendChild(number);
+
+  const banner = document.createElement('div');
+  banner.textContent = 'PRAGUE PARTY · 11 JUNE 2026';
+  banner.style.cssText = 'font:bold 14px ui-monospace,monospace;color:#fff5d8;letter-spacing:0.22em;margin-top:6px;';
+  card.appendChild(banner);
+
+  const venue = document.createElement('div');
+  venue.textContent = 'FUCHS2 · OSTROV ŠTVANICE';
+  venue.style.cssText = 'font:12px ui-monospace,monospace;color:rgba(255,245,216,0.75);letter-spacing:0.16em;';
+  card.appendChild(venue);
+
+  const link = document.createElement('a');
+  link.href = 'https://600.wtf';
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:6px;margin-top:8px;text-decoration:none;';
+  card.appendChild(link);
+
+  const qrCanvas = document.createElement('canvas');
+  qrCanvas.style.cssText = 'background:#fff5d8;padding:6px;border-radius:4px;';
+  link.appendChild(qrCanvas);
+  void QRCode.toCanvas(qrCanvas, 'https://600.wtf', {
+    width: 160,
+    margin: 0,
+    color: { dark: '#0a0418', light: '#fff5d8' },
+  }).catch(() => undefined);
+
+  const url = document.createElement('div');
+  url.textContent = '600.wtf · TAP';
+  url.style.cssText = 'font:bold 13px ui-monospace,monospace;color:#ffd84a;letter-spacing:0.2em;margin-top:4px;';
+  link.appendChild(url);
+
+  // Buttons row.
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:12px;flex-wrap:wrap;justify-content:center;margin-top:8px;';
+  overlay.appendChild(btnRow);
+
+  const replayBtn = document.createElement('button');
+  replayBtn.textContent = 'PLAY AGAIN ▶';
+  replayBtn.style.cssText = [
+    'padding:14px 28px',
+    'font:bold 16px ui-monospace,monospace',
+    'letter-spacing:0.24em',
+    'background:rgba(255,216,74,0.18)',
+    'border:2px solid #ffd84a',
+    'color:#ffd84a',
+    'border-radius:4px',
+    'cursor:pointer',
+    'text-shadow:0 0 8px rgba(255,216,74,0.5)',
+  ].join(';');
+  replayBtn.addEventListener('click', () => {
+    overlay.remove();
+    onReplay();
+  });
+  btnRow.appendChild(replayBtn);
+
+  const backBtn = document.createElement('button');
+  backBtn.textContent = 'BACK TO TITLE';
+  backBtn.style.cssText = [
+    'padding:14px 28px',
+    'font:bold 14px ui-monospace,monospace',
+    'letter-spacing:0.22em',
+    'background:rgba(255,138,58,0.08)',
+    'border:1px solid rgba(255,138,58,0.45)',
+    'color:rgba(255,245,216,0.85)',
+    'border-radius:4px',
+    'cursor:pointer',
+  ].join(';');
+  backBtn.addEventListener('click', () => {
+    musicStop(400);
+    window.location.assign('/');
+  });
+  btnRow.appendChild(backBtn);
+}
+
+/** Run a single Sanctum session. Resolves when the run ends (timer or
+ *  Bullbear-defeat). The caller's onReplay re-enters this. */
+async function runSanctumSession(): Promise<void> {
   applySanctumBackgroundIfPresent();
-  const canvas = mountPreview();
+  const { canvas } = mountPreview();
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
   await loadCouncil();
   const state = createSanctumState();
-  bindClickHit(canvas, state);
 
+  let musicStarted = false;
+  const startMusic = (): void => {
+    if (musicStarted) return;
+    musicStarted = true;
+    void audio.unlockAudio();
+    crossfadeTo('the-cult', 1200);
+  };
+
+  bindClickHit(canvas, state, startMusic);
+
+  let ended = false;
   let last = performance.now();
   const loop = (now: number): void => {
+    if (ended) return;
     const dt = now - last;
     last = now;
     tickSanctum(state, dt);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     renderSanctum(ctx, state);
+
+    if (isSanctumComplete(state)) {
+      ended = true;
+      // Fade music down slightly so the FUCHS2 card lands clean.
+      audio.setMusicDuck(0.35);
+      renderGameOverOverlay(state, () => {
+        audio.setMusicDuck(1);
+        void runSanctumSession();
+      });
+      return;
+    }
     requestAnimationFrame(loop);
   };
   requestAnimationFrame(loop);
+
+  // Visible-time fallback: if the user idles + the timer expires
+  // entirely without interaction, isSanctumComplete still fires via
+  // the elapsed-since-startedAt comparison inside tickSanctum, so
+  // the loop catches it. No extra setTimeout needed.
+  void SANCTUM_TOTAL_MS;
+}
+
+export async function renderSanctumPreview(): Promise<void> {
+  hideMainChrome();
+  await runSanctumSession();
 }
