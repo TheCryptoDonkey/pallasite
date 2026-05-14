@@ -367,7 +367,24 @@ export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?
   const t = isVein ? 'pallasite' : (type ?? pickAsteroidType(wave));
   const cfg = ASTEROID_TYPE_CONFIG[t];
 
-  const hp = isVein ? veinScaledHp() : (size === 'large' ? cfg.hp : 1);
+  // HP — veins use their own scaled HP, council members get the
+  // beefed-up Sanctum scaling so the level lasts longer (small ships
+  // chipping at large rocks should feel like a fight, not a flick),
+  // everything else uses the standard per-type config.
+  let hp: number;
+  if (isVein) {
+    hp = veinScaledHp();
+  } else if (opts?.councilMember) {
+    // Council mass scale — large takes 5-7 hits depending on type,
+    // medium 3, small 1. Visible shimmer/glow telegraphs the HP
+    // (see drawAsteroid council branch). Smalls are still terminal
+    // (1 hit, drops the ₿ coin).
+    hp = size === 'large' ? 5 : size === 'medium' ? 3 : 1;
+    if (t === 'iron')      hp += 2;  // armoured architects survive longer
+    else if (t === 'pallasite') hp += 1;
+  } else {
+    hp = size === 'large' ? cfg.hp : 1;
+  }
   return {
     pos: position,
     vel: velocity,

@@ -279,3 +279,12 @@ export function drawAvatarAsteroid(
 export function maybePreloadCouncil(): void {
   if (getFlavour() === '600bn') kickImageLoads();
 }
+
+// Eager image-load kick at module-init on 600bn — game.ts imports
+// this module statically, so this fires the moment main.ts loads,
+// well before the player can press IGNITE. Means portrait textures
+// arrive in cache during initial page load (parallel with other
+// asset fetches) instead of starting from the first frame of wave 1.
+if (typeof window !== 'undefined' && getFlavour() === '600bn') {
+  kickImageLoads();
+}
