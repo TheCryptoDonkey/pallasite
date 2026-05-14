@@ -104,18 +104,6 @@ let lastAppliedKey = '';  // memoised state→track key so musicSetTrackForState
 
 const DEFAULT_FADE_MS = 800;
 
-/** Safari treats `.opus` files served without a `Content-Type: audio/ogg`
- *  header as MEDIA_ERR_SRC_NOT_SUPPORTED (MediaError code 4) — silent
- *  music for the whole session. Side-load the file via fetch + Blob and
- *  re-issue it with an explicit `audio/ogg` MIME so Safari treats it as
- *  standard OGG-Opus regardless of the server's response header.
- *  Detection: Safari includes "Safari" but NOT "Chrome/Chromium/Android"
- *  in the user-agent. */
-function isSafariMimeWorkaroundNeeded(): boolean {
-  const ua = navigator.userAgent;
-  return /Safari/.test(ua) && !/Chrome|Chromium|CriOS|FxiOS|Android/.test(ua);
-}
-
 function load(track: Track): Loaded {
   const cached = loaded.get(track.id);
   if (cached) return cached;
@@ -124,25 +112,7 @@ function load(track: Track): Loaded {
   const el = new Audio();
   el.loop = track.loop !== false;
   el.preload = 'auto';
-  // Safari needs the Blob/MIME workaround; everyone else gets the direct
-  // src so we don't pay the fetch+memory cost without need.
-  if (isSafariMimeWorkaroundNeeded()) {
-    fetch(track.src)
-      .then(r => r.ok ? r.arrayBuffer() : Promise.reject(new Error(`HTTP ${r.status}`)))
-      .then(buf => {
-        const blob = new Blob([buf], { type: 'audio/ogg' });
-        el.src = URL.createObjectURL(blob);
-      })
-      .catch(e => {
-        // Fall back to direct src — if the fetch itself failed, the
-        // server can't serve the file at all and the error event will
-        // surface the underlying problem via the existing handler.
-        console.warn('[music] Safari blob workaround failed, falling back', track.id, e);
-        el.src = track.src;
-      });
-  } else {
-    el.src = track.src;
-  }
+  el.src = track.src;
   // Don't set crossOrigin — the music files are same-origin so it's
   // redundant, AND on iOS Safari setting it without matching CORS
   // response headers from the server taints the MediaElementSource and
@@ -156,20 +126,40 @@ function load(track: Track): Loaded {
   src.connect(gain);
   gain.connect(dest);
   const entry: Loaded = { el, src, gain, failed: false };
+  // First-time error → try the audio/ogg Blob workaround once. Safari
+  // rejects .opus served without an audio/ogg Content-Type with
+  // MediaError code 4 (MEDIA_ERR_SRC_NOT_SUPPORTED); side-loading via
+  // fetch + Blob with explicit MIME bypasses the server header check.
+  // Only retry on code 4 to avoid masking real failures (404, decode).
+  let blobRetryUsed = false;
   el.addEventListener('error', () => {
-    entry.failed = true;
-    // Surface the failure visibly + in console so a Safari-specific
-    // 404 / unsupported-codec / CORS rejection on the-cult or a wave
-    // track doesn't manifest as inexplicable silence. Most failures
-    // are MediaError codes 1-4 (aborted, network, decode, src unsupported).
     const code = el.error?.code;
     const msg = el.error?.message;
-    console.warn('[music] load failed', { id: track.id, src: track.src, code, msg });
+    console.warn('[music] load failed', { id: track.id, src: track.src, code, msg, blobRetryUsed });
     try {
       window.dispatchEvent(new CustomEvent('pallasite:music-load-failed', {
-        detail: { id: track.id, src: track.src, code, msg },
+        detail: { id: track.id, src: track.src, code, msg, blobRetryUsed },
       }));
     } catch { /* ignore */ }
+
+    if (!blobRetryUsed && code === 4) {
+      blobRetryUsed = true;
+      console.warn('[music] retrying via fetch+Blob/audio-ogg', track.id);
+      fetch(track.src)
+        .then(r => r.ok ? r.arrayBuffer() : Promise.reject(new Error(`HTTP ${r.status}`)))
+        .then(buf => {
+          const blob = new Blob([buf], { type: 'audio/ogg' });
+          el.src = URL.createObjectURL(blob);
+          // The element will fire error AGAIN if even the blob path
+          // fails; the !blobRetryUsed gate ensures we don't loop.
+        })
+        .catch(e => {
+          console.warn('[music] blob retry fetch failed', track.id, e);
+          entry.failed = true;
+        });
+      return;  // don't mark failed yet — give the blob retry a chance
+    }
+    entry.failed = true;
   });
   // Honour startAt — seek into the track once metadata arrives so the
   // first play starts mid-track. timeupdate watches for the natural
