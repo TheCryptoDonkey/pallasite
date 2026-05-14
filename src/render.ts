@@ -3059,12 +3059,19 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     for (const dy of ghostYs) {
       const isGhost = dx !== 0 || dy !== 0;
       if (isGhost) { ctx.save(); ctx.translate(dx, dy); }
-      // Parallax depth sort: render back→front so the gameplay plane
-      // overlays decoration cleanly. Stable sort keeps spawn order
-      // within a band for repeatable visuals. Non-3 bands get a global
-      // alpha multiplier from DEPTH_CONFIGS so distance reads as fade.
+      // Parallax depth sort, split into two passes:
+      //   - backgrounds + gameplay plane (depth ≤3) BEFORE the ship +
+      //     bullets + ufos. These rocks visually pass BEHIND the ship,
+      //     which kills the "asteroid travelled through the player and
+      //     didn't hit" illusion when a background rock drifts over the
+      //     ship's screen position.
+      //   - foregrounds (depth ≥4) AFTER the ship + projectiles, so
+      //     they read as "closer to the camera" and properly occlude
+      //     gameplay below them.
+      // Stable sort within each pass keeps spawn order for repeatable
+      // visuals; non-gameplay bands get globalAlpha from DEPTH_CONFIGS.
       const sortedAsteroids = state.asteroids.slice().sort((p, q) => (p.depth ?? 3) - (q.depth ?? 3));
-      for (const a of sortedAsteroids) {
+      const drawOne = (a: Asteroid): void => {
         const dCfg = DEPTH_CONFIGS[a.depth ?? 3];
         if (dCfg && dCfg.alphaMul !== 1) {
           ctx.save();
@@ -3074,7 +3081,8 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
         } else {
           drawAsteroid(ctx, a, now);
         }
-      }
+      };
+      for (const a of sortedAsteroids) if ((a.depth ?? 3) <= 3) drawOne(a);
       for (const m of state.mines) drawMine(ctx, m, now);
       // UFOs and mines don't wrap — they traverse the world (or sit
       // stationary) without crossing the wrap cycle. Drawing them in
@@ -3093,6 +3101,9 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       drawShield(ctx, state.ship, now);
       const idleSway = state.phase === 'title' || state.phase === 'wavestart';
       drawShip(ctx, state.ship, now, idleSway);
+      // Foreground rocks (depth ≥4) — drawn after the ship so they
+      // pass IN FRONT of it, selling depth.
+      for (const a of sortedAsteroids) if ((a.depth ?? 3) >= 4) drawOne(a);
       if (isGhost) ctx.restore();
     }
   }
