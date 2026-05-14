@@ -11,6 +11,15 @@ import { getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRel
 import { getTouchMode, setTouchMode, type TouchInputMode } from './touch.js';
 import { getDisplayMode, setDisplayMode, type DisplayMode } from './display.js';
 import {
+  VISUAL_CATEGORIES,
+  getVisualStyleRaw,
+  setVisualStyle,
+  setAllVisualStyles,
+  visualStyleIsUniform,
+  type VisualCategory,
+  type VisualTier,
+} from './visual-style.js';
+import {
   getReducedMotionPref, setReducedMotionPref, type ReducedMotionPref,
   getPalette, setPalette, type ColourPalette,
   getAsteroidStyle,
@@ -8877,6 +8886,109 @@ export function renderSettings(onBack: () => void): void {
     });
   }
   paintDisplay();
+
+  // ── VISUAL STYLE ───────────────────────────────────────────────────────
+  // Per-category tier picker. Top row is a quick preset (sets all four
+  // categories at once); rows below let advanced players mix tiers.
+  // The 'mesh' (3D) tier is shown disabled with "SOON" until the WebGL
+  // renderer ships. Toggling any button repaints the canvas on the next
+  // frame — no reload needed; render.ts reads getVisualStyle() per draw.
+  const styleHeading = el('p', { parent: overlay, text: 'VISUAL STYLE' });
+  styleHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
+
+  const stylePanel = el('div', { parent: overlay });
+  stylePanel.style.cssText = 'display:flex;flex-direction:column;gap:8px;align-items:stretch;min-width:340px;';
+
+  const styleHint = el('p', { parent: overlay, text: 'Drop a tier if your device chugs' });
+  styleHint.style.cssText = 'font-size:0.7rem;color:rgba(180,140,255,0.55);letter-spacing:0.06em;margin:0;text-align:center;';
+
+  const styleBtnCss = (on: boolean, locked: boolean): string => [
+    'background:' + (on ? 'rgba(91,157,255,0.22)' : 'transparent'),
+    'border:2px solid ' + (on ? '#5b9dff' : (locked ? 'rgba(180,140,255,0.22)' : 'rgba(180,140,255,0.4)')),
+    'color:' + (on ? '#5b9dff' : (locked ? 'rgba(220,210,255,0.45)' : 'rgba(220,210,255,0.85)')),
+    "font-family:'VT323',ui-monospace,monospace",
+    'font-size:0.9rem',
+    'padding:5px 12px',
+    'letter-spacing:0.14em',
+    'cursor:' + (locked ? 'not-allowed' : 'pointer'),
+    'border-radius:5px',
+    'flex:1',
+    on ? 'box-shadow:0 0 10px rgba(91,157,255,0.3);text-shadow:0 0 6px rgba(91,157,255,0.6)' : '',
+  ].filter(Boolean).join(';');
+
+  const tierLabels: Record<VisualTier, string> = {
+    vector: 'VECTOR',
+    shaded: 'SHADED',
+    mesh: '3D · SOON',
+  };
+
+  // Quick-preset row — single click sets all four categories to the
+  // same tier. Highlighted only when every category currently matches.
+  const presetRow = el('div', { parent: stylePanel });
+  presetRow.style.cssText = 'display:flex;gap:6px;align-items:center;';
+  const presetLabel = el('span', { parent: presetRow, text: 'ALL' });
+  presetLabel.style.cssText = 'font-size:0.75rem;letter-spacing:0.18em;color:rgba(180,140,255,0.65);min-width:80px;';
+  const presetBtns: Partial<Record<VisualTier, HTMLButtonElement>> = {};
+  for (const tier of ['vector', 'shaded', 'mesh'] as const) {
+    const btn = el('button', { parent: presetRow, text: tierLabels[tier] }) as HTMLButtonElement;
+    presetBtns[tier] = btn;
+    const locked = tier === 'mesh';
+    if (locked) btn.disabled = true;
+    btn.addEventListener('click', () => {
+      if (locked) return;
+      setAllVisualStyles(tier);
+      paintStyle();
+    });
+  }
+
+  // Per-category rows
+  const catBtns = new Map<VisualCategory, Partial<Record<VisualTier, HTMLButtonElement>>>();
+  const catLabels: Record<VisualCategory, string> = {
+    asteroid: 'Asteroids',
+    ship: 'Ship',
+    bullet: 'Bullets',
+    particle: 'Particles',
+  };
+  for (const cat of VISUAL_CATEGORIES) {
+    const row = el('div', { parent: stylePanel });
+    row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+    const lbl = el('span', { parent: row, text: catLabels[cat] });
+    lbl.style.cssText = 'font-size:0.75rem;letter-spacing:0.12em;color:rgba(220,210,255,0.85);min-width:80px;';
+    const map: Partial<Record<VisualTier, HTMLButtonElement>> = {};
+    catBtns.set(cat, map);
+    for (const tier of ['vector', 'shaded', 'mesh'] as const) {
+      const btn = el('button', { parent: row, text: tierLabels[tier] }) as HTMLButtonElement;
+      map[tier] = btn;
+      const locked = tier === 'mesh';
+      if (locked) btn.disabled = true;
+      btn.addEventListener('click', () => {
+        if (locked) return;
+        setVisualStyle(cat, tier);
+        paintStyle();
+      });
+    }
+  }
+
+  function paintStyle(): void {
+    for (const tier of ['vector', 'shaded', 'mesh'] as const) {
+      const btn = presetBtns[tier];
+      if (!btn) continue;
+      const locked = tier === 'mesh';
+      btn.style.cssText = styleBtnCss(visualStyleIsUniform(tier), locked);
+    }
+    for (const cat of VISUAL_CATEGORIES) {
+      const map = catBtns.get(cat);
+      if (!map) continue;
+      const current = getVisualStyleRaw(cat);
+      for (const tier of ['vector', 'shaded', 'mesh'] as const) {
+        const btn = map[tier];
+        if (!btn) continue;
+        const locked = tier === 'mesh';
+        btn.style.cssText = styleBtnCss(current === tier, locked);
+      }
+    }
+  }
+  paintStyle();
 
   // ── ACCESSIBILITY ───────────────────────────────────────────────────────
   // Three independent axes:

@@ -19,6 +19,7 @@ import { getAsteroidStyle, shouldReduceMotion } from './a11y.js';
 import { getActiveSkin } from './skins.js';
 import { getMemberImage } from './sanctum-avatars.js';
 import { getFlavour } from './flavour.js';
+import { getVisualStyle } from './visual-style.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
 
@@ -414,6 +415,8 @@ function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, idleSw
 
   const skin = getActiveSkin().palette;
 
+  const shipShaded = getVisualStyle('ship') === 'shaded';
+
   ctx.save();
   // Idle sway — gentle bob + tilt applied in screen space (before the rotate)
   // so it reads as a wobble around the resting frame, not a roll along the
@@ -421,20 +424,53 @@ function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, idleSw
   const swayDy = idleSway ? Math.sin(now * 0.0008) * 2 : 0;
   const swayRot = idleSway ? Math.sin(now * 0.0006) * 0.05 : 0;
   ctx.translate(ship.pos.x, ship.pos.y + swayDy);
+  // SHADED tier: drop shadow under the ship, BEFORE the rotate so the
+  // shadow stays put on the "floor" regardless of the ship's facing.
+  if (shipShaded) {
+    const sg = ctx.createRadialGradient(2, 5, 2, 2, 5, 16);
+    sg.addColorStop(0, 'rgba(0,0,0,0.45)');
+    sg.addColorStop(0.6, 'rgba(0,0,0,0.18)');
+    sg.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = sg;
+    ctx.beginPath();
+    ctx.arc(2, 5, 16, 0, Math.PI * 2);
+    ctx.fill();
+  }
   ctx.rotate(ship.rot + swayRot);
   // Visual recoil kick on fire — slides the ship back along its facing while
   // the offset decays. Pure render effect, doesn't affect physics or aim.
   if (ship.recoilOffset > 0) ctx.translate(-ship.recoilOffset, 0);
-  ctx.lineWidth = 1.6;
+  // Build the ship hull path once — both VECTOR and SHADED tiers use it.
+  const hullPath = (): void => {
+    ctx.beginPath();
+    ctx.moveTo(14, 0);
+    ctx.lineTo(-10, 8);
+    ctx.lineTo(-6, 0);
+    ctx.lineTo(-10, -8);
+    ctx.closePath();
+  };
+  if (shipShaded) {
+    // SHADED hull — gradient fill (camera-fixed lit direction via
+    // counter-rotate of the gradient endpoints) + brighter stroke.
+    ctx.save();
+    hullPath();
+    ctx.clip();
+    // Counter-rotate the lighting gradient so the lit edge stays upper-
+    // left in screen space rather than rotating with the ship.
+    ctx.rotate(-(ship.rot + swayRot));
+    const lit = ctx.createLinearGradient(-12, -10, 12, 10);
+    lit.addColorStop(0, skin.ship);
+    lit.addColorStop(0.55, skin.shipShadow);
+    lit.addColorStop(1, 'rgba(0,0,0,0.45)');
+    ctx.fillStyle = lit;
+    ctx.fillRect(-30, -30, 60, 60);
+    ctx.restore();
+  }
+  ctx.lineWidth = shipShaded ? 1.8 : 1.6;
   ctx.strokeStyle = skin.ship;
   ctx.shadowColor = skin.shipShadow;
-  ctx.shadowBlur = 12;
-  ctx.beginPath();
-  ctx.moveTo(14, 0);
-  ctx.lineTo(-10, 8);
-  ctx.lineTo(-6, 0);
-  ctx.lineTo(-10, -8);
-  ctx.closePath();
+  ctx.shadowBlur = shipShaded ? 14 : 12;
+  hullPath();
   ctx.stroke();
 
   if (ship.thrusting && Math.floor(ship.thrustFrame) % 2 === 0) {
@@ -816,12 +852,13 @@ function bakeAsteroidTexture(type: AsteroidType): HTMLCanvasElement {
 function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): void {
   if (!a.alive) return;
   const style = getAsteroidStyle(a.type);
-  // 600bn filler rocks (textured, no member portrait, not a vein)
-  // get the "awesome 3D tumbling" treatment: drop shadow under,
-  // camera-fixed rim light + terminator shading on top, neutral
-  // outline (no per-type tint). Council members and main-game
-  // asteroids skip this.
-  const is600bnFiller = !a.councilMember && !a.isVein && getFlavour() === '600bn';
+  // SHADED-tier asteroids get the "tumbling through space" treatment:
+  // drop shadow under, camera-fixed rim light + terminator shading on
+  // top, neutral outline (no per-type tint). Council members carry
+  // their portrait inside the polygon; everything else (textured
+  // filler) uses the photoreal rock surface.
+  const asteroidShaded = !a.isVein && getVisualStyle('asteroid') === 'shaded';
+  const is600bnFiller = asteroidShaded && !a.councilMember;
   ctx.save();
   ctx.translate(a.pos.x, a.pos.y);
   // 600bn drop shadow — drawn in the translated-but-NOT-rotated
@@ -865,11 +902,10 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
     ctx.restore();
   }
   ctx.rotate(a.rot);
-  // 600bn drops the per-type tint on every non-vein asteroid
+  // SHADED tier drops the per-type tint on every non-vein asteroid
   // (fillers AND council members) — the texture/portrait inside
   // carries the visual identity; an outline tint just fights it.
-  const is600bnAsteroid = !a.isVein && getFlavour() === '600bn';
-  if (is600bnAsteroid) {
+  if (asteroidShaded) {
     ctx.lineWidth = 1.0;
     ctx.strokeStyle = 'rgba(50, 40, 32, 0.85)';
     ctx.shadowColor = 'rgba(0,0,0,0)';
@@ -979,8 +1015,8 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   }
 
   // Iron: inner armour ring while hp > 1 — strips off after the first hit.
-  // Skipped on 600bn (textured + council faces don't need an extra ring).
-  if (a.type === 'iron' && a.hp > 1 && getFlavour() !== '600bn') {
+  // Skipped on SHADED tier (textured + council faces don't need it).
+  if (a.type === 'iron' && a.hp > 1 && !asteroidShaded) {
     ctx.lineWidth = 1.0;
     ctx.globalAlpha = 0.55;
     ctx.beginPath();
@@ -1018,9 +1054,9 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   }
 
   // Pallasite: olivine sparkle dots — animated, signals jackpot.
-  // Suppressed on 600bn so the photoreal surface / council portrait
+  // Suppressed on SHADED so the photoreal surface / council portrait
   // reads cleanly.
-  if (a.type === 'pallasite' && getFlavour() !== '600bn') {
+  if (a.type === 'pallasite' && !asteroidShaded) {
     const count = a.size === 'large' ? 7 : a.size === 'medium' ? 4 : 2;
     for (let i = 0; i < count; i++) {
       const t = now * 0.001 + i * 0.7;
@@ -1041,8 +1077,8 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   }
 
   // Chondrite: short crystal accents at every other vertex — brittle look.
-  // Suppressed on 600bn (texture already reads as brittle stone).
-  if (a.type === 'chondrite' && getFlavour() !== '600bn') {
+  // Suppressed on SHADED (texture already reads as brittle stone).
+  if (a.type === 'chondrite' && !asteroidShaded) {
     ctx.lineWidth = 0.8;
     ctx.globalAlpha = 0.55;
     ctx.strokeStyle = '#cfeaff';
@@ -1758,12 +1794,62 @@ function drawBullet(ctx: CanvasRenderingContext2D, b: Bullet, friendly: boolean)
   const len = Math.max(6, speed * 0.012);
   const ux = b.vel.x / speed;
   const uy = b.vel.y / speed;
+  const bulletShaded = getVisualStyle('bullet') === 'shaded';
   ctx.save();
 
-  // Soft trail behind the bullet head. Flat semi-transparent stroke -- the
-  // earlier gradient + composite-op version was per-bullet expensive enough
-  // to crater mobile frame rate. The shadowBlur on the head still gives the
-  // lit look without any per-frame allocation here.
+  if (bulletShaded) {
+    // SHADED tier — additive trail with linear gradient + head halo +
+    // beefier core line. The gradient costs a per-bullet allocation but
+    // the bullet count stays low (~20 active on screen) so the budget
+    // is comfortable. Lighter composite op = the trail blooms over
+    // backgrounds without smearing dark.
+    const trailLen = len * 5.5;
+    const tx = b.pos.x - ux * trailLen;
+    const ty = b.pos.y - uy * trailLen;
+    const grad = ctx.createLinearGradient(b.pos.x, b.pos.y, tx, ty);
+    const headHex = friendly ? '255,90,90' : '255,200,90';
+    grad.addColorStop(0, `rgba(${headHex},0.85)`);
+    grad.addColorStop(0.5, `rgba(${headHex},0.35)`);
+    grad.addColorStop(1, `rgba(${headHex},0)`);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = friendly ? 2.6 : 3.0;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(b.pos.x, b.pos.y);
+    ctx.lineTo(tx, ty);
+    ctx.stroke();
+    // Head halo — radial gradient bloom that reads as the bullet's
+    // burning core.
+    const halo = ctx.createRadialGradient(b.pos.x, b.pos.y, 0, b.pos.x, b.pos.y, 8);
+    halo.addColorStop(0, `rgba(${headHex},0.9)`);
+    halo.addColorStop(0.6, `rgba(${headHex},0.3)`);
+    halo.addColorStop(1, `rgba(${headHex},0)`);
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(b.pos.x, b.pos.y, 8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    // Solid white core line for snap.
+    ctx.strokeStyle = '#ffffff';
+    ctx.shadowColor = friendly ? '#ff5050' : '#ff8a3a';
+    ctx.shadowBlur = friendly ? 12 : 16;
+    ctx.lineWidth = friendly ? 1.4 : 1.8;
+    ctx.beginPath();
+    ctx.moveTo(b.pos.x - ux * len * 0.5, b.pos.y - uy * len * 0.5);
+    ctx.lineTo(b.pos.x + ux * len * 0.5, b.pos.y + uy * len * 0.5);
+    ctx.stroke();
+    if (!friendly) {
+      ctx.fillStyle = '#ffd84a';
+      ctx.beginPath();
+      ctx.arc(b.pos.x, b.pos.y, 1.8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+    return;
+  }
+
+  // VECTOR tier — flat trail + crisp core. Per-bullet cheap.
   const trailLen = len * 3.5;
   ctx.strokeStyle = friendly ? 'rgba(255,90,90,0.30)' : 'rgba(255,170,40,0.30)';
   ctx.lineWidth = 1.6;
@@ -1780,7 +1866,6 @@ function drawBullet(ctx: CanvasRenderingContext2D, b: Bullet, friendly: boolean)
   ctx.moveTo(b.pos.x - ux * len * 0.5, b.pos.y - uy * len * 0.5);
   ctx.lineTo(b.pos.x + ux * len * 0.5, b.pos.y + uy * len * 0.5);
   ctx.stroke();
-  // Centre dot for enemy bullets — makes them feel hotter
   if (!friendly) {
     ctx.fillStyle = '#ffd84a';
     ctx.beginPath();
@@ -2030,14 +2115,59 @@ function drawDebris(ctx: CanvasRenderingContext2D, debris: ReadonlyArray<Debris>
 
 function drawParticles(ctx: CanvasRenderingContext2D, particles: ReadonlyArray<Particle>): void {
   if (particles.length === 0) return;
+  const particleShaded = getVisualStyle('particle') === 'shaded';
   ctx.save();
   ctx.shadowBlur = 0;
+  if (particleShaded) {
+    // SHADED tier — additive blend so overlapping bursts brighten
+    // rather than just covering each other; ~1.4× sprite radius so
+    // bursts feel chunkier. Soft falloff via two-stop radial gradient
+    // per unique colour (cached across consecutive same-colour
+    // particles, which is the common case for an explosion ring).
+    ctx.globalCompositeOperation = 'lighter';
+    let lastColour: string | null = null;
+    let lastAlpha = -1;
+    let lastSize = -1;
+    let cachedGrad: CanvasGradient | null = null;
+    let cachedGradSize = 0;
+    for (const p of particles) {
+      const alpha = p.ttl / p.maxTtl;
+      if (alpha < 0.05) continue;
+      const r = p.size * (0.7 + 0.6 * alpha);
+      if (p.colour !== lastColour || Math.abs(r - cachedGradSize) > 0.5) {
+        // Rebuild the gradient — only happens on colour OR size shift.
+        // The size-shift threshold (0.5 px) avoids rebuilding for every
+        // sub-pixel falloff step during a fade.
+        const g = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+        g.addColorStop(0, p.colour);
+        g.addColorStop(0.55, p.colour.startsWith('rgba')
+          ? p.colour.replace(/[\d.]+\)$/, '0.35)')
+          : p.colour + '5a');
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        cachedGrad = g;
+        cachedGradSize = r;
+        lastColour = p.colour;
+        ctx.fillStyle = g;
+      }
+      if (alpha !== lastAlpha) { ctx.globalAlpha = alpha; lastAlpha = alpha; }
+      if (r !== lastSize) lastSize = r;
+      ctx.save();
+      ctx.translate(p.pos.x, p.pos.y);
+      ctx.fillStyle = cachedGrad ?? p.colour;
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.restore();
+    return;
+  }
+  // VECTOR tier — flat alpha-blended disc per particle, batched.
   let lastColour: string | null = null;
   let lastAlpha = -1;
   for (const p of particles) {
     const alpha = p.ttl / p.maxTtl;
     if (alpha < 0.05) continue;
-    // Avoid re-setting fillStyle / globalAlpha when consecutive particles match
     if (p.colour !== lastColour) { ctx.fillStyle = p.colour; lastColour = p.colour; }
     if (alpha !== lastAlpha) { ctx.globalAlpha = alpha; lastAlpha = alpha; }
     ctx.beginPath();
