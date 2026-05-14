@@ -10138,11 +10138,11 @@ function renderSanctumAttract(state: GameState): void {
 
   const brief = el('div', { parent: overlay });
   brief.style.cssText = 'display:flex;flex-direction:column;gap:4px;margin:16px 0;text-align:center;';
-  const line1 = el('p', { parent: brief, text: '240 SECONDS · 11 COUNCIL · 1 STONE' });
+  const line1 = el('p', { parent: brief, text: 'ONE LIFE · 11 COUNCIL · ENDLESS CYCLE' });
   line1.style.cssText = 'font:bold 13px ui-monospace,monospace;color:#ffd84a;letter-spacing:0.2em;margin:0;';
-  const line2 = el('p', { parent: brief, text: 'racooDNI at 04:20 · Bullbear at the horizon' });
+  const line2 = el('p', { parent: brief, text: 'Shatter pallasites for sats. The council always returns.' });
   line2.style.cssText = 'font:11px ui-monospace,monospace;color:rgba(255,245,216,0.75);letter-spacing:0.14em;margin:0;';
-  const line3 = el('p', { parent: brief, text: 'Stack sats. Find the signal.' });
+  const line3 = el('p', { parent: brief, text: '"600B was never just the price. It was the signal."' });
   line3.style.cssText = 'font:11px ui-monospace,monospace;color:rgba(255,245,216,0.55);letter-spacing:0.12em;margin:0;font-style:italic;';
 
   // Big PLAY button — triggers startGame via the shared bindings.
