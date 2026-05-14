@@ -412,7 +412,19 @@ export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?
     hpMax: hp,
     hitFlash: 0,
     rot: Math.random() * Math.PI * 2,
-    rotVel: (Math.random() - 0.5) * (isVein ? 0.6 : 1.6),
+    // Guarantee a visible non-zero rotation by picking sign first then
+    // a strictly-positive magnitude. The old (random-0.5)*scale form
+    // centred on 0 — a chunk of asteroids would spawn near-static,
+    // which on a smooth 3D mesh reads as "frozen" rather than "drifting".
+    // Council members get a slower band so players can read the face;
+    // veins keep their slow drift.
+    rotVel: (Math.random() < 0.5 ? -1 : 1) * (
+      opts?.councilMember
+        ? 0.25 + Math.random() * 0.25     // 0.25..0.50 rad/s — readable face
+        : isVein
+        ? 0.15 + Math.random() * 0.20     // 0.15..0.35 rad/s — gentle drift
+        : 0.50 + Math.random() * 1.00     // 0.50..1.50 rad/s — lively
+    ),
     shape: makeAsteroidShape(),
     hue: Math.random() * 60 - 30,
     isVein,

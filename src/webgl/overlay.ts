@@ -132,28 +132,6 @@ let frameCounter = 0;
  *  projection.
  */
 function buildAsteroidGeometry(a: Asteroid): THREE.BufferGeometry {
-  // Council members: smooth icosphere with planar UV projection only.
-  // Any procedural displacement warps the portrait beyond recognition
-  // — players couldn't tell which member they were shooting. Higher
-  // detail (4) keeps the sphere silhouette smooth, no crater/noise/
-  // stretch passes, planar UV stamps the portrait on the +Z hemisphere.
-  if (a.councilMember) {
-    const geo = new THREE.IcosahedronGeometry(a.radius, 4);
-    const pos = geo.attributes.position as THREE.BufferAttribute;
-    const n = pos.count;
-    const uv = geo.attributes.uv as THREE.BufferAttribute;
-    const maxExtent = a.radius * 1.4;
-    for (let i = 0; i < n; i++) {
-      const x = pos.getX(i);
-      const y = pos.getY(i);
-      const u = (x / maxExtent) * 0.5 + 0.5;
-      const v = 0.5 - (y / maxExtent) * 0.5;
-      uv.setXY(i, u, v);
-    }
-    uv.needsUpdate = true;
-    geo.computeVertexNormals();
-    return geo;
-  }
   // Detail dropped from 5/4/3 (up to 10242 verts) to 3/2/2 (642/162/162).
   // Combined with the continuous-noise fix below, fewer verts read as
   // SMOOTHER, not rougher — the previous high-detail meshes were just
@@ -297,45 +275,177 @@ function kickDiffuseLoad(h: OverlayHandle, type: string, attachTo: THREE.MeshPho
   });
 }
 
-/** Build (or fetch from cache) a council member's portrait texture.
- *  getMemberImage returns the pre-baked 128px canvas from
- *  sanctum-avatars; we wrap it in a CanvasTexture. Returns null if
- *  the image hasn't decoded yet (caller retries on subsequent
- *  frames via attachCouncilTextureWhenReady). */
-function getCouncilTexture(h: OverlayHandle, name: string): THREE.Texture | null {
-  const cached = h.councilTextureCache.get(name);
+/** ── Council medallion ───────────────────────────────────────────────
+ *  Council members render as flat round medallions (like the 600bn
+ *  coin). Front face shows the member's portrait inside a gold rim;
+ *  back face shows their role + archetype in serif type on a sacred-
+ *  stone gradient. The rock tumbles around its Y axis with small X/Z
+ *  wobble so both faces flash past, and the chip below the asteroid
+ *  (drawn in render.ts) carries the name + role for redundancy.
+ *
+ *  Spherical-asteroid approach was abandoned because the planar UV
+ *  projection of the portrait stretched as the rock rotated — players
+ *  couldn't recognise members at-a-glance. A flat medallion sidesteps
+ *  the projection problem entirely: when the face is toward camera
+ *  the portrait reads cleanly; when not, you see the back or edge. */
+const COUNCIL_FRONT_TEX = new Map<string, THREE.CanvasTexture>();
+const COUNCIL_BACK_TEX = new Map<string, THREE.CanvasTexture>();
+/** Tracks which front textures already have the portrait drawn into
+ *  them — so per-frame `ensureCouncilFrontPortrait` is a single Map
+ *  lookup once the image has landed. */
+const COUNCIL_FRONT_PORTRAIT_DRAWN = new Set<string>();
+
+const COUNCIL_TEX_SIZE = 384;
+
+function paintCouncilCoinBase(ctx: CanvasRenderingContext2D, gold: boolean): void {
+  const w = ctx.canvas.width;
+  const h = ctx.canvas.height;
+  const cx = w / 2;
+  const cy = h / 2;
+  const r = w / 2 - 4;
+  const grad = ctx.createRadialGradient(cx, cy, 10, cx, cy, r);
+  if (gold) {
+    grad.addColorStop(0, '#fff6c0');
+    grad.addColorStop(0.5, '#ffd84a');
+    grad.addColorStop(1, '#8a5800');
+  } else {
+    grad.addColorStop(0, '#241834');
+    grad.addColorStop(0.7, '#0a0418');
+    grad.addColorStop(1, '#000010');
+  }
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+  // Outer rim.
+  ctx.strokeStyle = gold ? '#5a3a00' : '#ffd84a';
+  ctx.lineWidth = 6;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r - 2, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+function getCouncilFrontTexture(member: NonNullable<Asteroid['councilMember']>): THREE.CanvasTexture {
+  const cached = COUNCIL_FRONT_TEX.get(member.name);
   if (cached) return cached;
-  const img = getMemberImage(name);
-  if (!img) return null;
-  const tex = new THREE.CanvasTexture(img);
+  const c = document.createElement('canvas');
+  c.width = COUNCIL_TEX_SIZE; c.height = COUNCIL_TEX_SIZE;
+  const ctx = c.getContext('2d')!;
+  paintCouncilCoinBase(ctx, true);
+  const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
-  // ClampToEdge keeps the portrait from repeating across the sphere
-  // surface; sphere UVs already wrap longitudinally so the back of
-  // the rock shows the seam, not a tiled face.
   tex.wrapS = THREE.ClampToEdgeWrapping;
   tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.needsUpdate = true;
-  h.councilTextureCache.set(name, tex);
+  COUNCIL_FRONT_TEX.set(member.name, tex);
   return tex;
 }
 
-/** Per-frame retry — make sure a council asteroid is showing its
- *  portrait. Previously bailed early if mat.map was already set, but
- *  that left a window where kickDiffuseLoad's callback could complete
- *  AFTER the portrait was attached and stomp the portrait with the
- *  rock texture (the per-frame retry would then refuse to fix it).
- *  Now: if the cached portrait texture isn't the current map, set it. */
-function attachCouncilTextureWhenReady(
-  h: OverlayHandle,
-  mat: THREE.MeshPhongMaterial,
-  name: string,
-): void {
-  const tex = getCouncilTexture(h, name);
+/** Draw the portrait into the front-face canvas if it hasn't been
+ *  done yet AND the portrait image has decoded. Returns true once
+ *  the portrait is in place. Cheap to call every frame: short-
+ *  circuits after the first successful draw. */
+function ensureCouncilFrontPortrait(member: NonNullable<Asteroid['councilMember']>): void {
+  if (COUNCIL_FRONT_PORTRAIT_DRAWN.has(member.name)) return;
+  const portrait = getMemberImage(member.name);
+  if (!portrait) return;
+  const tex = COUNCIL_FRONT_TEX.get(member.name);
   if (!tex) return;
-  if (mat.map === tex) return;
-  mat.map = tex;
-  mat.color = new THREE.Color(0xffffff);
-  mat.needsUpdate = true;
+  const c = tex.image as HTMLCanvasElement;
+  const ctx = c.getContext('2d')!;
+  const cx = c.width / 2;
+  const cy = c.height / 2;
+  const portraitR = c.width * 0.36;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, portraitR, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.drawImage(portrait, cx - portraitR, cy - portraitR, portraitR * 2, portraitR * 2);
+  ctx.restore();
+  // Dark inner ring + gold outer ring around the portrait — frames
+  // the face against the coin gradient.
+  ctx.strokeStyle = '#0a0418';
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.arc(cx, cy, portraitR, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.strokeStyle = '#ffd84a';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(cx, cy, portraitR + 4, 0, Math.PI * 2);
+  ctx.stroke();
+  // Member name in a strip below the portrait.
+  ctx.fillStyle = '#0a0418';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 26px Georgia, serif';
+  ctx.fillText(member.name.toUpperCase(), cx, cy + portraitR + 32);
+  tex.needsUpdate = true;
+  COUNCIL_FRONT_PORTRAIT_DRAWN.add(member.name);
+}
+
+function getCouncilBackTexture(member: NonNullable<Asteroid['councilMember']>): THREE.CanvasTexture {
+  const cached = COUNCIL_BACK_TEX.get(member.name);
+  if (cached) return cached;
+  const c = document.createElement('canvas');
+  c.width = COUNCIL_TEX_SIZE; c.height = COUNCIL_TEX_SIZE;
+  const ctx = c.getContext('2d')!;
+  paintCouncilCoinBase(ctx, false);
+  // Role big in the centre.
+  ctx.fillStyle = '#ffd84a';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 88px Georgia, serif';
+  ctx.fillText(member.role, c.width / 2, c.height / 2 - 28);
+  // Archetype below — wrap to two lines if longer than fits.
+  ctx.fillStyle = '#d8c08a';
+  ctx.font = 'bold 22px ui-monospace, monospace';
+  const arch = (member.archetype || '').toUpperCase();
+  if (arch.length > 18) {
+    const words = arch.split(' ');
+    const mid = Math.ceil(words.length / 2);
+    ctx.fillText(words.slice(0, mid).join(' '), c.width / 2, c.height / 2 + 50);
+    ctx.fillText(words.slice(mid).join(' '), c.width / 2, c.height / 2 + 80);
+  } else {
+    ctx.fillText(arch, c.width / 2, c.height / 2 + 60);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  COUNCIL_BACK_TEX.set(member.name, tex);
+  return tex;
+}
+
+function buildCouncilMedallionMesh(a: Asteroid): { mesh: THREE.Mesh; geometry: THREE.BufferGeometry; material: THREE.MeshPhongMaterial } {
+  const member = a.councilMember!;
+  const r = a.radius;
+  const h = r * 0.34;
+  const sideMat = new THREE.MeshPhongMaterial({
+    color: 0xb87400,
+    shininess: 200,
+    specular: 0xfff0a0,
+  });
+  const frontMat = new THREE.MeshPhongMaterial({
+    color: 0xffffff,
+    map: getCouncilFrontTexture(member),
+    shininess: 220,
+    specular: 0xffffff,
+  });
+  const backMat = new THREE.MeshPhongMaterial({
+    color: 0xffffff,
+    map: getCouncilBackTexture(member),
+    shininess: 220,
+    specular: 0xffffff,
+  });
+  const geo = new THREE.CylinderGeometry(r, r, h, 64);
+  // Rotate so axis points along Z (toward camera). +Z cap = front,
+  // -Z cap = back. Cylinder material slot order is [side, top, bot],
+  // unchanged by the geometry rotation, so the cap that ends up at
+  // +Z (toward camera) is still slot 1 (frontMat).
+  geo.rotateX(Math.PI / 2);
+  const mesh = new THREE.Mesh(geo, [sideMat, frontMat, backMat]);
+  mesh.frustumCulled = false;
+  return { mesh, geometry: geo, material: frontMat };
 }
 
 /** Trigger async load of three.js + scene construction. Idempotent. */
@@ -725,55 +835,54 @@ export function renderOverlay(opts: {
     if (!a.alive || a.id == null) continue;
     let entry = handle.asteroidMeshes.get(a.id);
     if (!entry) {
-      const geometry = buildAsteroidGeometry(a);
-      const baseColor = ASTEROID_TYPE_COLOR[a.type] ?? 0xb0a090;
-      const matCfg = ASTEROID_TYPE_MAT[a.type] ?? ASTEROID_TYPE_MAT.stony;
-      const material = new THREE.MeshPhongMaterial({
-        color: baseColor,
-        shininess: matCfg.shininess,
-        specular: matCfg.specular,
-      });
-      // Non-council asteroids: rock texture + bumpMap from same. The
-      // bumpMap uses the texture's luminance as height — gives free
-      // surface micro-detail under lighting that geometry alone can't
-      // (and shouldn't) provide.
-      // Council members: skip the rock texture entirely so the
-      // portrait isn't competing for the diffuse slot. The portrait
-      // attaches via attachCouncilTextureWhenReady once decoded.
-      const isCouncil = !!a.councilMember;
-      const cachedTypeMap = getDiffuseTexture(handle, a.type);
-      if (cachedTypeMap && !isCouncil) {
-        material.map = cachedTypeMap;
-        material.bumpMap = cachedTypeMap;
-        material.bumpScale = 0.35;
-      } else if (!cachedTypeMap) {
-        kickDiffuseLoad(handle, a.type, material, isCouncil);
-      }
-      if (isCouncil && a.councilMember) {
-        const portrait = getCouncilTexture(handle, a.councilMember.name);
-        if (portrait) {
-          material.map = portrait;
-          material.color = new THREE.Color(0xffffff);
+      if (a.councilMember) {
+        const built = buildCouncilMedallionMesh(a);
+        scene.add(built.mesh);
+        entry = { mesh: built.mesh, geometry: built.geometry, material: built.material, lastSeenFrame: frameCounter };
+      } else {
+        const geometry = buildAsteroidGeometry(a);
+        const baseColor = ASTEROID_TYPE_COLOR[a.type] ?? 0xb0a090;
+        const matCfg = ASTEROID_TYPE_MAT[a.type] ?? ASTEROID_TYPE_MAT.stony;
+        const material = new THREE.MeshPhongMaterial({
+          color: baseColor,
+          shininess: matCfg.shininess,
+          specular: matCfg.specular,
+        });
+        const cachedTypeMap = getDiffuseTexture(handle, a.type);
+        if (cachedTypeMap) {
+          material.map = cachedTypeMap;
+          material.bumpMap = cachedTypeMap;
+          material.bumpScale = 0.35;
+        } else {
+          kickDiffuseLoad(handle, a.type, material, false);
         }
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.frustumCulled = false;
+        scene.add(mesh);
+        entry = { mesh, geometry, material, lastSeenFrame: frameCounter };
       }
-      const mesh = new THREE.Mesh(geometry, material);
-      mesh.frustumCulled = false;
-      scene.add(mesh);
-      entry = { mesh, geometry, material, lastSeenFrame: frameCounter };
       handle.asteroidMeshes.set(a.id, entry);
     }
     entry.lastSeenFrame = frameCounter;
     entry.mesh.position.set(a.pos.x, 720 - a.pos.y, 0);
-    entry.mesh.rotation.z = -a.rot;
-    entry.mesh.rotation.x = a.rot * 0.55;
-    entry.mesh.rotation.y = a.rot * 0.37;
-    entry.mesh.visible = true;
-    // If this is a council asteroid and the portrait wasn't ready at
-    // mesh-build time, try again now. Cheap once the texture has been
-    // attached (the map check short-circuits).
     if (a.councilMember) {
-      attachCouncilTextureWhenReady(handle, entry.material, a.councilMember.name);
+      // Medallion tumble — main rotation around Y (vertical axis) flips
+      // the coin face↔back, with small X/Z wobble for life. Slower than
+      // non-council asteroids so the portrait reads when facing camera.
+      entry.mesh.rotation.set(
+        Math.sin(a.rot * 0.5) * 0.18,
+        a.rot,
+        Math.cos(a.rot * 0.4) * 0.10,
+      );
+      // Draw the portrait into the front-face canvas as soon as the
+      // image lands. Cheap after the first successful draw.
+      ensureCouncilFrontPortrait(a.councilMember);
+    } else {
+      entry.mesh.rotation.z = -a.rot;
+      entry.mesh.rotation.x = a.rot * 0.55;
+      entry.mesh.rotation.y = a.rot * 0.37;
     }
+    entry.mesh.visible = true;
   }
   sweepStale(scene, handle.asteroidMeshes, frameCounter);
 
