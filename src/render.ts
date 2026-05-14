@@ -579,6 +579,201 @@ function drawHyperspaceMalfunction(ctx: CanvasRenderingContext2D, ship: Ship, no
   ctx.restore();
 }
 
+// ── Asteroid 3D textures ─────────────────────────────────────────────
+// Pre-baked off-screen canvases per mineral type, drawn ONCE at module
+// load (lazy). drawAsteroid clips them inside the lumpy polygon at
+// runtime — combined with the rotating frame this reads as a 3D-shaded
+// rock tumbling through space, much richer than the previous line-art
+// outline. Cost per frame: one drawImage per asteroid (cheap, same as
+// the council portrait pipeline). Only activates on 600bn flavour so
+// the campaign's canonical line-art look is untouched.
+const ASTEROID_TEXTURE_SIZE = 128;
+const asteroidTextureCache = new Map<AsteroidType, HTMLCanvasElement>();
+
+/** Mulberry32 PRNG — deterministic so each type's texture is stable
+ *  across runs. Seeded per type so stony/iron/etc. each get their own
+ *  stable feature pattern. */
+function makePrng(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function bakeAsteroidTexture(type: AsteroidType): HTMLCanvasElement {
+  const cached = asteroidTextureCache.get(type);
+  if (cached) return cached;
+
+  const c = document.createElement('canvas');
+  c.width = ASTEROID_TEXTURE_SIZE;
+  c.height = ASTEROID_TEXTURE_SIZE;
+  const x = c.getContext('2d');
+  if (!x) return c;
+
+  const cx = ASTEROID_TEXTURE_SIZE / 2;
+  const cy = ASTEROID_TEXTURE_SIZE / 2;
+  const r = ASTEROID_TEXTURE_SIZE / 2;
+
+  // Per-type palette + features. The 3D shading is achieved by a
+  // radial gradient with the light source offset to the upper-left
+  // — bright at (cx - 30%r, cy - 30%r), dark at the opposite corner.
+  // Then small features overlaid for the mineral character.
+  const palettes: Record<AsteroidType, { lit: string; mid: string; shadow: string; rim: string }> = {
+    stony:     { lit: '#c4b298', mid: '#7a6856', shadow: '#2a2218', rim: '#1a1410' },
+    iron:      { lit: '#7a4e36', mid: '#3a1f12', shadow: '#1a0a06', rim: '#0a0402' },
+    chondrite: { lit: '#d8b070', mid: '#7c5828', shadow: '#2c1c08', rim: '#180e04' },
+    pallasite: { lit: '#a6b070', mid: '#3a4a18', shadow: '#1a200a', rim: '#0a1004' },
+  };
+  const p = palettes[type];
+  const rng = makePrng(
+    type === 'stony' ? 0x57071 :
+    type === 'iron' ? 0x12041 :
+    type === 'chondrite' ? 0xC4014 :
+    /* pallasite */ 0xA1148,
+  );
+
+  // Base 3D sphere shading — radial gradient from a lit upper-left to
+  // a deep shadow lower-right. Stops at three points sell the volume.
+  const lightR = r * 0.18;
+  const lightCx = cx - r * 0.32;
+  const lightCy = cy - r * 0.32;
+  const grad = x.createRadialGradient(lightCx, lightCy, lightR * 0.3, lightCx, lightCy, r * 1.4);
+  grad.addColorStop(0, p.lit);
+  grad.addColorStop(0.45, p.mid);
+  grad.addColorStop(1, p.shadow);
+  x.fillStyle = grad;
+  x.beginPath();
+  x.arc(cx, cy, r, 0, Math.PI * 2);
+  x.fill();
+
+  // Specular highlight — small bright disc above the lit center for
+  // a wet/metallic suggestion. Heavier on iron/pallasite (metallic),
+  // softer on stony/chondrite (rocky).
+  const specular = type === 'iron' || type === 'pallasite' ? 0.55 : 0.32;
+  const specR = r * 0.22;
+  const specGrad = x.createRadialGradient(lightCx, lightCy, 0, lightCx, lightCy, specR);
+  specGrad.addColorStop(0, `rgba(255, 240, 210, ${specular})`);
+  specGrad.addColorStop(1, 'rgba(255, 240, 210, 0)');
+  x.fillStyle = specGrad;
+  x.beginPath();
+  x.arc(lightCx, lightCy, specR, 0, Math.PI * 2);
+  x.fill();
+
+  // Type-specific surface features.
+  if (type === 'stony') {
+    // Craters — 14 small dark dimples scattered, each with a rim
+    // highlight on the lit side. Reads as cratered grey rock.
+    for (let i = 0; i < 14; i++) {
+      const a = rng() * Math.PI * 2;
+      const dist = rng() * r * 0.78;
+      const px = cx + Math.cos(a) * dist;
+      const py = cy + Math.sin(a) * dist;
+      const cr = 2 + rng() * 5;
+      // Dimple shadow
+      x.fillStyle = `rgba(20, 14, 8, ${0.45 + rng() * 0.3})`;
+      x.beginPath();
+      x.arc(px, py, cr, 0, Math.PI * 2);
+      x.fill();
+      // Rim highlight on the lit side
+      x.fillStyle = 'rgba(220, 200, 170, 0.35)';
+      x.beginPath();
+      x.arc(px - cr * 0.4, py - cr * 0.4, cr * 0.6, 0, Math.PI * 2);
+      x.fill();
+    }
+  } else if (type === 'iron') {
+    // Widmanstätten-style criss-cross hint + a few bright iron flecks.
+    x.save();
+    x.strokeStyle = 'rgba(200, 130, 70, 0.18)';
+    x.lineWidth = 0.8;
+    for (let i = 0; i < 6; i++) {
+      const a = rng() * Math.PI * 2;
+      const len = r * (0.5 + rng() * 0.6);
+      x.beginPath();
+      x.moveTo(cx + Math.cos(a) * -len, cy + Math.sin(a) * -len);
+      x.lineTo(cx + Math.cos(a) * len, cy + Math.sin(a) * len);
+      x.stroke();
+    }
+    x.restore();
+    // Iron flecks — small bright orange-red dots on the lit side.
+    for (let i = 0; i < 10; i++) {
+      const a = rng() * Math.PI * 2;
+      const dist = rng() * r * 0.7;
+      const px = cx + Math.cos(a) * dist;
+      const py = cy + Math.sin(a) * dist;
+      const fr = 1 + rng() * 2.5;
+      x.fillStyle = `rgba(255, ${130 + Math.floor(rng() * 60)}, 60, ${0.55 + rng() * 0.35})`;
+      x.shadowColor = '#ff6a20';
+      x.shadowBlur = 4;
+      x.beginPath();
+      x.arc(px, py, fr, 0, Math.PI * 2);
+      x.fill();
+    }
+    x.shadowBlur = 0;
+  } else if (type === 'chondrite') {
+    // Chondrules — round embedded grains in mixed warm colours.
+    const chondruleColours = ['#d8a040', '#b8804a', '#e0c060', '#9a6830', '#c89858', '#8a5a25'];
+    for (let i = 0; i < 16; i++) {
+      const a = rng() * Math.PI * 2;
+      const dist = rng() * r * 0.78;
+      const px = cx + Math.cos(a) * dist;
+      const py = cy + Math.sin(a) * dist;
+      const cr = 1.5 + rng() * 3.5;
+      const col = chondruleColours[Math.floor(rng() * chondruleColours.length)];
+      x.fillStyle = col;
+      x.beginPath();
+      x.arc(px, py, cr, 0, Math.PI * 2);
+      x.fill();
+      // Tiny shadow on the lower-right
+      x.fillStyle = 'rgba(20, 12, 4, 0.4)';
+      x.beginPath();
+      x.arc(px + cr * 0.3, py + cr * 0.3, cr * 0.35, 0, Math.PI * 2);
+      x.fill();
+    }
+  } else if (type === 'pallasite') {
+    // Olivine crystals — bright green-gold inclusions with glow,
+    // embedded in the dark iron base. This is the gem-grade variety.
+    for (let i = 0; i < 12; i++) {
+      const a = rng() * Math.PI * 2;
+      const dist = rng() * r * 0.75;
+      const px = cx + Math.cos(a) * dist;
+      const py = cy + Math.sin(a) * dist;
+      const cr = 2.5 + rng() * 4;
+      // Gold/green olivine glow
+      x.shadowColor = '#cfff70';
+      x.shadowBlur = 6;
+      x.fillStyle = `rgba(${180 + Math.floor(rng() * 50)}, ${220 + Math.floor(rng() * 30)}, ${100 + Math.floor(rng() * 60)}, 0.85)`;
+      x.beginPath();
+      x.arc(px, py, cr, 0, Math.PI * 2);
+      x.fill();
+      // Bright crystalline core
+      x.shadowBlur = 0;
+      x.fillStyle = 'rgba(255, 250, 200, 0.9)';
+      x.beginPath();
+      x.arc(px - cr * 0.25, py - cr * 0.25, cr * 0.35, 0, Math.PI * 2);
+      x.fill();
+    }
+    x.shadowBlur = 0;
+  }
+
+  // Subtle rim darkening — sells the silhouette by making the edge
+  // ~80% as dark as the shadow stop. Drawn last so features don't
+  // override it at the rim.
+  const rimGrad = x.createRadialGradient(cx, cy, r * 0.78, cx, cy, r);
+  rimGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+  rimGrad.addColorStop(1, p.rim);
+  x.fillStyle = rimGrad;
+  x.beginPath();
+  x.arc(cx, cy, r, 0, Math.PI * 2);
+  x.fill();
+
+  asteroidTextureCache.set(type, c);
+  return c;
+}
+
 // ── Asteroid ──────────────────────────────────────────────────────────────────
 
 function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): void {
@@ -629,6 +824,35 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   }
   ctx.closePath();
   ctx.stroke();
+
+  // 600bn non-council asteroids get a pre-baked 3D-style texture
+  // clipped inside the lumpy polygon — gives the field filler rocks
+  // the "awesome 3D tumbling through space" look. Council members
+  // skip this branch (their portrait fill comes below). Main flavour
+  // keeps the canonical line-art look untouched.
+  if (!a.councilMember && getFlavour() === '600bn' && !a.isVein) {
+    const tex = bakeAsteroidTexture(a.type);
+    ctx.save();
+    // Re-trace polygon path for the clip (the prior stroke consumed
+    // the previous path).
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const angle = (Math.PI * 2 * i) / n;
+      const r = a.radius * a.shape[i] * 0.96;
+      const x = Math.cos(angle) * r;
+      const y = Math.sin(angle) * r;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.clip();
+    // The polygon is drawn in the rotated frame (ctx.rotate(a.rot)
+    // happened upstream), so drawing the texture here in the same
+    // frame means it tumbles with the rock.
+    const d = a.radius * 2.05;
+    ctx.drawImage(tex, -d / 2, -d / 2, d, d);
+    ctx.restore();
+  }
 
   // 600bn council-textured asteroids — clip the member portrait inside
   // the lumpy outline. Renders at every size; texture is pre-baked to
