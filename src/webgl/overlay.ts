@@ -876,14 +876,15 @@ export function renderOverlay(opts: {
     const depthCfg = DEPTH_CONFIGS[a.depth ?? 3];
     const zOffset = depthCfg?.meshZ ?? 0;
     entry.mesh.position.set(a.pos.x, 720 - a.pos.y, zOffset);
-    // Per-band alpha — opaque on the gameplay plane, fading on
-    // decorative bands. material may be a single MeshPhongMaterial
-    // (asteroid) or part of an array (council medallion) — we own the
-    // single one we stashed in entry.material.
+    // Per-band alpha — backgrounds fade into the void, gameplay plane
+    // + foregrounds stay opaque (foregrounds must occlude what's
+    // behind them, not see through). Always-set opacity so a rock that
+    // changes depth (no current callers, but cheap to support) doesn't
+    // stay translucent.
     const alphaMul = depthCfg?.alphaMul ?? 1;
-    if (alphaMul !== 1 && 'opacity' in entry.material) {
+    if ('opacity' in entry.material) {
       const mat = entry.material as THREE.MeshPhongMaterial;
-      mat.transparent = true;
+      mat.transparent = alphaMul < 1;
       mat.opacity = alphaMul;
     }
     // Live radius can shift mid-life (council shrink-on-hit); scale
@@ -893,13 +894,17 @@ export function renderOverlay(opts: {
       entry.mesh.scale.set(s, s, s);
     }
     if (a.councilMember) {
-      // Medallion tumble — main rotation around Y (vertical axis) flips
-      // the coin face↔back, with small X/Z wobble for life. Slower than
-      // non-council asteroids so the portrait reads when facing camera.
+      // Medallion tumble on TWO axes at slightly different rates. Y
+      // is the main face↔back flip; X rotates the coin end-over-end
+      // so the portrait orientation (and the back-face text) shift
+      // through visible angles rather than always landing right-side-
+      // up at the same moments. Incommensurate ratio (0.6 vs 1.0)
+      // means the pose never quite repeats, so the player gets fresh
+      // angles every time round.
       entry.mesh.rotation.set(
-        Math.sin(a.rot * 0.5) * 0.18,
+        a.rot * 0.6,
         a.rot,
-        Math.cos(a.rot * 0.4) * 0.10,
+        0,
       );
       // Draw the portrait into the front-face canvas as soon as the
       // image lands. Cheap after the first successful draw.

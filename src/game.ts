@@ -2699,9 +2699,6 @@ export function updateGame(s: GameState, dt: number, now: number): void {
     if (!b.alive) continue;
     for (const a of s.asteroids) {
       if (!a.alive) continue;
-      // Bullets only hit gameplay-plane asteroids. Decorative bands
-      // pass through without interaction.
-      if (a.depth !== 3) continue;
       if (circlesHit(b, a)) {
         // Carom: a bullet that has already broken one asteroid earns the
         // bonus on its next break. Wrap: a bullet that has crossed a playfield
@@ -3203,6 +3200,16 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
 }
 
 function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boolean; isCarom?: boolean; isWrap?: boolean }): void {
+  // Decorative (non-gameplay-plane) rocks pop cleanly — visual
+  // satisfaction without disrupting gameplay economy. No coin drop,
+  // no score, no fragments. They just vanish with a particle burst.
+  if ((a.depth ?? 3) !== 3 && !a.councilMember && !a.isVein) {
+    a.alive = false;
+    const cfg = ASTEROID_TYPE_CONFIG[a.type];
+    spawnParticles(s, a.pos.x, a.pos.y, 8, cfg.glow, 140, 320);
+    audio.hit();
+    return;
+  }
   // Council members shrink rather than fragment. The medallion stays
   // single throughout — players chip a sculpture down one tier at a
   // time. Final small-size break flows through the normal path below
