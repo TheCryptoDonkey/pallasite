@@ -7,21 +7,24 @@
  * private game loop so the main-game updateGame is never touched —
  * keeps the conference deployment hard-isolated.
  *
- * Controls:
- *   - ←/→ or A/D — rotate ship
- *   - ↑ or W or thrust pad — thrust
- *   - Space or fire pad — shoot
+ * Controls (desktop):
+ *   ←/→ or A/D  — rotate
+ *   ↑   or W    — thrust
+ *   Space       — fire
+ *   X           — shield (2s up, 8s cooldown)
+ *   Shift       — hyperspace (random teleport, 6s cooldown)
  *
- * Mobile: same touch controls as the main game (#touch-controls is
- * the existing virtual joystick + fire button — we just stop hiding
- * them on the Sanctum surface).
+ * Mobile (canvas-only): tap-and-drag left half = joystick (rotate +
+ * thrust), tap right half = fire single shot.
  *
- * Sat scale 1 / 2 / 6 / 21 — member kill 1 sat, racoo 6, Stone 21,
- * Bullbear 21. ~50-60 sats per perfect run. Music: the-cult.opus on
- * first user gesture.
+ * Lives: 3 — on death you respawn at centre with 2s invuln; on the
+ * third death the game-over overlay lands.
  *
- * 240s timer OR Bullbear-defeat OR ship-death ends the run with the
- * FUCHS2 game-over overlay (party banner + QR to 600.wtf).
+ * Run length: 240s, OR Bullbear-defeat, OR last life lost.
+ *
+ * Sat tier: only smallest-size council fragments drop sats (1 each).
+ * racooDNI 6, Sacred Stone shatter 21, Bullbear defeat 21. Per-run
+ * max ~135 sats; realistic high score ~50-70.
  */
 
 import {
@@ -57,6 +60,14 @@ interface Ship {
   alive: boolean;
   invulnerableUntil: number;
   thrustFrame: number;
+  recoilOffset: number;
+  // Shield power-up state.
+  shieldUp: boolean;
+  shieldExpiresAt: number;
+  shieldReadyAt: number;
+  // Hyperspace state — ship is invisible while cloakMs > 0 then warps.
+  hyperspaceCloakMs: number;
+  hyperspaceReadyAt: number;
 }
 
 interface Bullet {
@@ -69,6 +80,7 @@ interface Bullet {
   alive: boolean;
 }
 
+// Tuning — matched to Pallasite main-game values where it makes sense.
 const SHIP_THRUST = 240;
 const SHIP_DRAG = 0.4;
 const SHIP_ROT_ACCEL = 14;
@@ -79,6 +91,13 @@ const BULLET_SPEED = 460;
 const BULLET_TTL_MS = 1400;
 const BULLET_RADIUS = 3;
 const SHIP_RADIUS = 12;
+const SHIELD_DURATION_MS = 2200;
+const SHIELD_COOLDOWN_MS = 8000;
+const HYPERSPACE_COOLDOWN_MS = 6000;
+const HYPERSPACE_CLOAK_MS = 600;
+const RESPAWN_INVULN_MS = 2200;
+const INITIAL_LIVES = 3;
+const IGNITE_BANNER_MS = 1400;
 
 function makeShip(): Ship {
   return {
@@ -92,7 +111,28 @@ function makeShip(): Ship {
     alive: true,
     invulnerableUntil: performance.now() + 3000,
     thrustFrame: 0,
+    recoilOffset: 0,
+    shieldUp: false,
+    shieldExpiresAt: 0,
+    shieldReadyAt: 0,
+    hyperspaceCloakMs: 0,
+    hyperspaceReadyAt: 0,
   };
+}
+
+function respawnShip(ship: Ship, now: number): void {
+  ship.x = SANCTUM_WORLD_W / 2;
+  ship.y = SANCTUM_WORLD_H * 0.78;
+  ship.vx = 0; ship.vy = 0;
+  ship.rot = -Math.PI / 2;
+  ship.rotVel = 0;
+  ship.thrusting = false;
+  ship.alive = true;
+  ship.invulnerableUntil = now + RESPAWN_INVULN_MS;
+  ship.recoilOffset = 0;
+  ship.shieldUp = false;
+  ship.shieldExpiresAt = 0;
+  ship.hyperspaceCloakMs = 0;
 }
 
 function fireBullet(ship: Ship, bullets: Bullet[]): void {
@@ -105,7 +145,38 @@ function fireBullet(ship: Ship, bullets: Bullet[]): void {
     ttl: BULLET_TTL_MS,
     alive: true,
   });
+  ship.recoilOffset = 1.8;
   audio.fire();
+}
+
+function tryShield(ship: Ship, now: number): boolean {
+  if (!ship.alive) return false;
+  if (ship.shieldUp) return false;
+  if (now < ship.shieldReadyAt) return false;
+  ship.shieldUp = true;
+  ship.shieldExpiresAt = now + SHIELD_DURATION_MS;
+  ship.shieldReadyAt = now + SHIELD_DURATION_MS + SHIELD_COOLDOWN_MS;
+  audio.shieldUp();
+  return true;
+}
+
+function tryHyperspace(ship: Ship, now: number): boolean {
+  if (!ship.alive) return false;
+  if (ship.hyperspaceCloakMs > 0) return false;
+  if (now < ship.hyperspaceReadyAt) return false;
+  ship.hyperspaceCloakMs = HYPERSPACE_CLOAK_MS;
+  ship.hyperspaceReadyAt = now + HYPERSPACE_COOLDOWN_MS;
+  // Schedule the actual teleport at the end of the cloak window so the
+  // departure/arrival reads as a real "warp" beat.
+  audio.warpJump();
+  window.setTimeout(() => {
+    if (!ship.alive) return;
+    ship.x = 80 + Math.random() * (SANCTUM_WORLD_W - 160);
+    ship.y = 80 + Math.random() * (SANCTUM_WORLD_H - 160);
+    ship.vx = 0; ship.vy = 0;
+    ship.invulnerableUntil = performance.now() + 600;
+  }, HYPERSPACE_CLOAK_MS);
+  return true;
 }
 
 function wrap(p: { x: number; y: number }): void {
@@ -176,7 +247,7 @@ function mountSurface(): { canvas: HTMLCanvasElement; wrap: HTMLDivElement } {
 
   const caption = document.createElement('div');
   caption.style.cssText = 'font:11px ui-monospace,monospace;color:rgba(255,216,74,0.85);letter-spacing:0.16em;text-align:center;';
-  caption.innerHTML = '←→ ROTATE · ↑ THRUST · SPACE FIRE · or drag/tap canvas on mobile';
+  caption.innerHTML = '←→ ROTATE · ↑ THRUST · SPACE FIRE · X SHIELD · SHIFT WARP';
   wrap.appendChild(caption);
 
   return { canvas, wrap };
@@ -190,11 +261,9 @@ interface PointerState {
   centreY: number;
   dx: number;
   dy: number;
-  firePressed: boolean;
 }
 
 function bindPointer(canvas: HTMLCanvasElement, state: PointerState, onFire: () => void): void {
-  // Left half = joystick (rotate + thrust). Right half = fire.
   let lastFireAt = 0;
   const halfW = (): number => canvas.getBoundingClientRect().width / 2;
 
@@ -214,10 +283,7 @@ function bindPointer(canvas: HTMLCanvasElement, state: PointerState, onFire: () 
       const now = performance.now();
       if (now - lastFireAt > 80) {
         lastFireAt = now;
-        state.firePressed = true;
         onFire();
-        // Auto-release after one shot — held-fire would need a timer.
-        window.setTimeout(() => { state.firePressed = false; }, 50);
       }
     }
   });
@@ -240,59 +306,169 @@ function bindPointer(canvas: HTMLCanvasElement, state: PointerState, onFire: () 
   canvas.addEventListener('pointercancel', release);
 }
 
-// ── Ship draw + bullet draw ──────────────────────────────────────────
+// ── Ship + bullets draw (matched to main-game line-art style) ────────
+
+const SHIP_COLOUR = '#9bf9ff';
+const SHIP_SHADOW = '#a6e3ff';
+const THRUST_COLOUR = '#ffbe40';
+const THRUST_SHADOW = '#ff8a3a';
 
 function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number): void {
   if (!ship.alive) return;
+  // Hide ship entirely during hyperspace cloak.
+  if (ship.hyperspaceCloakMs > 0) return;
+  // Invulnerability flicker.
+  const flickerOff = ship.invulnerableUntil > now && Math.floor(now / 80) % 2 === 0;
+  if (flickerOff) return;
+
   ctx.save();
   ctx.translate(ship.x, ship.y);
   ctx.rotate(ship.rot);
+  if (ship.recoilOffset > 0) ctx.translate(-ship.recoilOffset, 0);
 
-  ctx.strokeStyle = '#fff5d8';
-  ctx.fillStyle = 'rgba(255,245,216,0.15)';
-  ctx.lineWidth = 1.8;
+  // Hull — line art triangle, classic Pallasite proportions.
+  ctx.lineWidth = 1.6;
+  ctx.strokeStyle = SHIP_COLOUR;
+  ctx.shadowColor = SHIP_SHADOW;
+  ctx.shadowBlur = 12;
   ctx.beginPath();
   ctx.moveTo(14, 0);
-  ctx.lineTo(-10, -9);
+  ctx.lineTo(-10, 8);
   ctx.lineTo(-6, 0);
-  ctx.lineTo(-10, 9);
+  ctx.lineTo(-10, -8);
   ctx.closePath();
-  ctx.fill();
   ctx.stroke();
 
-  if (ship.thrusting) {
-    const flicker = 0.6 + 0.4 * Math.sin(ship.thrustFrame * 1.3);
-    ctx.fillStyle = `rgba(255,138,58,${flicker})`;
+  // Thrust bloom + flame.
+  if (ship.thrusting && Math.floor(ship.thrustFrame) % 2 === 0) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const bloom = ctx.createRadialGradient(-10, 0, 0, -10, 0, 24);
+    bloom.addColorStop(0, 'rgba(255, 190, 60, 0.7)');
+    bloom.addColorStop(0.5, 'rgba(255, 138, 58, 0.4)');
+    bloom.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = bloom;
     ctx.beginPath();
-    ctx.moveTo(-6, -5);
-    ctx.lineTo(-14 - 4 * flicker, 0);
-    ctx.lineTo(-6, 5);
-    ctx.closePath();
+    ctx.arc(-10, 0, 24, 0, Math.PI * 2);
     ctx.fill();
-  }
+    ctx.restore();
 
-  if (now < ship.invulnerableUntil) {
-    const t = Math.max(0, Math.min(1, (ship.invulnerableUntil - now) / 3000));
-    ctx.globalAlpha = 0.6 * t;
-    ctx.strokeStyle = '#ffd84a';
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = THRUST_COLOUR;
+    ctx.shadowColor = THRUST_SHADOW;
+    ctx.shadowBlur = 10;
     ctx.beginPath();
-    ctx.arc(0, 0, 18, 0, Math.PI * 2);
+    ctx.moveTo(-6, 4);
+    ctx.lineTo(-14, 0);
+    ctx.lineTo(-6, -4);
     ctx.stroke();
   }
 
   ctx.restore();
+
+  // Shield bubble (drawn in screen space so it doesn't rotate with ship).
+  if (ship.shieldUp) {
+    const remaining = (ship.shieldExpiresAt - now) / SHIELD_DURATION_MS;
+    const alpha = Math.max(0.25, Math.min(1, remaining + 0.25));
+    ctx.save();
+    ctx.lineWidth = 2.4;
+    ctx.strokeStyle = `rgba(255, 216, 74, ${alpha})`;
+    ctx.shadowColor = 'rgba(255, 138, 58, 0.85)';
+    ctx.shadowBlur = 16;
+    ctx.beginPath();
+    ctx.arc(ship.x, ship.y, ship.r + 8, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
 }
 
 function drawBullets(ctx: CanvasRenderingContext2D, bullets: readonly Bullet[]): void {
   ctx.save();
-  ctx.fillStyle = '#fff5d8';
-  ctx.shadowColor = '#ffd84a';
-  ctx.shadowBlur = 6;
   for (const b of bullets) {
+    if (!b.alive) continue;
+    const speed = Math.hypot(b.vx, b.vy);
+    const len = Math.max(6, speed * 0.012);
+    const ux = b.vx / speed;
+    const uy = b.vy / speed;
+    // Trail.
+    ctx.strokeStyle = 'rgba(255,170,40,0.30)';
+    ctx.lineWidth = 1.6;
+    ctx.shadowBlur = 0;
     ctx.beginPath();
-    ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.moveTo(b.x, b.y);
+    ctx.lineTo(b.x - ux * len * 3.5, b.y - uy * len * 3.5);
+    ctx.stroke();
+    // Head.
+    ctx.lineWidth = 2.6;
+    ctx.strokeStyle = '#ffffff';
+    ctx.shadowColor = '#ff6a00';
+    ctx.shadowBlur = 14;
+    ctx.beginPath();
+    ctx.moveTo(b.x - ux * len * 0.5, b.y - uy * len * 0.5);
+    ctx.lineTo(b.x + ux * len * 0.5, b.y + uy * len * 0.5);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/** HUD: lives, shield/warp cooldown chips, IGNITE banner. */
+function drawSanctumHUD(
+  ctx: CanvasRenderingContext2D,
+  ship: Ship,
+  lives: number,
+  igniteUntil: number,
+  now: number,
+): void {
+  ctx.save();
+  // Lives (small ship icons, top-left under the phase label).
+  for (let i = 0; i < lives; i++) {
+    const cx = 20 + i * 16;
+    const cy = 42;
+    ctx.strokeStyle = '#9bf9ff';
+    ctx.lineWidth = 1.4;
+    ctx.shadowColor = '#a6e3ff';
+    ctx.shadowBlur = 4;
+    ctx.beginPath();
+    ctx.moveTo(cx + 6, cy);
+    ctx.lineTo(cx - 4, cy + 4);
+    ctx.lineTo(cx - 2, cy);
+    ctx.lineTo(cx - 4, cy - 4);
+    ctx.closePath();
+    ctx.stroke();
+  }
+  ctx.shadowBlur = 0;
+
+  // Cooldown chips (bottom-left).
+  const baseY = ctx.canvas.height - 22;
+  const chip = (label: string, ready: boolean, x: number): void => {
+    ctx.fillStyle = ready ? 'rgba(255,216,74,0.85)' : 'rgba(140,140,140,0.55)';
+    ctx.font = 'bold 11px ui-monospace, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(label, x, baseY);
+  };
+  chip('X SHIELD',  now >= ship.shieldReadyAt && !ship.shieldUp, 20);
+  chip('SHIFT WARP', now >= ship.hyperspaceReadyAt, 110);
+
+  // IGNITE banner.
+  if (now < igniteUntil) {
+    const t = (igniteUntil - now) / IGNITE_BANNER_MS;
+    const alpha = Math.min(1, t * 2);
+    const scale = 1 + (1 - t) * 0.5;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(ctx.canvas.width / 2, ctx.canvas.height / 2);
+    ctx.scale(scale, scale);
+    ctx.font = 'bold 52px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffd84a';
+    ctx.shadowColor = '#ff8a3a';
+    ctx.shadowBlur = 24;
+    ctx.fillText('IGNITE', 0, -22);
+    ctx.font = 'bold 14px ui-monospace, monospace';
+    ctx.fillStyle = '#fff5d8';
+    ctx.fillText('240 SECONDS · STACK SATS', 0, 18);
+    ctx.restore();
   }
   ctx.restore();
 }
@@ -430,9 +606,13 @@ async function runSanctumSession(): Promise<void> {
   const state = createSanctumState();
   const ship = makeShip();
   const bullets: Bullet[] = [];
+  let lives = INITIAL_LIVES;
   const keys: Record<string, boolean> = {};
-  const pointer: PointerState = { active: false, centreX: 0, centreY: 0, dx: 0, dy: 0, firePressed: false };
+  const pointer: PointerState = { active: false, centreX: 0, centreY: 0, dx: 0, dy: 0 };
   let lastFireAt = 0;
+
+  const sessionStart = performance.now();
+  const igniteUntil = sessionStart + IGNITE_BANNER_MS;
 
   let musicStarted = false;
   const startMusic = (): void => {
@@ -442,13 +622,20 @@ async function runSanctumSession(): Promise<void> {
     crossfadeTo('the-cult', 1200);
   };
 
-  // Bind keys at window level — captures even when canvas isn't focused.
+  // Keyboard input — bound to window so canvas focus doesn't matter.
   const onKeyDown = (e: KeyboardEvent): void => {
     keys[e.code] = true;
     if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space'].includes(e.code)) {
       e.preventDefault();
     }
     if (!musicStarted) startMusic();
+    // Edge-triggered actions (avoid auto-repeat firing them every frame).
+    if (!e.repeat) {
+      if (e.code === 'KeyX') tryShield(ship, performance.now());
+      if (e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyH') {
+        tryHyperspace(ship, performance.now());
+      }
+    }
   };
   const onKeyUp = (e: KeyboardEvent): void => { keys[e.code] = false; };
   window.addEventListener('keydown', onKeyDown);
@@ -466,20 +653,38 @@ async function runSanctumSession(): Promise<void> {
 
   let ended = false;
   let last = performance.now();
+  const cleanupAndEnd = (victory: boolean): void => {
+    if (ended) return;
+    ended = true;
+    window.removeEventListener('keydown', onKeyDown);
+    window.removeEventListener('keyup', onKeyUp);
+    audio.setMusicDuck(0.35);
+    renderGameOverOverlay(state, victory, () => {
+      audio.setMusicDuck(1);
+      void runSanctumSession();
+    });
+  };
+
   const loop = (now: number): void => {
     if (ended) return;
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
 
-    // Ship input.
-    if (ship.alive) {
-      // Pointer joystick (mobile).
+    // Shield + hyperspace housekeeping.
+    if (ship.shieldUp && now >= ship.shieldExpiresAt) {
+      ship.shieldUp = false;
+      audio.shieldDown();
+    }
+    if (ship.hyperspaceCloakMs > 0) ship.hyperspaceCloakMs -= dt * 1000;
+    if (ship.recoilOffset > 0) ship.recoilOffset = Math.max(0, ship.recoilOffset - dt * 24);
+
+    // Ship input only while alive AND not cloaked.
+    if (ship.alive && ship.hyperspaceCloakMs <= 0) {
       const POINTER_DEAD = 14;
       const POINTER_MAX = 60;
       const len = Math.hypot(pointer.dx, pointer.dy);
       if (pointer.active && len > POINTER_DEAD) {
         const targetRot = Math.atan2(pointer.dy, pointer.dx);
-        // Lerp ship.rot toward target.
         let diff = targetRot - ship.rot;
         while (diff > Math.PI) diff -= 2 * Math.PI;
         while (diff < -Math.PI) diff += 2 * Math.PI;
@@ -487,11 +692,8 @@ async function runSanctumSession(): Promise<void> {
         const step = lerpRate * dt;
         if (Math.abs(diff) <= step) ship.rot = targetRot;
         else ship.rot += Math.sign(diff) * step;
-        // Stick deflection past 50% of max = thrust.
-        if (len > POINTER_MAX * 0.5) ship.thrusting = true;
-        else ship.thrusting = false;
+        ship.thrusting = len > POINTER_MAX * 0.5;
       } else {
-        // Keyboard.
         const turnL = keys['ArrowLeft'] || keys['KeyA'];
         const turnR = keys['ArrowRight'] || keys['KeyD'];
         if (turnL) ship.rotVel -= SHIP_ROT_ACCEL * dt;
@@ -522,7 +724,6 @@ async function runSanctumSession(): Promise<void> {
       ship.y += ship.vy * dt;
       wrap(ship);
 
-      // Keyboard fire.
       if (keys['Space'] && now - lastFireAt >= FIRE_COOLDOWN_MS) {
         lastFireAt = now;
         fireBullet(ship, bullets);
@@ -588,11 +789,10 @@ async function runSanctumSession(): Promise<void> {
         }
       }
     }
-    // Cull dead bullets.
     for (let i = bullets.length - 1; i >= 0; i--) if (!bullets[i].alive) bullets.splice(i, 1);
 
-    // Ship × entity body collisions (lethal).
-    if (ship.alive && now >= ship.invulnerableUntil) {
+    // Ship × entity body collisions (lethal unless shielded).
+    if (ship.alive && now >= ship.invulnerableUntil && ship.hyperspaceCloakMs <= 0) {
       let lethal = false;
       for (const m of state.council) {
         if (m.dead) continue;
@@ -609,20 +809,27 @@ async function runSanctumSession(): Promise<void> {
         }
       }
       if (lethal) {
-        ship.alive = false;
-        audio.explosion(2.0);
-        // Short delay before showing game-over so the explosion lands.
-        window.setTimeout(() => {
-          if (ended) return;
-          ended = true;
-          window.removeEventListener('keydown', onKeyDown);
-          window.removeEventListener('keyup', onKeyUp);
-          audio.setMusicDuck(0.35);
-          renderGameOverOverlay(state, false, () => {
-            audio.setMusicDuck(1);
-            void runSanctumSession();
-          });
-        }, 1200);
+        if (ship.shieldUp) {
+          // Shield eats the hit — fizzle the shield, brief invuln, no life lost.
+          ship.shieldUp = false;
+          ship.shieldExpiresAt = 0;
+          ship.invulnerableUntil = now + 700;
+          audio.shieldHit();
+        } else {
+          ship.alive = false;
+          audio.explosion(1.6);
+          lives -= 1;
+          if (lives > 0) {
+            // Respawn after a short death beat.
+            window.setTimeout(() => {
+              if (ended) return;
+              respawnShip(ship, performance.now());
+            }, 900);
+          } else {
+            // Out of lives — game over.
+            window.setTimeout(() => cleanupAndEnd(false), 1000);
+          }
+        }
       }
     }
 
@@ -633,18 +840,11 @@ async function runSanctumSession(): Promise<void> {
     renderSanctum(ctx, state);
     drawBullets(ctx, bullets);
     drawShip(ctx, ship, now);
+    drawSanctumHUD(ctx, ship, lives, igniteUntil, now);
 
     // End conditions: timer expired OR Bullbear defeated.
     if (!ended && isSanctumComplete(state)) {
-      ended = true;
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-      audio.setMusicDuck(0.35);
-      const victory = state.bullbearDefeated;
-      renderGameOverOverlay(state, victory, () => {
-        audio.setMusicDuck(1);
-        void runSanctumSession();
-      });
+      cleanupAndEnd(state.bullbearDefeated);
       return;
     }
     requestAnimationFrame(loop);
