@@ -8316,6 +8316,15 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
   // give bass and treble equal visual weight, gradient fill (green→yellow
   // →red) plus peak-hold caps with decay echo classic VU meters, strong
   // bloom on bar tops makes the bass kicks read.
+  //
+  // Skipped entirely on iOS PWA: the underlying game canvas + WebGL
+  // overlay are already drawing at 60fps beneath the music player, and
+  // adding a third 60fps canvas with shadow blur + analyser tap +
+  // sparks while the AudioContext is also decoding music has been
+  // observed to choke the main thread badly enough that audio drops
+  // out and touch events stop firing (PWA on iPhone). Track list works
+  // fine without the viz.
+  const skipViz = isIosSafari() && isStandalone();
   const vizSticky = el('div', { parent: overlay });
   vizSticky.style.cssText = [
     'position:sticky', 'top:-8px',  // -8px so the rounded corners overlap the overlay padding
@@ -8326,7 +8335,8 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
     'backdrop-filter:blur(6px)',
     'border-radius:10px',
     'display:flex', 'justify-content:center',
-  ].join(';');
+    skipViz ? 'display:none' : '',
+  ].filter(Boolean).join(';');
   const canvas = el('canvas', { parent: vizSticky, attrs: { width: '960', height: '360' } }) as HTMLCanvasElement;
   // Shrink the viz on phones so the 20-row track list isn't pushed
   // below the fold. 110px is enough for the bar pattern to read; the
@@ -8499,7 +8509,8 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
 
     requestAnimationFrame(drawViz);
   };
-  requestAnimationFrame(drawViz);
+  // Skip the RAF loop entirely on iOS PWA — see skipViz comment above.
+  if (!skipViz) requestAnimationFrame(drawViz);
 
   // Buttons go ABOVE the list so STOP + BACK are reachable without
   // scrolling past 20+ rows on a phone. Previously they sat at the
