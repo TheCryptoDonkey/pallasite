@@ -756,7 +756,10 @@ function buildUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeome
   inner.rotation.x = u.type === 'sniper' ? -0.18 : -0.55;
   const outer = new THREE.Group();
   outer.add(inner);
-  if (inner.userData.ringGroup) outer.userData.ringGroup = inner.userData.ringGroup;
+  // Mirror every userData ref from the inner build group onto the outer
+  // wrapper so renderOverlay's per-frame animation hooks can grab
+  // them off entry.mesh without traversing children.
+  Object.assign(outer.userData, inner.userData);
   return { group: outer, geometry: built.geometry, material: built.material };
 }
 
@@ -839,15 +842,50 @@ function buildCruiserUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.Buff
     emissive: palette.glow, emissiveIntensity: 0.1,
   }))));
 
+  const tipMat = new THREE.MeshBasicMaterial({
+    color: palette.glow, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending,
+  });
   const tipGeo = new THREE.SphereGeometry(bodyR * 0.075, 10, 8);
   tipGeo.translate(0, 0, bodyH * 0.4 + domeR + antennaH + bodyR * 0.04);
-  group.add(setupMesh(new THREE.Mesh(tipGeo, new THREE.MeshBasicMaterial({
-    color: palette.glow, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending,
+  group.add(setupMesh(new THREE.Mesh(tipGeo, tipMat)));
+
+  // 4 radial horns at the cardinal rim positions — short stubby antennas
+  // that read as comm / sensor protrusions. Adds silhouette interest.
+  for (let i = 0; i < 4; i++) {
+    const angle = (Math.PI / 2) * i + Math.PI / 4;
+    const hornR = bodyR * 0.025;
+    const hornL = bodyR * 0.16;
+    const hornGeo = new THREE.CylinderGeometry(hornR * 0.5, hornR, hornL, 6);
+    hornGeo.rotateZ(Math.PI / 2);
+    hornGeo.translate(bodyR + hornL * 0.45, 0, bodyH * 0.05);
+    const horn = new THREE.Mesh(hornGeo, bodyMat);
+    horn.frustumCulled = false;
+    horn.rotation.z = angle;
+    group.add(horn);
+  }
+
+  // Bottom comm mast — small downward antenna with its own glowing tip.
+  // Doubles the antenna read so the saucer feels properly instrumented.
+  const mastH = bodyR * 0.28;
+  const mastGeo = new THREE.CylinderGeometry(bodyR * 0.025, bodyR * 0.04, mastH, 6);
+  mastGeo.rotateX(Math.PI / 2);
+  mastGeo.translate(0, 0, -bodyH * 0.6 - mastH * 0.5);
+  group.add(setupMesh(new THREE.Mesh(mastGeo, new THREE.MeshPhongMaterial({
+    color: 0x707070, shininess: 60,
+    emissive: palette.glow, emissiveIntensity: 0.15,
   }))));
+  const mastTipMat = new THREE.MeshBasicMaterial({
+    color: palette.glow, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending,
+  });
+  const mastTipGeo = new THREE.SphereGeometry(bodyR * 0.05, 8, 6);
+  mastTipGeo.translate(0, 0, -bodyH * 0.6 - mastH - bodyR * 0.02);
+  group.add(setupMesh(new THREE.Mesh(mastTipGeo, mastTipMat)));
 
   group.add(setupMesh(buildAbductorBeam(bodyR, palette.glow, -bodyH * 0.6, bodyR * 1.25, 0.18)));
 
   group.userData.ringGroup = ringGroup;
+  group.userData.pulseTipMat = tipMat;
+  group.userData.pulseMastTipMat = mastTipMat;
   return { group, geometry: bodyGeo, material: bodyMat };
 }
 
@@ -885,7 +923,19 @@ function buildEliteUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.Buffer
     group.add(spike);
   }
 
+  // Iris ring — dark torus around the eye base, so the sensor reads
+  // as a proper iris-mounted optic rather than a glowing tumour. The
+  // inset between the iris and the body adds depth.
+  const irisR = bodyR * 0.42;
+  const irisGeo = new THREE.TorusGeometry(irisR, bodyR * 0.05, 8, 24);
+  irisGeo.translate(0, 0, bodyH * 0.42);
+  group.add(setupMesh(new THREE.Mesh(irisGeo, new THREE.MeshPhongMaterial({
+    color: 0x281008, shininess: 80, specular: 0x606060,
+    emissive: palette.glow, emissiveIntensity: 0.35,
+  }))));
+
   // Single sensor eye on top — half-sphere of bright emissive glow.
+  // Captured in eyeMat for the per-frame predatory pulse.
   const eyeR = bodyR * 0.4;
   const eyeGeo = new THREE.SphereGeometry(eyeR, 16, 12);
   eyeGeo.translate(0, 0, bodyH * 0.45 + eyeR * 0.4);
@@ -898,11 +948,24 @@ function buildEliteUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.Buffer
 
   // Eye inner core — small bright point at the centre so the "pupil"
   // reads even when the player is offset from the sensor's gaze axis.
+  const pupilMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending,
+  });
   const pupilGeo = new THREE.SphereGeometry(eyeR * 0.3, 10, 8);
   pupilGeo.translate(0, 0, bodyH * 0.45 + eyeR * 0.4);
-  group.add(setupMesh(new THREE.Mesh(pupilGeo, new THREE.MeshBasicMaterial({
-    color: 0xffffff, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending,
-  }))));
+  group.add(setupMesh(new THREE.Mesh(pupilGeo, pupilMat)));
+
+  // Spike tip bulbs — small glowing additive spheres at the end of
+  // each spike, so the spike tips read as energy weapons rather than
+  // pure pointy hull.
+  for (let i = 0; i < 6; i++) {
+    const angle = (Math.PI * 2 * i) / 6 + Math.PI / 6;
+    const tipGeo = new THREE.SphereGeometry(bodyR * 0.06, 8, 6);
+    tipGeo.translate(Math.cos(angle) * bodyR * 1.4, Math.sin(angle) * bodyR * 1.4, 0);
+    group.add(setupMesh(new THREE.Mesh(tipGeo, new THREE.MeshBasicMaterial({
+      color: palette.glow, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending,
+    }))));
+  }
 
   // Twin underbelly weapon pods — short cylinders flanking the
   // centreline, glowing tips suggesting charged barrels.
@@ -923,6 +986,22 @@ function buildEliteUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.Buffer
     }))));
   }
 
+  // Twin rear thruster cones — additive blue-tinted glows behind the
+  // hull. Doesn't track rotation; just there as the "engines running"
+  // backdrop to the predatory wobble.
+  for (const sign of [-1, 1]) {
+    const thrR = bodyR * 0.12;
+    const thrL = bodyR * 0.35;
+    const thrGeo = new THREE.ConeGeometry(thrR, thrL, 10);
+    thrGeo.rotateZ(Math.PI / 2);
+    thrGeo.translate(-bodyR * 0.45 - thrL * 0.5, sign * bodyR * 0.25, 0);
+    group.add(setupMesh(new THREE.Mesh(thrGeo, new THREE.MeshBasicMaterial({
+      color: 0xff8060, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending,
+    }))));
+  }
+
+  group.userData.eyeMat = eyeMat;
+  group.userData.pupilMat = pupilMat;
   return { group, geometry: bodyGeo, material: bodyMat };
 }
 
@@ -981,10 +1060,30 @@ function buildTankUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferG
     emissive: palette.glow, emissiveIntensity: 0.6,
   }))));
 
+  // Hex armour plates on each pauldron — small box decoration that
+  // sells "this thing is layered armour" rather than a smooth box.
+  // Captured nothing; pure visual texture.
+  for (let i = 0; i < 4; i++) {
+    const angle = (Math.PI / 2) * i;
+    const plateGeo = new THREE.BoxGeometry(paulW * 0.55, paulD * 0.35, paulH * 0.4);
+    plateGeo.translate(Math.cos(angle) * (bodyR * 0.95 + paulW * 0.3), Math.sin(angle) * (bodyR * 0.95 + paulW * 0.3), 0);
+    const plate = new THREE.Mesh(plateGeo, new THREE.MeshPhongMaterial({
+      color: 0x4a1818, shininess: 40, specular: 0x808080,
+      emissive: palette.glow, emissiveIntensity: 0.25,
+      flatShading: true,
+    }));
+    plate.frustumCulled = false;
+    plate.rotation.z = angle;
+    group.add(plate);
+  }
+
   // 4 gun barrels protruding in cardinal directions from the central
-  // turret. The "always pointed at you" silhouette.
+  // turret. Tip glow per barrel is captured so renderOverlay can fire
+  // them in a chase pattern — each barrel "charges" then "fires" so
+  // the silhouette feels mechanical and busy.
   const barrelL = bodyR * 0.45;
   const barrelR = bodyR * 0.09;
+  const barrelTipMats: THREE.MeshBasicMaterial[] = [];
   for (let i = 0; i < 4; i++) {
     const angle = (Math.PI / 2) * i;
     const bGeo = new THREE.CylinderGeometry(barrelR, barrelR, barrelL, 10);
@@ -994,6 +1093,18 @@ function buildTankUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferG
     barrel.frustumCulled = false;
     barrel.rotation.z = angle;
     group.add(barrel);
+
+    // Tip glow at the muzzle end of each barrel.
+    const tipMat = new THREE.MeshBasicMaterial({
+      color: palette.glow, transparent: true, opacity: 0.4, blending: THREE.AdditiveBlending,
+    });
+    const tipGeo = new THREE.SphereGeometry(barrelR * 1.5, 8, 6);
+    tipGeo.translate(barrelL + barrelR, 0, bodyH * 0.45 + turretH * 0.4);
+    const tipMesh = new THREE.Mesh(tipGeo, tipMat);
+    tipMesh.frustumCulled = false;
+    tipMesh.rotation.z = angle;
+    group.add(tipMesh);
+    barrelTipMats.push(tipMat);
   }
 
   // Slow-glow rim slits — 8 narrow emissive bars around the equator
@@ -1006,6 +1117,21 @@ function buildTankUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferG
   baseGeo.rotateX(Math.PI / 2);
   baseGeo.translate(0, 0, -bodyH * 0.7);
   group.add(setupMesh(new THREE.Mesh(baseGeo, bodyMat)));
+
+  // 4 anchor spikes on the underbelly — small downward cones at
+  // diagonal positions, sells the "anchored / dropped" feel.
+  for (let i = 0; i < 4; i++) {
+    const angle = (Math.PI / 2) * i + Math.PI / 4;
+    const spkR = bodyR * 0.05;
+    const spkL = bodyR * 0.22;
+    const spkGeo = new THREE.ConeGeometry(spkR, spkL, 6);
+    spkGeo.rotateX(Math.PI / 2);  // point along +Z
+    spkGeo.translate(Math.cos(angle) * bodyR * 0.45, Math.sin(angle) * bodyR * 0.45, -bodyH * 0.9 - spkL * 0.5);
+    spkGeo.rotateX(Math.PI);  // flip so tip points down
+    group.add(setupMesh(new THREE.Mesh(spkGeo, bodyMat)));
+  }
+
+  group.userData.barrelTipMats = barrelTipMats;
 
   group.userData.ringGroup = ringGroup;
   return { group, geometry: bodyGeo, material: bodyMat };
@@ -1054,12 +1180,43 @@ function buildSniperUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.Buffe
     emissive: palette.glow, emissiveIntensity: 0.15,
   }))));
 
-  // Muzzle glow — small additive sphere at the very tip of the barrel.
+  // Muzzle glow — additive sphere at the very tip of the barrel. Captured
+  // so renderOverlay can run the build-and-fire charge cycle: opacity
+  // ramps up slowly then snaps back to baseline. Reads as "the sniper
+  // is charging its shot."
+  const muzzleMat = new THREE.MeshBasicMaterial({
+    color: palette.glow, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending,
+  });
   const muzzleR = barrelR * 1.4;
   const muzzleGeo = new THREE.SphereGeometry(muzzleR, 10, 8);
   muzzleGeo.translate(hullL * 0.5 + hullR + barrelL + muzzleR * 0.6, 0, 0);
-  group.add(setupMesh(new THREE.Mesh(muzzleGeo, new THREE.MeshBasicMaterial({
-    color: palette.glow, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending,
+  group.add(setupMesh(new THREE.Mesh(muzzleGeo, muzzleMat)));
+
+  // Dorsal scope — small forward-mounted box with a glowing lens
+  // disc, reads as the precision optic the rail-ship is famous for.
+  const scopeW = bodyR * 0.18;
+  const scopeH = bodyR * 0.12;
+  const scopeD = bodyR * 0.35;
+  const scopeGeo = new THREE.BoxGeometry(scopeD, scopeW, scopeH);
+  scopeGeo.translate(hullL * 0.2, 0, hullR + scopeH * 0.4);
+  group.add(setupMesh(new THREE.Mesh(scopeGeo, new THREE.MeshPhongMaterial({
+    color: 0x303838, shininess: 80, specular: 0xc0fff0,
+    emissive: palette.glow, emissiveIntensity: 0.2,
+  }))));
+  // Scope lens disc — bright cyan, at the front of the scope.
+  const lensGeo = new THREE.CylinderGeometry(scopeH * 0.45, scopeH * 0.45, scopeW * 0.2, 12);
+  lensGeo.rotateZ(Math.PI / 2);
+  lensGeo.translate(hullL * 0.2 + scopeD * 0.5, 0, hullR + scopeH * 0.4);
+  group.add(setupMesh(new THREE.Mesh(lensGeo, new THREE.MeshBasicMaterial({
+    color: palette.glow, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending,
+  }))));
+
+  // Body emissive stripe — thin glowing band along the hull, reads
+  // as a power conduit. Cyan accent on the otherwise muted body.
+  const stripeGeo = new THREE.BoxGeometry(hullL * 0.85, hullR * 0.12, hullR * 0.08);
+  stripeGeo.translate(0, 0, -hullR * 0.7);
+  group.add(setupMesh(new THREE.Mesh(stripeGeo, new THREE.MeshBasicMaterial({
+    color: palette.glow, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending,
   }))));
 
   // Twin fins — small flat plates on left and right of the hull.
@@ -1089,6 +1246,21 @@ function buildSniperUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.Buffe
     color: palette.glow, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending,
   }))));
 
+  // Twin rear stabiliser fins — small angled plates behind the
+  // capsule, gives the sniper a "thrust + control surfaces" look
+  // rather than a featureless tube.
+  const stabW = bodyR * 0.18;
+  const stabH = bodyR * 0.4;
+  for (const sign of [-1, 1]) {
+    const stabGeo = new THREE.BoxGeometry(stabW, hullR * 0.08, stabH);
+    stabGeo.translate(-hullL * 0.45, sign * hullR * 0.7, hullR * 0.4);
+    const stab = new THREE.Mesh(stabGeo, hullMat);
+    stab.frustumCulled = false;
+    stab.rotation.x = sign * 0.35;
+    group.add(stab);
+  }
+
+  group.userData.muzzleMat = muzzleMat;
   return { group, geometry: hullGeo, material: hullMat };
 }
 
@@ -1140,18 +1312,26 @@ function buildBossUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferG
   });
   group.add(setupMesh(new THREE.Mesh(domeGeo, domeMat)));
 
-  // Inner core — bright emissive sphere visible through the dome.
-  // Sells the "alien core powering this thing" idea.
+  // Inner core — bright emissive sphere visible through the dome. The
+  // material is captured for per-frame pulse modulation: scale + opacity
+  // breathe at ~0.7Hz so the core reads as "powered up" rather than
+  // a stuck glow. Sells the "alien core powering this thing" idea.
+  const coreMat = new THREE.MeshBasicMaterial({
+    color: palette.glow, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending,
+  });
   const coreR = bodyR * 0.22;
   const coreGeo = new THREE.SphereGeometry(coreR, 14, 10);
   coreGeo.translate(0, 0, bodyH * 0.85 + coreR * 0.4);
-  group.add(setupMesh(new THREE.Mesh(coreGeo, new THREE.MeshBasicMaterial({
-    color: palette.glow, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending,
-  }))));
+  const coreMesh = new THREE.Mesh(coreGeo, coreMat);
+  coreMesh.frustumCulled = false;
+  group.add(coreMesh);
 
   // Crown of 4 spires — vertical glowing pillars around the dome.
+  // Tip materials captured per spire so renderOverlay can alternate
+  // their glow in a chase pattern around the crown.
   const spireR = bodyR * 0.04;
   const spireH = bodyR * 0.55;
+  const spireTipMats: THREE.MeshBasicMaterial[] = [];
   for (let i = 0; i < 4; i++) {
     const angle = (Math.PI / 2) * i + Math.PI / 4;
     const spireGeo = new THREE.CylinderGeometry(spireR, spireR * 1.5, spireH, 8);
@@ -1161,13 +1341,39 @@ function buildBossUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferG
       color: 0x602030, shininess: 100, specular: 0xffffff,
       emissive: palette.glow, emissiveIntensity: 0.9,
     }))));
-    // Spire tip — small bright bulb.
+    // Spire tip — small bright bulb, captured for crown alternation.
+    const tipMat = new THREE.MeshBasicMaterial({
+      color: palette.glow, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending,
+    });
     const tipGeo = new THREE.SphereGeometry(spireR * 2, 8, 6);
     tipGeo.translate(Math.cos(angle) * bodyR * 0.45, Math.sin(angle) * bodyR * 0.45, bodyH * 0.55 + spireH + spireR);
-    group.add(setupMesh(new THREE.Mesh(tipGeo, new THREE.MeshBasicMaterial({
-      color: palette.glow, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending,
+    group.add(setupMesh(new THREE.Mesh(tipGeo, tipMat)));
+    spireTipMats.push(tipMat);
+  }
+
+  // Orbital escort drones — 2 small saucer satellites that orbit the
+  // boss. Stored in a group whose rotation.z spins each frame so they
+  // sweep around the boss. The "command flotilla" silhouette.
+  const escortGroup = new THREE.Group();
+  for (const sign of [-1, 1]) {
+    const droneR = bodyR * 0.14;
+    const droneH = droneR * 0.4;
+    const droneGeo = new THREE.CylinderGeometry(droneR * 0.7, droneR, droneH, 16);
+    droneGeo.rotateX(Math.PI / 2);
+    droneGeo.translate(sign * bodyR * 1.4, 0, bodyH * 0.2);
+    const droneMat = new THREE.MeshPhongMaterial({
+      color: 0x4a1818, shininess: 80, specular: 0xc08040,
+      emissive: palette.glow, emissiveIntensity: 0.6,
+    });
+    escortGroup.add(setupMesh(new THREE.Mesh(droneGeo, droneMat)));
+    // Drone glow underside — small additive sphere.
+    const dGlowGeo = new THREE.SphereGeometry(droneR * 0.55, 8, 6);
+    dGlowGeo.translate(sign * bodyR * 1.4, 0, bodyH * 0.2 - droneH * 0.6);
+    escortGroup.add(setupMesh(new THREE.Mesh(dGlowGeo, new THREE.MeshBasicMaterial({
+      color: palette.glow, transparent: true, opacity: 0.65, blending: THREE.AdditiveBlending,
     }))));
   }
+  group.add(escortGroup);
 
   // Triple abductor beam — central wide cone + 2 narrower side cones.
   group.add(setupMesh(buildAbductorBeam(bodyR, palette.glow, -bodyH * 0.6, bodyR * 1.6, 0.16)));
@@ -1178,6 +1384,10 @@ function buildBossUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferG
   }
 
   group.userData.ringGroup = ringGroup;
+  group.userData.coreMat = coreMat;
+  group.userData.coreMesh = coreMesh;
+  group.userData.spireTipMats = spireTipMats;
+  group.userData.escortGroup = escortGroup;
   return { group, geometry: bodyGeo, material: bodyMat };
 }
 
@@ -1540,48 +1750,98 @@ export function renderOverlay(opts: {
       );
     } else {
       // Per-type idle motion. Each silhouette earns its own "personality"
-      // so the threat reads from movement as well as shape.
+      // so the threat reads from movement as well as shape. Animation
+      // material refs are stashed on entry.mesh.userData by the build
+      // functions and modulated here per frame.
+      const ud = entry.mesh.userData;
       switch (u.type) {
         case 'sniper': {
           // Nose tracks direction of travel — the barrel always points
-          // along the dir vector. No bank/hover; this is a rail-gun,
-          // not a saucer.
+          // along the dir vector.
           entry.mesh.rotation.set(0, 0, -u.dir);
+          // Muzzle charge cycle: opacity ramps up over ~1.6s then snaps
+          // back to baseline, so the sniper visibly "winds up" before
+          // each shot.
+          const muzzle = ud.muzzleMat as THREE.MeshBasicMaterial | undefined;
+          if (muzzle) {
+            const cycle = (frameCounter * 0.012 + u.id * 0.7) % 1;
+            muzzle.opacity = cycle < 0.92 ? 0.35 + cycle * 0.7 : 0.25;
+          }
           break;
         }
         case 'tank': {
-          // Slow z-axis turret sweep + mild banking. The 4 cardinal gun
-          // barrels rotate around the centre so they appear to scan.
           entry.mesh.rotation.y = u.dir * 0.15;
           entry.mesh.rotation.z = frameCounter * 0.012;
+          // Gun barrel chase — each tip glows brightly in sequence
+          // around the turret, sells "cycling fire" without actually
+          // firing.
+          const tips = ud.barrelTipMats as THREE.MeshBasicMaterial[] | undefined;
+          if (tips) {
+            const lead = Math.floor((frameCounter * 0.04 + u.id) % tips.length);
+            for (let i = 0; i < tips.length; i++) {
+              tips[i].opacity = i === lead ? 0.95 : 0.3;
+            }
+          }
           break;
         }
         case 'elite': {
-          // Predatory wobble — slow z-spin layered on the banking roll.
-          // The spikes catch light at different angles as it shimmies.
           entry.mesh.rotation.y = u.dir * 0.22;
           entry.mesh.rotation.z = frameCounter * 0.018 + Math.sin(frameCounter * 0.05 + u.id) * 0.12;
+          // Predatory eye pulse — emissive intensity breathes between
+          // 1.0 and 2.2, pupil tracks it. Reads as a sensor scanning
+          // for prey.
+          const eye = ud.eyeMat as THREE.MeshPhongMaterial | undefined;
+          const pupil = ud.pupilMat as THREE.MeshBasicMaterial | undefined;
+          const eyePulse = 0.5 + 0.5 * Math.sin(frameCounter * 0.07 + u.id);
+          if (eye) eye.emissiveIntensity = 1.0 + eyePulse * 1.2;
+          if (pupil) pupil.opacity = 0.7 + eyePulse * 0.3;
           break;
         }
         case 'boss': {
-          // Big, slow, imposing. Less bank than cruiser; the carrier
-          // doesn't dance.
           entry.mesh.rotation.y = u.dir * 0.14;
           entry.mesh.rotation.z = Math.sin(frameCounter * 0.02 + u.id) * 0.05;
+          // Core breath — opacity + scale pulse at ~0.7Hz. Sells the
+          // "powered up" feel.
+          const coreMat = ud.coreMat as THREE.MeshBasicMaterial | undefined;
+          const coreMesh = ud.coreMesh as THREE.Mesh | undefined;
+          const corePulse = 0.5 + 0.5 * Math.sin(frameCounter * 0.04);
+          if (coreMat) coreMat.opacity = 0.65 + corePulse * 0.3;
+          if (coreMesh) {
+            const s = 0.9 + corePulse * 0.2;
+            coreMesh.scale.set(s, s, s);
+          }
+          // Spire crown alternation — chase glow around the 4 spires.
+          const spires = ud.spireTipMats as THREE.MeshBasicMaterial[] | undefined;
+          if (spires) {
+            const lead = Math.floor((frameCounter * 0.03) % spires.length);
+            for (let i = 0; i < spires.length; i++) {
+              spires[i].opacity = i === lead ? 1.0 : 0.45;
+            }
+          }
+          // Orbital escort drones — the satellite group spins around
+          // the boss centre. Slow enough to read as ceremonial flotilla.
+          const escortGroup = ud.escortGroup as THREE.Group | undefined;
+          if (escortGroup) escortGroup.rotation.z = frameCounter * 0.015;
           break;
         }
         case 'cruiser':
         default: {
-          // Classic saucer: banking roll on direction + small sin-wave hover.
           entry.mesh.rotation.y = u.dir * 0.25;
           entry.mesh.rotation.z = Math.sin(frameCounter * 0.04 + u.id) * 0.08;
+          // Antenna tips pulse — top spike + bottom mast both breathe
+          // gently. Tagged by id so multiple cruisers pulse out of phase.
+          const tip = ud.pulseTipMat as THREE.MeshBasicMaterial | undefined;
+          const mast = ud.pulseMastTipMat as THREE.MeshBasicMaterial | undefined;
+          const p = 0.6 + 0.4 * Math.sin(frameCounter * 0.06 + u.id);
+          if (tip) tip.opacity = 0.55 + p * 0.4;
+          if (mast) mast.opacity = 0.5 + (1 - p) * 0.45;  // out of phase with tip
           break;
         }
       }
       // Rim port-hole ring spins independently of the hull bank/turret
       // sweep. Only saucer types stash a ringGroup (cruiser / tank /
       // boss). Speed tagged via id so multiple UFOs don't pulse in lockstep.
-      const ringGroup = (entry.mesh as THREE.Group).userData?.ringGroup as THREE.Group | undefined;
+      const ringGroup = ud.ringGroup as THREE.Group | undefined;
       if (ringGroup) ringGroup.rotation.z = frameCounter * 0.06 + u.id * 0.3;
     }
     entry.mesh.visible = true;
