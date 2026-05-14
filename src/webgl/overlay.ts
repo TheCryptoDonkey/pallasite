@@ -139,7 +139,6 @@ function buildAsteroidGeometry(a: Asteroid): THREE.BufferGeometry {
     const x = pos.getX(i);
     const y = pos.getY(i);
     const z = pos.getZ(i);
-    const r = Math.hypot(x, y, z);
     // Angle around the camera axis (z), 0..2π — used to index shape[].
     const ang = Math.atan2(y, x);
     const t = (ang / (Math.PI * 2) + 1) % 1;
@@ -157,9 +156,13 @@ function buildAsteroidGeometry(a: Asteroid): THREE.BufferGeometry {
     const sy = Math.sin(y * 0.22 + ((seedOff >> 10) & 0x3ff) * 0.013);
     const sz = Math.sin(z * 0.16 + ((seedOff >> 20) & 0x3ff) * 0.017);
     const bumps = (sx + sy + sz) / 3;
-    const displacement = shapeR + bumps * 0.08;
-    const norm = r > 0 ? displacement * a.radius / r : 1;
-    pos.setXYZ(i, x * norm / a.radius, y * norm / a.radius, z * norm / a.radius);
+    // Icosahedron vertices sit on a sphere of radius a.radius, so
+    // `displacement` (≈0.8–1.3 from shape[] + noise) is already the
+    // correct multiplicative factor. The old code divided by a.radius
+    // a second time, collapsing every rock to ~1 unit — rendered
+    // sub-pixel and looked like "nothing on screen".
+    const scale = shapeR + bumps * 0.08;
+    pos.setXYZ(i, x * scale, y * scale, z * scale);
   }
   geo.computeVertexNormals();
   return geo;
