@@ -7,7 +7,7 @@
  */
 
 import type {
-  GameState, Ship, Asteroid, AsteroidType, Bullet, Coin, Particle, Ufo, Mine, PowerUp, ReplaySnapshot, Debris,
+  GameState, Ship, Asteroid, AsteroidType, Bullet, Coin, Particle, Ufo, Mine, PowerUp, ReplaySnapshot, Debris, Shockwave,
 } from './types.js';
 import {
   WORLD_W, WORLD_H, WARP_MS, waveName, waveSubtitle, waveTagline, POWERUP_CONFIG,
@@ -2965,6 +2965,38 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
   ctx.restore();
 }
 
+// ── Shockwave rings (transient post-shatter effect) ─────────────────────────
+//
+// Soft expanding stroke, ~380ms life. Cubic ease-out so the initial pop is
+// fast and the trailing fade reads "settling dust" rather than "drifting".
+// Self-prunes dead rings each frame — no game-tick coupling. Drawn inside the
+// shake transform so the ring moves with the world that spawned it.
+
+function drawShockwaves(ctx: CanvasRenderingContext2D, rings: Shockwave[], now: number): void {
+  const RING_LIFETIME_MS = 380;
+  const RING_GROWTH = 2.2;
+  for (const r of rings) {
+    const age = (now - r.startMs) / RING_LIFETIME_MS;
+    if (age >= 1 || age < 0) continue;
+    const ease = 1 - Math.pow(1 - age, 3);
+    const radius = r.baseRadius * (1 + ease * RING_GROWTH);
+    const alpha = (1 - age) * 0.85;
+    const width = (1 - age) * 4 + 0.5;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = r.color;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    ctx.arc(r.x, r.y, radius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+  // Prune dead rings — walk backward so splice indices stay stable.
+  for (let i = rings.length - 1; i >= 0; i--) {
+    if ((now - rings[i].startMs) >= RING_LIFETIME_MS) rings.splice(i, 1);
+  }
+}
+
 // ── Main render ───────────────────────────────────────────────────────────────
 
 export function render(canvas: HTMLCanvasElement, state: GameState, now: number): void {
@@ -3106,6 +3138,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // 3 passes = 240+ arcs reduced to 80).
   drawParticles(ctx, state.particles);
   drawDebris(ctx, state.debris);
+  drawShockwaves(ctx, state.shockwaveRings, now);
 
   ctx.restore();
 

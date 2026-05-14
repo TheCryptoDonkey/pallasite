@@ -147,6 +147,94 @@ function fireBossPing(): void {
   }
 }
 
+// ── Intensity drone — scales with on-screen gameplay rock count ─────────────
+//
+// Persistent low-frequency layer that comes alive when the playfield is busy.
+// Sub fundamental (42Hz) + first harmonic (84Hz) + lowpass-filtered noise
+// rumble, all routed through a single smoothed gain. Target each frame is a
+// function of the alive depth-3 asteroid count: silent below
+// INTENSITY_FLOOR_COUNT, linear ramp to peak at INTENSITY_FULL_COUNT, capped
+// at INTENSITY_PEAK. Felt as added density rather than a new instrument, so
+// it blends with any recorded track.
+
+let intensityGain: GainNode | null = null;
+let intensityStarted = false;
+const INTENSITY_PEAK = 0.18;
+const INTENSITY_FLOOR_COUNT = 6;
+const INTENSITY_FULL_COUNT = 20;
+const INTENSITY_RAMP_S = 0.6;
+
+function ensureIntensityStem(): void {
+  if (intensityStarted) return;
+  const r = ensureBus();
+  if (!r) return;
+  const { ctx, bus } = r;
+
+  intensityGain = ctx.createGain();
+  intensityGain.gain.value = 0;
+  intensityGain.connect(bus);
+
+  const fund = ctx.createOscillator();
+  fund.type = 'sine';
+  fund.frequency.value = 42;
+  fund.connect(intensityGain);
+  fund.start();
+
+  const harm = ctx.createOscillator();
+  harm.type = 'sine';
+  harm.frequency.value = 84;
+  const harmGain = ctx.createGain();
+  harmGain.gain.value = 0.35;
+  harm.connect(harmGain);
+  harmGain.connect(intensityGain);
+  harm.start();
+
+  // 2-second looped noise buffer — tiny memory, lowpass-filtered into a
+  // sub-bass texture rather than hiss. Adds rolling rumble under the
+  // tonal oscillators so the drone doesn't read as a pure test tone.
+  const noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
+  const data = noiseBuf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+  const noise = ctx.createBufferSource();
+  noise.buffer = noiseBuf;
+  noise.loop = true;
+  const noiseFilter = ctx.createBiquadFilter();
+  noiseFilter.type = 'lowpass';
+  noiseFilter.frequency.value = 180;
+  const noiseGain = ctx.createGain();
+  noiseGain.gain.value = 0.20;
+  noise.connect(noiseFilter);
+  noiseFilter.connect(noiseGain);
+  noiseGain.connect(intensityGain);
+  noise.start();
+
+  intensityStarted = true;
+}
+
+function setIntensityTargetGain(target: number): void {
+  if (!intensityGain || !stemCtx) return;
+  const now = stemCtx.currentTime;
+  const current = intensityGain.gain.value;
+  // Cancel + rebase so an in-flight ramp doesn't fight the new one, then
+  // ramp linearly to target. Linear (not exponential) is fine for a
+  // low-frequency bed and survives near-zero values cleanly.
+  intensityGain.gain.cancelScheduledValues(now);
+  intensityGain.gain.setValueAtTime(current, now);
+  intensityGain.gain.linearRampToValueAtTime(target, now + INTENSITY_RAMP_S);
+}
+
+function intensityTargetFromState(state: GameState): number {
+  // Count alive, gameplay-plane asteroids. Decorative parallax bands
+  // (depth 1-2, 4-5) don't count toward threat density.
+  let collideCount = 0;
+  for (const a of state.asteroids) {
+    if (a.alive && a.depth === 3) collideCount++;
+  }
+  if (collideCount <= INTENSITY_FLOOR_COUNT) return 0;
+  const norm = Math.min(1, (collideCount - INTENSITY_FLOOR_COUNT) / (INTENSITY_FULL_COUNT - INTENSITY_FLOOR_COUNT));
+  return norm * INTENSITY_PEAK;
+}
+
 /**
  * Per-frame tick. Drives the stem schedules off `performance.now()` rather
  * than the audio clock so pauses freeze the rhythm cleanly with the rest of
@@ -154,6 +242,7 @@ function fireBossPing(): void {
  *
  * Combo pulse fires every COMBO_PULSE_INTERVAL_MS while state.combo >= 2.
  * Boss ping fires every BOSS_PING_INTERVAL_MS while wave 25 boss is alive.
+ * Intensity drone updates its target gain from the live rock count.
  */
 export function stemsTickForState(state: GameState, nowMs: number): void {
   // Only fire stems while the simulation is actually running. Title, pause,
@@ -162,8 +251,15 @@ export function stemsTickForState(state: GameState, nowMs: number): void {
   if (state.phase !== 'playing' && state.phase !== 'wavestart') {
     nextComboPulseAt = 0;
     nextBossPingAt = 0;
+    setIntensityTargetGain(0);
     return;
   }
+
+  // Intensity drone tracks the playfield's collide-asteroid count, smoothed
+  // each frame. Lazy-init on first frame of play so the AudioContext is
+  // already user-unlocked by the time we reach for it.
+  ensureIntensityStem();
+  setIntensityTargetGain(intensityTargetFromState(state));
 
   if (state.combo >= 2) {
     if (nextComboPulseAt === 0) nextComboPulseAt = nowMs;
@@ -193,4 +289,5 @@ export function stemsTickForState(state: GameState, nowMs: number): void {
 export function stemsStop(): void {
   nextComboPulseAt = 0;
   nextBossPingAt = 0;
+  setIntensityTargetGain(0);
 }
