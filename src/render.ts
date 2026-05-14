@@ -627,26 +627,6 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   // shimmer aura (council mass scale gives large 5-7 HP) so the player
   // can read "this rock has more left in it" without an HP bar.
   if (a.councilMember) {
-    if (a.hp > 1) {
-      // Outer mass-shedding aura — gold halo only OUTSIDE the rock,
-      // not a disc through the middle. Three-stop gradient: transparent
-      // at center, peak just past the polygon edge, fade out at auraR.
-      // Pulses faster as HP drops so a near-dead rock feels frantic.
-      const ratio = a.hp / a.hpMax;
-      const pulseHz = 0.0035 + (1 - ratio) * 0.005;
-      const pulse = 0.85 + 0.15 * Math.sin(now * pulseHz);
-      const auraR = a.radius * (1.45 + 0.18 * pulse * ratio);
-      const edgeStop = a.radius / auraR;
-      const auraGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, auraR);
-      auraGrad.addColorStop(0, 'rgba(255, 216, 74, 0)');                                          // no glow through the portrait
-      auraGrad.addColorStop(Math.max(0, edgeStop - 0.04), 'rgba(255, 216, 74, 0)');               // transparent until we reach the silhouette
-      auraGrad.addColorStop(edgeStop, `rgba(255, 216, 74, ${0.55 * ratio * pulse})`);             // peak at the polygon edge
-      auraGrad.addColorStop(1, 'rgba(255, 216, 74, 0)');                                          // fade out into space
-      ctx.fillStyle = auraGrad;
-      ctx.beginPath();
-      ctx.arc(0, 0, auraR, 0, Math.PI * 2);
-      ctx.fill();
-    }
 
     const img = getMemberImage(a.councilMember.name);
     if (img) {

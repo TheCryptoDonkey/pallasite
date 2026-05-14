@@ -375,13 +375,13 @@ export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?
   if (isVein) {
     hp = veinScaledHp();
   } else if (opts?.councilMember) {
-    // Council mass scale — large takes 5-7 hits depending on type,
-    // medium 3, small 1. Visible shimmer/glow telegraphs the HP
-    // (see drawAsteroid council branch). Smalls are still terminal
-    // (1 hit, drops the ₿ coin).
-    hp = size === 'large' ? 5 : size === 'medium' ? 3 : 1;
-    if (t === 'iron')      hp += 2;  // armoured architects survive longer
-    else if (t === 'pallasite') hp += 1;
+    // Council mass scale — gentle bump over standard so the level
+    // lasts longer than 10s but stays playable. Large 2 HP (iron 3,
+    // pallasite 3), medium 1, small 1. Mass-shedding particles
+    // telegraph "still has more in it" without making the rock a
+    // bullet sponge.
+    hp = size === 'large' ? 2 : 1;
+    if (size === 'large' && (t === 'iron' || t === 'pallasite')) hp += 1;
   } else {
     hp = size === 'large' ? cfg.hp : 1;
   }
@@ -2447,6 +2447,43 @@ export function updateGame(s: GameState, dt: number, now: number): void {
     a.pos.x += a.vel.x * dt;
     a.pos.y += a.vel.y * dt;
     a.rot += a.rotVel * dt;
+    // 600bn council shedding — periodic tiny gold particles spit off
+    // the polygon edge while the rock still has mass to shed. Per-
+    // frame poisson roll, rate scales with hp-remaining ratio so a
+    // full-health large pumps out sparks and a 1-HP rock barely
+    // sheds. Particles get an outward radial velocity + short ttl
+    // so they read as "mass flying off" rather than a static glow.
+    if (a.councilMember && a.hp > 1 && a.size !== 'small') {
+      const ratio = a.hp / a.hpMax;
+      // ~6 particles per second at full hp on a large rock, scaled
+      // down by ratio + size. Cap so a perfect run doesn't fill the
+      // particle buffer.
+      const sizeMul = a.size === 'large' ? 1 : 0.55;
+      const expected = 6 * ratio * sizeMul * dt;
+      if (Math.random() < expected) {
+        const headroom = MAX_PARTICLES - s.particles.length;
+        if (headroom > 0) {
+          const ang = Math.random() * Math.PI * 2;
+          const edgeR = a.radius * 0.92;
+          const px = a.pos.x + Math.cos(ang) * edgeR;
+          const py = a.pos.y + Math.sin(ang) * edgeR;
+          // Outward velocity with a small tangential nudge so the
+          // shed trail curls naturally with the rock's motion.
+          const outSpeed = 40 + Math.random() * 40;
+          s.particles.push({
+            pos: { x: px, y: py },
+            vel: {
+              x: Math.cos(ang) * outSpeed + a.vel.x * 0.2,
+              y: Math.sin(ang) * outSpeed + a.vel.y * 0.2,
+            },
+            ttl: 350,
+            maxTtl: 350,
+            colour: '#ffd84a',
+            size: 1.4 + Math.random() * 1.0,
+          });
+        }
+      }
+    }
     if (a.hitFlash > 0) a.hitFlash = Math.max(0, a.hitFlash - dt * 4);
     wrap(a.pos, RADIUS_PER_SIZE.large);
   }
