@@ -23,6 +23,7 @@ if (!API_KEY) {
 
 const MODEL = 'gpt-image-2';
 const SIZE = '1536x1024';   // panoramic; canvas crops/stretches to 960x720
+const ASTEROID_SIZE = '1024x1024';  // square for the per-type asteroid surface textures
 const QUALITY = 'high';     // gpt-image-1 accepts low|medium|high|auto; gpt-image-2 expected to mirror
 /** Originals directory — full-quality PNG kept out of the deploy bundle. */
 const OUT_DIR = join(process.cwd(), 'originals');
@@ -35,6 +36,10 @@ const onlyWave = waveArgIdx >= 0 ? parseInt(args[waveArgIdx + 1], 10) : null;
  *  cliffs, storm light, ember palette) instead of any wave. Off-axis
  *  from the wave-N flow so the file lands at originals/sanctum.png. */
 const onlySanctum = args.includes('--sanctum');
+/** --asteroids generates the four 1024×1024 photoreal asteroid-surface
+ *  textures (stony, iron, chondrite, pallasite) used as filler-asteroid
+ *  fills on the 600bn Sanctum wave. */
+const onlyAsteroids = args.includes('--asteroids');
 
 interface WavePrompt {
   wave: number;
@@ -176,6 +181,31 @@ const SANCTUM_SPACE_PROMPT: NamedPrompt = {
   prompt: `Photorealistic deep-space astrophotography, ultra-high resolution, captured in the style of a Hubble + JWST composite mosaic. A vast cosmic vista with a warm ember nebula filling the upper-third — drifting orange and gold dust clouds with delicate filamentary structure, like a celestial forge breathing slowly. A distant golden Andromeda-like spiral galaxy hanging at upper-right at three-quarter angle, deep amber core with warm sweeping arms. Thousands of pinpoint stars scattered across deep velvet-black space, with subtle cobalt and violet ionised dust streaks in the upper-left for cool-tone balance. Soft crepuscular rays of warm light bleeding through the nebula. The lower-centre and lower-third is a dark quiet void — deep black sky for gameplay legibility on top. Cinematic, mythic, sacred, awe-inspiring, painterly. No text, no graphics, no UI elements, no spaceships, no asteroids, no characters, no figures, no logos, no planets in the foreground. Aspect 1536x1024.`,
 };
 
+/** Four photoreal close-up surface textures used as the per-type
+ *  filler-asteroid fills on the 600bn Sanctum wave. Square 1024×1024
+ *  so they can be clipped inside the lumpy asteroid polygons at any
+ *  size without aspect distortion. Each prompt instructs the model
+ *  to FILL the frame with surface texture so the polygon clip never
+ *  cuts into empty background. */
+const ASTEROID_PROMPTS: NamedPrompt[] = [
+  {
+    name: 'asteroid-stony',
+    prompt: `Ultra-high resolution photorealistic close-up macro of a stony asteroid surface, NASA Hayabusa / Mars-rover quality. Brown-grey rocky regolith covered in dozens of tiny craters and pock-marks, dusty weathered surface, scattered small embedded rocks and pebbles, dramatic side-lighting from upper-left casting long shadows across the craters and revealing deep grey shadows with warm tan highlights on the lit faces. Photoreal scientific imaging — no stylisation. Square 1024×1024 frame. The entire frame is the asteroid surface filling edge to edge — NO edges of the asteroid visible, NO sky, NO black background, NO text, NO graphics, NO UI, NO logos. Pure cratered rocky surface texture filling the entire square.`,
+  },
+  {
+    name: 'asteroid-iron',
+    prompt: `Ultra-high resolution photorealistic close-up of a polished iron-nickel meteorite cross-section — a Widmanstätten pattern revealed by acid-etching, with the characteristic interlocking geometric crystal lattice of slowly-cooled iron meteorites clearly visible. Dark metallic grey base with subtle bronze and copper tones, the cross-hatched kamacite-taenite plates running diagonally across the frame, polished mirror-like metal surface with faint reflections, dramatic side-lighting from upper-left bringing out the etched crystal pattern. Scientific macro photography quality. Square 1024×1024 frame. The entire frame is the iron meteorite surface — NO edges visible, NO sky, NO background, NO text, NO graphics, NO logos. Pure metallic Widmanstätten texture filling the entire square.`,
+  },
+  {
+    name: 'asteroid-chondrite',
+    prompt: `Ultra-high resolution photorealistic close-up macro of a chondrite meteorite cut-and-polished surface. Dozens of round embedded chondrules — small spherical mineral grains 1-3mm across — in mixed warm colours: amber, golden yellow, deep brown, dark red, beige, rust-orange, embedded in a darker fine-grained matrix. Primitive meteoritic texture, classic ordinary chondrite appearance, polished surface with the chondrules slightly raised. Dramatic side-lighting from upper-left bringing out the spherical 3D form of each chondrule with tiny shadows. Scientific macro photography quality. Square 1024×1024 frame. The entire frame is the chondrite cross-section — NO edges visible, NO sky, NO background, NO text, NO logos. Pure chondritic texture filling the entire square.`,
+  },
+  {
+    name: 'asteroid-pallasite',
+    prompt: `Ultra-high resolution photorealistic close-up macro of a pallasite meteorite cut-and-polished cross-section — the iconic stony-iron type. Brilliant green-gold olivine crystals (gem-grade peridot) embedded in a dark metallic iron-nickel matrix that gleams between the gems. The peridot crystals are 5-15mm across, translucent yellow-green, refractive, catching the light with bright internal reflections and glowing edges where the light passes through. The iron matrix is dark steel grey with faint Widmanstätten etching visible. Polished mirror-like surface. Dramatic side-lighting from upper-left making the gems sparkle and pop. Scientific macro photography quality. Square 1024×1024 frame. The entire frame is the pallasite cross-section — NO edges visible, NO sky, NO background, NO text, NO logos. Pure gem-and-metal texture filling the entire square.`,
+  },
+];
+
 mkdirSync(OUT_DIR, { recursive: true });
 
 async function generateOne(wp: WavePrompt): Promise<void> {
@@ -243,14 +273,14 @@ async function generateOne(wp: WavePrompt): Promise<void> {
   }
 }
 
-async function generateNamed(np: NamedPrompt): Promise<void> {
+async function generateNamed(np: NamedPrompt, size: string = SIZE): Promise<void> {
   const target = join(OUT_DIR, `${np.name}.png`);
   if (!force && existsSync(target)) {
     console.log(`  ${np.name}.png exists, skipping (use --force to regenerate)`);
     return;
   }
 
-  process.stdout.write(`  generating ${np.name} … `);
+  process.stdout.write(`  generating ${np.name} (${size}) … `);
 
   const res = await fetch('https://api.openai.com/v1/images/generations', {
     method: 'POST',
@@ -262,7 +292,7 @@ async function generateNamed(np: NamedPrompt): Promise<void> {
       model: MODEL,
       prompt: np.prompt,
       n: 1,
-      size: SIZE,
+      size,
       quality: QUALITY,
     }),
   });
@@ -311,6 +341,18 @@ async function generateNamed(np: NamedPrompt): Promise<void> {
 async function main(): Promise<void> {
   // --sanctum is exclusive with --wave / no-flag (which iterate the
   // wave roster). When set, only the named Sanctum target generates.
+  if (onlyAsteroids) {
+    console.log(`Generating ${ASTEROID_PROMPTS.length} asteroid-surface textures via ${MODEL} (${ASTEROID_SIZE}, quality=${QUALITY})…`);
+    console.log(`Output dir: ${OUT_DIR}`);
+    console.log('');
+    for (const np of ASTEROID_PROMPTS) {
+      await generateNamed(np, ASTEROID_SIZE);
+    }
+    console.log('');
+    console.log('Done. Run `npm run optimise-backgrounds` to refresh the runtime WebPs.');
+    return;
+  }
+
   if (onlySanctum) {
     console.log(`Generating 2 named backgrounds (sanctum, sanctum-space) via ${MODEL} (${SIZE}, quality=${QUALITY})…`);
     console.log(`Output dir: ${OUT_DIR}`);
