@@ -582,6 +582,24 @@ export interface GameState {
    *  arrive. 0 when no swarm is pending. Set by spawnVein; consumed in
    *  updateGame the moment the timer elapses. */
   veinSwarmDueAt: number;
+
+  /** Transient expanding-ring effects spawned by big shatters (large breaks,
+   *  vein collapse). Purely visual — rendered as a stroked circle that grows
+   *  and fades over ~380ms. Self-pruning in render. */
+  shockwaveRings: Shockwave[];
+}
+
+/** Single radial shockwave ring. Wall-clock-driven so the visual lands even
+ *  if the simulation is paused immediately after the kill. */
+export interface Shockwave {
+  x: number;
+  y: number;
+  /** performance.now() at spawn. */
+  startMs: number;
+  /** Stroke colour — typically the asteroid type's accent glow. */
+  color: string;
+  /** Radius at spawn — the ring grows from here to ~3.2× this over its life. */
+  baseRadius: number;
 }
 
 /** A single (t, score) pacing point. t is ms since startGame. */

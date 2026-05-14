@@ -454,6 +454,26 @@ export function explosion(scale: number = 1): void {
   rumbleGain.connect(destination());
   rumble.start(t0);
   rumble.stop(t0 + 1.12);
+
+  // Layer 5: deep sub kicker — only fires on big breaks (scale >= 1.0).
+  // Sits below the thump in frequency (50Hz, gentle drift) and decays
+  // slower (0.55s) so it reads as chest impact rather than percussive
+  // snap. Felt on subs / party rigs; phone speakers still get the
+  // existing thump unchanged. Pairs with screen shake for big-shatter
+  // weight at the conference rig.
+  if (scale >= 1.0) {
+    const deepSub = c.createOscillator();
+    deepSub.type = 'sine';
+    deepSub.frequency.setValueAtTime(50, t0);
+    deepSub.frequency.exponentialRampToValueAtTime(32, t0 + 0.5);
+    const deepGain = c.createGain();
+    deepGain.gain.setValueAtTime(0.45 * scale, t0);
+    deepGain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.55);
+    deepSub.connect(deepGain);
+    deepGain.connect(destination());
+    deepSub.start(t0);
+    deepSub.stop(t0 + 0.57);
+  }
 }
 
 // ── UFO siren — menacing wobble ──────────────────────────────────────────────

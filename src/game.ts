@@ -80,6 +80,7 @@ export function makeInitialState(): GameState {
     powerups: [],
     particles: [],
     debris: [],
+    shockwaveRings: [],
     score: 0,
     sats: 0,
     displaySats: 0,
@@ -156,6 +157,16 @@ export function makeInitialState(): GameState {
  *  state machine honest. */
 export function bumpTrauma(s: GameState, amount: number): void {
   s.cameraTrauma = Math.min(1, s.cameraTrauma + amount);
+}
+
+/** Spawn a transient radial shockwave ring at world coords. Pure visual —
+ *  no collision side effects. Lifetime is fixed (~380ms in render.ts), so
+ *  callers only supply spawn data. Used for big-shatter feel: large
+ *  asteroid breaks and vein collapse. Reduced-motion users still get the
+ *  ring (it's a soft expanding stroke, not a flash) — render pass renders
+ *  it at the same alpha either way. */
+export function spawnShockwave(s: GameState, x: number, y: number, baseRadius: number, color: string): void {
+  s.shockwaveRings.push({ x, y, startMs: performance.now(), baseRadius, color });
 }
 
 /** Freeze the simulation for `ms` to let an impact land. Render keeps running.
@@ -3308,6 +3319,7 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
     audio.pulseDuck(0.45, 240);
     haptic('rumble');
     // Layered burst — gold core, white sparkle, magenta shockwave.
+    spawnShockwave(s, a.pos.x, a.pos.y, a.radius * 0.9, '#ffd84a');
     spawnParticles(s, a.pos.x, a.pos.y, 36, '#ffd84a', 320, 900);
     spawnParticles(s, a.pos.x, a.pos.y, 18, '#fff5d8', 220, 700);
     spawnParticles(s, a.pos.x, a.pos.y, 14, '#ff8ad6', 280, 600);
@@ -3348,6 +3360,7 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
   if (a.size === 'large') {
     audio.pulseDuck(0.65, 180);
     haptic('thump');
+    spawnShockwave(s, a.pos.x, a.pos.y, a.radius, cfg.glow);
   }
 
   // Particles tinted to the type's accent
