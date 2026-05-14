@@ -80,13 +80,22 @@ let bgCache: BackgroundCache | null = null;
 const overrideImages: Map<number, HTMLImageElement | 'failed' | 'pending'> = new Map();
 
 /** Kick off a background load for the given wave if not already requested. */
+/** Resolve the background URL for a wave. 600bn flavour overrides
+ *  wave 1 to use the bespoke sanctum-space.webp (Hubble + JWST style
+ *  ember nebula + golden spiral galaxy) instead of the campaign's
+ *  wave-1 deep-space shot. */
+function backgroundUrlForWave(wave: number): string {
+  if (wave === 1 && getFlavour() === '600bn') return '/backgrounds/sanctum-space.webp';
+  return `/backgrounds/wave-${wave}.webp`;
+}
+
 export function preloadBackground(wave: number): void {
   if (overrideImages.has(wave)) return;
   overrideImages.set(wave, 'pending');
   const img = new Image();
   img.onload = () => overrideImages.set(wave, img);
   img.onerror = () => overrideImages.set(wave, 'failed');
-  img.src = `/backgrounds/wave-${wave}.webp`;
+  img.src = backgroundUrlForWave(wave);
 }
 
 function tryLoadOverride(wave: number): HTMLImageElement | null {
@@ -207,7 +216,7 @@ function syncBodyBackground(wave: number, hasOverride: boolean): void {
   if (key === lastBodyBgKey) return;
   lastBodyBgKey = key;
   if (typeof document === 'undefined') return;
-  document.body.style.backgroundImage = key ? `url(/backgrounds/wave-${wave}.webp)` : '';
+  document.body.style.backgroundImage = key ? `url(${backgroundUrlForWave(wave)})` : '';
 }
 
 /** Safe-area insets in CSS pixels. Zero on desktop and Android without notch;

@@ -166,6 +166,16 @@ const SANCTUM_PROMPT: NamedPrompt = {
   prompt: `Photorealistic dramatic landscape, ultra-high resolution, cinematic mythic register. Madeira volcanic basalt cliffs viewed from a high vantage at storm-light golden hour. Towering jagged black basalt headlands silhouetted in the lower-left and lower-right thirds, weathered and ancient. Vast tempestuous Atlantic sky fills the upper two-thirds — a cathedral of layered ember orange, burnished gold, deep amber, and storm-charged crimson, with massive crepuscular rays piercing through ragged stratus clouds. Distant ocean horizon catching the molten light. Faint sparks and embers drifting upward from the cliffs as if the rock itself is alive. The lower-centre is a darker quiet void where the ocean lies in deep shadow. No text, no graphics, no UI, no spaceships, no asteroids, no boats, no characters, no buildings, no figures, no logos. Cinematic, mythic, scripture-like, awe-inspiring, painterly. Aspect 1536x1024.`,
 };
 
+/** Bespoke deep-space backdrop for the 600bn Sanctum playable wave —
+ *  space rather than the Madeira landscape, so it sits behind the
+ *  council ring without competing for the eye. Warm ember nebula,
+ *  distant golden spiral galaxy, dark lower-centre for gameplay
+ *  legibility. */
+const SANCTUM_SPACE_PROMPT: NamedPrompt = {
+  name: 'sanctum-space',
+  prompt: `Photorealistic deep-space astrophotography, ultra-high resolution, captured in the style of a Hubble + JWST composite mosaic. A vast cosmic vista with a warm ember nebula filling the upper-third — drifting orange and gold dust clouds with delicate filamentary structure, like a celestial forge breathing slowly. A distant golden Andromeda-like spiral galaxy hanging at upper-right at three-quarter angle, deep amber core with warm sweeping arms. Thousands of pinpoint stars scattered across deep velvet-black space, with subtle cobalt and violet ionised dust streaks in the upper-left for cool-tone balance. Soft crepuscular rays of warm light bleeding through the nebula. The lower-centre and lower-third is a dark quiet void — deep black sky for gameplay legibility on top. Cinematic, mythic, sacred, awe-inspiring, painterly. No text, no graphics, no UI elements, no spaceships, no asteroids, no characters, no figures, no logos, no planets in the foreground. Aspect 1536x1024.`,
+};
+
 mkdirSync(OUT_DIR, { recursive: true });
 
 async function generateOne(wp: WavePrompt): Promise<void> {
@@ -302,12 +312,13 @@ async function main(): Promise<void> {
   // --sanctum is exclusive with --wave / no-flag (which iterate the
   // wave roster). When set, only the named Sanctum target generates.
   if (onlySanctum) {
-    console.log(`Generating 1 named background (sanctum) via ${MODEL} (${SIZE}, quality=${QUALITY})…`);
+    console.log(`Generating 2 named backgrounds (sanctum, sanctum-space) via ${MODEL} (${SIZE}, quality=${QUALITY})…`);
     console.log(`Output dir: ${OUT_DIR}`);
     console.log('');
     await generateNamed(SANCTUM_PROMPT);
+    await generateNamed(SANCTUM_SPACE_PROMPT);
     console.log('');
-    console.log('Done. Run `npm run optimise-backgrounds` to refresh the runtime WebP.');
+    console.log('Done. Run `npm run optimise-backgrounds` to refresh the runtime WebPs.');
     return;
   }
 
