@@ -877,7 +877,12 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   // hasn't finished loading yet (or the player has the renderer turned
   // off via prefers-reduced-motion / WebGL unavailable).
   const asteroidTier = getVisualStyle('asteroid');
-  if (asteroidTier === 'mesh' && isWebGLOverlayReady() && !a.isVein) return;
+  // Veins now flow through the mesh path too — the WebGL overlay paints
+  // a regular pallasite mesh which reads as a chunky 3D vault, far more
+  // "massive" than the 2D gold-halo vector circle that used to leak
+  // through underneath. The bespoke gold halo is sacrificed in mesh tier;
+  // shaded/vector tiers still get the original treatment below.
+  if (asteroidTier === 'mesh' && isWebGLOverlayReady()) return;
   // SHADED-tier asteroids get the "tumbling through space" treatment:
   // drop shadow under, camera-fixed rim light + terminator shading on
   // top, neutral outline (no per-type tint). Council members carry
@@ -1249,9 +1254,12 @@ function drawSixHundredBnLogoUfo(ctx: CanvasRenderingContext2D, u: Ufo, now: num
 
 function drawUfo(ctx: CanvasRenderingContext2D, u: Ufo, now: number): void {
   if (!u.alive) return;
-  // MESH-tier ships also cover UFOs — the WebGL overlay draws a 3D
-  // saucer above this canvas. Skip the 2D path when ready.
-  if (getVisualStyle('ship') === 'mesh' && isWebGLOverlayReady()) return;
+  // UFOs render as a 3D saucer on the WebGL overlay when EITHER the ship
+  // tier OR the asteroid tier is mesh — the player almost always expects
+  // mesh UFOs once any other entity is meshed, and tying it to ship-only
+  // meant a default-vector main game with mesh asteroids still drew 2D
+  // saucers, which looked inconsistent.
+  if ((getVisualStyle('ship') === 'mesh' || getVisualStyle('asteroid') === 'mesh') && isWebGLOverlayReady()) return;
   const r = u.radius;
   // 600bn flavour swap — UFO renders as the canonical 4-line sacred
   // number ($600B logo), rotating slowly. The hitbox + behaviour are
@@ -3269,10 +3277,13 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     // both "vehicles" and grouping them keeps the settings UI to four
     // categories rather than introducing a fifth row.
     const shipTier = getVisualStyle('ship');
+    const asteroidTier = getVisualStyle('asteroid');
     const particleTier = getVisualStyle('particle');
+    // UFOs follow ship OR asteroid tier — see drawUfo gate for why.
+    const ufosMesh = shipTier === 'mesh' || asteroidTier === 'mesh';
     callWebGLOverlay({
-      asteroids: getVisualStyle('asteroid') === 'mesh' ? state.asteroids : [],
-      ufos: shipTier === 'mesh' ? state.ufos : [],
+      asteroids: asteroidTier === 'mesh' ? state.asteroids : [],
+      ufos: ufosMesh ? state.ufos : [],
       powerups: particleTier === 'mesh' ? state.powerups : [],
       ship: shipTier === 'mesh' ? state.ship : null,
       dpr: renderMode.dpr,
