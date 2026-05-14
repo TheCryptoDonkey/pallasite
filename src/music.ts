@@ -104,6 +104,29 @@ let lastAppliedKey = '';  // memoised state→track key so musicSetTrackForState
 
 const DEFAULT_FADE_MS = 800;
 
+/** Cache the Opus support test so we don't re-create an Audio element
+ *  per load(). Empty string = no support. */
+let canPlayOpusCached: boolean | null = null;
+function canPlayOpus(): boolean {
+  if (canPlayOpusCached !== null) return canPlayOpusCached;
+  try {
+    canPlayOpusCached = !!new Audio().canPlayType('audio/ogg; codecs=opus');
+  } catch {
+    canPlayOpusCached = false;
+  }
+  return canPlayOpusCached;
+}
+
+/** Pick the playable URL for a track. The wave / sting set is published
+ *  as .opus (smaller files, ~50% bandwidth of equivalent-bitrate AAC).
+ *  Safari on older macOS has no Opus codec at all — we ship matching
+ *  .m4a (AAC) versions of every track and swap the extension here for
+ *  any browser that says it can't play Opus. */
+function trackUrlFor(track: Track): string {
+  if (canPlayOpus()) return track.src;
+  return track.src.replace(/\.opus$/, '.m4a');
+}
+
 function load(track: Track): Loaded {
   const cached = loaded.get(track.id);
   if (cached) return cached;
@@ -112,7 +135,7 @@ function load(track: Track): Loaded {
   const el = new Audio();
   el.loop = track.loop !== false;
   el.preload = 'auto';
-  el.src = track.src;
+  el.src = trackUrlFor(track);
   // Don't set crossOrigin — the music files are same-origin so it's
   // redundant, AND on iOS Safari setting it without matching CORS
   // response headers from the server taints the MediaElementSource and
