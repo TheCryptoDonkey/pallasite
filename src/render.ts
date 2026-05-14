@@ -2041,6 +2041,10 @@ function drawDustShape(ctx: CanvasRenderingContext2D, type: AsteroidType, r: num
 
 function drawPowerUp(ctx: CanvasRenderingContext2D, p: PowerUp, now: number): void {
   if (!p.alive || p.collected) return;
+  // Powerups follow the 'particle' visual tier (decorative field
+  // items, same bucket as particles in the settings UI). When on mesh
+  // the 3D path renders the spinning glyph sphere instead.
+  if (getVisualStyle('particle') === 'mesh' && isWebGLOverlayReady()) return;
   const cfg = POWERUP_CONFIG[p.type];
   const fadeOut = p.ttl < 2000 ? p.ttl / 2000 : 1;
   const pulse = 0.85 + 0.25 * Math.sin(now * 0.008);
@@ -3112,9 +3116,11 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     // both "vehicles" and grouping them keeps the settings UI to four
     // categories rather than introducing a fifth row.
     const shipTier = getVisualStyle('ship');
+    const particleTier = getVisualStyle('particle');
     callWebGLOverlay({
       asteroids: getVisualStyle('asteroid') === 'mesh' ? state.asteroids : [],
       ufos: shipTier === 'mesh' ? state.ufos : [],
+      powerups: particleTier === 'mesh' ? state.powerups : [],
       ship: shipTier === 'mesh' ? state.ship : null,
       dpr: renderMode.dpr,
       scale: renderMode.scale,

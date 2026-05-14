@@ -18,7 +18,7 @@
  */
 
 import { getFlavour } from './flavour.js';
-import type { Asteroid, Ship, Ufo } from './types.js';
+import type { Asteroid, PowerUp, Ship, Ufo } from './types.js';
 
 export type VisualTier = 'vector' | 'shaded' | 'mesh';
 export type VisualCategory = 'asteroid' | 'ship' | 'bullet' | 'particle';
@@ -120,6 +120,7 @@ export function warmWebGLIfPreviouslyEnabled(): void {
 export interface WebGLOverlayCall {
   asteroids: ReadonlyArray<Asteroid>;
   ufos: ReadonlyArray<Ufo>;
+  powerups: ReadonlyArray<PowerUp>;
   ship: Ship | null;
   dpr: number;
   scale: number;

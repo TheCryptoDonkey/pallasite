@@ -21,7 +21,8 @@
  */
 
 import * as THREE from 'three';
-import type { Asteroid, Ship, Ufo } from '../types.js';
+import type { Asteroid, PowerUp, PowerUpType, Ship, Ufo } from '../types.js';
+import { POWERUP_CONFIG, POWERUP_RADIUS } from '../types.js';
 import { getMemberImage } from '../sanctum-avatars.js';
 import { getFlavour } from '../flavour.js';
 
@@ -36,6 +37,8 @@ interface OverlayHandle {
   asteroidMeshes: Map<number, MeshEntry<THREE.MeshPhongMaterial>>;
   /** Per-UFO mesh cache, same pattern as asteroidMeshes. */
   ufoMeshes: Map<number, MeshEntry<THREE.Material>>;
+  /** Per-powerup mesh cache, keyed by powerup id. */
+  powerupMeshes: Map<number, MeshEntry<THREE.Material>>;
   /** Diffuse textures per asteroid type, kept alive across the renderer's
    *  lifetime — 4 textures total, each ~265-360KB raw. */
   diffuseCache: Map<string, THREE.Texture>;
@@ -117,6 +120,28 @@ let frameCounter = 0;
  *  projection.
  */
 function buildAsteroidGeometry(a: Asteroid): THREE.BufferGeometry {
+  // Council members: smooth icosphere with planar UV projection only.
+  // Any procedural displacement warps the portrait beyond recognition
+  // — players couldn't tell which member they were shooting. Higher
+  // detail (4) keeps the sphere silhouette smooth, no crater/noise/
+  // stretch passes, planar UV stamps the portrait on the +Z hemisphere.
+  if (a.councilMember) {
+    const geo = new THREE.IcosahedronGeometry(a.radius, 4);
+    const pos = geo.attributes.position as THREE.BufferAttribute;
+    const n = pos.count;
+    const uv = geo.attributes.uv as THREE.BufferAttribute;
+    const maxExtent = a.radius * 1.4;
+    for (let i = 0; i < n; i++) {
+      const x = pos.getX(i);
+      const y = pos.getY(i);
+      const u = (x / maxExtent) * 0.5 + 0.5;
+      const v = 0.5 - (y / maxExtent) * 0.5;
+      uv.setXY(i, u, v);
+    }
+    uv.needsUpdate = true;
+    geo.computeVertexNormals();
+    return geo;
+  }
   // Detail dropped from 5/4/3 (up to 10242 verts) to 3/2/2 (642/162/162).
   // Combined with the continuous-noise fix below, fewer verts read as
   // SMOOTHER, not rougher — the previous high-detail meshes were just
@@ -206,24 +231,6 @@ function buildAsteroidGeometry(a: Asteroid): THREE.BufferGeometry {
     pos.setXYZ(i, x, y, z);
   }
   geo.computeVertexNormals();
-
-  // Council asteroids: planar UV mapping from the +Z hemisphere so the
-  // portrait reads as a face stamped on the front of the rock rather
-  // than wrapping around the sphere. ClampToEdge then ensures the back
-  // face shows the texture's edge pixels, not a mirrored portrait.
-  if (a.councilMember) {
-    const uv = geo.attributes.uv as THREE.BufferAttribute;
-    const maxExtent = a.radius * 1.5;
-    for (let i = 0; i < n; i++) {
-      const x = pos.getX(i);
-      const y = pos.getY(i);
-      // Project onto the XY plane. Range [-1, 1] → UV [0, 1].
-      const u = (x / maxExtent) * 0.5 + 0.5;
-      const v = 0.5 - (y / maxExtent) * 0.5;
-      uv.setXY(i, u, v);
-    }
-    uv.needsUpdate = true;
-  }
   return geo;
 }
 
@@ -341,23 +348,25 @@ export function ensureWebGLOverlay(): Promise<OverlayHandle> {
       canvasW: canvas.width, canvasH: canvas.height,
       pixelRatio: renderer.getPixelRatio(),
     });
-    // Lights — strong key from upper-left, warm-neutral ambient fill,
-    // cool rim from below-right. Ambient bumped to 0.85 so the unlit
-    // hemisphere doesn't fall to pitch-black against the dark space
-    // backdrop (that's what was reading as "see-through"); the key +
-    // rim still provide plenty of contrast for shading to read.
-    const sun = new THREE.DirectionalLight(0xfff2da, 1.8);
-    sun.position.set(-200, -200, 300);
+    // Lights:
+    //   - sun: strong warm key from upper-left-FRONT
+    //   - ambient: medium fill so the unlit hemisphere is visible
+    //   - rim: strong warm BACK light. Catches the silhouette edge
+    //     of every entity so darker rocks read against the dark space
+    //     background as if there's a star behind the scene.
+    const sun = new THREE.DirectionalLight(0xfff2da, 1.5);
+    sun.position.set(-200, -200, 350);
     scene.add(sun);
-    const ambient = new THREE.AmbientLight(0xa8b0b8, 1.0);
+    const ambient = new THREE.AmbientLight(0xa8b0b8, 0.75);
     scene.add(ambient);
-    const rim = new THREE.DirectionalLight(0x80a0ff, 0.5);
-    rim.position.set(250, 250, 200);
+    const rim = new THREE.DirectionalLight(0xfff0c0, 2.4);
+    rim.position.set(180, 100, -450);
     scene.add(rim);
     handle = {
       renderer, scene, camera, canvas,
       asteroidMeshes: new Map(),
       ufoMeshes: new Map(),
+      powerupMeshes: new Map(),
       diffuseCache: new Map(),
       councilTextureCache: new Map(),
       shipMesh: null,
@@ -611,9 +620,67 @@ function buildUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeome
   return { group, geometry: bodyGeo, material: bodyMat };
 }
 
+/** Build a powerup mesh: a spinning sphere with the glyph painted at
+ *  four longitudes so a player always sees at least one glyph face
+ *  regardless of rotation. Strong emissive + bright base colour so it
+ *  reads as a glowing pickup against the dark backdrop. */
+const POWERUP_TEX_CACHE = new Map<PowerUpType, THREE.CanvasTexture>();
+function getPowerupTexture(type: PowerUpType): THREE.CanvasTexture {
+  const cached = POWERUP_TEX_CACHE.get(type);
+  if (cached) return cached;
+  const cfg = POWERUP_CONFIG[type];
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 256;
+  const ctx = c.getContext('2d')!;
+  // Coloured background — slightly darker than the glyph so the
+  // emissive on the material lifts the glyph clear.
+  ctx.fillStyle = cfg.colour;
+  ctx.fillRect(0, 0, 512, 256);
+  // Four glyph stamps around the equator so spinning always shows one
+  // face-on. Inset from canvas edges so wrapping at u=0/1 doesn't
+  // produce a cropped glyph at the seam.
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 150px ui-monospace, "Helvetica Neue", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  // Sat-boost ₿ is bold serif territory; trident ⋔ and magnet ◎ need
+  // a sans fallback for glyph coverage.
+  for (let i = 0; i < 4; i++) {
+    ctx.fillText(cfg.glyph, 64 + i * 128, 128);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  POWERUP_TEX_CACHE.set(type, tex);
+  return tex;
+}
+
+function parseHexColor(s: string): number {
+  return parseInt(s.replace('#', ''), 16);
+}
+
+function buildPowerupMesh(p: PowerUp): { mesh: THREE.Mesh; geometry: THREE.BufferGeometry; material: THREE.Material } {
+  const cfg = POWERUP_CONFIG[p.type];
+  const color = parseHexColor(cfg.colour);
+  const geo = new THREE.SphereGeometry(POWERUP_RADIUS, 24, 16);
+  const mat = new THREE.MeshPhongMaterial({
+    color: 0xffffff,
+    map: getPowerupTexture(p.type),
+    shininess: 140,
+    specular: 0xffffff,
+    emissive: color,
+    emissiveIntensity: 0.55,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false;
+  return { mesh, geometry: geo, material: mat };
+}
+
 export function renderOverlay(opts: {
   asteroids: ReadonlyArray<Asteroid>;
   ufos: ReadonlyArray<Ufo>;
+  powerups: ReadonlyArray<PowerUp>;
   ship: Ship | null;
   dpr: number;
   scale: number;
@@ -730,33 +797,88 @@ export function renderOverlay(opts: {
   }
   sweepStale(scene, handle.ufoMeshes, frameCounter);
 
+  // ── Powerups ─────────────────────────────────────────────────────
+  // Each is a sphere with the glyph stamped four times around its
+  // equator. Spin on Y so a glyph face rotates into view continuously;
+  // small vertical bob makes them feel alive rather than static props.
+  for (const p of opts.powerups) {
+    if (!p.alive || p.collected || p.id == null) continue;
+    let entry = handle.powerupMeshes.get(p.id);
+    if (!entry) {
+      const { mesh, geometry, material } = buildPowerupMesh(p);
+      scene.add(mesh);
+      entry = { mesh, geometry, material, lastSeenFrame: frameCounter };
+      handle.powerupMeshes.set(p.id, entry);
+    }
+    entry.lastSeenFrame = frameCounter;
+    const bob = Math.sin(frameCounter * 0.05 + p.id) * 2;
+    entry.mesh.position.set(p.pos.x, 720 - p.pos.y + bob, 0);
+    entry.mesh.rotation.set(0, frameCounter * 0.06, 0);
+    entry.mesh.visible = true;
+  }
+  sweepStale(scene, handle.powerupMeshes, frameCounter);
+
   // ── Ship ─────────────────────────────────────────────────────────
   if (opts.ship && opts.ship.alive) {
     if (!handle.shipMesh) {
       const group = new THREE.Group();
+      // Beefed-up hull — slightly larger, deeper extrude for more
+      // visible 3D form at the player ship's small on-screen size.
       const hullGeo = new THREE.ExtrudeGeometry(
         new THREE.Shape([
-          new THREE.Vector2(14, 0),
-          new THREE.Vector2(-10, 8),
-          new THREE.Vector2(-6, 0),
-          new THREE.Vector2(-10, -8),
+          new THREE.Vector2(16, 0),
+          new THREE.Vector2(-12, 10),
+          new THREE.Vector2(-8, 0),
+          new THREE.Vector2(-12, -10),
         ]),
-        { depth: 4, bevelEnabled: true, bevelSize: 1.2, bevelThickness: 1.2, bevelSegments: 2 },
+        { depth: 5, bevelEnabled: true, bevelSize: 1.5, bevelThickness: 1.5, bevelSegments: 3 },
       );
-      hullGeo.translate(0, 0, -2);
+      hullGeo.translate(0, 0, -2.5);
       const hullMat = new THREE.MeshPhongMaterial({
         color: 0x9be7ff,
         shininess: 80,
         specular: 0xffffff,
         emissive: 0x4080a0,
-        emissiveIntensity: 0.5,
+        emissiveIntensity: 0.45,
       });
       const hullMesh = new THREE.Mesh(hullGeo, hullMat);
       hullMesh.frustumCulled = false;
       group.add(hullMesh);
+      // Cockpit canopy — translucent dome on top of hull, sells the
+      // 3D form better than a flat extrude alone.
+      const cockpitGeo = new THREE.SphereGeometry(4.2, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2);
+      cockpitGeo.rotateX(-Math.PI / 2);
+      const cockpitMat = new THREE.MeshPhongMaterial({
+        color: 0xb8f0ff,
+        shininess: 240,
+        specular: 0xffffff,
+        emissive: 0x4080a0,
+        emissiveIntensity: 0.5,
+        transparent: true,
+        opacity: 0.78,
+      });
+      const cockpitMesh = new THREE.Mesh(cockpitGeo, cockpitMat);
+      cockpitMesh.position.set(1, 0, 4.5);
+      cockpitMesh.frustumCulled = false;
+      group.add(cockpitMesh);
+      // Nose laser barrel — small cylinder protruding from the bow.
+      const barrelGeo = new THREE.CylinderGeometry(1.2, 1.2, 6, 10);
+      barrelGeo.rotateZ(Math.PI / 2);
+      barrelGeo.translate(18, 0, 0);
+      const barrelMat = new THREE.MeshPhongMaterial({
+        color: 0x6080a0,
+        shininess: 140,
+        specular: 0xffffff,
+        emissive: 0xff8040,
+        emissiveIntensity: 0.6,
+      });
+      const barrelMesh = new THREE.Mesh(barrelGeo, barrelMat);
+      barrelMesh.frustumCulled = false;
+      group.add(barrelMesh);
+      // Thrust cone (existing) — same additive flame at the rear.
       const thrustGeo = new THREE.ConeGeometry(5, 14, 12);
       thrustGeo.rotateZ(Math.PI / 2);
-      thrustGeo.translate(-14, 0, 0);
+      thrustGeo.translate(-16, 0, 0);
       const thrustMat = new THREE.MeshBasicMaterial({
         color: 0xffb84a,
         transparent: true,
