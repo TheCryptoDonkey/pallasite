@@ -88,16 +88,68 @@ export function getCouncil(): readonly ReadonlyMember[] {
   return cached ?? [];
 }
 
+/** Per-asteroid lumpy outline — deterministic per `seed` so the same
+ *  member keeps the same silhouette across frames. Returns 12 points
+ *  in [angle, radius-multiplier] pairs, packed flat. */
+function makeAsteroidShape(seed: number): number[] {
+  const points = 12;
+  const out: number[] = [];
+  // Simple LCG so the shape is deterministic per ringSlot but varied
+  // across the council. Math.random would make every frame redraw a
+  // new silhouette which reads wrong on a static asteroid.
+  let s = (seed * 9301 + 49297) & 0x7fffffff;
+  const next = (): number => {
+    s = (s * 1103515245 + 12345) & 0x7fffffff;
+    return (s & 0xffff) / 0xffff;
+  };
+  for (let i = 0; i < points; i++) {
+    out.push(0.78 + next() * 0.32);
+  }
+  return out;
+}
+
+/** Cache shapes by seed so we don't re-rng them every frame. */
+const SHAPE_CACHE = new Map<number, number[]>();
+function shapeFor(seed: number): number[] {
+  let s = SHAPE_CACHE.get(seed);
+  if (!s) {
+    s = makeAsteroidShape(seed);
+    SHAPE_CACHE.set(seed, s);
+  }
+  return s;
+}
+
+/** Trace a closed lumpy polygon at (x, y) with base radius r, rotated
+ *  by `angle`, using `shape` as per-vertex radius multipliers. */
+function tracePolygon(
+  ctx: CanvasRenderingContext2D,
+  x: number, y: number, r: number,
+  angle: number,
+  shape: number[],
+): void {
+  const n = shape.length;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const a = angle + (i / n) * Math.PI * 2;
+    const rr = r * shape[i];
+    const px = x + Math.cos(a) * rr;
+    const py = y + Math.sin(a) * rr;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+}
+
 /**
- * Draw a member's avatar as a circular asteroid sprite at (x, y) with
- * radius r. The image is clipped to a circle, surrounded by an ember
- * ring (canonical 600bn palette). `angle` rotates the image while the
- * ring stays steady, so the sprite feels alive without the silhouette
- * looking off-axis.
+ * Draw a member's avatar as a council asteroid at (x, y) with base
+ * radius r. The silhouette is a 12-point lumpy polygon (canonical
+ * Pallasite asteroid shape, deterministic per member); the avatar
+ * image is clipped to that polygon so each "asteroid" is a rocky
+ * council portrait. An ember ring outlines the silhouette.
  *
  * Fallback: if member.image is null (load failed or pending), draws a
- * dark volcanic fill with a yellow "?" glyph so the level keeps reading
- * as an asteroid even before/without textures.
+ * dark volcanic fill inside the polygon so the silhouette still reads
+ * as an asteroid even before textures land.
  */
 export function drawAvatarAsteroid(
   ctx: CanvasRenderingContext2D,
@@ -107,35 +159,39 @@ export function drawAvatarAsteroid(
   r: number,
   angle = 0,
 ): void {
-  ctx.save();
+  // Stable shape per member via name hash (cheap, deterministic).
+  let nameSeed = 0;
+  for (let i = 0; i < member.name.length; i++) nameSeed = (nameSeed * 31 + member.name.charCodeAt(i)) | 0;
+  const shape = shapeFor(nameSeed);
+  const lineWidth = Math.max(1.5, r * 0.07);
 
-  // Ember ring (always drawn, even before image loads). Soft outer glow
-  // sells the volcanic / charged feel without a heavy shader pass.
-  const ringWidth = Math.max(1.5, r * 0.07);
-  ctx.lineWidth = ringWidth;
+  // Outer ember glow + outline trace.
+  ctx.save();
+  ctx.lineWidth = lineWidth;
   ctx.strokeStyle = 'rgba(255, 138, 58, 0.85)';
-  ctx.shadowColor = 'rgba(255, 138, 58, 0.5)';
-  ctx.shadowBlur = r * 0.4;
-  ctx.beginPath();
-  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.shadowColor = 'rgba(255, 138, 58, 0.55)';
+  ctx.shadowBlur = r * 0.45;
+  tracePolygon(ctx, x, y, r, angle, shape);
   ctx.stroke();
   ctx.shadowBlur = 0;
+  ctx.restore();
 
+  // Texture / fallback inside the polygon (separate save so the clip
+  // path doesn't leak to the outline pass).
+  ctx.save();
+  tracePolygon(ctx, x, y, r - lineWidth * 0.5, angle, shape);
+  ctx.clip();
   if (member.ready && member.image) {
-    // Clip image to circle (inset by half ring-width so the stroke stays
-    // visible on top of the texture).
-    ctx.beginPath();
-    ctx.arc(x, y, r - ringWidth * 0.5, 0, Math.PI * 2);
-    ctx.clip();
+    // Centre the image within the silhouette's bounding box, scaled to
+    // fit the asteroid's max diameter. Rotation goes around the centre
+    // so the texture aligns with the polygon's spin.
     ctx.translate(x, y);
     ctx.rotate(angle);
-    const d = r * 2 - ringWidth;
+    const d = r * 2.05;  // slight oversize so corners reach the lumpy peaks
     ctx.drawImage(member.image, -d / 2, -d / 2, d, d);
   } else {
-    // Volcanic fill + glyph fallback.
     ctx.fillStyle = 'rgba(40, 24, 12, 0.85)';
-    ctx.beginPath();
-    ctx.arc(x, y, r - ringWidth * 0.5, 0, Math.PI * 2);
+    tracePolygon(ctx, x, y, r, angle, shape);
     ctx.fill();
     ctx.fillStyle = 'rgba(255, 216, 74, 0.9)';
     ctx.font = `bold ${Math.floor(r * 1.2)}px monospace`;
@@ -143,7 +199,6 @@ export function drawAvatarAsteroid(
     ctx.textBaseline = 'middle';
     ctx.fillText('?', x, y);
   }
-
   ctx.restore();
 }
 

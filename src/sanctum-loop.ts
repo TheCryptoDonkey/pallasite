@@ -245,7 +245,7 @@ export function updateSanctumLoop(s: GameState, dt: number, now: number): void {
     for (const m of s.sanctum.council) {
       if (m.dead) continue;
       if (hitTest(b.pos.x, b.pos.y, b.radius, m.x, m.y, m.r)) {
-        const drop = applyMemberHit(m);
+        const drop = applyMemberHit(m, s.sanctum);
         b.alive = false;
         b.hasLanded = true;
         hitCouncil = true;

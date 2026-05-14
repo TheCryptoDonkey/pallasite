@@ -29,14 +29,15 @@
  */
 
 import { drawAvatarAsteroid, getCouncil, type ReadonlyMember } from './sanctum-avatars.js';
+import { WORLD_W, WORLD_H } from './types.js';
 
 // ── World + timing constants ─────────────────────────────────────────
 
-/** World dimensions the entities are sized against. Matches the main
- *  game's playfield so existing collision/wrap utilities work without
- *  conversion. */
-export const SANCTUM_WORLD_W = 1280;
-export const SANCTUM_WORLD_H = 720;
+/** World dimensions the entities are sized against. Re-exports from the
+ *  main game's types.ts so the existing 960x720 canvas + collision utils
+ *  work for the Sanctum without any coordinate-space conversion. */
+export const SANCTUM_WORLD_W = WORLD_W;
+export const SANCTUM_WORLD_H = WORLD_H;
 
 /** Total run length. 240s = 4 minutes. */
 export const SANCTUM_TOTAL_MS = 240_000;
@@ -74,15 +75,34 @@ export const DROP_BULLBEAR = 21;
 
 // ── Council tuning ───────────────────────────────────────────────────
 
-export const SANCTUM_RING_RADIUS = 260;
-export const SANCTUM_MEMBER_RADIUS = 42;
+/** Council ring radius — sized for the 960px playfield so the ring
+ *  doesn't crowd the edges. */
+export const SANCTUM_RING_RADIUS = 220;
+/** Council member radius per size. Mediums and smalls are children
+ *  of a large that broke; small kills drop the 1-sat fragment. */
+export const SANCTUM_MEMBER_RADIUS: Record<CouncilSize, number> = {
+  large: 38,
+  medium: 22,
+  small: 12,
+};
+/** HP per size — large takes 2 hits (matches Pallasite iron asteroids),
+ *  medium and small are 1 hit each. */
+export const SANCTUM_MEMBER_HP_BY_SIZE: Record<CouncilSize, number> = {
+  large: 2,
+  medium: 1,
+  small: 1,
+};
+/** Drift speed of break-children (px/s). Tuned so fragments fly out
+ *  fast enough to read as a satisfying "shatter" but slow enough to
+ *  re-aim and clean up. */
+export const SANCTUM_FRAGMENT_SPEED = 110;
 /** Council orbit speed (rad/s). Two values — slow during invocation,
- *  ramps up during ascendant phase for energy. */
+ *  ramps up during ascendant phase for energy. Only large size orbits;
+ *  medium/small drift freely from the kill point. */
 export const ORBIT_SPEED_BASE = 0.18;
 export const ORBIT_SPEED_RAMP = 0.42;
-/** Member HP. Two hits feels punchy without dragging out the kill. */
-export const SANCTUM_MEMBER_HP = 2;
-/** Respawn delay after a member is killed. Keeps the ring populated. */
+/** Respawn delay after a large member is killed. Children don't
+ *  respawn — only the orbital slot. */
 export const MEMBER_RESPAWN_MS = 9_000;
 
 // ── Sacred Stone tuning ──────────────────────────────────────────────
@@ -136,25 +156,34 @@ export const BULLBEAR_CHARGE_SPEED = 340;
 
 // ── Entity types ─────────────────────────────────────────────────────
 
+/** Council members break into smaller children on death — classic
+ *  Pallasite asteroid mechanic. 'large' orbits the ring; 'medium' and
+ *  'small' drift freely from the break-point. Only 'small' kills drop
+ *  a sat; 'large' / 'medium' kills just spawn children. */
+export type CouncilSize = 'large' | 'medium' | 'small';
+
 export interface SanctumCouncilAsteroid {
   x: number;
   y: number;
+  /** Drift velocity — zero for large (orbital), set on break for
+   *  medium/small children so they fly outward from the kill point. */
+  vx: number;
+  vy: number;
   r: number;
   rot: number;
   rotVel: number;
   hp: number;
   hpMax: number;
+  size: CouncilSize;
   orbitAngle: number;
   ringSlot: number;
   member: ReadonlyMember;
   hitFlash: number;
   bannerTtl: number;
-  /** True between death and respawn. The level loop sweeps these out
-   *  on phase transitions; respawn flips this back to false when the
-   *  respawnAt timer elapses. */
+  /** True between death and respawn. */
   dead: boolean;
   /** performance.now() at which this slot becomes spawnable again.
-   *  Zero when not pending. */
+   *  Only used for size==='large' (children don't respawn). */
   respawnAt: number;
 }
 
@@ -281,7 +310,7 @@ export function createSanctumState(now: number = performance.now()): SanctumStat
 
 /** Spawn the council in a ring around the world centre. Each member
  *  gets a fixed slot so the visual order matches the canonical roster:
- *  CEO at 12 o'clock, then walking clockwise. */
+ *  CEO at 12 o'clock, then walking clockwise. All start as 'large'. */
 export function spawnCouncil(now: number): SanctumCouncilAsteroid[] {
   const members = getCouncil();
   const out: SanctumCouncilAsteroid[] = [];
@@ -294,11 +323,13 @@ export function spawnCouncil(now: number): SanctumCouncilAsteroid[] {
     out.push({
       x: cx + Math.cos(orbitAngle) * SANCTUM_RING_RADIUS,
       y: cy + Math.sin(orbitAngle) * SANCTUM_RING_RADIUS,
-      r: SANCTUM_MEMBER_RADIUS,
+      vx: 0, vy: 0,
+      r: SANCTUM_MEMBER_RADIUS.large,
       rot: (i * 137.5) * (Math.PI / 180),
       rotVel: 0.0009 + (i % 3) * 0.0002,
-      hp: SANCTUM_MEMBER_HP,
-      hpMax: SANCTUM_MEMBER_HP,
+      hp: SANCTUM_MEMBER_HP_BY_SIZE.large,
+      hpMax: SANCTUM_MEMBER_HP_BY_SIZE.large,
+      size: 'large',
       orbitAngle,
       ringSlot: i,
       member: members[i],
@@ -309,6 +340,41 @@ export function spawnCouncil(now: number): SanctumCouncilAsteroid[] {
     });
   }
   void now;
+  return out;
+}
+
+/** Spawn child fragments at a parent's death position. Returns the
+ *  freshly-spawned children (caller appends to state.council). Each
+ *  fragment gets a random outward velocity for the shatter feel. */
+export function spawnCouncilFragments(
+  parent: SanctumCouncilAsteroid,
+  childSize: CouncilSize,
+  count: number = 2,
+): SanctumCouncilAsteroid[] {
+  const out: SanctumCouncilAsteroid[] = [];
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const speed = SANCTUM_FRAGMENT_SPEED * (0.7 + Math.random() * 0.6);
+    out.push({
+      x: parent.x + Math.cos(a) * parent.r * 0.4,
+      y: parent.y + Math.sin(a) * parent.r * 0.4,
+      vx: Math.cos(a) * speed,
+      vy: Math.sin(a) * speed,
+      r: SANCTUM_MEMBER_RADIUS[childSize],
+      rot: Math.random() * Math.PI * 2,
+      rotVel: (Math.random() - 0.5) * 0.004,
+      hp: SANCTUM_MEMBER_HP_BY_SIZE[childSize],
+      hpMax: SANCTUM_MEMBER_HP_BY_SIZE[childSize],
+      size: childSize,
+      orbitAngle: 0,
+      ringSlot: parent.ringSlot,
+      member: parent.member,
+      hitFlash: 0,
+      bannerTtl: 0,
+      dead: false,
+      respawnAt: 0,
+    });
+  }
   return out;
 }
 
@@ -441,24 +507,45 @@ export function tickSanctum(state: SanctumState, dtMs: number): void {
   // a Bullbear defeat.
   state.phase = phaseFor(elapsedMs);
 
-  // Council orbit + respawn.
+  // Council motion + respawn. Large orbits the ring; medium/small
+  // drift freely from their parent's kill point. Dead large slots
+  // respawn after MEMBER_RESPAWN_MS; dead fragments stay culled.
   const orbitSpeed = orbitSpeedFor(state.phase);
   const cx = SANCTUM_WORLD_W / 2;
   const cy = SANCTUM_WORLD_H / 2;
-  for (const m of state.council) {
+  for (let i = state.council.length - 1; i >= 0; i--) {
+    const m = state.council[i];
     if (m.dead) {
-      // Respawn check.
-      if (m.respawnAt > 0 && performance.now() >= m.respawnAt) {
+      if (m.size === 'large' && m.respawnAt > 0 && performance.now() >= m.respawnAt) {
         m.hp = m.hpMax;
         m.dead = false;
         m.respawnAt = 0;
-        m.hitFlash = 1;  // brief flash to telegraph the respawn
+        m.hitFlash = 1;
+      } else if (m.size !== 'large') {
+        // Fragments are transient — once dead, splice them out so
+        // the array doesn't grow unboundedly across a 240s run.
+        state.council.splice(i, 1);
       }
       continue;
     }
-    m.orbitAngle += orbitSpeed * dt;
-    m.x = cx + Math.cos(m.orbitAngle) * SANCTUM_RING_RADIUS;
-    m.y = cy + Math.sin(m.orbitAngle) * SANCTUM_RING_RADIUS;
+    if (m.size === 'large') {
+      m.orbitAngle += orbitSpeed * dt;
+      m.x = cx + Math.cos(m.orbitAngle) * SANCTUM_RING_RADIUS;
+      m.y = cy + Math.sin(m.orbitAngle) * SANCTUM_RING_RADIUS;
+    } else {
+      // Free-drift fragment. Mild drag so they don't fly out forever.
+      m.x += m.vx * dt;
+      m.y += m.vy * dt;
+      const dragK = Math.exp(-0.25 * dt);
+      m.vx *= dragK;
+      m.vy *= dragK;
+      // Wrap so fragments stay in the playfield (matches Pallasite
+      // asteroid wrap behaviour).
+      if (m.x < -m.r) m.x = SANCTUM_WORLD_W + m.r;
+      else if (m.x > SANCTUM_WORLD_W + m.r) m.x = -m.r;
+      if (m.y < -m.r) m.y = SANCTUM_WORLD_H + m.r;
+      else if (m.y > SANCTUM_WORLD_H + m.r) m.y = -m.r;
+    }
     m.rot += m.rotVel * clampedDtMs;
     if (m.hitFlash > 0) m.hitFlash = Math.max(0, m.hitFlash - dt * 4);
     if (m.bannerTtl > 0) m.bannerTtl = Math.max(0, m.bannerTtl - clampedDtMs);
@@ -566,16 +653,30 @@ export function tickSanctum(state: SanctumState, dtMs: number): void {
 
 // ── Hit application (sat-returning) ──────────────────────────────────
 
-/** Land a hit on a council member. Returns the sat drop on a kill, 0
- *  otherwise. Sets the respawn timer so the slot comes back ~9s later. */
-export function applyMemberHit(member: SanctumCouncilAsteroid): number {
+/** Land a hit on a council member. Large + medium kills spawn shrinking
+ *  child fragments (appended to state.council if `state` is supplied)
+ *  but pay no sats. Only the smallest size pays a 1-sat drop on kill.
+ *  Large kills also arm the respawn timer so the orbital slot comes
+ *  back ~9s later. */
+export function applyMemberHit(
+  member: SanctumCouncilAsteroid,
+  state?: SanctumState,
+): number {
   if (member.dead) return 0;
   member.hp -= 1;
   member.hitFlash = 1;
   member.bannerTtl = 1_500;
   if (member.hp <= 0) {
     member.dead = true;
-    member.respawnAt = performance.now() + MEMBER_RESPAWN_MS;
+    if (member.size === 'large') {
+      member.respawnAt = performance.now() + MEMBER_RESPAWN_MS;
+      if (state) state.council.push(...spawnCouncilFragments(member, 'medium', 2));
+      return 0;  // Large kill yields no sat — children must be cleared first.
+    } else if (member.size === 'medium') {
+      if (state) state.council.push(...spawnCouncilFragments(member, 'small', 2));
+      return 0;
+    }
+    // small — terminal drop.
     return DROP_MEMBER;
   }
   return 0;
