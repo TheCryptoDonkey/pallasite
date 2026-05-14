@@ -56,12 +56,16 @@ interface MeshEntry<M extends THREE.Material> {
   lastSeenFrame: number;
 }
 
-/** Per-type fallback base colour. Visible immediately so a slow texture
- *  decode doesn't show pitch-black meshes against the dark background. */
+/** Per-type fallback base colour. Brighter than the visible-against-
+ *  dark-bg minimum: with the dark space backdrop, the unlit hemisphere
+ *  of a rock blends into the background and the player only sees the
+ *  lit silhouette, which reads as "see-through". Brighter base colour
+ *  + ambient fill (see lights) keeps the unlit side readable so the
+ *  rock reads as a solid body. */
 const ASTEROID_TYPE_COLOR: Record<string, number> = {
-  stony:     0xb0a090,
-  iron:      0xc8b888,
-  chondrite: 0xc0d0e0,
+  stony:     0xd0c0a8,
+  iron:      0xe0c898,
+  chondrite: 0xd8e4ee,
   pallasite: 0xf0c860,
 };
 
@@ -245,14 +249,15 @@ export function ensureWebGLOverlay(): Promise<OverlayHandle> {
       canvasW: canvas.width, canvasH: canvas.height,
       pixelRatio: renderer.getPixelRatio(),
     });
-    // Lights — strong key from upper-left, modest ambient fill,
-    // cool rim from the opposite side. Ambient kept low so the
-    // lit/unlit contrast on rock surfaces is dramatic enough for
-    // specular highlights to read clearly.
+    // Lights — strong key from upper-left, warm-neutral ambient fill,
+    // cool rim from below-right. Ambient bumped to 0.85 so the unlit
+    // hemisphere doesn't fall to pitch-black against the dark space
+    // backdrop (that's what was reading as "see-through"); the key +
+    // rim still provide plenty of contrast for shading to read.
     const sun = new THREE.DirectionalLight(0xfff2da, 1.8);
     sun.position.set(-200, -200, 300);
     scene.add(sun);
-    const ambient = new THREE.AmbientLight(0x8090a0, 0.55);
+    const ambient = new THREE.AmbientLight(0xa8b0b8, 0.85);
     scene.add(ambient);
     const rim = new THREE.DirectionalLight(0x80a0ff, 0.5);
     rim.position.set(250, 250, 200);
@@ -323,35 +328,53 @@ function getSixHundredBnFaceTexture(): THREE.CanvasTexture {
 
 function build600bnCoinMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.Material } {
   const r = u.radius * 1.6;             // 1.6× matches the 2D oversized badge
-  const h = r * 0.18;
+  const h = r * 0.38;                    // thick coin — visible depth when it tumbles
   const group = new THREE.Group();
-  // Side wall (gold ring without text) + textured caps.
+  // Side wall — darker gold ring without text. Higher specular here
+  // gives a glinting edge as the coin rotates past the key light.
   const sideMat = new THREE.MeshPhongMaterial({
-    color: 0xc88a00,
-    shininess: 180,
+    color: 0xb87400,
+    shininess: 200,
     specular: 0xfff0a0,
   });
+  // Faces carry the 4-line wordmark texture.
   const capMat = new THREE.MeshPhongMaterial({
     color: 0xffffff,
     map: getSixHundredBnFaceTexture(),
     shininess: 220,
     specular: 0xffffff,
-    emissive: 0x402000,
-    emissiveIntensity: 0.35,
   });
-  // CylinderGeometry materials: [side, capTop, capBottom]
-  const geo = new THREE.CylinderGeometry(r, r, h, 48);
-  geo.rotateX(Math.PI / 2);             // disc faces +Z (camera)
+  // CylinderGeometry material slots: [side, top, bottom]. Geometry
+  // built upright (axis along Y); we'll tumble it in renderOverlay.
+  const geo = new THREE.CylinderGeometry(r, r, h, 64);
+  // Small edge bevel via a slightly smaller torus ring at each cap
+  // edge — sells the "milled rim" look without an extrude pass.
+  const rimGeo = new THREE.TorusGeometry(r, h * 0.18, 12, 64);
+  const rimMat = new THREE.MeshPhongMaterial({
+    color: 0xd09000,
+    shininess: 240,
+    specular: 0xffe080,
+  });
+  const rimTop = new THREE.Mesh(rimGeo, rimMat);
+  rimTop.rotation.x = Math.PI / 2;
+  rimTop.position.y = h / 2;
+  rimTop.frustumCulled = false;
+  const rimBot = new THREE.Mesh(rimGeo, rimMat);
+  rimBot.rotation.x = Math.PI / 2;
+  rimBot.position.y = -h / 2;
+  rimBot.frustumCulled = false;
   const mesh = new THREE.Mesh(geo, [sideMat, capMat, capMat]);
   mesh.frustumCulled = false;
   group.add(mesh);
-  // Subtle additive halo so the coin reads as glowing against the
-  // dark space backdrop.
-  const haloGeo = new THREE.RingGeometry(r * 1.05, r * 1.35, 48);
+  group.add(rimTop);
+  group.add(rimBot);
+  // Additive halo behind the coin — sits in the world-Z=0 plane (the
+  // coin tumbles in front/behind this plane). Glow-against-space read.
+  const haloGeo = new THREE.RingGeometry(r * 1.1, r * 1.45, 48);
   const haloMat = new THREE.MeshBasicMaterial({
     color: 0xffd84a,
     transparent: true,
-    opacity: 0.45,
+    opacity: 0.4,
     blending: THREE.AdditiveBlending,
     side: THREE.DoubleSide,
     depthWrite: false,
@@ -510,9 +533,12 @@ export function renderOverlay(opts: {
     entry.lastSeenFrame = frameCounter;
     entry.mesh.position.set(u.pos.x, 720 - u.pos.y, 0);
     if (getFlavour() === '600bn') {
-      // Coin: spin around Z (face-axis) like the 2D rotating badge.
-      // No banking — it's a flat coin, not a banking saucer.
-      entry.mesh.rotation.set(0, 0, frameCounter * 0.02);
+      // Coin tumbles around the Y (vertical) axis — the cylinder is
+      // built upright, so a Y spin shows face → edge → back face →
+      // edge → face. That's the "real coin in zero-g" read. Slight
+      // X tilt so neither face is ever perfectly edge-on (the visible
+      // sliver always reads as a coin, not a line).
+      entry.mesh.rotation.set(0.35, frameCounter * 0.025, 0);
     } else {
       // Saucer: banking roll on direction + small sin-wave hover.
       entry.mesh.rotation.y = u.dir * 0.25;
