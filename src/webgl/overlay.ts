@@ -23,6 +23,7 @@
 import * as THREE from 'three';
 import type { Asteroid, Ship, Ufo } from '../types.js';
 import { getMemberImage } from '../sanctum-avatars.js';
+import { getFlavour } from '../flavour.js';
 
 interface OverlayHandle {
   renderer: THREE.WebGLRenderer;
@@ -64,20 +65,20 @@ const ASTEROID_TYPE_COLOR: Record<string, number> = {
   pallasite: 0xf0c860,
 };
 
-/** Per-type Phong tuning — specular highlight, shininess, emissive
- *  trace. Iron reads as polished metal, chondrite as dull stone,
- *  pallasite as gem-bright. */
+/** Per-type Phong tuning — specular highlight + shininess. Emissive
+ *  dropped entirely (was reading as "ghostly/see-through" because it
+ *  brightened the rock regardless of view angle). Higher shininess
+ *  across the board so the rocks read as solid lit bodies with
+ *  distinct highlight points. */
 interface AsteroidTypeMaterial {
   shininess: number;
   specular: number;
-  emissive: number;
-  emissiveIntensity: number;
 }
 const ASTEROID_TYPE_MAT: Record<string, AsteroidTypeMaterial> = {
-  stony:     { shininess: 18, specular: 0x202020, emissive: 0x000000, emissiveIntensity: 0   },
-  iron:      { shininess: 90, specular: 0x806040, emissive: 0x100804, emissiveIntensity: 0.4 },
-  chondrite: { shininess: 10, specular: 0x101820, emissive: 0x000000, emissiveIntensity: 0   },
-  pallasite: { shininess: 60, specular: 0x806020, emissive: 0x1a1004, emissiveIntensity: 0.5 },
+  stony:     { shininess: 60,  specular: 0x707070 },
+  iron:      { shininess: 140, specular: 0xc0a880 },
+  chondrite: { shininess: 35,  specular: 0x506070 },
+  pallasite: { shininess: 110, specular: 0xd0a040 },
 };
 
 /** Per-UFO-type palette + form factor. */
@@ -244,14 +245,16 @@ export function ensureWebGLOverlay(): Promise<OverlayHandle> {
       canvasW: canvas.width, canvasH: canvas.height,
       pixelRatio: renderer.getPixelRatio(),
     });
-    // Lights — key + ambient + opposite rim. Calibrated for Phong
-    // materials against the dark space backdrop.
-    const sun = new THREE.DirectionalLight(0xfff2da, 1.6);
+    // Lights — strong key from upper-left, modest ambient fill,
+    // cool rim from the opposite side. Ambient kept low so the
+    // lit/unlit contrast on rock surfaces is dramatic enough for
+    // specular highlights to read clearly.
+    const sun = new THREE.DirectionalLight(0xfff2da, 1.8);
     sun.position.set(-200, -200, 300);
     scene.add(sun);
-    const ambient = new THREE.AmbientLight(0xa0a8b0, 0.8);
+    const ambient = new THREE.AmbientLight(0x8090a0, 0.55);
     scene.add(ambient);
-    const rim = new THREE.DirectionalLight(0x80a0ff, 0.45);
+    const rim = new THREE.DirectionalLight(0x80a0ff, 0.5);
     rim.position.set(250, 250, 200);
     scene.add(rim);
     handle = {
@@ -274,9 +277,96 @@ export function getReadyOverlay(): OverlayHandle | null {
   return handle;
 }
 
+/** ── 600bn coin UFO ──────────────────────────────────────────────────
+ *  On 600bn flavour the 2D path renders every UFO as the $600B sacred
+ *  number badge (drawSixHundredBnLogoUfo). For 3D parity we build a
+ *  gold coin: thick cylinder + canvas-rendered wordmark texture on
+ *  both faces + bright specular so it catches the key light. */
+let sixHundredBnFaceTexture: THREE.CanvasTexture | null = null;
+function getSixHundredBnFaceTexture(): THREE.CanvasTexture {
+  if (sixHundredBnFaceTexture) return sixHundredBnFaceTexture;
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 256;
+  const ctx = c.getContext('2d')!;
+  // Radial gold gradient — brighter centre fades to deep gold edge.
+  const grad = ctx.createRadialGradient(128, 128, 8, 128, 128, 128);
+  grad.addColorStop(0, '#fff6c0');
+  grad.addColorStop(0.5, '#ffd84a');
+  grad.addColorStop(1, '#8a5800');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(128, 128, 124, 0, Math.PI * 2);
+  ctx.fill();
+  // Outer rim stroke for the "coin edge" feel.
+  ctx.strokeStyle = '#5a3a00';
+  ctx.lineWidth = 6;
+  ctx.beginPath();
+  ctx.arc(128, 128, 121, 0, Math.PI * 2);
+  ctx.stroke();
+  // 4-line sacred number wordmark — same canonical layout as the 2D
+  // game-over card.
+  ctx.fillStyle = '#0a0418';
+  ctx.font = 'bold 42px ui-monospace, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const lines = ['600', '000', '000', '000'];
+  for (let i = 0; i < lines.length; i++) {
+    ctx.fillText(lines[i], 128, 76 + i * 36);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  sixHundredBnFaceTexture = tex;
+  return tex;
+}
+
+function build600bnCoinMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.Material } {
+  const r = u.radius * 1.6;             // 1.6× matches the 2D oversized badge
+  const h = r * 0.18;
+  const group = new THREE.Group();
+  // Side wall (gold ring without text) + textured caps.
+  const sideMat = new THREE.MeshPhongMaterial({
+    color: 0xc88a00,
+    shininess: 180,
+    specular: 0xfff0a0,
+  });
+  const capMat = new THREE.MeshPhongMaterial({
+    color: 0xffffff,
+    map: getSixHundredBnFaceTexture(),
+    shininess: 220,
+    specular: 0xffffff,
+    emissive: 0x402000,
+    emissiveIntensity: 0.35,
+  });
+  // CylinderGeometry materials: [side, capTop, capBottom]
+  const geo = new THREE.CylinderGeometry(r, r, h, 48);
+  geo.rotateX(Math.PI / 2);             // disc faces +Z (camera)
+  const mesh = new THREE.Mesh(geo, [sideMat, capMat, capMat]);
+  mesh.frustumCulled = false;
+  group.add(mesh);
+  // Subtle additive halo so the coin reads as glowing against the
+  // dark space backdrop.
+  const haloGeo = new THREE.RingGeometry(r * 1.05, r * 1.35, 48);
+  const haloMat = new THREE.MeshBasicMaterial({
+    color: 0xffd84a,
+    transparent: true,
+    opacity: 0.45,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const halo = new THREE.Mesh(haloGeo, haloMat);
+  halo.frustumCulled = false;
+  group.add(halo);
+  return { group, geometry: geo, material: capMat };
+}
+
 /** Build a UFO mesh once per type. Saucer body (squashed cylinder) +
  *  hemisphere dome + emissive cockpit ring + glow underglow. */
 function buildUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.Material } {
+  // 600bn flavour: every UFO is the $600B coin (matches the 2D path).
+  if (getFlavour() === '600bn') return build600bnCoinMesh(u);
   const palette = UFO_PALETTE[u.type];
   const group = new THREE.Group();
   // Body — flat disc (squashed cylinder). Radius scaled by type.
@@ -370,8 +460,6 @@ export function renderOverlay(opts: {
         color: baseColor,
         shininess: matCfg.shininess,
         specular: matCfg.specular,
-        emissive: matCfg.emissive,
-        emissiveIntensity: matCfg.emissiveIntensity,
       });
       // Council members get their portrait as the diffuse map.
       // Photoreal type texture is loaded as a fallback so the rock is
@@ -421,9 +509,15 @@ export function renderOverlay(opts: {
     }
     entry.lastSeenFrame = frameCounter;
     entry.mesh.position.set(u.pos.x, 720 - u.pos.y, 0);
-    // Banking on direction change — small roll to read as flight.
-    entry.mesh.rotation.y = u.dir * 0.25;
-    entry.mesh.rotation.z = Math.sin(frameCounter * 0.04 + u.id) * 0.08;
+    if (getFlavour() === '600bn') {
+      // Coin: spin around Z (face-axis) like the 2D rotating badge.
+      // No banking — it's a flat coin, not a banking saucer.
+      entry.mesh.rotation.set(0, 0, frameCounter * 0.02);
+    } else {
+      // Saucer: banking roll on direction + small sin-wave hover.
+      entry.mesh.rotation.y = u.dir * 0.25;
+      entry.mesh.rotation.z = Math.sin(frameCounter * 0.04 + u.id) * 0.08;
+    }
     entry.mesh.visible = true;
   }
   sweepStale(scene, handle.ufoMeshes, frameCounter);
