@@ -3,18 +3,18 @@
  *
  *   vector  — original 1979 line-art look: thin stroke, per-type glow, no fill.
  *   shaded  — modern lit look: gradient/photoreal fill, rim light, drop shadow.
- *   mesh    — full WebGL 3D meshes. NOT YET IMPLEMENTED. Falls back to shaded
- *             at render time so a stale localStorage value can't blank the
- *             game. Surfaced in the settings UI as "3D · SOON" (disabled).
+ *   mesh    — full WebGL 3D meshes via the dynamic-imported overlay (three.js).
+ *             Falls back to shaded at render time until the overlay loads so
+ *             a stale localStorage value or slow CDN can't blank the game.
  *
  * Four independent categories — asteroid, ship, bullet, particle — so a
- * player can mix-and-match (e.g. shaded asteroids on a vector ship). The
- * settings panel offers a quick-preset shortcut (ALL CLASSIC / ALL SHADED)
- * for the common case.
+ * player can mix-and-match (e.g. mesh asteroids on a vector ship). The
+ * settings panel offers a quick-preset shortcut (ALL CLASSIC / ALL SHADED /
+ * ALL 3D) for the common case.
  *
  * Defaults vary by flavour: main game opens with everything VECTOR (matches
- * what returning players see), 600bn opens with everything SHADED (the
- * conference teaser is designed around the modern look).
+ * what returning players see), 600bn opens with everything MESH (the
+ * conference teaser is the showcase for the WebGL pipeline).
  */
 
 import { getFlavour } from './flavour.js';
@@ -36,7 +36,10 @@ interface State {
 }
 
 function defaults(): State {
-  const tier: VisualTier = getFlavour() === '600bn' ? 'shaded' : 'vector';
+  // 600bn opens in full 3D — the Sanctum is the showcase, and the WebGL
+  // overlay is the headline feature. Players on weak devices downshift
+  // themselves via the settings panel (Player agency over defaults).
+  const tier: VisualTier = getFlavour() === '600bn' ? 'mesh' : 'vector';
   return { asteroid: tier, ship: tier, bullet: tier, particle: tier };
 }
 
