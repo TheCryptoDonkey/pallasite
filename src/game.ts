@@ -3241,7 +3241,10 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
   // Tiny momentum transfer on the non-fatal hit — even iron-large surviving
   // a first shot should visibly accept the impulse. Scales inversely with
   // asteroid mass-equivalent so a small rock budges more than a large one.
-  if (opts?.bulletVel) {
+  if (opts?.bulletVel && !a.isVein) {
+    // Veins are set-piece centrepieces (wave 5 vault, random vein events)
+    // and should feel massive — no bullet impulse budges them. The 100-300
+    // hit fight reads as "chipping a megalith" instead of "shoving a pebble".
     const massBias = a.size === 'large' ? 0.05 : a.size === 'medium' ? 0.08 : 0.12;
     a.vel.x += opts.bulletVel.x * massBias;
     a.vel.y += opts.bulletVel.y * massBias;
