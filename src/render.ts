@@ -10,7 +10,7 @@ import type {
   GameState, Ship, Asteroid, AsteroidType, Bullet, Coin, Particle, Ufo, Mine, PowerUp, ReplaySnapshot, Debris, Shockwave, HyperspaceEffect,
 } from './types.js';
 import {
-  WORLD_W, WORLD_H, WARP_MS, waveName, waveSubtitle, waveTagline, POWERUP_CONFIG,
+  WORLD_W, WORLD_H, WARP_MS, WAVE_CLEAR_GRACE_MS, waveName, waveSubtitle, waveTagline, POWERUP_CONFIG,
   REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS, COMBO_MAX,
 } from './types.js';
 import { getCachedGhost, ghostScoreAt, ghostPoseAt } from './ghost.js';
@@ -3066,6 +3066,39 @@ function drawHyperspaceEffects(ctx: CanvasRenderingContext2D, effects: Hyperspac
   }
 }
 
+// ── Wave-clear pickup countdown ─────────────────────────────────────────────
+//
+// During the WAVE_CLEAR_GRACE_MS window after the last gameplay-plane
+// asteroid breaks, the player has free roam to scoop up remaining
+// coins / power-ups. A gentle 5→1 countdown sits high on screen so
+// they can pace the dash without checking a clock.
+
+function drawWaveClearCountdown(ctx: CanvasRenderingContext2D, state: GameState, now: number): void {
+  if (state.waveClearAt === null) return;
+  const elapsed = now - state.waveClearAt;
+  const remainingMs = Math.max(0, WAVE_CLEAR_GRACE_MS - elapsed);
+  const seconds = Math.max(1, Math.ceil(remainingMs / 1000));
+  // Pulse: the number breathes between full size and 90% so the
+  // countdown feels alive even when it doesn't change. Pulse syncs to
+  // the second boundary so "tick" lines up with the breath.
+  const fracInSecond = (remainingMs % 1000) / 1000;
+  const pulse = 0.9 + 0.1 * Math.sin(fracInSecond * Math.PI * 2);
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  // "WAVE CLEAR" label.
+  ctx.fillStyle = '#ffd84a';
+  ctx.shadowColor = '#ff8a3a';
+  ctx.shadowBlur = 12;
+  ctx.font = 'bold 18px ui-monospace, monospace';
+  ctx.fillText('WAVE CLEAR · GRAB EVERYTHING', WORLD_W / 2, 110);
+  // Big countdown number.
+  ctx.shadowBlur = 28;
+  ctx.font = `bold ${Math.round(72 * pulse)}px ui-monospace, monospace`;
+  ctx.fillText(String(seconds), WORLD_W / 2, 170);
+  ctx.restore();
+}
+
 // ── Shockwave rings (transient post-shatter effect) ─────────────────────────
 //
 // Soft expanding stroke, ~380ms life. Cubic ease-out so the initial pop is
@@ -3265,6 +3298,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   drawHud(ctx, state, now);
   drawWaveBanner(ctx, state, now);
   drawBonusBanner(ctx, state, now);
+  drawWaveClearCountdown(ctx, state, now);
 
   // WebGL mesh overlay — runs only if any category is currently on
   // 'mesh' tier AND the overlay module has finished loading. Lives on

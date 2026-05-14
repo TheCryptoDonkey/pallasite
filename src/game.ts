@@ -23,7 +23,7 @@ import {
 import type { PickupKind } from './types.js';
 import type { ReplaySnapshot, Debris } from './types.js';
 import {
-  WORLD_W, WORLD_H, WARP_MS,
+  WORLD_W, WORLD_H, WARP_MS, WAVE_CLEAR_GRACE_MS,
   SHIP_RADIUS, SHIP_THRUST, SHIP_DRAG, SHIP_ROT_ACCEL, SHIP_ROT_DAMPING, SHIP_MAX_ROT, SHIP_INVULN_MS, FIRE_COOLDOWN_MS,
   HYPERSPACE_COOLDOWN_MS, HYPERSPACE_CLOAK_MS, HYPERSPACE_MALFUNCTION_CHANCE, HYPERSPACE_SAFE_DIST,
   HYPERSPACE_CONSECUTIVE_WINDOW_MS, HYPERSPACE_DETONATE_RANGE,
@@ -82,6 +82,7 @@ export function makeInitialState(): GameState {
     debris: [],
     shockwaveRings: [],
     hyperspaceEffects: [],
+    waveClearAt: null,
     score: 0,
     sats: 0,
     displaySats: 0,
@@ -2978,70 +2979,74 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   // Sweep dead asteroids
   s.asteroids = s.asteroids.filter(a => a.alive);
 
-  // Wave clear? Trigger warp transition (or completion if wave 25 boss is down).
+  // Wave clear? Two-stage flow: a grace window for picking up coins +
+  // power-ups, then the warp / bonus / completion transition.
   if (s.phase === 'playing') {
-    const asteroidsClear = s.asteroids.length === 0;
+    // Decoratives (parallax depth 1-2, 4-5) are visual dressing only —
+    // they shouldn't block a clear. Without this filter the wave is
+    // gated on the player tracking down tiny background dust rocks that
+    // can't even hit them.
+    const collideAsteroids = s.asteroids.filter(a => a.alive && (a.depth ?? 3) === 3);
+    const asteroidsClear = collideAsteroids.length === 0;
     const setPiece = WAVE_SET_PIECES[s.wave];
     // Set-piece waves can override the clear condition (e.g. bullet curtain
     // clears on UFO kill count, not on empty asteroid array). Falls back to
     // the standard asteroidsClear check.
     const cleared = setPiece?.isCleared ? setPiece.isCleared(s) : asteroidsClear;
-    if (s.wave === FINAL_WAVE) {
-      // Wave 25 completion: boss down AND the arena is fully clean. Mopping
-      // up the lingering asteroids and UFO escorts after the kill is the
-      // earned exhale before the credits roll. In drift mode the boss
-      // kill is a milestone, not a finale — we warp on to wave 26 and
-      // keep going procedurally.
-      const ufosClear = s.ufos.length === 0;
-      if (s.bossDefeated && asteroidsClear && ufosClear) {
+    const ufosClear = s.ufos.length === 0;
+    const wave25Clear = s.bossDefeated && asteroidsClear && ufosClear;
+    const isFinalWave = s.wave === FINAL_WAVE;
+    const conditionClear = isFinalWave ? wave25Clear : cleared;
+
+    // 600bn flavour wave 1 is an infinity wave — no grace, no warp, just
+    // immediately respawn fillers and keep going. The Sanctum is a
+    // continuous engagement; a 5s pause every time the field empties
+    // would break the flow.
+    const skipGrace = getFlavour() === '600bn' && s.wave === 1;
+
+    // Stage 1: first frame of clear → kick off grace window.
+    if (conditionClear && s.waveClearAt === null) {
+      if (skipGrace) {
+        awardWaveClearBonuses(s);
+        bumpTrauma(s, 0.30);
+        hitStop(s, 180);
+        clearStage(s, { autoCollect: true });
+        audio.ufoSirenStop();
+        spawnSanctumFillers(s, 5);
+      } else {
+        s.waveClearAt = now;
+        awardWaveClearBonuses(s);
+        bumpTrauma(s, isFinalWave ? 0.40 : 0.30);
+        hitStop(s, isFinalWave ? 220 : 180);
+        spawnWaveClearStreak(s);
+        // Set-piece clear achievements land on the wave-clear beat.
+        if (s.wave === 5)  markAchievement(s, 'first-heist');
+        if (s.wave === 12) markAchievement(s, 'first-curtain');
+        // Ship invulnerable for the whole grace window so the player can
+        // fly into coins / power-ups without taking a stray hit from a
+        // last-frame fragment that hadn't been swept yet.
+        s.ship.invulnerableUntil = Math.max(s.ship.invulnerableUntil, now + WAVE_CLEAR_GRACE_MS + 200);
+      }
+    }
+
+    // Stage 2: grace expired → clear stage + transition.
+    if (s.waveClearAt !== null && now >= s.waveClearAt + WAVE_CLEAR_GRACE_MS) {
+      s.waveClearAt = null;
+      clearStage(s, { autoCollect: true });
+      audio.ufoSirenStop();
+      if (isFinalWave) {
         if (currentMode() === 'drift') {
-          awardWaveClearBonuses(s);
-          clearStage(s, { autoCollect: true });
-          audio.ufoSirenStop();
-          bumpTrauma(s, 0.40);
-          hitStop(s, 220);
-          spawnWaveClearStreak(s);
           toastNow(s, 'DRIFT · BEYOND THE HORIZON');
           startWarp(s);
         } else {
           triggerCompletion(s);
         }
-      }
-    } else if (cleared) {
-      // Set-piece clear badges fire here so they land on the wave-clear
-      // beat alongside the bonus toast.
-      if (s.wave === 5)  markAchievement(s, 'first-heist');
-      if (s.wave === 12) markAchievement(s, 'first-curtain');
-      // Award NO SHIELD / NO MISS / PACIFIST UFO bonuses before clearing the
-      // stage so the per-wave flags still reflect what the player did. The
-      // toast lands a beat before warp so the bonuses register.
-      awardWaveClearBonuses(s);
-      // Despawn UFOs/mines/enemy bullets and auto-bank any uncollected coins
-      clearStage(s, { autoCollect: true });
-      audio.ufoSirenStop();
-      // Wave-clear punctuation: brief freeze + a soft trauma bump + inward
-      // star-streak so the transition into warp lands on a beat instead of
-      // a smooth fade.
-      bumpTrauma(s, 0.30);
-      hitStop(s, 180);
-      spawnWaveClearStreak(s);
-      // BONUS round divert — between W9 → W10 the player gets 60s of
-      // HYPER BLITZ (dense asteroid storm, removed hyperspace cooldown,
-      // invuln) into EVENT HORIZON PRELUDE (5 pallasite mini-bosses).
-      // Music swaps to hyperspace; ends warping into W10 normally.
-      //
-      // Gated on bonus_wave_chance from /api/game-config so the admin
-      // can dial bonus rarity from the panel (default 1.0 = every
-      // run). Uses gameRng so daily-seed runs are deterministic
-      // against the active seed — two players with the same daily
-      // seed see the bonus on the same runs.
-      if (getFlavour() === '600bn' && s.wave === 1) {
-        // 600bn is an infinity wave — when the field empties we
-        // spawn a fresh batch of themed asteroids instead of warping
-        // or triggering completion. The run only ends on ship death
-        // (handled elsewhere via the lives-out → gameover path).
-        spawnSanctumFillers(s, 5);
       } else if (s.wave === 9 && gameRng() < getGameConfig().bonus_wave_chance) {
+        // BONUS round divert — W9 → W10 hyper blitz + event-horizon
+        // prelude. Music swaps to hyperspace; ends warping into W10
+        // normally. Gated on bonus_wave_chance from /api/game-config so
+        // the admin can dial bonus rarity from the panel. Uses gameRng
+        // so daily-seed runs are deterministic against the active seed.
         startBonus(s);
       } else {
         startWarp(s);

@@ -597,6 +597,13 @@ export interface GameState {
    *  departure point on warp trigger, and an emerge spawned at the new
    *  position when the cloak ends. Self-pruning in render. */
   hyperspaceEffects: HyperspaceEffect[];
+
+  /** performance.now() at the moment the wave was cleared. While non-null
+   *  the player is in the WAVE_CLEAR_GRACE_MS pickup window: no new
+   *  spawns, ship invulnerable, countdown shown on screen. Cleared when
+   *  the grace window expires and the warp / bonus / completion path
+   *  fires. null during normal play. */
+  waveClearAt: number | null;
 }
 
 /** A single hyperspace cinematic ring (collapse on departure, emerge on
@@ -713,6 +720,11 @@ export const REPLAY_EXPLOSION_WALL_MS = Math.round(REPLAY_EXPLOSION_MS / REPLAY_
 
 export const WORLD_W = 960;
 export const WORLD_H = 720;
+
+/** Grace window after the last gameplay-plane asteroid breaks, before the
+ *  warp animation kicks off. Lets the player scoop up remaining coins /
+ *  power-ups without rushing. Ship is invulnerable during this window. */
+export const WAVE_CLEAR_GRACE_MS = 5000;
 
 /** Inter-wave warp transition duration. Drives the visual envelope in render
  *  (drawWarp uses elapsed/WARP_MS) and the setTimeout in startWarp that calls
