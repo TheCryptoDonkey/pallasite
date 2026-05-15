@@ -6,7 +6,7 @@
  */
 
 import type { AsteroidType, GameState } from './types.js';
-import { WAVE_LORE } from './types.js';
+import { WAVE_LORE, gameOverArcLine } from './types.js';
 import { getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRelay, removeRelay, resetRelays } from './relays.js';
 import { getTouchMode, setTouchMode, type TouchInputMode } from './touch.js';
 import { getDisplayMode, setDisplayMode, type DisplayMode } from './display.js';
@@ -57,6 +57,7 @@ import {
   isInstallHintDismissed, dismissInstallHint,
 } from './install-fullscreen.js';
 import { type ParallaxTier, getParallaxTier, setParallaxTier } from './parallax.js';
+import { type BounceMode, getBounceMode, setBounceMode } from './bounce.js';
 import { followUser, shareCompletion, endorseSubject, rankFromWave } from './social.js';
 import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipient } from './zap.js';
@@ -9141,6 +9142,48 @@ export function renderSettings(onBack: () => void): void {
   }
   paintParallax();
 
+  // ── ASTEROID BOUNCE ──────────────────────────────────────────────────────
+  // Gameplay setting (not visual): whether gameplay-plane asteroids bounce
+  // off each other. AUTO derives from difficulty — off on easy, on for
+  // normal / hard. ON / OFF override. Hidden in 600bn (always on there).
+  if (getFlavour() !== '600bn') {
+    const bounceHeading = el('p', { parent: overlay, text: 'ASTEROID BOUNCE' });
+    bounceHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
+    const bounceRow = el('div', { parent: overlay });
+    bounceRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;min-width:340px;';
+    el('label', { parent: bounceRow, text: 'ROCKS COLLIDE' })
+      .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
+    const bounceBtnWrap = el('div', { parent: bounceRow });
+    bounceBtnWrap.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;';
+    const bounceOpts: ReadonlyArray<{ value: BounceMode; label: string }> = [
+      { value: 'auto', label: 'AUTO' },
+      { value: 'on',   label: 'ON' },
+      { value: 'off',  label: 'OFF' },
+    ];
+    const bounceBtns = new Map<BounceMode, HTMLButtonElement>();
+    const paintBounce = (): void => {
+      const cur = getBounceMode();
+      for (const [mode, btn] of bounceBtns) {
+        const on = mode === cur;
+        btn.style.background = on ? 'rgba(255,216,74,0.18)' : 'rgba(20,12,36,0.6)';
+        btn.style.color = on ? '#ffd84a' : 'rgba(220,210,255,0.7)';
+        btn.style.borderColor = on ? '#ffd84a' : 'rgba(180,140,255,0.45)';
+      }
+    };
+    for (const o of bounceOpts) {
+      const btn = el('button', { className: 'menu-btn secondary', parent: bounceBtnWrap, text: o.label }) as HTMLButtonElement;
+      btn.style.cssText += 'font-size:0.72rem;padding:6px 14px;letter-spacing:0.14em;';
+      btn.addEventListener('click', () => {
+        setBounceMode(o.value);
+        paintBounce();
+      });
+      bounceBtns.set(o.value, btn);
+    }
+    paintBounce();
+    const bounceHint = el('p', { parent: overlay, text: 'AUTO: off on easy · on for normal / hard' });
+    bounceHint.style.cssText = 'font-size:0.62rem;letter-spacing:0.1em;color:rgba(180,140,255,0.5);margin:-6px 0 0;';
+  }
+
   // ── ACCESSIBILITY ───────────────────────────────────────────────────────
   // Three independent axes:
   //   reduced motion: kills shake / chromatic split / future bloom pulses.
@@ -10386,6 +10429,17 @@ function renderRunCredits(
   if (opts.subText) {
     const sub = el('p', { parent: overlay, text: opts.subText });
     sub.style.cssText = 'font-size:1.1rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:-10px 0 4px;';
+  }
+
+  // Arc-aware fall line — frames the loss as a story beat rather than a bare
+  // wave number. Campaign game-overs only; gameOverArcLine returns null for
+  // drift-mode waves (26+). See docs/pallasite-arc.md §5.
+  if (!opts.isCompletion) {
+    const arcLine = gameOverArcLine(state.wave);
+    if (arcLine) {
+      const arc = el('p', { parent: overlay, text: arcLine });
+      arc.style.cssText = 'font:italic 0.92rem ui-monospace,monospace;color:rgba(255,245,216,0.6);letter-spacing:0.06em;margin:2px 0 12px;max-width:480px;text-align:center;';
+    }
   }
 
   // 600bn flavour runs surface the FUCHS2 party card above the claim
