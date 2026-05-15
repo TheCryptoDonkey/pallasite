@@ -1105,14 +1105,10 @@ async function boot(): Promise<void> {
   // Title renders first so the shared boot wiring (music, scoreboard subs,
   // bfcache hooks) still runs; the overlay then clears and the route's
   // own panel owns the screen until the user backs out.
-  const routeParams = new URLSearchParams(window.location.search);
-  const isAdmin = routeParams.has('admin');
-  // `?watch` forces the watch surface on any host. Lets the watch theatre
-  // be exercised on the dev server, which has no `watch.` subdomain.
-  const isWatch = window.location.hostname.startsWith('watch.') || routeParams.has('watch');
+  const isAdmin = new URLSearchParams(window.location.search).has('admin');
   if (isAdmin) {
     renderAdminPanel();
-  } else if (isWatch) {
+  } else if (window.location.hostname.startsWith('watch.')) {
     // Auto-open used to fire here when exactly one player was live;
     // dropped because the path bypassed every user gesture and iOS
     // Safari then locked out audio for the rest of the page. With the
