@@ -12,6 +12,7 @@ import { recordStreamEvent } from './stream-session.js';
 import { getGameConfig } from './faucet.js';
 import { getFlavour } from './flavour.js';
 import { asteroidBounceEnabled } from './bounce.js';
+import { bulletKnockbackEnabled } from './knockback.js';
 import { getCouncil } from './sanctum-avatars.js';
 import { DEPTH_CONFIGS, decorativeSpawnCount, getParallaxTier, pickDecorativeDepth } from './parallax.js';
 import {
@@ -3269,7 +3270,7 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
   // Tiny momentum transfer on the non-fatal hit — even iron-large surviving
   // a first shot should visibly accept the impulse. Scales inversely with
   // asteroid mass-equivalent so a small rock budges more than a large one.
-  if (opts?.bulletVel && !a.isVein) {
+  if (opts?.bulletVel && !a.isVein && bulletKnockbackEnabled()) {
     // Veins are set-piece centrepieces (wave 5 vault, random vein events)
     // and should feel massive — no bullet impulse budges them. The 100-300
     // hit fight reads as "chipping a megalith" instead of "shoving a pebble".
@@ -3381,7 +3382,7 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
     // tuned conservatively — at BULLET_SPEED=520, a small-size kick of 0.12
     // adds ~62 px/s, enough to read as directional without rocketing the
     // chunk across the screen.
-    if (opts?.bulletVel) {
+    if (opts?.bulletVel && bulletKnockbackEnabled()) {
       const kick = newSize === 'small' ? 0.12 : 0.08;
       a.vel.x += opts.bulletVel.x * kick;
       a.vel.y += opts.bulletVel.y * kick;
@@ -3493,8 +3494,9 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
     // Factors are tuned conservatively (small=0.10 adds ~52 px/s at
     // BULLET_SPEED=520) so children read as kicked debris, not racing rounds.
     const childSizeFactor = childSize === 'medium' ? 0.07 : 0.10;
-    const bulletKickX = opts?.bulletVel ? opts.bulletVel.x * childSizeFactor : 0;
-    const bulletKickY = opts?.bulletVel ? opts.bulletVel.y * childSizeFactor : 0;
+    const applyKick = bulletKnockbackEnabled();
+    const bulletKickX = applyKick && opts?.bulletVel ? opts.bulletVel.x * childSizeFactor : 0;
+    const bulletKickY = applyKick && opts?.bulletVel ? opts.bulletVel.y * childSizeFactor : 0;
     for (let i = 0; i < count; i++) {
       const offset = (i - (count - 1) / 2) * spread;
       const angle = baseAngle + offset;
