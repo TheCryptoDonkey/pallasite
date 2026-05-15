@@ -11,7 +11,7 @@
  *   hidden. Different game → different icons, same physical layout.
  *
  *   Transport: raw WebSocket pass-through at controller.pallasite.app.
- *   Pair by sessionId (8-hex random in the QR code).
+ *   Pair by sessionId (a short random code in the QR, also shown as text).
  *
  * Wire shape:
  *
