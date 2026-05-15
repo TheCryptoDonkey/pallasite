@@ -12,6 +12,7 @@ import type {
 import {
   WORLD_W, WORLD_H, WARP_MS, WAVE_CLEAR_GRACE_MS, waveName, waveSubtitle, waveTagline, POWERUP_CONFIG,
   REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS, COMBO_MAX,
+  intertitleForWave, INTERTITLE_MS,
 } from './types.js';
 import { getCachedGhost, ghostScoreAt, ghostPoseAt } from './ghost.js';
 import { getActiveSeed } from './seed.js';
@@ -2438,6 +2439,9 @@ function drawGhostChip(ctx: CanvasRenderingContext2D, s: GameState): void {
  */
 function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState, now: number): void {
   if (s.phase !== 'wavestart') return;
+  // Act-boundary waves are owned by drawIntertitle — one card carrying the
+  // act beat AND the wave name. The standard banner is suppressed there.
+  if (intertitleHoldMs(s) > 0) return;
   const elapsed = now - s.phaseStart;
   const REVEAL_AT = 400;
   const FADE_IN = 300;
@@ -2532,6 +2536,132 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState, now: number
     ctx.shadowBlur = 6;
     ctx.letterSpacing = '0.10em' as unknown as string;
     ctx.fillText(tagline, WORLD_W / 2, WORLD_H / 2 + 102);
+  }
+
+  ctx.restore();
+}
+
+/** Intertitle wavestart length for this wave, in ms. Zero unless the wave is
+ *  an act boundary (1/10/17/25) and the flavour is the campaign — in which
+ *  case the whole wavestart is the story card and the banner is suppressed. */
+function intertitleHoldMs(s: GameState): number {
+  if (getFlavour() === '600bn') return 0;
+  return intertitleForWave(s.wave) ? INTERTITLE_MS : 0;
+}
+
+/** Fade-out tail of the intertitle card. */
+const INTERTITLE_OUT_MS = 560;
+
+/** True while an act-boundary intertitle card is fully opaque. The WebGL
+ *  overlay is fed empty entity lists during this window so its separate
+ *  canvas does not paint over the 2D story card; it is released for the
+ *  fade-out so mesh entities reveal behind the lifting card. */
+function isIntertitleHolding(s: GameState, now: number): boolean {
+  if (s.phase !== 'wavestart') return false;
+  if (intertitleHoldMs(s) === 0) return false;
+  return (now - s.phaseStart) < INTERTITLE_MS - INTERTITLE_OUT_MS;
+}
+
+/**
+ * Act-boundary story card — a self-contained full-screen card shown for the
+ * whole wavestart on the waves in ACT_INTROS (1 / 10 / 17 / 25). One card
+ * carries the act beat (label + two arc lines) AND the wave identity (WAVE N
+ * + specimen name + subtitle + tagline), so skipping it never drops the wave
+ * name and there is no fragile second banner. Skippable via skipWaveStart
+ * once the window opens. Campaign flavour only — the 600bn Sanctum teaser is
+ * not the hero quest.
+ */
+function drawIntertitle(ctx: CanvasRenderingContext2D, s: GameState, now: number): void {
+  if (s.phase !== 'wavestart') return;
+  if (intertitleHoldMs(s) === 0) return;
+  const intro = intertitleForWave(s.wave);
+  if (!intro) return;
+  const elapsed = now - s.phaseStart;
+  if (elapsed >= INTERTITLE_MS) return;
+
+  // Single envelope — the whole card fades in, holds, then fades out, so
+  // every element is on screen well before the skip window opens.
+  const IN = 420;
+  let alpha: number;
+  if (elapsed < IN) alpha = elapsed / IN;
+  else if (elapsed < INTERTITLE_MS - INTERTITLE_OUT_MS) alpha = 1;
+  else alpha = (INTERTITLE_MS - elapsed) / INTERTITLE_OUT_MS;
+  alpha = Math.max(0, Math.min(1, alpha));
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  // Full-screen black hold — covers HUD, background, the lot.
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, WORLD_W, WORLD_H);
+
+  const cx = WORLD_W / 2;
+  const cy = WORLD_H / 2;
+
+  // — Act label — small, wide-tracked, cold blue.
+  ctx.font = 'bold 17px ui-monospace, monospace';
+  ctx.fillStyle = '#5b9dff';
+  ctx.shadowColor = '#5b9dff';
+  ctx.shadowBlur = 14;
+  ctx.letterSpacing = '0.34em' as unknown as string;
+  ctx.fillText(intro.act, cx, cy - 132);
+
+  // — Two arc lines — the story beat.
+  ctx.font = '21px ui-monospace, monospace';
+  ctx.fillStyle = '#fff5d8';
+  ctx.shadowColor = 'rgba(0,0,0,0.9)';
+  ctx.shadowBlur = 4;
+  ctx.letterSpacing = '0.04em' as unknown as string;
+  ctx.fillText(intro.lines[0], cx, cy - 90);
+  ctx.fillText(intro.lines[1], cx, cy - 58);
+
+  // — Divider —
+  ctx.globalAlpha = alpha * 0.45;
+  ctx.strokeStyle = '#5b9dff';
+  ctx.shadowColor = '#5b9dff';
+  ctx.shadowBlur = 8;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(cx - 170, cy - 20);
+  ctx.lineTo(cx + 170, cy - 20);
+  ctx.stroke();
+  ctx.globalAlpha = alpha;
+
+  // — Wave identity — WAVE N + specimen name + factual subtitle + tagline.
+  ctx.font = 'bold 50px ui-monospace, monospace';
+  ctx.fillStyle = '#5b9dff';
+  ctx.shadowColor = '#5b9dff';
+  ctx.shadowBlur = 22;
+  ctx.letterSpacing = '0em' as unknown as string;
+  ctx.fillText(`WAVE ${s.wave}`, cx, cy + 22);
+
+  ctx.font = 'bold 25px ui-monospace, monospace';
+  ctx.fillStyle = '#ffd84a';
+  ctx.shadowColor = '#ffd84a';
+  ctx.shadowBlur = 14;
+  ctx.letterSpacing = '0.18em' as unknown as string;
+  ctx.fillText(waveName(s.wave), cx, cy + 64);
+
+  const subtitle = waveSubtitle(s.wave);
+  if (subtitle) {
+    ctx.font = '15px ui-monospace, monospace';
+    ctx.fillStyle = '#fff5d8';
+    ctx.shadowColor = 'rgba(0,0,0,0.9)';
+    ctx.shadowBlur = 4;
+    ctx.letterSpacing = '0.06em' as unknown as string;
+    ctx.fillText(subtitle, cx, cy + 96);
+  }
+
+  const tagline = waveTagline(s.wave);
+  if (tagline) {
+    ctx.font = '14px ui-monospace, monospace';
+    ctx.fillStyle = '#7da5d4';
+    ctx.shadowColor = '#5b9dff';
+    ctx.shadowBlur = 6;
+    ctx.letterSpacing = '0.10em' as unknown as string;
+    ctx.fillText(tagline, cx, cy + 124);
   }
 
   ctx.restore();
@@ -3077,7 +3207,6 @@ function drawHyperspaceEffects(ctx: CanvasRenderingContext2D, effects: Hyperspac
 
 function drawOffscreenIndicators(ctx: CanvasRenderingContext2D, state: GameState, now: number): void {
   if (state.phase !== 'playing') return;
-  if (state.waveClearAt !== null) return;
   const collide = state.asteroids.filter(a => a.alive && (a.depth ?? 3) === 3);
   // Only when the wave is nearly clear — otherwise the screen would be
   // covered in arrows during a busy frame, which is noise.
@@ -3137,31 +3266,31 @@ function drawOffscreenIndicators(ctx: CanvasRenderingContext2D, state: GameState
 
 // ── Wave-clear pickup countdown ─────────────────────────────────────────────
 //
-// During the WAVE_CLEAR_GRACE_MS window after the last gameplay-plane
-// asteroid breaks, the player has free roam to scoop up remaining
-// coins / power-ups. A gentle 5→1 countdown sits high on screen so
-// they can pace the dash without checking a clock.
+// The grab-everything grace window after a wave clears. A gentle 5→1
+// countdown sits high on screen so the player can pace the dash. The window
+// itself is skipped (waveClearAt never set) when there's nothing to grab or
+// the run is cheated — see the wave-clear handler in game.ts.
 
 function drawWaveClearCountdown(ctx: CanvasRenderingContext2D, state: GameState, now: number): void {
+  // Live play only — never bleeds into warp / wavestart / gameover.
+  if (state.phase !== 'playing') return;
   if (state.waveClearAt === null) return;
   const elapsed = now - state.waveClearAt;
   const remainingMs = Math.max(0, WAVE_CLEAR_GRACE_MS - elapsed);
   const seconds = Math.max(1, Math.ceil(remainingMs / 1000));
-  // Pulse: the number breathes between full size and 90% so the
-  // countdown feels alive even when it doesn't change. Pulse syncs to
-  // the second boundary so "tick" lines up with the breath.
+  // Pulse: the number breathes between full size and 90% so the countdown
+  // feels alive even when it doesn't change. Synced to the second boundary
+  // so the "tick" lines up with the breath.
   const fracInSecond = (remainingMs % 1000) / 1000;
   const pulse = 0.9 + 0.1 * Math.sin(fracInSecond * Math.PI * 2);
   ctx.save();
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  // "WAVE CLEAR" label.
   ctx.fillStyle = '#ffd84a';
   ctx.shadowColor = '#ff8a3a';
   ctx.shadowBlur = 12;
   ctx.font = 'bold 18px ui-monospace, monospace';
   ctx.fillText('WAVE CLEAR · GRAB EVERYTHING', WORLD_W / 2, 110);
-  // Big countdown number.
   ctx.shadowBlur = 28;
   ctx.font = `bold ${Math.round(72 * pulse)}px ui-monospace, monospace`;
   ctx.fillText(String(seconds), WORLD_W / 2, 170);
@@ -3369,6 +3498,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   drawBonusBanner(ctx, state, now);
   drawWaveClearCountdown(ctx, state, now);
   drawOffscreenIndicators(ctx, state, now);
+  drawIntertitle(ctx, state, now);
 
   // WebGL mesh overlay — runs only if any category is currently on
   // 'mesh' tier AND the overlay module has finished loading. Lives on
@@ -3385,11 +3515,14 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     const particleTier = getVisualStyle('particle');
     // UFOs follow ship OR asteroid tier — see drawUfo gate for why.
     const ufosMesh = shipTier === 'mesh' || asteroidTier === 'mesh';
+    // While an act-boundary intertitle holds the screen black, feed the
+    // overlay empty lists so its canvas stays clear of the story card.
+    const holding = isIntertitleHolding(state, now);
     callWebGLOverlay({
-      asteroids: asteroidTier === 'mesh' ? state.asteroids : [],
-      ufos: ufosMesh ? state.ufos : [],
-      powerups: particleTier === 'mesh' ? state.powerups : [],
-      ship: shipTier === 'mesh' ? state.ship : null,
+      asteroids: !holding && asteroidTier === 'mesh' ? state.asteroids : [],
+      ufos: !holding && ufosMesh ? state.ufos : [],
+      powerups: !holding && particleTier === 'mesh' ? state.powerups : [],
+      ship: !holding && shipTier === 'mesh' ? state.ship : null,
       dpr: renderMode.dpr,
       scale: renderMode.scale,
       tx: renderMode.tx,

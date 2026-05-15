@@ -11,6 +11,7 @@ import type {
 import { recordStreamEvent } from './stream-session.js';
 import { getGameConfig } from './faucet.js';
 import { getFlavour } from './flavour.js';
+import { asteroidBounceEnabled } from './bounce.js';
 import { getCouncil } from './sanctum-avatars.js';
 import { DEPTH_CONFIGS, decorativeSpawnCount, getParallaxTier, pickDecorativeDepth } from './parallax.js';
 import {
@@ -23,7 +24,7 @@ import {
 import type { PickupKind } from './types.js';
 import type { ReplaySnapshot, Debris } from './types.js';
 import {
-  WORLD_W, WORLD_H, WARP_MS, WAVE_CLEAR_GRACE_MS,
+  WORLD_W, WORLD_H, WARP_MS, WAVE_CLEAR_GRACE_MS, intertitleForWave, INTERTITLE_MS,
   SHIP_RADIUS, SHIP_THRUST, SHIP_DRAG, SHIP_ROT_ACCEL, SHIP_ROT_DAMPING, SHIP_MAX_ROT, SHIP_INVULN_MS, FIRE_COOLDOWN_MS,
   HYPERSPACE_COOLDOWN_MS, HYPERSPACE_CLOAK_MS, HYPERSPACE_MALFUNCTION_CHANCE, HYPERSPACE_SAFE_DIST,
   HYPERSPACE_CONSECUTIVE_WINDOW_MS, HYPERSPACE_DETONATE_RANGE,
@@ -83,6 +84,7 @@ export function makeInitialState(): GameState {
     shockwaveRings: [],
     hyperspaceEffects: [],
     waveClearAt: null,
+    phaseEpoch: 0,
     score: 0,
     sats: 0,
     displaySats: 0,
@@ -381,8 +383,10 @@ function pickAsteroidType(wave: number): AsteroidType {
  *  vanished" confusion. */
 function spawnDecorativeAsteroids(s: GameState, wave: number): void {
   if (wave <= 1) return;
-  const tier = getParallaxTier();
-  const count = decorativeSpawnCount(tier);
+  // Parallax depth bands are dressing for the enhanced visual tiers. Pure
+  // vector mode stays flat — classic 1979, no background depth.
+  if (getVisualStyle('asteroid') === 'vector') return;
+  const count = decorativeSpawnCount(getParallaxTier());
   if (count === 0) return;
   for (let i = 0; i < count; i++) {
     const depth = pickDecorativeDepth(gameRng);
@@ -840,6 +844,7 @@ export function beginWave(s: GameState, wave: number): void {
   if (wave === FINAL_WAVE) markAchievement(s, 'first-wave-25');
   if (wave === 26) markAchievement(s, 'first-drift');
   // Wave-end bonus tracking — reset every wave so each one stands on its own.
+  s.waveClearAt = null;
   s.shieldUsedThisWave = false;
   s.bulletsFiredThisWave = 0;
   s.missedShotsThisWave = 0;
@@ -930,6 +935,10 @@ export function beginWave(s: GameState, wave: number): void {
   // fresh start lands here too because s.phase is 'title'.
   s.phase = 'wavestart';
   s.phaseStart = performance.now();
+  // Transition token — bumped by every wave-progression change. The
+  // setTimeouts below capture it and no-op if a newer transition (a
+  // cheat-warp, a death) supersedes this one mid-flight.
+  const epoch = ++s.phaseEpoch;
   // Heartbeat speeds up with wave
   audio.setHeartbeatPeriod(Math.max(0.35, 1.0 - wave * 0.06));
   // Preload the next wave's background so the warp transition is seamless
@@ -937,32 +946,33 @@ export function beginWave(s: GameState, wave: number): void {
   // Half-beat of silence first — duck the music so the wave name lands cleanly,
   // then fire the chime + reveal at WAVE_REVEAL_DELAY_MS, then unduck and resume.
   audio.setMusicDuck(0.3);
+  // Act-boundary waves (1/10/17/25) replace the wave banner with a story
+  // intertitle card that carries the wave name itself. Campaign flavour
+  // only — the 600bn Sanctum is a one-level teaser.
+  const isActWave = getFlavour() !== '600bn' && intertitleForWave(wave) !== null;
   setTimeout(() => {
-    if (s.phase !== 'wavestart') return;
+    if (s.phaseEpoch !== epoch || s.phase !== 'wavestart') return;
     audio.levelUp();
-    toastNow(s, `WAVE ${wave} · ${waveName(wave)}`);
+    // The intertitle card shows the wave name itself, so skip the toast there.
+    if (!isActWave) toastNow(s, `WAVE ${wave} · ${waveName(wave)}`);
   }, WAVE_REVEAL_DELAY_MS);
-  // Wave-1 wavestart runs longer (6s vs 4s) so a spectator who lands on
-  // watch.pallasite.app within a couple of seconds of the player
-  // clicking IGNITE still catches the launch beat — the watch page
-  // discovers new runs via the faucet's 5-second heartbeat cycle, and
-  // the standard 4s wavestart could otherwise be half over by the time
-  // they click WATCH. Skip-window still applies if the player wants to
-  // jump in immediately.
-  // 600bn flavour gets a longer wavestart on wave 1 so the player has
-  // time to read the canonical lore line before the action starts.
-  // Skip-on-input still works after WAVESTART_SKIP_AFTER_MS.
-  const wavestartMs = wave === 1
-    ? (getFlavour() === '600bn' ? 9_000 : WAVESTART_MS_WAVE1)
-    : WAVESTART_MS;
+  // Act waves hold for the whole intertitle card (campaign wave 1 is always
+  // ACT I, so it keeps a long, spectator-friendly opening — the watch page
+  // discovers new runs on a 5s heartbeat). 600bn wave 1 holds longest so the
+  // player can read the canonical lore line. Every other wave gets the
+  // standard short banner. Skip-on-input still works after
+  // WAVESTART_SKIP_AFTER_MS.
+  const wavestartMs = isActWave
+    ? INTERTITLE_MS
+    : (wave === 1 && getFlavour() === '600bn' ? 9_000 : WAVESTART_MS);
   setTimeout(() => {
+    if (s.phaseEpoch !== epoch) return;
     audio.setMusicDuck(1);
     if (s.phase === 'wavestart' || s.phase === 'warp') s.phase = 'playing';
   }, wavestartMs);
 }
 
 const WAVESTART_MS = 4000;
-const WAVESTART_MS_WAVE1 = 6000;
 const WAVE_REVEAL_DELAY_MS = 400;
 /** Earliest moment after wavestart begins that a tap/key can skip — give the
  *  banner enough time to fully fade in so accidental skips don't show nothing. */
@@ -980,15 +990,20 @@ export function skipWaveStart(s: GameState): void {
 
 function startWarp(s: GameState, targetWave?: number): void {
   const next = targetWave ?? s.wave + 1;
+  // Cancel any in-progress grab grace so its countdown can't bleed past the warp.
+  s.waveClearAt = null;
   s.phase = 'warp';
   s.phaseStart = performance.now();
   s.warpTargetWave = next;
+  // Transition token — a second startWarp (e.g. a cheat-warp taken while
+  // this one is still animating) bumps it, so this timer's beginWave is
+  // suppressed and only the latest warp lands. Without this the first
+  // stale timer wins and drags the player to the wrong wave.
+  const epoch = ++s.phaseEpoch;
   audio.warpJump();
   haptic('celebrate');
   setTimeout(() => {
-    if (s.phase === 'warp') {
-      beginWave(s, next);
-    }
+    if (s.phaseEpoch === epoch && s.phase === 'warp') beginWave(s, next);
   }, WARP_MS);
 }
 
@@ -1012,6 +1027,7 @@ export const BONUS_ASTEROID_CAP = 14;
 export function startBonus(s: GameState): void {
   s.phase = 'bonus';
   s.phaseStart = performance.now();
+  ++s.phaseEpoch;  // supersede any pending warp / wavestart timer
   s.bonusStartedAt = performance.now();
   s.bonusNextSpawnAt = performance.now() + 1500;  // first refill 1.5s in
   s.bonusPreludeSpawned = 0;
@@ -1625,6 +1641,7 @@ function destroyMine(s: GameState, m: Mine): void {
 function triggerCompletion(s: GameState): void {
   s.phase = 'completed';
   s.phaseStart = performance.now();
+  ++s.phaseEpoch;  // supersede any pending warp / wavestart timer
   audio.thrustOff();
   audio.stopHeartbeat();
   audio.ufoSirenStop();
@@ -2700,7 +2717,8 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   // Asteroid-asteroid elastic bounce on the gameplay plane. Decorative
   // depth bands pass through everything. O(N²) is cheap at the typical
   // ~10-30 active rocks; only kicks in when same-depth circles overlap.
-  runAsteroidCollisions(s);
+  // Gated: off restores classic 1979 pass-through (easy mode / override).
+  if (asteroidBounceEnabled()) runAsteroidCollisions(s);
 
   // ── Shield expiry ──
   if (s.ship.shieldUp && now >= s.ship.shieldExpiresAt) {
@@ -2979,8 +2997,9 @@ export function updateGame(s: GameState, dt: number, now: number): void {
   // Sweep dead asteroids
   s.asteroids = s.asteroids.filter(a => a.alive);
 
-  // Wave clear? Two-stage flow: a grace window for picking up coins +
-  // power-ups, then the warp / bonus / completion transition.
+  // Wave clear — two-stage: a grab-everything grace window (when there are
+  // loose coins / power-ups and the run isn't cheated), then the warp /
+  // bonus / completion transition.
   if (s.phase === 'playing') {
     // Decoratives (parallax depth 1-2, 4-5) are visual dressing only —
     // they shouldn't block a clear. Without this filter the wave is
@@ -2998,38 +3017,44 @@ export function updateGame(s: GameState, dt: number, now: number): void {
     const isFinalWave = s.wave === FINAL_WAVE;
     const conditionClear = isFinalWave ? wave25Clear : cleared;
 
-    // 600bn flavour wave 1 is an infinity wave — no grace, no warp, just
-    // immediately respawn fillers and keep going. The Sanctum is a
-    // continuous engagement; a 5s pause every time the field empties
-    // would break the flow.
-    const skipGrace = getFlavour() === '600bn' && s.wave === 1;
+    // 600bn flavour wave 1 is an infinity wave — a clear just respawns
+    // fillers and keeps going; the Sanctum is a continuous engagement.
+    const sanctumInfinity = getFlavour() === '600bn' && s.wave === 1;
 
-    // Stage 1: first frame of clear → kick off grace window.
+    // Stage 1 — first frame of clear: award bonuses, then either open the
+    // grab-everything grace window or transition straight away.
     if (conditionClear && s.waveClearAt === null) {
-      if (skipGrace) {
-        awardWaveClearBonuses(s);
-        bumpTrauma(s, 0.30);
-        hitStop(s, 180);
+      awardWaveClearBonuses(s);
+      bumpTrauma(s, isFinalWave ? 0.40 : 0.30);
+      hitStop(s, isFinalWave ? 220 : 180);
+      audio.ufoSirenStop();
+      if (sanctumInfinity) {
+        // Infinity wave — sweep, refill, keep going; no grace, no transition.
         clearStage(s, { autoCollect: true });
-        audio.ufoSirenStop();
         spawnSanctumFillers(s, 5);
       } else {
-        s.waveClearAt = now;
-        awardWaveClearBonuses(s);
-        bumpTrauma(s, isFinalWave ? 0.40 : 0.30);
-        hitStop(s, isFinalWave ? 220 : 180);
         spawnWaveClearStreak(s);
         // Set-piece clear achievements land on the wave-clear beat.
         if (s.wave === 5)  markAchievement(s, 'first-heist');
         if (s.wave === 12) markAchievement(s, 'first-curtain');
-        // Ship invulnerable for the whole grace window so the player can
-        // fly into coins / power-ups without taking a stray hit from a
-        // last-frame fragment that hadn't been swept yet.
-        s.ship.invulnerableUntil = Math.max(s.ship.invulnerableUntil, now + WAVE_CLEAR_GRACE_MS + 200);
+        // Grace window — a few seconds to fly in and scoop loose coins /
+        // power-ups before the warp. Skipped (backdated so Stage 2 fires
+        // this frame) when there's nothing to grab, or the run is cheated
+        // and sats are voided — either way the dash would be pointless.
+        const hasGoodies = s.coins.some(c => c.alive)
+          || s.powerups.some(p => p.alive && !p.collected);
+        if (hasGoodies && !s.cheatedThisRun) {
+          s.waveClearAt = now;
+          s.ship.invulnerableUntil = Math.max(
+            s.ship.invulnerableUntil, now + WAVE_CLEAR_GRACE_MS + 200,
+          );
+        } else {
+          s.waveClearAt = now - WAVE_CLEAR_GRACE_MS;
+        }
       }
     }
 
-    // Stage 2: grace expired → clear stage + transition.
+    // Stage 2 — grace expired (or skipped) → sweep + transition.
     if (s.waveClearAt !== null && now >= s.waveClearAt + WAVE_CLEAR_GRACE_MS) {
       s.waveClearAt = null;
       clearStage(s, { autoCollect: true });
@@ -3043,10 +3068,8 @@ export function updateGame(s: GameState, dt: number, now: number): void {
         }
       } else if (s.wave === 9 && gameRng() < getGameConfig().bonus_wave_chance) {
         // BONUS round divert — W9 → W10 hyper blitz + event-horizon
-        // prelude. Music swaps to hyperspace; ends warping into W10
-        // normally. Gated on bonus_wave_chance from /api/game-config so
-        // the admin can dial bonus rarity from the panel. Uses gameRng
-        // so daily-seed runs are deterministic against the active seed.
+        // prelude. Gated on bonus_wave_chance from /api/game-config;
+        // uses gameRng so daily-seed runs stay deterministic.
         startBonus(s);
       } else {
         startWarp(s);

@@ -598,12 +598,16 @@ export interface GameState {
    *  position when the cloak ends. Self-pruning in render. */
   hyperspaceEffects: HyperspaceEffect[];
 
-  /** performance.now() at the moment the wave was cleared. While non-null
-   *  the player is in the WAVE_CLEAR_GRACE_MS pickup window: no new
-   *  spawns, ship invulnerable, countdown shown on screen. Cleared when
-   *  the grace window expires and the warp / bonus / completion path
-   *  fires. null during normal play. */
+  /** performance.now() when the current wave was cleared, or null. While
+   *  non-null the player is in the grab-everything grace window: ship
+   *  invulnerable, countdown on screen. Never set when the field has no
+   *  loose coins / power-ups, or the run is cheated. */
   waveClearAt: number | null;
+  /** Monotonic transition token. Bumped by every wave-progression change
+   *  (warp, wavestart, bonus, completion). Pending setTimeout-driven
+   *  transitions capture it and no-op if a newer transition has superseded
+   *  them — kills stale-timer races when the player cheat-warps. */
+  phaseEpoch: number;
 }
 
 /** A single hyperspace cinematic ring (collapse on departure, emerge on
@@ -721,9 +725,9 @@ export const REPLAY_EXPLOSION_WALL_MS = Math.round(REPLAY_EXPLOSION_MS / REPLAY_
 export const WORLD_W = 960;
 export const WORLD_H = 720;
 
-/** Grace window after the last gameplay-plane asteroid breaks, before the
- *  warp animation kicks off. Lets the player scoop up remaining coins /
- *  power-ups without rushing. Ship is invulnerable during this window. */
+/** Grab-everything grace window after a wave is cleared, before the warp.
+ *  Lets the player scoop loose coins / power-ups; ship is invulnerable for
+ *  the duration. Skipped when there's nothing to grab or the run is cheated. */
 export const WAVE_CLEAR_GRACE_MS = 5000;
 
 /** Inter-wave warp transition duration. Drives the visual envelope in render
@@ -874,6 +878,73 @@ export const FINAL_WAVE = 25;
 /** Get the lore name for a given wave number (1-indexed). Falls back to "WAVE N" beyond the table. */
 export function waveName(wave: number): string {
   return WAVE_NAMES[wave - 1] ?? `WAVE ${wave}`;
+}
+
+// ── Story arc — three acts over the 25 waves ────────────────────────────────
+// Connective tissue for the wave lore: the meteorite specimens are waypoints
+// on a hero quest, not a museum catalogue. See docs/pallasite-arc.md.
+
+/** Which act a campaign wave belongs to. The boss arena (wave 25) is its own beat. */
+export function waveAct(wave: number): 1 | 2 | 3 | 'boss' {
+  if (wave >= FINAL_WAVE) return 'boss';
+  if (wave >= 17) return 3;
+  if (wave >= 9) return 2;
+  return 1;
+}
+
+/** A full-screen story card shown before the wavestart banner on act boundaries. */
+export interface Intertitle {
+  /** Wave whose wavestart this card precedes (1-indexed). */
+  wave: number;
+  /** Act label shown small above the lines. */
+  act: string;
+  /** Two lines of arc copy. */
+  lines: readonly [string, string];
+}
+
+/** The four act-boundary story cards, triggered at the start of these waves. */
+export const ACT_INTROS: readonly Intertitle[] = [
+  {
+    wave: 1,
+    act: 'ACT I · THE OUTER DRIFT',
+    lines: ['The contract pays per stone.', 'The chain pays only if you finish it.'],
+  },
+  {
+    wave: 10,
+    act: 'ACT II · THE RECLASSIFICATION',
+    lines: ['That one was not on the list.', 'Someone is placing them.'],
+  },
+  {
+    wave: 17,
+    act: 'ACT III · THE ANOMALOUS RUN',
+    lines: ['Past halfway. The catalogue grows anomalous.', 'You are no longer the one reading it.'],
+  },
+  {
+    wave: 25,
+    act: 'THE GATE',
+    lines: ['The line ends here.', 'Stand or fall. Then choose.'],
+  },
+];
+
+/** The intertitle for a given wave, or null if the wave is not an act boundary. */
+export function intertitleForWave(wave: number): Intertitle | null {
+  return ACT_INTROS.find(i => i.wave === wave) ?? null;
+}
+
+/** Wavestart duration for an act-boundary wave — the whole hold is the story
+ *  card (act beat + wave identity), replacing the standard wave banner. */
+export const INTERTITLE_MS = 6000;
+
+/** Arc-aware game-over line, keyed off the act the player fell in. Null for
+ *  drift-mode waves (26+) where the campaign arc no longer applies. */
+export function gameOverArcLine(wave: number): string | null {
+  if (wave < 1 || wave > FINAL_WAVE) return null;
+  const name = waveName(wave);
+  const act = waveAct(wave);
+  if (act === 'boss') return 'You fell at the horizon. The forge sang on.';
+  if (act === 3) return `You fell at ${name}, within sight of the gate.`;
+  if (act === 2) return `You fell at ${name}. The catalogue holds your line for the next hunter.`;
+  return `You fell at ${name}, the contract unfilled.`;
 }
 
 export const UFO_RADIUS: Record<UfoType, number> = {
