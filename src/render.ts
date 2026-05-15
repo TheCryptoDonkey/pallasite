@@ -242,9 +242,6 @@ export interface RenderModeInfo {
 }
 let renderMode: RenderModeInfo = { kind: 'retro', vw: 960, vh: 720, dpr: 1, scale: 1, tx: 0, ty: 0, insets: ZERO_INSETS };
 export function setRenderMode(info: RenderModeInfo): void { renderMode = info; }
-/** Read the active render mode. Used by the watch theatre to snapshot
- *  and restore it around its own render() calls. */
-export function getRenderMode(): RenderModeInfo { return renderMode; }
 export function getRenderModeKind(): 'retro' | 'modern' { return renderMode.kind; }
 
 /**
