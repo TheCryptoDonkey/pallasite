@@ -58,6 +58,7 @@ import {
 } from './install-fullscreen.js';
 import { type ParallaxTier, getParallaxTier, setParallaxTier } from './parallax.js';
 import { type BounceMode, getBounceMode, setBounceMode } from './bounce.js';
+import { type KnockbackMode, getKnockbackMode, setKnockbackMode } from './knockback.js';
 import { followUser, shareCompletion, endorseSubject, rankFromWave } from './social.js';
 import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipient } from './zap.js';
@@ -9182,6 +9183,49 @@ export function renderSettings(onBack: () => void): void {
     paintBounce();
     const bounceHint = el('p', { parent: overlay, text: 'AUTO: off on easy · on for normal / hard' });
     bounceHint.style.cssText = 'font-size:0.62rem;letter-spacing:0.1em;color:rgba(180,140,255,0.5);margin:-6px 0 0;';
+  }
+
+  // ── SHOT KNOCKBACK ───────────────────────────────────────────────────────
+  // Gameplay setting (not visual): whether a bullet's momentum is blended
+  // into the rock it hits and into any fragments. AUTO derives from
+  // difficulty — off on easy, on for normal / hard. ON / OFF override.
+  // Hidden in 600bn (always on there).
+  if (getFlavour() !== '600bn') {
+    const knockHeading = el('p', { parent: overlay, text: 'SHOT KNOCKBACK' });
+    knockHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
+    const knockRow = el('div', { parent: overlay });
+    knockRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;min-width:340px;';
+    el('label', { parent: knockRow, text: 'SHOTS NUDGE' })
+      .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
+    const knockBtnWrap = el('div', { parent: knockRow });
+    knockBtnWrap.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;';
+    const knockOpts: ReadonlyArray<{ value: KnockbackMode; label: string }> = [
+      { value: 'auto', label: 'AUTO' },
+      { value: 'on',   label: 'ON' },
+      { value: 'off',  label: 'OFF' },
+    ];
+    const knockBtns = new Map<KnockbackMode, HTMLButtonElement>();
+    const paintKnock = (): void => {
+      const cur = getKnockbackMode();
+      for (const [mode, btn] of knockBtns) {
+        const on = mode === cur;
+        btn.style.background = on ? 'rgba(255,216,74,0.18)' : 'rgba(20,12,36,0.6)';
+        btn.style.color = on ? '#ffd84a' : 'rgba(220,210,255,0.7)';
+        btn.style.borderColor = on ? '#ffd84a' : 'rgba(180,140,255,0.45)';
+      }
+    };
+    for (const o of knockOpts) {
+      const btn = el('button', { className: 'menu-btn secondary', parent: knockBtnWrap, text: o.label }) as HTMLButtonElement;
+      btn.style.cssText += 'font-size:0.72rem;padding:6px 14px;letter-spacing:0.14em;';
+      btn.addEventListener('click', () => {
+        setKnockbackMode(o.value);
+        paintKnock();
+      });
+      knockBtns.set(o.value, btn);
+    }
+    paintKnock();
+    const knockHint = el('p', { parent: overlay, text: 'AUTO: off on easy · on for normal / hard' });
+    knockHint.style.cssText = 'font-size:0.62rem;letter-spacing:0.1em;color:rgba(180,140,255,0.5);margin:-6px 0 0;';
   }
 
   // ── ACCESSIBILITY ───────────────────────────────────────────────────────
