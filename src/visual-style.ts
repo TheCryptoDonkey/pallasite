@@ -79,16 +79,31 @@ function save(s: State): void {
   try { window.dispatchEvent(new CustomEvent('pallasite:visualStyle')); } catch { /* ignore */ }
 }
 
-/** Read the effective tier for a category. Returns the raw stored value
- *  including 'mesh'. Render code is responsible for falling back to
- *  'shaded' if the WebGL overlay hasn't loaded yet (call
- *  getReadyOverlay() and downgrade locally). */
-export function getVisualStyle(cat: VisualCategory): VisualTier {
+/** When set, getVisualStyle reports this tier wherever the stored value
+ *  is 'mesh'. The watch theatre sets it to 'shaded': it renders through
+ *  the shared render() but cannot drive the WebGL mesh overlay (the
+ *  overlay canvas is bound to the game canvas, not the theatre). Cleared
+ *  on theatre close. getVisualStyleRaw is unaffected, so the settings UI
+ *  still shows the player's real choice. */
+let meshClamp: VisualTier | null = null;
+export function setMeshTierClamp(tier: VisualTier | null): void { meshClamp = tier; }
+
+/** Raw stored tier for a category, including 'mesh'. */
+function rawVisualStyle(cat: VisualCategory): VisualTier {
   return load()[cat];
 }
 
-/** Alias retained for the settings UI / clarity at call sites. */
-export const getVisualStyleRaw = getVisualStyle;
+/** Effective tier for render code. Returns the stored value, except
+ *  'mesh' is reported as the active mesh-clamp tier when one is set.
+ *  Render code still falls back to 'shaded' itself if the WebGL overlay
+ *  has not finished loading. */
+export function getVisualStyle(cat: VisualCategory): VisualTier {
+  const tier = rawVisualStyle(cat);
+  return meshClamp !== null && tier === 'mesh' ? meshClamp : tier;
+}
+
+/** Unclamped read for the settings UI / clarity at call sites. */
+export const getVisualStyleRaw = rawVisualStyle;
 
 /** Set a category's tier. If the new tier is 'mesh', kick off the
  *  WebGL overlay dynamic-load so it's ready by the next frame (or one
