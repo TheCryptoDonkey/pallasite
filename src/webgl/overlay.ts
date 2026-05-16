@@ -489,6 +489,9 @@ export function ensureWebGLOverlay(): Promise<OverlayHandle> {
       canvas,
       alpha: true,
       antialias: true,
+      // Kept readable so a presentation theme can composite the overlay
+      // down into the 2D canvas (see main.ts applyThemeFrame).
+      preserveDrawingBuffer: true,
     });
     renderer.setClearColor(0x000000, 0);
     renderer.outputColorSpace = THREE.SRGBColorSpace;

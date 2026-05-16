@@ -254,10 +254,10 @@ function lutPass(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, lowW:
 
 /** Thermal camera: a coarse, soft luminance heat-map. */
 function applyThermal(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): void {
-  lutPass(ctx, canvas, 300, true, HEAT_LUT);
+  lutPass(ctx, canvas, 600, true, HEAT_LUT);
 }
 
 /** Game Boy DMG: 160-wide chunky pixels, four-shade green. */
 function applyGameBoy(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): void {
-  lutPass(ctx, canvas, 160, false, GB_LUT);
+  lutPass(ctx, canvas, 320, false, GB_LUT);
 }
