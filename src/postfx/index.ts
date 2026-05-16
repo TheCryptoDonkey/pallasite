@@ -9,7 +9,7 @@
 
 export type ThemeId =
   | 'none' | 'crt' | 'synthwave' | 'thermal' | 'gameboy' | 'gameboycolor'
-  | 'hologram' | 'blueprint';
+  | 'hologram' | 'blueprint' | 'ascii' | 'handdrawn';
 
 export interface ThemeInfo {
   id: ThemeId;
@@ -26,6 +26,8 @@ export const THEMES: readonly ThemeInfo[] = [
   { id: 'gameboycolor', label: 'GB COLOR' },
   { id: 'hologram', label: 'HOLOGRAM' },
   { id: 'blueprint', label: 'BLUEPRINT' },
+  { id: 'ascii', label: 'ASCII' },
+  { id: 'handdrawn', label: 'HAND DRAWN' },
 ];
 
 /** Coerce an unknown value (e.g. a stale localStorage entry) into a ThemeId.
@@ -56,6 +58,8 @@ export function applyPostFx(canvas: HTMLCanvasElement, theme: ThemeId, nowMs: nu
   else if (theme === 'gameboycolor') applyGameBoyColor(ctx, canvas);
   else if (theme === 'hologram') applyHologram(ctx, canvas, nowMs);
   else if (theme === 'blueprint') applyBlueprint(ctx, canvas);
+  else if (theme === 'ascii') applyAscii(ctx, canvas);
+  else if (theme === 'handdrawn') applyHandDrawn(ctx, canvas, nowMs);
 }
 
 /**
@@ -407,6 +411,119 @@ function applyBlueprint(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement
   const vig = ctx.createRadialGradient(w / 2, h / 2, h * 0.45, w / 2, h / 2, h * 0.85);
   vig.addColorStop(0, 'rgba(6,20,50,0)');
   vig.addColorStop(1, 'rgba(6,20,50,0.45)');
+  ctx.fillStyle = vig;
+  ctx.fillRect(0, 0, w, h);
+
+  ctx.restore();
+}
+
+// ── ASCII ────────────────────────────────────────────────────────────
+const ASCII_RAMP = ' .:-=+*#%@';
+const ASCII_CELL = 24;
+let asciiAtlas: HTMLCanvasElement | null = null;
+
+/** Lazily render the brightness ramp into a glyph atlas, one cell per
+ *  character, so the per-frame pass only does drawImage, not fillText. */
+function getAsciiAtlas(): HTMLCanvasElement {
+  if (asciiAtlas) return asciiAtlas;
+  const c = document.createElement('canvas');
+  c.width = ASCII_CELL * ASCII_RAMP.length;
+  c.height = ASCII_CELL;
+  const cx = c.getContext('2d');
+  if (cx) {
+    cx.font = `bold ${Math.round(ASCII_CELL * 0.95)}px ui-monospace, monospace`;
+    cx.textAlign = 'center';
+    cx.textBaseline = 'middle';
+    cx.fillStyle = '#7dff9b';
+    for (let i = 0; i < ASCII_RAMP.length; i++) {
+      cx.fillText(ASCII_RAMP[i], i * ASCII_CELL + ASCII_CELL / 2, ASCII_CELL / 2 + 1);
+    }
+  }
+  asciiAtlas = c;
+  return asciiAtlas;
+}
+
+/** ASCII: sample the frame into an 80-column character grid and stamp
+ *  ramp glyphs, terminal-green on near-black. */
+function applyAscii(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): void {
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w === 0 || h === 0) return;
+  const cols = 80;
+  const rows = Math.max(1, Math.round(cols * (h / w) / 1.6));
+  const buf = getPixelBuf(cols, rows);
+  const bctx = buf.getContext('2d', { willReadFrequently: true });
+  if (!bctx) return;
+  bctx.setTransform(1, 0, 0, 1, 0, 0);
+  bctx.imageSmoothingEnabled = true;
+  bctx.clearRect(0, 0, cols, rows);
+  bctx.drawImage(canvas, 0, 0, w, h, 0, 0, cols, rows);
+  const d = bctx.getImageData(0, 0, cols, rows).data;
+  const atlas = getAsciiAtlas();
+  const last = ASCII_RAMP.length - 1;
+  const cw = w / cols;
+  const ch = h / rows;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#020805';
+  ctx.fillRect(0, 0, w, h);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const i = (r * cols + c) * 4;
+      const lum = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+      const idx = Math.round(Math.min(1, lum / 255 * 1.8) * last);
+      if (idx <= 0) continue;
+      ctx.drawImage(atlas, idx * ASCII_CELL, 0, ASCII_CELL, ASCII_CELL, c * cw, r * ch, cw, ch);
+    }
+  }
+  ctx.restore();
+}
+
+/** Hand-drawn: dark ink on cream paper with a gentle wobble. Inverts the
+ *  frame so bright strokes become ink, multiplies that onto a paper fill,
+ *  and draws it in wavy horizontal strips so straight lines wobble. */
+function applyHandDrawn(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, nowMs: number): void {
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w === 0 || h === 0) return;
+  const k = w / 960;
+  const sc = getScratch(w, h);
+  const scx = sc.getContext('2d');
+  if (!scx) return;
+  scx.setTransform(1, 0, 0, 1, 0, 0);
+  scx.clearRect(0, 0, w, h);
+  scx.drawImage(canvas, 0, 0);
+
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  // Cream paper.
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#e9e1c6';
+  ctx.fillRect(0, 0, w, h);
+
+  // Ink: invert the frame so bright strokes go dark, multiply it onto the
+  // paper, drawn in wavy strips so straight lines pick up a wobble.
+  ctx.globalCompositeOperation = 'multiply';
+  ctx.filter = 'invert(1) contrast(1.7)';
+  const strips = 48;
+  const stripH = h / strips;
+  const amp = 3.2 * k;
+  for (let s = 0; s < strips; s++) {
+    const sy = s * stripH;
+    const dx = Math.sin(s * 0.5 + nowMs * 0.0011) * amp
+      + Math.sin(s * 1.7 + nowMs * 0.0007) * amp * 0.5;
+    ctx.drawImage(sc, 0, sy, w, stripH + 1, dx, sy, w, stripH + 1);
+  }
+  ctx.filter = 'none';
+
+  // Soft page vignette.
+  const vig = ctx.createRadialGradient(w / 2, h / 2, h * 0.5, w / 2, h / 2, h * 0.95);
+  vig.addColorStop(0, 'rgba(255,255,255,1)');
+  vig.addColorStop(1, 'rgba(202,192,162,1)');
   ctx.fillStyle = vig;
   ctx.fillRect(0, 0, w, h);
 
