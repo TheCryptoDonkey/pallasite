@@ -130,6 +130,10 @@ export function populateTheatreState(gs: GameState, args: TheatreFrameArgs): voi
   ship.alive = t < 0.5 ? prev.alive : next.alive;
   ship.thrusting = t < 0.5 ? prev.thrust : next.thrust;
   ship.shieldUp = t < 0.5 ? prev.shielded : next.shielded;
+  // render()'s drawShield fades the dome over its final 300ms via
+  // (shieldExpiresAt - now). The wire carries only a boolean, so park the
+  // expiry well ahead while shielded so the dome paints at full opacity.
+  ship.shieldExpiresAt = ship.shieldUp ? performance.now() + 1000 : 0;
   ship.invulnerableUntil = 0;
   ship.hyperspaceCloakMs = 0;
   ship.hyperspaceMalfunction = false;
