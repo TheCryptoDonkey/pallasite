@@ -79,16 +79,28 @@ function save(s: State): void {
   try { window.dispatchEvent(new CustomEvent('pallasite:visualStyle')); } catch { /* ignore */ }
 }
 
-/** Read the effective tier for a category. Returns the raw stored value
- *  including 'mesh'. Render code is responsible for falling back to
- *  'shaded' if the WebGL overlay hasn't loaded yet (call
- *  getReadyOverlay() and downgrade locally). */
-export function getVisualStyle(cat: VisualCategory): VisualTier {
-  return load()[cat];
+let forcedTier: VisualTier | null = null;
+
+/** Force a single tier for the duration of one synchronous render()
+ *  call. The watch live tiles use this to render in vector regardless
+ *  of the player's saved preference: set it, call render(), clear it.
+ *  Synchronous use only, so it never races other render() callers. */
+export function setForcedVisualTier(tier: VisualTier | null): void {
+  forcedTier = tier;
 }
 
-/** Alias retained for the settings UI / clarity at call sites. */
-export const getVisualStyleRaw = getVisualStyle;
+/** Read the effective tier for a category. Honours an active forced
+ *  tier override (see setForcedVisualTier). Render code falls back to
+ *  'shaded' if the WebGL overlay hasn't loaded yet. */
+export function getVisualStyle(cat: VisualCategory): VisualTier {
+  return forcedTier ?? load()[cat];
+}
+
+/** The raw stored tier, ignoring any forced override. Used by the
+ *  settings UI so it reflects the player's real saved choice. */
+export function getVisualStyleRaw(cat: VisualCategory): VisualTier {
+  return load()[cat];
+}
 
 /** Set a category's tier. If the new tier is 'mesh', kick off the
  *  WebGL overlay dynamic-load so it's ready by the next frame (or one

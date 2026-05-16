@@ -242,6 +242,12 @@ export interface RenderModeInfo {
 }
 let renderMode: RenderModeInfo = { kind: 'retro', vw: 960, vh: 720, dpr: 1, scale: 1, tx: 0, ty: 0, insets: ZERO_INSETS };
 export function setRenderMode(info: RenderModeInfo): void { renderMode = info; }
+
+/** Hide the on-canvas HUD and banners for render() calls. The watch
+ *  live tiles use this so the small preview shows only the entity
+ *  layer; score / wave / sats sit in the tile's own chrome instead. */
+let hudHidden = false;
+export function setHudHidden(hidden: boolean): void { hudHidden = hidden; }
 export function getRenderModeKind(): 'retro' | 'modern' { return renderMode.kind; }
 
 /**
@@ -3493,12 +3499,14 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     ctx.restore();
   }
 
-  drawHud(ctx, state, now);
-  drawWaveBanner(ctx, state, now);
-  drawBonusBanner(ctx, state, now);
-  drawWaveClearCountdown(ctx, state, now);
-  drawOffscreenIndicators(ctx, state, now);
-  drawIntertitle(ctx, state, now);
+  if (!hudHidden) {
+    drawHud(ctx, state, now);
+    drawWaveBanner(ctx, state, now);
+    drawBonusBanner(ctx, state, now);
+    drawWaveClearCountdown(ctx, state, now);
+    drawOffscreenIndicators(ctx, state, now);
+    drawIntertitle(ctx, state, now);
+  }
 
   // WebGL mesh overlay — runs only if any category is currently on
   // 'mesh' tier AND the overlay module has finished loading. Lives on
