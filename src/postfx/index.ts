@@ -7,7 +7,9 @@
  * lift out into a shared package other games drop in.
  */
 
-export type ThemeId = 'none' | 'crt' | 'synthwave' | 'thermal' | 'gameboy' | 'gameboycolor';
+export type ThemeId =
+  | 'none' | 'crt' | 'synthwave' | 'thermal' | 'gameboy' | 'gameboycolor'
+  | 'hologram' | 'blueprint';
 
 export interface ThemeInfo {
   id: ThemeId;
@@ -22,6 +24,8 @@ export const THEMES: readonly ThemeInfo[] = [
   { id: 'thermal', label: 'THERMAL' },
   { id: 'gameboy', label: 'GAME BOY' },
   { id: 'gameboycolor', label: 'GB COLOR' },
+  { id: 'hologram', label: 'HOLOGRAM' },
+  { id: 'blueprint', label: 'BLUEPRINT' },
 ];
 
 /** Coerce an unknown value (e.g. a stale localStorage entry) into a ThemeId.
@@ -50,6 +54,8 @@ export function applyPostFx(canvas: HTMLCanvasElement, theme: ThemeId, nowMs: nu
   else if (theme === 'thermal') applyThermal(ctx, canvas);
   else if (theme === 'gameboy') applyGameBoy(ctx, canvas);
   else if (theme === 'gameboycolor') applyGameBoyColor(ctx, canvas);
+  else if (theme === 'hologram') applyHologram(ctx, canvas, nowMs);
+  else if (theme === 'blueprint') applyBlueprint(ctx, canvas);
 }
 
 /**
@@ -298,5 +304,111 @@ function applyGameBoyColor(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElem
   ctx.globalCompositeOperation = 'source-over';
   ctx.globalAlpha = 1;
   ctx.drawImage(buf, 0, 0, lowW, lowH, 0, 0, w, h);
+  ctx.restore();
+}
+
+/**
+ * Hologram: cyan monochrome with additive bloom, fine scanlines, a slow
+ * scan-sweep band and a faint flicker, for a ship's tactical-display look.
+ */
+function applyHologram(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, nowMs: number): void {
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w === 0 || h === 0) return;
+  const k = w / 960;
+  const sc = getScratch(w, h);
+  const scx = sc.getContext('2d');
+  if (!scx) return;
+  scx.setTransform(1, 0, 0, 1, 0, 0);
+  scx.clearRect(0, 0, w, h);
+  scx.drawImage(canvas, 0, 0);
+
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  // Additive bloom.
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.filter = `blur(${(2.5 * k).toFixed(2)}px)`;
+  ctx.globalAlpha = 0.5;
+  ctx.drawImage(sc, 0, 0);
+  ctx.filter = 'none';
+
+  // Recolour to cyan, luminance preserved.
+  ctx.globalCompositeOperation = 'color';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#3ad6ff';
+  ctx.fillRect(0, 0, w, h);
+
+  // Scanlines.
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = 'rgba(0,20,30,0.35)';
+  const step = Math.max(2, Math.round(3 * k));
+  for (let y = 0; y < h; y += step) ctx.fillRect(0, y, w, 1);
+
+  // Scan-sweep: a soft bright band travelling down.
+  const sweepY = (nowMs * 0.1) % (h + 200) - 100;
+  ctx.globalCompositeOperation = 'lighter';
+  const sweep = ctx.createLinearGradient(0, sweepY - 80 * k, 0, sweepY + 80 * k);
+  sweep.addColorStop(0, 'rgba(60,220,255,0)');
+  sweep.addColorStop(0.5, 'rgba(120,240,255,0.22)');
+  sweep.addColorStop(1, 'rgba(60,220,255,0)');
+  ctx.fillStyle = sweep;
+  ctx.fillRect(0, sweepY - 80 * k, w, 160 * k);
+
+  // Flicker plus vignette.
+  ctx.globalCompositeOperation = 'source-over';
+  const flick = 0.04 + 0.04 * Math.sin(nowMs * 0.08);
+  ctx.fillStyle = `rgba(0,40,60,${flick.toFixed(3)})`;
+  ctx.fillRect(0, 0, w, h);
+  const vig = ctx.createRadialGradient(w / 2, h / 2, h * 0.42, w / 2, h / 2, h * 0.82);
+  vig.addColorStop(0, 'rgba(0,8,16,0)');
+  vig.addColorStop(1, 'rgba(0,8,16,0.6)');
+  ctx.fillStyle = vig;
+  ctx.fillRect(0, 0, w, h);
+
+  ctx.restore();
+}
+
+/**
+ * Blueprint: a drafting-table look. Recolour the frame to monochrome
+ * blue, lift the dark field to blueprint paper-blue, lay a faint grid.
+ */
+function applyBlueprint(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): void {
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w === 0 || h === 0) return;
+  const k = w / 960;
+
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  // Monochrome blue, luminance preserved.
+  ctx.globalCompositeOperation = 'color';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#5a9be8';
+  ctx.fillRect(0, 0, w, h);
+
+  // Lift the dark field to blueprint paper-blue.
+  ctx.globalCompositeOperation = 'screen';
+  ctx.fillStyle = '#133f86';
+  ctx.fillRect(0, 0, w, h);
+
+  // Drafting grid.
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.strokeStyle = 'rgba(200,225,255,0.16)';
+  ctx.lineWidth = Math.max(1, k);
+  const cell = Math.round(48 * k);
+  ctx.beginPath();
+  for (let x = cell; x < w; x += cell) { ctx.moveTo(x, 0); ctx.lineTo(x, h); }
+  for (let y = cell; y < h; y += cell) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
+  ctx.stroke();
+
+  // Vignette.
+  const vig = ctx.createRadialGradient(w / 2, h / 2, h * 0.45, w / 2, h / 2, h * 0.85);
+  vig.addColorStop(0, 'rgba(6,20,50,0)');
+  vig.addColorStop(1, 'rgba(6,20,50,0.45)');
+  ctx.fillStyle = vig;
+  ctx.fillRect(0, 0, w, h);
+
   ctx.restore();
 }
