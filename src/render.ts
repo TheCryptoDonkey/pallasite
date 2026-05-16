@@ -20,7 +20,7 @@ import { getAsteroidStyle, shouldReduceMotion } from './a11y.js';
 import { getActiveSkin } from './skins.js';
 import { getMemberImage } from './sanctum-avatars.js';
 import { getFlavour } from './flavour.js';
-import { getVisualStyle, isWebGLOverlayReady, callWebGLOverlay } from './visual-style.js';
+import { getVisualStyle, getTheme, isWebGLOverlayReady, callWebGLOverlay } from './visual-style.js';
 import { DEPTH_CONFIGS } from './parallax.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
@@ -3358,7 +3358,9 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // small hits barely shake, big hits punch. Reduced-motion zeros amplitude.
   let shakeX = 0, shakeY = 0;
   const trauma = state.cameraTrauma;
-  if (trauma > 0 && !shouldReduceMotion()) {
+  // ASCII theme resamples the frame into a character grid every tick, so
+  // camera shake turns into flickering character noise — suppress it.
+  if (trauma > 0 && !shouldReduceMotion() && getTheme() !== 'ascii') {
     const amp = trauma * trauma * 14;
     shakeX = (Math.sin(now * 0.073) + Math.sin(now * 0.127) * 0.6) * amp;
     shakeY = (Math.cos(now * 0.091) + Math.cos(now * 0.151) * 0.6) * amp;
