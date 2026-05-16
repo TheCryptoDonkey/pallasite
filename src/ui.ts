@@ -23,7 +23,7 @@ import {
   type VisualCategory,
   type VisualTier,
 } from './visual-style.js';
-import { THEMES, type ThemeId } from './postfx/index.js';
+import { THEMES, applyPostFx, type ThemeId } from './postfx/index.js';
 import {
   getReducedMotionPref, setReducedMotionPref, type ReducedMotionPref,
   getPalette, setPalette, type ColourPalette,
@@ -2693,6 +2693,28 @@ export function renderLiveTheatre(input: LiveTheatreInput): void {
   }
   syncTierBtns();
 
+  // Theme toggle — postfx presentation themes. applyPostFx in the tick
+  // reads getTheme() live, so a click restyles the theatre next frame.
+  // setTheme persists to the watch origin, same as the tier row.
+  const themeRow = el('div', { parent: overlay });
+  themeRow.style.cssText = 'display:flex;justify-content:center;gap:6px;margin:6px auto 0;flex-wrap:wrap;';
+  const themeBtns: Array<[ThemeId, HTMLButtonElement]> = [];
+  const syncThemeBtns = (): void => {
+    const active = getTheme();
+    for (const [id, b] of themeBtns) {
+      const on = id === active;
+      b.style.opacity = on ? '1' : '0.55';
+      b.style.borderColor = on ? '#8cffb4' : 'rgba(140,255,180,0.3)';
+    }
+  };
+  for (const themeInfo of THEMES) {
+    const b = el('button', { className: 'menu-btn secondary', parent: themeRow, text: themeInfo.label }) as HTMLButtonElement;
+    b.style.cssText += 'flex:0 0 auto;padding:6px 14px;font-size:0.72rem;letter-spacing:0.08em;';
+    b.addEventListener('click', () => { setTheme(themeInfo.id); syncThemeBtns(); });
+    themeBtns.push([themeInfo.id, b]);
+  }
+  syncThemeBtns();
+
   const status = el('p', { parent: overlay, text: 'Subscribing to relay…' });
   status.style.cssText = 'margin:10px 0 4px;font-size:0.9rem;color:rgba(140,255,180,0.8);letter-spacing:0.08em;min-height:1.2em;';
 
@@ -3564,6 +3586,23 @@ export function renderLiveTheatre(input: LiveTheatreInput): void {
     });
     setRenderMode(theatreRenderMode);
     render(canvas, theatreState, nowPerf);
+    // Presentation theme — composite the borrowed 3D overlay in first so
+    // the theme covers the meshes too, then post-process the frame.
+    const theatreTheme = getTheme();
+    if (theatreTheme !== 'none') {
+      if (g3d && g3d.width > 0) {
+        c2d.save();
+        c2d.setTransform(1, 0, 0, 1, 0, 0);
+        c2d.globalAlpha = 1;
+        c2d.globalCompositeOperation = 'source-over';
+        c2d.drawImage(g3d, 0, 0, g3d.width, g3d.height, 0, 0, canvas.width, canvas.height);
+        c2d.restore();
+        g3d.style.visibility = 'hidden';
+      }
+      applyPostFx(canvas, theatreTheme, nowPerf);
+    } else if (g3d && g3d.style.visibility === 'hidden') {
+      g3d.style.visibility = '';
+    }
     // render() leaves the canvas in the game's world transform; the warp
     // banner and status overlays below draw in raw device pixels, so step
     // out of it here and restore at the end of the tick.
