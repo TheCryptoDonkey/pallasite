@@ -6047,6 +6047,10 @@ export function renderWatchPage(state: GameState): void {
     catch { window.location.assign('/'); }
   });
 
+  // Build / SW version + update-check chip, so a stale-cache suspicion on
+  // the watch surface is answerable at a glance. Clicking it re-checks.
+  renderLegalFooter(overlay);
+
   // Card rendering — keyed by pubkey so update emits can patch existing
   // cards rather than tear down and rebuild the grid (avoids layout jank
   // and keeps any open zap popovers anchored to the right element).
