@@ -7732,7 +7732,7 @@ export function renderPause(state?: GameState): void {
       // bleed through the title overlay's translucent backdrop.
       clearEntitiesForTitle(state);
       state.phase = 'title';
-      state.phaseStart = performance.now();
+      state.phaseStart = state.elapsed;
       renderTitle(state);
     });
   }

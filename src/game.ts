@@ -69,6 +69,11 @@ import {
 
 // ── Initial state ─────────────────────────────────────────────────────────────
 
+/** Fixed simulation timestep. The sim advances in exact 1/60s quanta so a
+ *  run reproduces bit-identically from its seed and inputs (B3). */
+export const FIXED_STEP_S = 1 / 60;
+export const FIXED_STEP_MS = 1000 / 60;
+
 export function makeInitialState(): GameState {
   return {
     phase: 'title',
@@ -94,9 +99,10 @@ export function makeInitialState(): GameState {
     // difficulty + the starting_lives override. createState only
     // runs once at boot, well before the player picks difficulty.
     lives: 3,
-    phaseStart: performance.now(),
-    lastUpdate: performance.now(),
+    phaseStart: 0,
+    lastUpdate: 0,
     elapsed: 0,
+    frame: 0,
     nextUfoSpawn: getGameConfig().ufo_first_spawn_ms,
     nextMineSpawn: 0,
     warpTargetWave: 1,
@@ -109,7 +115,7 @@ export function makeInitialState(): GameState {
     bossDefeated: false,
     combo: 0,
     comboExpiresAt: 0,
-    hitStopUntil: 0,
+    hitStopSteps: 0,
     rapidExpiresAt: 0,
     satboostExpiresAt: 0,
     tridentExpiresAt: 0,
@@ -180,8 +186,10 @@ export function spawnShockwave(s: GameState, x: number, y: number, baseRadius: n
  *  Takes the max of any in-flight hit-stop so a brief later event can't shorten
  *  a longer earlier one (e.g. boss-down should not be cut by a stray combo hit). */
 export function hitStop(s: GameState, ms: number): void {
-  const target = performance.now() + ms;
-  if (target > s.hitStopUntil) s.hitStopUntil = target;
+  // Express the freeze in whole fixed sim steps so the loop can skip
+  // exactly that many ticks. Takes the max of any in-flight freeze.
+  const steps = Math.round(ms / FIXED_STEP_MS);
+  if (steps > s.hitStopSteps) s.hitStopSteps = steps;
 }
 
 // ── Wire-stream entity ids ───────────────────────────────────────────────────
@@ -265,7 +273,7 @@ export function startGame(s: GameState): void {
   s.powerups = [];
   s.particles = [];
   s.ship = makeShip();
-  s.ship.invulnerableUntil = performance.now() + SHIP_INVULN_MS;
+  s.ship.invulnerableUntil = s.elapsed + SHIP_INVULN_MS;
   s.nextUfoSpawn = getGameConfig().ufo_first_spawn_ms;
   s.nextMineSpawn = 0;
   s.runTimeMs = 0;
@@ -677,7 +685,7 @@ function spawnVein(s: GameState, wave: number): void {
   }
   const vein = spawnAsteroid('large', wave, best, { x: 0, y: 0 }, 'pallasite', { vein: true });
   s.asteroids.push(vein);
-  s.veinSwarmDueAt = performance.now() + VEIN_SWARM_DELAY_MS;
+  s.veinSwarmDueAt = s.elapsed + VEIN_SWARM_DELAY_MS;
   audio.coinPickup();
   toastNow(s, 'PALLASITE VEIN · STAKE YOUR CLAIM');
 }
@@ -889,7 +897,7 @@ export function beginWave(s: GameState, wave: number): void {
     s.ship.vel.y = 0;
     s.ship.rotVel = 0;
     s.ship.rot = spawn?.rot ?? -Math.PI / 2;
-    s.ship.invulnerableUntil = performance.now() + SHIP_INVULN_MS;
+    s.ship.invulnerableUntil = s.elapsed + SHIP_INVULN_MS;
   }
   const setPiece = WAVE_SET_PIECES[wave];
   // 600bn flavour overrides wave 1 with the council ring — every
@@ -958,7 +966,7 @@ export function beginWave(s: GameState, wave: number): void {
   // suppresses the cinematic drawWaveBanner that wave 1 gets. Wave 1 from a
   // fresh start lands here too because s.phase is 'title'.
   s.phase = 'wavestart';
-  s.phaseStart = performance.now();
+  s.phaseStart = s.elapsed;
   // Transition token — bumped by every wave-progression change. The
   // setTimeouts below capture it and no-op if a newer transition (a
   // cheat-warp, a death) supersedes this one mid-flight.
@@ -1006,7 +1014,7 @@ const WAVESTART_SKIP_AFTER_MS = 900;
  *  unless we're actually in wavestart and past the skip-allowed window. */
 export function skipWaveStart(s: GameState): void {
   if (s.phase !== 'wavestart') return;
-  const elapsed = performance.now() - s.phaseStart;
+  const elapsed = s.elapsed - s.phaseStart;
   if (elapsed < WAVESTART_SKIP_AFTER_MS) return;
   audio.setMusicDuck(1);
   s.phase = 'playing';
@@ -1017,7 +1025,7 @@ function startWarp(s: GameState, targetWave?: number): void {
   // Cancel any in-progress grab grace so its countdown can't bleed past the warp.
   s.waveClearAt = null;
   s.phase = 'warp';
-  s.phaseStart = performance.now();
+  s.phaseStart = s.elapsed;
   s.warpTargetWave = next;
   // Transition token — a second startWarp (e.g. a cheat-warp taken while
   // this one is still animating) bumps it, so this timer's beginWave is
@@ -1050,10 +1058,10 @@ export const BONUS_ASTEROID_CAP = 14;
 
 export function startBonus(s: GameState): void {
   s.phase = 'bonus';
-  s.phaseStart = performance.now();
+  s.phaseStart = s.elapsed;
   ++s.phaseEpoch;  // supersede any pending warp / wavestart timer
-  s.bonusStartedAt = performance.now();
-  s.bonusNextSpawnAt = performance.now() + 1500;  // first refill 1.5s in
+  s.bonusStartedAt = s.elapsed;
+  s.bonusNextSpawnAt = s.elapsed + 1500;  // first refill 1.5s in
   s.bonusPreludeSpawned = 0;
   // Re-centre ship + grant invuln for the FULL bonus duration. Hyperspace
   // cooldown wiped so the player can spam X.
@@ -1062,7 +1070,7 @@ export function startBonus(s: GameState): void {
     s.ship.pos.y = WORLD_H / 2;
     s.ship.vel.x = 0;
     s.ship.vel.y = 0;
-    s.ship.invulnerableUntil = performance.now() + BONUS_TOTAL_MS + 200;
+    s.ship.invulnerableUntil = s.elapsed + BONUS_TOTAL_MS + 200;
     s.ship.hyperspaceReadyAt = 0;
   }
   // Initial spawn — 6 large mixed-type asteroids. They shatter into
@@ -1080,7 +1088,7 @@ export function startBonus(s: GameState): void {
   setTimeout(() => {
     if (s.phase === 'bonus') {
       clearStage(s, { autoCollect: true });
-      s.ship.invulnerableUntil = performance.now() + SHIP_INVULN_MS;
+      s.ship.invulnerableUntil = s.elapsed + SHIP_INVULN_MS;
       startWarp(s, 10);
     }
   }, BONUS_TOTAL_MS);
@@ -1092,7 +1100,7 @@ export function startBonus(s: GameState): void {
  *  player who isn't keeping up doesn't get drowned in entities. */
 export function tickBonus(s: GameState): void {
   if (s.phase !== 'bonus') return;
-  const now = performance.now();
+  const now = s.elapsed;
   const elapsed = now - s.bonusStartedAt;
   if (now < s.bonusNextSpawnAt) return;
   // Skip refill while the screen is busy — keeps the entity count
@@ -1122,7 +1130,7 @@ export function tickBonus(s: GameState): void {
  *  skip window opens (so accidental taps right at warp-start don't skip). */
 export function skipWarp(s: GameState): void {
   if (s.phase !== 'warp') return;
-  const elapsed = performance.now() - s.phaseStart;
+  const elapsed = s.elapsed - s.phaseStart;
   if (elapsed < WARP_SKIP_AFTER_MS) return;
   beginWave(s, s.warpTargetWave);
 }
@@ -1646,7 +1654,7 @@ function destroyMine(s: GameState, m: Mine): void {
   m.alive = false;
   s.runStats.minesDestroyed += 1;
   markAchievement(s, 'first-mine');
-  const mul = recordCombo(s, performance.now());
+  const mul = recordCombo(s, s.elapsed);
   s.score += MINE_POINTS * mul;
   audio.explosion(0.7);
   recordStreamEvent('md', m.pos.x, m.pos.y);
@@ -1664,7 +1672,7 @@ function destroyMine(s: GameState, m: Mine): void {
 
 function triggerCompletion(s: GameState): void {
   s.phase = 'completed';
-  s.phaseStart = performance.now();
+  s.phaseStart = s.elapsed;
   ++s.phaseEpoch;  // supersede any pending warp / wavestart timer
   audio.thrustOff();
   audio.stopHeartbeat();
@@ -1762,7 +1770,7 @@ function destroyUfo(s: GameState, u: Ufo): void {
   if (u.type === 'elite')  markAchievement(s, 'first-elite');
   if (u.type === 'sniper') markAchievement(s, 'first-sniper');
   if (u.type === 'boss')   markAchievement(s, 'first-boss');
-  const mul = recordCombo(s, performance.now());
+  const mul = recordCombo(s, s.elapsed);
   // Risk-proximity also pays out on UFO kills — sniping from safety is fine,
   // but landing the kill while threading the field earns a fatter score.
   const risk = computeRiskBonus(s);
@@ -1823,7 +1831,7 @@ export function fireBullet(s: GameState): void {
   // Trident active: fan three bullets at ±TRIDENT_SPREAD around the centre
   // heading. Same speed and cooldown as a normal shot — the value is the
   // wider arc, not faster fire.
-  const tridentActive = performance.now() < s.tridentExpiresAt;
+  const tridentActive = s.elapsed < s.tridentExpiresAt;
   const angles = tridentActive
     ? [-TRIDENT_SPREAD, 0, TRIDENT_SPREAD]
     : [0];
@@ -2146,7 +2154,7 @@ function emergeHyperspace(s: GameState): void {
     toastNow(s, 'HYPERSPACE BREACH');
     if (s.lives <= 0) {
       s.phase = 'gameover';
-      s.phaseStart = performance.now();
+      s.phaseStart = s.elapsed;
       // Hull-breached music carries the moment now — no synth gameOver chime.
       audio.stopHeartbeat();
       audio.ufoSirenStop();
@@ -2176,7 +2184,7 @@ function emergeHyperspace(s: GameState): void {
   }
   s.ship.pos = pos;
   s.ship.hyperspaceCloakMs = 0;
-  s.ship.invulnerableUntil = performance.now() + 800;
+  s.ship.invulnerableUntil = s.elapsed + 800;
   // Emerge cinematic — expanding ring + arrival starburst at the new
   // position. Spawned after the position lands so the ring centres on
   // the visible ship rather than where it WAS during cloak.
@@ -2288,7 +2296,7 @@ function stopGameplayAudio(): void {
  */
 export function startDeathReplay(s: GameState, after: 'gameover'): void {
   if (!s.deathReplay) return;
-  s.deathReplay.startedAt = performance.now();
+  s.deathReplay.startedAt = s.elapsed;
   // Re-arm the impact-frame explosion spawn — the flag is sticky from the
   // previous play, so a REPLAY KILL click would otherwise skip the explosion
   // entirely. Clear lingering particles/debris from the prior replay so the
@@ -2305,7 +2313,7 @@ export function startDeathReplay(s: GameState, after: 'gameover'): void {
     if (s.phase !== 'deathreplay') return;
     audio.setMusicDuck(1);
     s.phase = after;
-    s.phaseStart = performance.now();
+    s.phaseStart = s.elapsed;
     if (after === 'gameover') {
       // Hull-breached music carries it; no synth chime.
       stopGameplayAudio();
@@ -2318,7 +2326,7 @@ export function skipDeathReplay(s: GameState): void {
   if (s.phase !== 'deathreplay') return;
   audio.setMusicDuck(1);
   s.phase = 'gameover';
-  s.phaseStart = performance.now();
+  s.phaseStart = s.elapsed;
   stopGameplayAudio();
 }
 
@@ -2391,12 +2399,16 @@ function updateDisplaySats(s: GameState, dt: number): void {
   s.displaySats = Math.min(s.sats, s.displaySats + step);
 }
 
-export function updateGame(s: GameState, dt: number, now: number): void {
-  // Hit-stop crescendo: freeze the simulation while a milestone-kill punch
-  // frame holds. The renderer still draws the static state so the player
-  // sees the moment land. dt is discarded -- next frame's natural dt picks
-  // play back up; main.ts caps dt at 50ms so any drift is minor.
-  if (now < s.hitStopUntil) return;
+export function updateGame(s: GameState): void {
+  // One fixed sim step. `dt` is the constant timestep; `now` is the sim
+  // clock (s.elapsed), not wall time, so every deadline runs on a clock
+  // that advances by exactly STEP each tick — the basis for a run
+  // reproducing bit-identically from its seed and inputs (B3). Hit-stop
+  // is handled by the loop (it skips this call), so there is no
+  // early-return here.
+  const dt = FIXED_STEP_S;
+  const now = s.elapsed;
+  s.frame++;
 
   // 600bn Sanctum is now layered into the standard wave-1 pipeline
   // (council-themed asteroids spawned by beginWave). The parallel
@@ -3129,7 +3141,7 @@ function recordCombo(s: GameState, now: number): number {
   // a trauma bump so the moment lands. Only fires once per chain because
   // subsequent kills find prev already at COMBO_MAX.
   if (s.combo === COMBO_MAX && prev < COMBO_MAX) {
-    s.hitStopUntil = now + 80;
+    hitStop(s, 80);
     bumpTrauma(s, 0.18);
     markAchievement(s, 'first-max-combo');
   }
@@ -3451,7 +3463,7 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
     return;
   }
   const cfg = ASTEROID_TYPE_CONFIG[a.type];
-  const mul = recordCombo(s, performance.now());
+  const mul = recordCombo(s, s.elapsed);
   // Trick-shot bonuses stack multiplicatively on top of combo: a wrapped carom
   // is a 4× kill on top of any active combo. Risk-proximity adds another tier
   // on top: ≤55px = ×1.5, ≤110px = ×1.25. Each fires independently and is
@@ -3704,7 +3716,7 @@ function killShip(s: GameState): void {
       startDeathReplay(s, 'gameover');
     } else {
       s.phase = 'gameover';
-      s.phaseStart = performance.now();
+      s.phaseStart = s.elapsed;
       // Hull-breached music carries it; no synth chime.
       stopGameplayAudio();
     }
@@ -3725,7 +3737,7 @@ function respawnShip(s: GameState): void {
     s.ship.pos.y = spawn.y;
     s.ship.rot = spawn.rot ?? -Math.PI / 2;
   }
-  s.ship.invulnerableUntil = performance.now() + SHIP_INVULN_MS;
+  s.ship.invulnerableUntil = s.elapsed + SHIP_INVULN_MS;
   toastNow(s, '');
 }
 
@@ -3752,5 +3764,5 @@ export function toastNow(s: GameState, text: string): void {
     return;
   }
   s.toast = text;
-  s.toastUntil = performance.now() + 2500;
+  s.toastUntil = s.elapsed + 2500;
 }

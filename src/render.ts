@@ -371,13 +371,13 @@ function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: nu
 
 // ── Ship ──────────────────────────────────────────────────────────────────────
 
-function drawShield(ctx: CanvasRenderingContext2D, ship: Ship, now: number): void {
+function drawShield(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapsed: number): void {
   if (!ship.shieldUp || !ship.alive) return;
   // 3D shield dome renders on the WebGL overlay — skip the 2D path entirely
   // when ship-tier is mesh and the overlay is ready so the player sees the
   // faceted dome alone, not both at once.
   if (getVisualStyle('ship') === 'mesh' && isWebGLOverlayReady()) return;
-  const remaining = Math.max(0, ship.shieldExpiresAt - now);
+  const remaining = Math.max(0, ship.shieldExpiresAt - elapsed);
   const fade = Math.min(1, remaining / 300);  // fade out in last 300ms
   const r = ship.radius * 2.2 + Math.sin(now * 0.012) * 1.5;
   ctx.save();
@@ -413,7 +413,7 @@ function drawShield(ctx: CanvasRenderingContext2D, ship: Ship, now: number): voi
   ctx.restore();
 }
 
-function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, idleSway = false): void {
+function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapsed: number, idleSway = false): void {
   if (!ship.alive) return;
   // Hide ship entirely during hyperspace cloak — except when the warp is
   // malfunctioning, in which case render a red distortion at the departure
@@ -422,7 +422,7 @@ function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, idleSw
     if (ship.hyperspaceMalfunction) drawHyperspaceMalfunction(ctx, ship, now);
     return;
   }
-  const flickerOff = ship.invulnerableUntil > now && Math.floor(now / 80) % 2 === 0;
+  const flickerOff = ship.invulnerableUntil > elapsed && Math.floor(now / 80) % 2 === 0;
   if (flickerOff) return;
 
   const skin = getActiveSkin().palette;
@@ -2237,7 +2237,7 @@ function pad(n: number, len: number): string {
   return n.toString().padStart(len, '0');
 }
 
-function drawHud(ctx: CanvasRenderingContext2D, s: GameState, now: number): void {
+function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   ctx.save();
   // Render HUD in screen-pixel space so SCORE / SATS / WAVE / LIVES are
   // always visible regardless of how the world is cropped or zoomed. Using
@@ -2352,21 +2352,21 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState, now: number): void
   }
 
   if (s.combo >= 2) {
-    const remaining = Math.max(0, s.comboExpiresAt - now);
+    const remaining = Math.max(0, s.comboExpiresAt - s.elapsed);
     const colour = s.combo >= 5 ? '#ffd84a' : s.combo >= 4 ? '#ff8a3a' : '#5b9dff';
     drawChip(`×${s.combo}  CHAIN`, remaining, 3000, colour);
   }
-  if (now < s.rapidExpiresAt) {
-    drawChip('⚡ RAPID', s.rapidExpiresAt - now, 8000, '#ff8a3a');
+  if (s.elapsed < s.rapidExpiresAt) {
+    drawChip('⚡ RAPID', s.rapidExpiresAt - s.elapsed, 8000, '#ff8a3a');
   }
-  if (now < s.satboostExpiresAt) {
-    drawChip('₿ ×2 SATS', s.satboostExpiresAt - now, 12000, '#ffd84a');
+  if (s.elapsed < s.satboostExpiresAt) {
+    drawChip('₿ ×2 SATS', s.satboostExpiresAt - s.elapsed, 12000, '#ffd84a');
   }
-  if (now < s.tridentExpiresAt) {
-    drawChip('⋔ TRIDENT', s.tridentExpiresAt - now, 6000, '#ffd84a');
+  if (s.elapsed < s.tridentExpiresAt) {
+    drawChip('⋔ TRIDENT', s.tridentExpiresAt - s.elapsed, 6000, '#ffd84a');
   }
-  if (now < s.magnetExpiresAt) {
-    drawChip('◎ MAGNET', s.magnetExpiresAt - now, 8000, '#5b9dff');
+  if (s.elapsed < s.magnetExpiresAt) {
+    drawChip('◎ MAGNET', s.magnetExpiresAt - s.elapsed, 8000, '#5b9dff');
   }
   // Lurking + cheated indicators removed — both states already fire
   // toasts when they're entered (toastNow in updateLurkState and
@@ -2443,12 +2443,12 @@ function drawGhostChip(ctx: CanvasRenderingContext2D, s: GameState): void {
  *   3500–3800ms fade out
  *   3800–4000ms held black before action resumes
  */
-function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState, now: number): void {
+function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState): void {
   if (s.phase !== 'wavestart') return;
   // Act-boundary waves are owned by drawIntertitle — one card carrying the
   // act beat AND the wave name. The standard banner is suppressed there.
   if (intertitleHoldMs(s) > 0) return;
-  const elapsed = now - s.phaseStart;
+  const elapsed = s.elapsed - s.phaseStart;
   const REVEAL_AT = 400;
   const FADE_IN = 300;
   const HOLD_END = 3500;
@@ -2562,10 +2562,10 @@ const INTERTITLE_OUT_MS = 560;
  *  overlay is fed empty entity lists during this window so its separate
  *  canvas does not paint over the 2D story card; it is released for the
  *  fade-out so mesh entities reveal behind the lifting card. */
-function isIntertitleHolding(s: GameState, now: number): boolean {
+function isIntertitleHolding(s: GameState): boolean {
   if (s.phase !== 'wavestart') return false;
   if (intertitleHoldMs(s) === 0) return false;
-  return (now - s.phaseStart) < INTERTITLE_MS - INTERTITLE_OUT_MS;
+  return (s.elapsed - s.phaseStart) < INTERTITLE_MS - INTERTITLE_OUT_MS;
 }
 
 /**
@@ -2577,12 +2577,12 @@ function isIntertitleHolding(s: GameState, now: number): boolean {
  * once the window opens. Campaign flavour only — the 600bn Sanctum teaser is
  * not the hero quest.
  */
-function drawIntertitle(ctx: CanvasRenderingContext2D, s: GameState, now: number): void {
+function drawIntertitle(ctx: CanvasRenderingContext2D, s: GameState): void {
   if (s.phase !== 'wavestart') return;
   if (intertitleHoldMs(s) === 0) return;
   const intro = intertitleForWave(s.wave);
   if (!intro) return;
-  const elapsed = now - s.phaseStart;
+  const elapsed = s.elapsed - s.phaseStart;
   if (elapsed >= INTERTITLE_MS) return;
 
   // Single envelope — the whole card fades in, holds, then fades out, so
@@ -2791,7 +2791,7 @@ function drawWarp(ctx: CanvasRenderingContext2D, s: GameState, now: number): voi
 
   const cx = WORLD_W / 2;
   const cy = WORLD_H / 2;
-  const elapsed = (now - s.phaseStart) / WARP_MS;  // 0..1 across phase
+  const elapsed = (s.elapsed - s.phaseStart) / WARP_MS;  // 0..1 across phase
   const progress = Math.min(1, elapsed);
   const intensity = Math.sin(progress * Math.PI);  // ease in/out
   const reachMax = Math.max(WORLD_W, WORLD_H) * 0.75;
@@ -3052,7 +3052,7 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
   drawBackground(ctx, state, now);
   drawStars(ctx, now);
 
-  const wallElapsed = now - dr.startedAt;
+  const wallElapsed = state.elapsed - dr.startedAt;
   const gameTime = replayGameTime(dr.spanMs, wallElapsed);
   const snap = pickSnapshot(dr.snapshots, gameTime);
 
@@ -3074,7 +3074,7 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
       shieldUp: false, shieldExpiresAt: 0, shieldReadyAt: 0, recoilOffset: 0,
       shieldHitFlash: 0, lastHyperspaceAt: 0,
     };
-    drawShip(ctx, fauxShip, now);
+    drawShip(ctx, fauxShip, now, 0);
   }
 
   // Real death-explosion: particles + ship debris that updateGame re-spawns
@@ -3281,11 +3281,11 @@ function drawOffscreenIndicators(ctx: CanvasRenderingContext2D, state: GameState
 // itself is skipped (waveClearAt never set) when there's nothing to grab or
 // the run is cheated — see the wave-clear handler in game.ts.
 
-function drawWaveClearCountdown(ctx: CanvasRenderingContext2D, state: GameState, now: number): void {
+function drawWaveClearCountdown(ctx: CanvasRenderingContext2D, state: GameState): void {
   // Live play only — never bleeds into warp / wavestart / gameover.
   if (state.phase !== 'playing') return;
   if (state.waveClearAt === null) return;
-  const elapsed = now - state.waveClearAt;
+  const elapsed = state.elapsed - state.waveClearAt;
   const remainingMs = Math.max(0, WAVE_CLEAR_GRACE_MS - elapsed);
   const seconds = Math.max(1, Math.ceil(remainingMs / 1000));
   // Pulse: the number breathes between full size and 90% so the countdown
@@ -3345,12 +3345,12 @@ function drawShockwaves(ctx: CanvasRenderingContext2D, rings: Shockwave[], now: 
  *  banners, and the intertitle. The intertitle draws last so its black
  *  card can cover the readouts during act-boundary intros. */
 function drawHudLayer(ctx: CanvasRenderingContext2D, state: GameState, now: number): void {
-  drawHud(ctx, state, now);
-  drawWaveBanner(ctx, state, now);
-  drawBonusBanner(ctx, state, now);
-  drawWaveClearCountdown(ctx, state, now);
+  drawHud(ctx, state);
+  drawWaveBanner(ctx, state);
+  drawBonusBanner(ctx, state);
+  drawWaveClearCountdown(ctx, state);
   drawOffscreenIndicators(ctx, state, now);
-  drawIntertitle(ctx, state, now);
+  drawIntertitle(ctx, state);
 }
 
 /** Crisp HUD pass for the ASCII theme. render() skips the HUD layer while
@@ -3493,9 +3493,9 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       for (const p of state.powerups) drawPowerUp(ctx, p, now);
       drawGhostShip(ctx, state);
       drawGhostAttract(ctx, state, now);
-      drawShield(ctx, state.ship, now);
+      drawShield(ctx, state.ship, now, state.elapsed);
       const idleSway = state.phase === 'title' || state.phase === 'wavestart';
-      drawShip(ctx, state.ship, now, idleSway);
+      drawShip(ctx, state.ship, now, state.elapsed, idleSway);
       if (isGhost) ctx.restore();
     }
   }
@@ -3556,7 +3556,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     const ufosMesh = shipTier === 'mesh' || asteroidTier === 'mesh';
     // While an act-boundary intertitle holds the screen black, feed the
     // overlay empty lists so its canvas stays clear of the story card.
-    const holding = isIntertitleHolding(state, now);
+    const holding = isIntertitleHolding(state);
     callWebGLOverlay({
       asteroids: !holding && asteroidTier === 'mesh' ? state.asteroids : [],
       ufos: !holding && ufosMesh ? state.ufos : [],
@@ -3577,9 +3577,9 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
  *  then a persistent countdown timer + sub-phase label (HYPER BLITZ
  *  vs EVENT HORIZON PRELUDE) at the top of the canvas for the rest
  *  of the 60s window. */
-function drawBonusBanner(ctx: CanvasRenderingContext2D, s: GameState, now: number): void {
+function drawBonusBanner(ctx: CanvasRenderingContext2D, s: GameState): void {
   if (s.phase !== 'bonus') return;
-  const elapsed = now - s.bonusStartedAt;
+  const elapsed = s.elapsed - s.bonusStartedAt;
   const remaining = Math.max(0, 60_000 - elapsed);
   const subPhase = elapsed < 45_000 ? 'HYPER BLITZ' : 'EVENT HORIZON PRELUDE';
 

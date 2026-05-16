@@ -132,7 +132,7 @@ function attachButton(parent: HTMLElement, spec: ButtonSpec, state: GameState): 
     btn.classList.add('held');
     void audio.unlockAudio();
     for (const k of spec.keys) state.keys[k] = true;
-    if (spec.oneShot) spec.oneShot(state, performance.now());
+    if (spec.oneShot) spec.oneShot(state, state.elapsed);
   };
   const release = (): void => {
     btn.classList.remove('held');
