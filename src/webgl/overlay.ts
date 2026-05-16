@@ -509,7 +509,7 @@ export function ensureWebGLOverlay(): Promise<OverlayHandle> {
     const sun = new THREE.DirectionalLight(0xfff2da, 1.5);
     sun.position.set(-200, -200, 350);
     scene.add(sun);
-    const ambient = new THREE.AmbientLight(0xa8b0b8, 0.75);
+    const ambient = new THREE.AmbientLight(0xa8b0b8, 1.3);
     scene.add(ambient);
     const rim = new THREE.DirectionalLight(0xfff0c0, 2.4);
     rim.position.set(180, 100, -450);
