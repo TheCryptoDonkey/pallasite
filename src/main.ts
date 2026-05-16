@@ -571,6 +571,31 @@ document.addEventListener('resume', hardResume);
 let lastFrame = performance.now();
 let lastPhase = state.phase;
 
+/** Apply the active presentation theme to the finished frame. With a theme
+ *  on, the 3D mesh overlay is composited down into the 2D canvas first so
+ *  the post-process covers it too, and the separate overlay is hidden; with
+ *  no theme, the overlay stays the browser-composited layer it normally is. */
+function applyThemeFrame(target: HTMLCanvasElement, now: number): void {
+  const theme = getTheme();
+  if (theme === 'none') {
+    if (overlay3d && overlay3d.style.visibility === 'hidden') overlay3d.style.visibility = '';
+    return;
+  }
+  if (overlay3d && overlay3d.width > 0) {
+    const c = target.getContext('2d');
+    if (c) {
+      c.save();
+      c.setTransform(1, 0, 0, 1, 0, 0);
+      c.globalAlpha = 1;
+      c.globalCompositeOperation = 'source-over';
+      c.drawImage(overlay3d, 0, 0, overlay3d.width, overlay3d.height, 0, 0, target.width, target.height);
+      c.restore();
+    }
+    overlay3d.style.visibility = 'hidden';
+  }
+  applyPostFx(target, theme, now);
+}
+
 function loop(now: number): void {
   // The watch-page live theatre, while open, drives #game / #game3d and
   // render.ts's module-level render mode itself. Yield the loop to it so
@@ -584,8 +609,7 @@ function loop(now: number): void {
 
   updateGame(state, dt, now);
   render(canvas, state, now);
-  // Presentation theme post-process (CRT etc.); a no-op while the theme is 'none'.
-  applyPostFx(canvas, getTheme(), now);
+  applyThemeFrame(canvas, now);
 
   // Phase transitions render UI overlays
   if (state.phase !== lastPhase) {
