@@ -17,6 +17,7 @@ import {
   setAllVisualStyles,
   visualStyleIsUniform,
   hasStoredVisualStyle,
+  setForcedVisualTier,
   type VisualCategory,
   type VisualTier,
 } from './visual-style.js';
@@ -68,7 +69,7 @@ import { subscribeZapTotals, type ZapTotalsByPubkey } from './zaps.js';
 import { isGuestSession, setGuestName, clearGuestIdentity, getGuestPrivkeyHex, getGuestRecord } from './guest.js';
 import { getReplayBuffer, type ReplayFrameRaw } from './stream-session.js';
 import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, gzipReplayFrames, findReplayByAuthor, fetchReplayByScoreEventId, fetchReplayByEventId, type GhostRun } from './ghost.js';
-import { preloadBackground, render, setRenderMode, type RenderModeInfo } from './render.js';
+import { preloadBackground, render, setRenderMode, setHudHidden, type RenderModeInfo } from './render.js';
 import { createTheatreState, populateTheatreState } from './theatre-adapter.js';
 import { musicSetTrackForState } from './music.js';
 import { savePersonalGhost } from './personal-ghost.js';
@@ -6015,7 +6016,7 @@ export function renderWatchPage(state: GameState): void {
   // game view, not a thumbnail. Bigger gap. Sits high in the page DOM
   // (moved above the relay/filter clutter via insertBefore below) so
   // a fresh visitor sees actual play before any chrome.
-  liveTiles.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit, minmax(320px, 1fr));gap:22px;max-width:1100px;width:100%;margin:6px auto 22px;position:relative;';
+  liveTiles.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit, minmax(300px, 340px));justify-content:center;gap:22px;max-width:1100px;width:100%;margin:6px auto 22px;position:relative;';
   liveTiles.style.display = 'none';  // shown once at least one live tile lands
   // Per-pubkey tracker so we can keep stable tiles across update emits
   // (rebuilding from scratch every emit would flicker the canvas and
@@ -6265,6 +6266,7 @@ export function renderWatchPage(state: GameState): void {
           shortPubkey(e.pubkey),
           e.score,
           e.wave,
+          e.sats,
           e.createdAt * 1000,
           state,
           (i + 1) as 1 | 2 | 3,
@@ -6359,27 +6361,28 @@ export function renderWatchPage(state: GameState): void {
  *
  *  Returns an unsubscribe — call when the tile is removed. The caller
  *  can also call .onClick to wire up expand-to-full-theatre. */
-function makeMiniLiveTile(
+export function makeMiniLiveTile(
   pubkey: string,
   displayName: string,
   initialScore: number,
   initialWave: number,
+  initialSats: number,
   runStartedAtMs: number,
   state: GameState,
   rank: 1 | 2 | 3,
 ): { el: HTMLElement; unsubscribe: () => void } {
-  // Hero treatment — these are the *only* thing on the page actually
-  // showing live play, so they take centre stage: thick border, strong
-  // glow, two-line HUD with avatar + name on top, score/wave row below.
-  // Rank colour tints the border so 1ST/2ND/3RD reads at a glance.
+  // A live preview window: a wave / score / sats strip on top, the game
+  // rendered live in vector below it, player name + icon underneath.
+  // Rank colour tints the border so 1ST / 2ND / 3RD reads at a glance.
   const rankColours: Record<1 | 2 | 3, string> = { 1: '#ffd84a', 2: '#cbd5e0', 3: '#cd7f32' };
   const rankGlows: Record<1 | 2 | 3, string> = {
-    1: '0 0 22px rgba(255,216,74,0.45)',
-    2: '0 0 18px rgba(203,213,224,0.32)',
-    3: '0 0 18px rgba(205,127,50,0.32)',
+    1: '0 0 22px rgba(255,216,74,0.42)',
+    2: '0 0 18px rgba(203,213,224,0.30)',
+    3: '0 0 18px rgba(205,127,50,0.30)',
   };
   const rankLabels: Record<1 | 2 | 3, string> = { 1: '1ST', 2: '2ND', 3: '3RD' };
   const tint = rankColours[rank];
+
   const card = el('div');
   card.style.cssText = [
     'position:relative',
@@ -6402,45 +6405,47 @@ function makeMiniLiveTile(
     card.style.transform = '';
     card.style.boxShadow = rankGlows[rank];
   });
-  // Canvas sized to fill the grid cell — let the CSS dictate the box and
-  // size the internal buffer to DPR for crispness. The grid template uses
-  // minmax(320px, 1fr) so a single-column phone layout still works.
-  const MINI_W_CSS = 340;
-  const MINI_H_CSS = Math.round(MINI_W_CSS * PALL_WORLD_H / PALL_WORLD_W);
+
+  // Top strip: WAVE / SCORE / sats.
+  const topStrip = el('div', { parent: card });
+  topStrip.style.cssText = 'display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:7px 11px;font-family:monospace;background:rgba(2,5,13,0.92);border-bottom:1px solid rgba(220,210,255,0.10);';
+  const waveEl = el('span', { parent: topStrip, text: `WAVE ${initialWave}` });
+  waveEl.style.cssText = 'color:#8cffb4;letter-spacing:0.12em;font-size:0.74rem;';
+  const scoreEl = el('span', { parent: topStrip, text: initialScore.toLocaleString() });
+  scoreEl.style.cssText = 'color:#ffd84a;letter-spacing:0.05em;font-size:1.04rem;font-weight:bold;text-shadow:0 0 8px rgba(255,216,74,0.45);';
+  const satsEl = el('span', { parent: topStrip, text: `₿ ${initialSats}` });
+  satsEl.style.cssText = 'color:#ffd84a;letter-spacing:0.06em;font-size:0.78rem;';
+
+  // Canvas: the live vector render. Wrapped so the rank and LIVE chips
+  // can overlay it without colliding with the strips.
+  const canvasWrap = el('div', { parent: card });
+  canvasWrap.style.cssText = 'position:relative;line-height:0;';
   const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-  const canvas = el('canvas', { parent: card, attrs: { width: String(MINI_W_CSS * dpr), height: String(MINI_H_CSS * dpr) } }) as HTMLCanvasElement;
-  canvas.style.cssText = `display:block;width:100%;height:auto;aspect-ratio:${PALL_WORLD_W} / ${PALL_WORLD_H};`;
+  const canvas = el('canvas', {
+    parent: canvasWrap,
+    attrs: {
+      width: String(Math.round(PALL_WORLD_W * dpr)),
+      height: String(Math.round(PALL_WORLD_H * dpr)),
+    },
+  }) as HTMLCanvasElement;
+  canvas.style.cssText = `display:block;width:100%;height:auto;aspect-ratio:${PALL_WORLD_W} / ${PALL_WORLD_H};background:#02050d;`;
   const ctx = canvas.getContext('2d');
+  if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  // Rank chip — top-left, bolder than before so the podium reads first.
-  const rankChip = el('span', { parent: card, text: rankLabels[rank] });
-  rankChip.style.cssText = `position:absolute;top:8px;left:8px;font-size:0.72rem;font-weight:bold;letter-spacing:0.2em;color:${tint};border:1.5px solid ${tint};padding:3px 9px;border-radius:4px;font-family:monospace;background:rgba(2,5,13,0.82);text-shadow:0 0 8px ${tint}88;`;
+  const rankChip = el('span', { parent: canvasWrap, text: rankLabels[rank] });
+  rankChip.style.cssText = `position:absolute;top:7px;left:7px;font-size:0.64rem;font-weight:bold;letter-spacing:0.18em;color:${tint};border:1.5px solid ${tint};padding:2px 8px;border-radius:4px;font-family:monospace;background:rgba(2,5,13,0.82);text-shadow:0 0 8px ${tint}88;`;
+  const pill = el('span', { parent: canvasWrap, text: '● LIVE' });
+  pill.style.cssText = 'position:absolute;top:7px;right:7px;font-size:0.6rem;font-weight:bold;letter-spacing:0.16em;color:#8cffb4;border:1.5px solid rgba(140,255,180,0.7);padding:2px 8px;border-radius:4px;font-family:monospace;background:rgba(2,5,13,0.82);animation:pallasite-live-pulse 1.6s ease-in-out infinite;';
 
-  // Live pulse pill — top-right.
-  const pill = el('span', { parent: card, text: '● LIVE' });
-  pill.style.cssText = 'position:absolute;top:8px;right:8px;font-size:0.68rem;font-weight:bold;letter-spacing:0.16em;color:#8cffb4;border:1.5px solid rgba(140,255,180,0.7);padding:3px 9px;border-radius:4px;font-family:monospace;background:rgba(2,5,13,0.82);animation:pallasite-live-pulse 1.6s ease-in-out infinite;';
+  // Bottom strip: avatar + player name.
+  const botStrip = el('div', { parent: card });
+  botStrip.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 10px;background:rgba(2,5,13,0.92);border-top:1px solid rgba(220,210,255,0.10);';
+  const avatarEl = el('div', { parent: botStrip });
+  avatarEl.style.cssText = `flex:0 0 26px;width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg, ${tint}33, rgba(140,255,180,0.18));border:1px solid ${tint}66;background-size:cover;background-position:center;`;
+  const nameEl = el('span', { parent: botStrip, text: displayName });
+  nameEl.style.cssText = 'flex:1;color:#fff5d8;letter-spacing:0.08em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace;font-size:0.85rem;';
 
-  // Mode badge — RETRO / MODERN, bottom-left over the HUD strip.
-  const modeChip = el('span', { parent: card, text: '' });
-  modeChip.style.cssText = 'position:absolute;bottom:60px;left:8px;font-size:0.6rem;letter-spacing:0.14em;font-family:monospace;background:rgba(2,5,13,0.78);padding:2px 7px;border-radius:3px;display:none;';
-
-  // HUD — two-line: avatar + name on top, score / wave on bottom.
-  const hud = el('div', { parent: card });
-  hud.style.cssText = 'display:flex;flex-direction:column;gap:4px;padding:8px 10px;background:rgba(2,5,13,0.92);border-top:1px solid rgba(220,210,255,0.08);';
-  const hudTop = el('div', { parent: hud });
-  hudTop.style.cssText = 'display:flex;align-items:center;gap:8px;';
-  const avatarEl = el('div', { parent: hudTop });
-  avatarEl.style.cssText = `flex:0 0 28px;width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg, ${tint}33, rgba(140,255,180,0.18));border:1px solid ${tint}66;background-size:cover;background-position:center;`;
-  const nameEl = el('span', { parent: hudTop, text: displayName });
-  nameEl.style.cssText = 'flex:1;color:#fff5d8;letter-spacing:0.08em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace;font-size:0.88rem;';
-  const hudBot = el('div', { parent: hud });
-  hudBot.style.cssText = 'display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-family:monospace;';
-  const scoreEl = el('span', { parent: hudBot, text: initialScore.toLocaleString() });
-  scoreEl.style.cssText = 'color:#ffd84a;letter-spacing:0.06em;font-size:1.1rem;font-weight:bold;text-shadow:0 0 8px rgba(255,216,74,0.45);';
-  const waveEl = el('span', { parent: hudBot, text: `WAVE ${initialWave}` });
-  waveEl.style.cssText = 'color:#8cffb4;letter-spacing:0.12em;font-size:0.78rem;';
-
-  // Asynchronously resolve a profile name + avatar.
+  // Resolve a profile name + avatar in the background.
   void (async () => {
     try {
       const profile = await fetchProfile(pubkey);
@@ -6450,23 +6455,22 @@ function makeMiniLiveTile(
     } catch { /* ignore */ }
   })();
 
-  // Click → open full live theatre.
+  // Click opens the full live theatre.
   card.addEventListener('click', () => {
     unsubscribe();
     renderLiveTheatre({
       masterPubkey: pubkey,
       displayName: nameEl.textContent ?? shortPubkey(pubkey),
       initialScore: parseInt((scoreEl.textContent ?? '0').replace(/,/g, ''), 10) || 0,
-      initialWave: parseInt((waveEl.textContent ?? 'W0').replace('W', ''), 10) || 0,
+      initialWave: parseInt((waveEl.textContent ?? '0').replace(/\D/g, ''), 10) || 0,
       runStartedAtMs,
       onClose: () => renderWatchPage(state),
     });
   });
 
-  // WS subscription — minimal frame parse, render ship pose + entity
-  // dots. Don't bother with interpolation / extrapolation at this
-  // size; a 60fps slam-cut reads fine.
-  let lastFrame: { x: number; y: number; r: number; asteroids: unknown[][]; ufos: unknown[][]; score: number; wave: number; mode: 'r' | 'm' } | null = null;
+  // WS subscription: full LiveFrame via readWsFrame, the same wire the
+  // theatre consumes.
+  let lastFrame: LiveFrame | null = null;
   let ws: WebSocket | null = null;
   let closed = false;
   let lastActivity = Date.now();
@@ -6479,31 +6483,13 @@ function makeMiniLiveTile(
       try {
         const obj = JSON.parse(typeof ev.data === 'string' ? ev.data : '');
         if (!obj || typeof obj.type === 'string') return;  // ignore peer-up/down
-        const world = (typeof obj.world === 'object' && obj.world) ? obj.world : {};
-        const md = world.md === 'm' ? 'm' : 'r';
-        lastFrame = {
-          x: typeof obj.x === 'number' ? obj.x : 0,
-          y: typeof obj.y === 'number' ? obj.y : 0,
-          r: typeof obj.r === 'number' ? obj.r : 0,
-          asteroids: Array.isArray(world.a) ? world.a as unknown[][] : [],
-          ufos: Array.isArray(world.u) ? world.u as unknown[][] : [],
-          score: typeof obj.score === 'number' ? obj.score : 0,
-          wave: typeof obj.wave === 'number' ? obj.wave : 0,
-          mode: md,
-        };
+        const lf = readWsFrame(obj as Record<string, unknown>);
+        if (!lf) return;
+        lastFrame = lf;
         lastActivity = Date.now();
-        scoreEl.textContent = lastFrame.score.toLocaleString();
-        waveEl.textContent = `W${lastFrame.wave}`;
-        modeChip.style.display = 'inline-block';
-        if (md === 'm') {
-          modeChip.textContent = 'MODERN';
-          modeChip.style.color = '#b48cff';
-          modeChip.style.border = '1px solid rgba(180,140,255,0.55)';
-        } else {
-          modeChip.textContent = 'RETRO 4:3';
-          modeChip.style.color = '#ffd84a';
-          modeChip.style.border = '1px solid rgba(255,216,74,0.55)';
-        }
+        scoreEl.textContent = lf.score.toLocaleString();
+        waveEl.textContent = `WAVE ${lf.wave}`;
+        satsEl.textContent = `₿ ${lf.sats}`;
       } catch { /* ignore */ }
     };
     ws.onclose = () => { if (!closed) window.setTimeout(open, 1500); };
@@ -6511,74 +6497,55 @@ function makeMiniLiveTile(
   };
   open();
 
+  // Render loop: synthesise a GameState from the latest frame and draw
+  // it through the shared render() in a forced vector tier with the HUD
+  // hidden (score / wave / sats live in the strip above). Both overrides
+  // are set only across the synchronous render() call, so they never
+  // race the game loop or another tile.
+  const tileState = createTheatreState();
+  const tileRenderMode: RenderModeInfo = {
+    kind: 'retro', vw: PALL_WORLD_W, vh: PALL_WORLD_H, dpr,
+    scale: 1, tx: 0, ty: 0, insets: { top: 0, right: 0, bottom: 0, left: 0 },
+  };
   let raf = 0;
   const draw = (): void => {
     if (closed) return;
     raf = requestAnimationFrame(draw);
     if (!ctx) return;
-    const w = canvas.width;
-    const h = canvas.height;
-    ctx.fillStyle = '#02050d';
-    ctx.fillRect(0, 0, w, h);
     if (!lastFrame) {
-      // No data yet — faint scanline at centre.
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = '#02050d';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = 'rgba(140,255,180,0.18)';
-      ctx.fillRect(0, h / 2, w, 1);
+      ctx.fillRect(0, canvas.height / 2, canvas.width, 1);
+      ctx.restore();
       return;
     }
-    const sx = w / PALL_WORLD_W;
-    const sy = h / PALL_WORLD_H;
-    // Asteroids — small grey dots, slightly larger for size 'l'.
-    ctx.fillStyle = 'rgba(220,210,255,0.55)';
-    for (const a of lastFrame.asteroids) {
-      const ax = (a[1] as number) * sx;
-      const ay = (a[2] as number) * sy;
-      const size = a[3] as string;
-      const r = size === 'l' ? 3 * dpr : size === 'm' ? 2 * dpr : 1.4 * dpr;
-      ctx.beginPath();
-      ctx.arc(ax, ay, r, 0, Math.PI * 2);
-      ctx.fill();
+    populateTheatreState(tileState, {
+      prev: lastFrame, next: lastFrame, t: 0,
+      playbackT: lastFrame.capturedAt, particles: [], debris: [],
+    });
+    setRenderMode(tileRenderMode);
+    setForcedVisualTier('vector');
+    setHudHidden(true);
+    try {
+      render(canvas, tileState, performance.now());
+    } finally {
+      setForcedVisualTier(null);
+      setHudHidden(false);
     }
-    // UFOs — red dots, distinct from asteroids at this scale.
-    ctx.fillStyle = '#ff5050';
-    for (const u of lastFrame.ufos) {
-      const ux = (u[1] as number) * sx;
-      const uy = (u[2] as number) * sy;
-      ctx.beginPath();
-      ctx.arc(ux, uy, 3 * dpr, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    // Ship — small green triangle.
-    const shipX = lastFrame.x * sx;
-    const shipY = lastFrame.y * sy;
-    ctx.save();
-    ctx.translate(shipX, shipY);
-    ctx.rotate(lastFrame.r);
-    ctx.scale(sx, sy);
-    ctx.fillStyle = 'rgba(140,255,180,0.45)';
-    ctx.strokeStyle = '#8cffb4';
-    ctx.lineWidth = 1 / sx;
-    ctx.beginPath();
-    ctx.moveTo(14, 0);
-    ctx.lineTo(-10, 8);
-    ctx.lineTo(-6, 0);
-    ctx.lineTo(-10, -8);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-    ctx.restore();
-    // Stale indicator — if no frame in 6s, fade the canvas to signal
-    // the stream went quiet without removing the tile.
     if (Date.now() - lastActivity > 6000) {
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.fillStyle = 'rgba(2,5,13,0.55)';
-      ctx.fillRect(0, 0, w, h);
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = 'rgba(255,120,120,0.85)';
-      ctx.font = `bold ${Math.round(10 * dpr)}px ui-monospace`;
+      ctx.font = `bold ${Math.round(11 * dpr)}px ui-monospace, monospace`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('STALE', w / 2, h / 2);
-      ctx.textAlign = 'start';
-      ctx.textBaseline = 'alphabetic';
+      ctx.fillText('STALE', canvas.width / 2, canvas.height / 2);
+      ctx.restore();
     }
   };
   raf = requestAnimationFrame(draw);
