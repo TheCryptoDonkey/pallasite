@@ -177,3 +177,11 @@ export function visualStyleIsUniform(tier: VisualTier): boolean {
   const s = load();
   return s.asteroid === tier && s.ship === tier && s.bullet === tier && s.particle === tier;
 }
+
+/** True iff a visual-tier preference has been stored for this origin
+ *  (vs. running on the flavour default). Lets a surface apply its own
+ *  default without overriding a real player choice. */
+export function hasStoredVisualStyle(): boolean {
+  try { return localStorage.getItem(KEY) !== null; }
+  catch { return false; }
+}

@@ -571,6 +571,13 @@ let lastFrame = performance.now();
 let lastPhase = state.phase;
 
 function loop(now: number): void {
+  // The watch-page live theatre, while open, drives #game / #game3d and
+  // render.ts's module-level render mode itself. Yield the loop to it so
+  // the two never contend; it resumes the moment the theatre closes.
+  if (document.body.dataset.theatre === 'open') {
+    requestAnimationFrame(loop);
+    return;
+  }
   const dt = Math.min(0.05, (now - lastFrame) / 1000);  // cap to 50ms (20fps minimum step)
   lastFrame = now;
 

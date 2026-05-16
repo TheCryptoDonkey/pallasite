@@ -5,7 +5,7 @@
  * to handle clicks/inputs, and keeps the canvas pure-vector.
  */
 
-import type { AsteroidType, GameState } from './types.js';
+import type { GameState } from './types.js';
 import { WAVE_LORE, gameOverArcLine } from './types.js';
 import { getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRelay, removeRelay, resetRelays } from './relays.js';
 import { getTouchMode, setTouchMode, type TouchInputMode } from './touch.js';
@@ -16,13 +16,13 @@ import {
   setVisualStyle,
   setAllVisualStyles,
   visualStyleIsUniform,
+  hasStoredVisualStyle,
   type VisualCategory,
   type VisualTier,
 } from './visual-style.js';
 import {
   getReducedMotionPref, setReducedMotionPref, type ReducedMotionPref,
   getPalette, setPalette, type ColourPalette,
-  getAsteroidStyle,
 } from './a11y.js';
 import { getHapticsEnabled, setHapticsEnabled, hapticsSupported } from './haptics.js';
 import * as auth from './auth.js';
@@ -68,7 +68,8 @@ import { subscribeZapTotals, type ZapTotalsByPubkey } from './zaps.js';
 import { isGuestSession, setGuestName, clearGuestIdentity, getGuestPrivkeyHex, getGuestRecord } from './guest.js';
 import { getReplayBuffer, type ReplayFrameRaw } from './stream-session.js';
 import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, gzipReplayFrames, findReplayByAuthor, fetchReplayByScoreEventId, fetchReplayByEventId, type GhostRun } from './ghost.js';
-import { preloadBackground } from './render.js';
+import { preloadBackground, render, setRenderMode, type RenderModeInfo } from './render.js';
+import { createTheatreState, populateTheatreState } from './theatre-adapter.js';
 import { musicSetTrackForState } from './music.js';
 import { savePersonalGhost } from './personal-ghost.js';
 import { canCaptureClip, captureClip, shareClip, shareDailyStats } from './clip.js';
@@ -2388,7 +2389,7 @@ interface LiveTheatreInput {
   };
 }
 
-interface LiveAsteroid {
+export interface LiveAsteroid {
   id: number;
   x: number;
   y: number;
@@ -2396,7 +2397,7 @@ interface LiveAsteroid {
   type: 's' | 'i' | 'c' | 'p';
   rot: number;
 }
-interface LiveUfo {
+export interface LiveUfo {
   id: number;
   x: number;
   y: number;
@@ -2405,14 +2406,14 @@ interface LiveUfo {
    *  bar. Defaults to 1 for old clients that don't ship the field. */
   hp: number;
 }
-interface LiveMine { id: number; x: number; y: number; }
-interface LiveBullet { id: number; x: number; y: number; vx: number; vy: number; enemy: boolean; }
-interface LiveCoin { id: number; x: number; y: number; kind: 's' | 'd'; sourceType: 's' | 'i' | 'c' | 'p' | ''; }
-interface LivePowerup { id: number; x: number; y: number; type: 'r' | 'b' | 'n' | 't' | 'm'; }
-type LiveEventCode = 'ak' | 'uk' | 'md' | 'sh' | 'sb' | 'vc' | 'pu' | 'fi';
-interface LiveSfxEvent { code: LiveEventCode; x: number; y: number; }
+export interface LiveMine { id: number; x: number; y: number; }
+export interface LiveBullet { id: number; x: number; y: number; vx: number; vy: number; enemy: boolean; }
+export interface LiveCoin { id: number; x: number; y: number; kind: 's' | 'd'; sourceType: 's' | 'i' | 'c' | 'p' | ''; }
+export interface LivePowerup { id: number; x: number; y: number; type: 'r' | 'b' | 'n' | 't' | 'm'; }
+export type LiveEventCode = 'ak' | 'uk' | 'md' | 'sh' | 'sb' | 'vc' | 'pu' | 'fi';
+export interface LiveSfxEvent { code: LiveEventCode; x: number; y: number; }
 
-interface LiveFrame {
+export interface LiveFrame {
   /** When the player captured this frame (unix ms). */
   capturedAt: number;
   /** When this client received the frame from the relay (perf ms). */
@@ -2583,7 +2584,7 @@ function readWsFrame(obj: Record<string, unknown>): LiveFrame | null {
   };
 }
 
-function renderLiveTheatre(input: LiveTheatreInput): void {
+export function renderLiveTheatre(input: LiveTheatreInput): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
@@ -2599,6 +2600,11 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   // Replay mode (kind 30764 full-world bundle) reuses this theatre but
   // skips the WS subscription, pre-seeds the frame buffer with the whole
   // run, and advances playbackT linearly across the whole timeline.
+  // The watch origin keeps its own localStorage, so a first-time watcher
+  // has no tier preference. Default them to the 3D showcase; a returning
+  // watcher's explicit choice is kept (hasStoredVisualStyle gates this).
+  if (!hasStoredVisualStyle()) setAllVisualStyles('mesh');
+
   const replayMode = !!input.replaySource;
   const headerLabel = input.replaySource?.headerLabel ?? (replayMode ? 'REPLAY · WATCHING' : 'LIVE · WATCHING');
   el('h2', { parent: overlay, text: headerLabel });
@@ -2637,10 +2643,17 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   const cssWidth = Math.max(360, cssWidthMax);
   const cssHeight = Math.round(cssWidth * PALL_WORLD_H / PALL_WORLD_W);
   const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
-  const CANVAS_W = Math.round(cssWidth * dpr);
-  const CANVAS_H = Math.round(cssHeight * dpr);
-  const canvas = el('canvas', { parent: overlay, attrs: { width: String(CANVAS_W), height: String(CANVAS_H) } });
-  canvas.style.cssText = `border:1px solid rgba(140,255,180,0.45);border-radius:8px;background:#02050d;display:block;margin:0 auto;width:${cssWidth}px;height:${cssHeight}px;max-width:100%;box-shadow:0 0 18px rgba(140,255,180,0.18);`;
+  // The theatre drives the shared render() in the game's retro mode. The
+  // canvas backing store is the native game resolution scaled by dpr, and
+  // CSS scales it to the viewport-fit display size. The canvas sits in a
+  // positioned `stage` wrapper so the borrowed #game3d overlay can
+  // composite over it for the mesh tier (see the render setup below).
+  const CANVAS_W = Math.round(PALL_WORLD_W * dpr);
+  const CANVAS_H = Math.round(PALL_WORLD_H * dpr);
+  const stage = el('div', { parent: overlay });
+  stage.style.cssText = `position:relative;width:${cssWidth}px;height:${cssHeight}px;margin:0 auto;max-width:100%;`;
+  const canvas = el('canvas', { parent: stage, attrs: { width: String(CANVAS_W), height: String(CANVAS_H) } });
+  canvas.style.cssText = `border:1px solid rgba(140,255,180,0.45);border-radius:8px;background:#02050d;display:block;width:${cssWidth}px;height:${cssHeight}px;max-width:100%;box-shadow:0 0 18px rgba(140,255,180,0.18);`;
   const ctx = canvas.getContext('2d');
   if (!ctx) {
     el('p', { parent: overlay, text: 'Canvas unsupported in this browser.' });
@@ -2651,6 +2664,30 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   // multiplies world coordinates by sx/sy (canvas-internal/world)
   // which already accounts for both DPR and aspect.
   void ctx;
+
+  // Visual-tier toggle — vector / shaded / 3D. render() reads the tier
+  // live each frame, so a click switches the theatre on the next tick.
+  // setAllVisualStyles persists the choice to the watch origin.
+  const tierRow = el('div', { parent: overlay });
+  tierRow.style.cssText = 'display:flex;justify-content:center;gap:6px;margin:10px auto 0;flex-wrap:wrap;';
+  const TIERS: ReadonlyArray<readonly [VisualTier, string]> = [
+    ['vector', 'VECTOR'], ['shaded', 'SHADED'], ['mesh', '3D'],
+  ];
+  const tierBtns: Array<[VisualTier, HTMLButtonElement]> = [];
+  const syncTierBtns = (): void => {
+    for (const [tier, b] of tierBtns) {
+      const on = visualStyleIsUniform(tier);
+      b.style.opacity = on ? '1' : '0.55';
+      b.style.borderColor = on ? '#8cffb4' : 'rgba(140,255,180,0.3)';
+    }
+  };
+  for (const [tier, label] of TIERS) {
+    const b = el('button', { className: 'menu-btn secondary', parent: tierRow, text: label }) as HTMLButtonElement;
+    b.style.cssText += 'flex:0 0 auto;padding:6px 16px;font-size:0.78rem;letter-spacing:0.1em;';
+    b.addEventListener('click', () => { setAllVisualStyles(tier); syncTierBtns(); });
+    tierBtns.push([tier, b]);
+  }
+  syncTierBtns();
 
   const status = el('p', { parent: overlay, text: 'Subscribing to relay…' });
   status.style.cssText = 'margin:10px 0 4px;font-size:0.9rem;color:rgba(140,255,180,0.8);letter-spacing:0.08em;min-height:1.2em;';
@@ -2967,6 +3004,15 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
     if (watchdog !== null) { window.clearTimeout(watchdog); watchdog = null; }
     for (const ws of sockets) { try { ws.close(); } catch { /* ignore */ } }
     window.removeEventListener('keydown', onKey);
+    // Hand #game3d back to the game and let the watch-page loop resume.
+    if (g3d && g3dHome) {
+      g3d.width = g3dHome.w;
+      g3d.height = g3dHome.h;
+      g3d.style.cssText = g3dHome.css;
+      if (g3dHome.next && g3dHome.parent) g3dHome.parent.insertBefore(g3d, g3dHome.next);
+      else if (g3dHome.parent) g3dHome.parent.appendChild(g3d);
+    }
+    delete document.body.dataset.theatre;
   };
   const onKey = (e: KeyboardEvent): void => {
     if (e.code === 'Escape') { cleanup(); input.onClose(); return; }
@@ -3156,73 +3202,38 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
   if (!replayMode) openSubscriptions();
 
   const c2d = canvas.getContext('2d')!;
-  // World-space (PALL_WORLD_W × PALL_WORLD_H) → canvas-space (with DPR
-  // baked in). Hoisted so we compute once per resize rather than every
-  // frame.
-  const sx = CANVAS_W / PALL_WORLD_W;
-  const sy = CANVAS_H / PALL_WORLD_H;
-  // Ship is drawn in game-world coordinates (the same constants
-  // render.ts uses: 14, -10, -6, 8) then scaled by sx so it occupies
-  // the same fraction of the canvas as in the player's view.
-  const shipScale = sx;
-
-  // Asteroid styling — drawn from the live a11y palette so the watch
-  // theatre tracks the same hue + glow combos the player is seeing
-  // (default vs high-contrast). hueBase drives the stroke colour via
-  // HSL exactly like render.ts drawAsteroid.
-  const WIRE_TYPE_TO_GAME: Record<'s' | 'i' | 'c' | 'p' | 'b' | 'm' | 'a', AsteroidType> = {
-    s: 'stony', i: 'iron', c: 'chondrite', p: 'pallasite',
-    b: 'carbonaceous', m: 'mesosiderite', a: 'achondrite',
+  // Retro render mode: world coordinates map to device pixels through a
+  // persistent dpr transform, exactly like the game's #game canvas, so
+  // the shared render() fills this canvas. render() save/restores
+  // internally, so this transform survives every frame.
+  c2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const theatreRenderMode: RenderModeInfo = {
+    kind: 'retro', vw: PALL_WORLD_W, vh: PALL_WORLD_H, dpr,
+    scale: 1, tx: 0, ty: 0, insets: { top: 0, right: 0, bottom: 0, left: 0 },
   };
-  // Match game's RADIUS_PER_SIZE — the v2d radii were a fraction too
-  // small, which made asteroids feel undersized vs the player's view.
-  const ASTEROID_RADIUS_WORLD: Record<'l' | 'm' | 's', number> = {
-    l: 48, m: 26, s: 14,
-  };
-  // UFO type-letter → radius. Wire only carries the letter so the
-  // viewer derives the size. Mirrors game.ts UFO_RADIUS.
-  const UFO_RADIUS_WORLD: Record<'s' | 'p' | 't' | 'e' | 'c' | 'b', number> = {
-    s: 22, p: 14, t: 30, e: 12, c: 22, b: 50,
-  };
-  // Per-type palette matches render.ts UFO_PALETTE so saucers look
-  // saucer-orange and the boss reads as a red-and-gold menace.
-  interface UfoPaletteEntry { primary: string; accent: string; shadow: string; cockpit: string; }
-  const UFO_PALETTE: Record<'s' | 'p' | 't' | 'e' | 'c' | 'b', UfoPaletteEntry> = {
-    s: { primary: '#ff8a3a', accent: '#ffd1a3', shadow: '#5a2d10', cockpit: '#ffe9c0' },
-    c: { primary: '#ff8a3a', accent: '#ffd1a3', shadow: '#5a2d10', cockpit: '#ffe9c0' },
-    e: { primary: '#ff5050', accent: '#ffd0d0', shadow: '#3d0808', cockpit: '#ff9090' },
-    t: { primary: '#ff3a3a', accent: '#ff9a9a', shadow: '#330808', cockpit: '#ff7070' },
-    p: { primary: '#7fffea', accent: '#bfffff', shadow: '#08322e', cockpit: '#cffffd' },
-    b: { primary: '#ff5050', accent: '#ffd84a', shadow: '#1a0303', cockpit: '#ffd84a' },
-  };
-
-  // Deterministic per-asteroid lumpy outline, seeded by id so the same
-  // asteroid keeps the same silhouette across frames without us having
-  // to ship the shape on the wire. Matches the game's asteroid look
-  // (7-10 sides, 0.82-1.14 radius wobble) closely enough that a
-  // spectator can't distinguish from the player's canvas.
-  const shapeCache = new Map<number, number[]>();
-  const asteroidShape = (id: number): number[] => {
-    const hit = shapeCache.get(id);
-    if (hit) return hit;
-    let s = (id * 2654435761) >>> 0;
-    const r = (): number => { s = (s * 1664525 + 1013904223) >>> 0; return s / 0x100000000; };
-    const sides = 8 + Math.floor(r() * 3);
-    const shape: number[] = [];
-    for (let i = 0; i < sides; i++) shape.push(0.82 + r() * 0.32);
-    shapeCache.set(id, shape);
-    return shape;
-  };
-
-  // Position interp helper — short-way-around so an asteroid wrapping
-  // off one edge and reappearing on the other doesn't draw a streak
-  // straight across the canvas. If the delta exceeds half the world
-  // dimension on either axis, assume a wrap and snap to next.
-  const interpAxis = (a: number, b: number, k: number, worldSpan: number): number => {
-    const delta = b - a;
-    if (Math.abs(delta) > worldSpan * 0.5) return b;
-    return a + delta * k;
-  };
+  // One persistent synthetic GameState, rewritten each tick from the
+  // interpolated wire-frame pair and handed to render().
+  const theatreState = createTheatreState();
+  // Borrow the real #game3d WebGL overlay canvas. The overlay module is
+  // hard-bound to that element, so moving it into `stage` is what lets
+  // render()'s mesh tier composite 3D meshes over the 2D canvas. The
+  // watch-page game loop pauses via the body dataset flag below so
+  // nothing else draws to it. Saved refs restore it on theatre close.
+  const g3d = document.getElementById('game3d') as HTMLCanvasElement | null;
+  const g3dHome = g3d
+    ? { parent: g3d.parentElement, next: g3d.nextSibling, css: g3d.style.cssText, w: g3d.width, h: g3d.height }
+    : null;
+  if (g3d) {
+    stage.appendChild(g3d);
+    // Match the 2D canvas backing store: the WebGL overlay sizes its
+    // viewport as 960 * scale * dpr and expects #game3d's backing to
+    // match. Leaving it at the default resolution makes the overlay
+    // overshoot, dropping most meshes off-canvas.
+    g3d.width = CANVAS_W;
+    g3d.height = CANVAS_H;
+    g3d.style.cssText = `position:absolute;left:0;top:0;width:${cssWidth}px;height:${cssHeight}px;display:block;pointer-events:none;`;
+  }
+  document.body.dataset.theatre = 'open';
 
   // Local particle system — purely viewer-side. Spawned on receipt of
   // SFX events (asteroid_kill, ufo_kill, mine_detonate, ship_destroyed,
@@ -3502,856 +3513,11 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
         + ` <span style="color:${heartsTotal > 0 ? 'rgba(255,120,120,0.7)' : 'rgba(255,120,120,0.95)'};">${hearts}</span>`
         + ` <span style="color:#ffd84a;">₿ ${prev.sats}</span>`;
     }
-    // Ship wraps too — same short-way-around treatment as entities.
-    const x = interpAxis(prev.x, next.x, t, PALL_WORLD_W) * sx;
-    const y = interpAxis(prev.y, next.y, t, PALL_WORLD_H) * sy;
-    // Rotation lerp — pick the short way around the circle.
-    let dr = next.r - prev.r;
-    while (dr > Math.PI) dr -= Math.PI * 2;
-    while (dr < -Math.PI) dr += Math.PI * 2;
-    const rot = prev.r + dr * t;
-    const thrusting = (t < 0.5 ? prev.thrust : next.thrust);
 
-    // 2b. Entities — asteroids, UFOs, mines, bullets — interpolated by
-    // id across the prev/next frame pair the same way the ship pose
-    // is. New entities (present in `next` but not `prev`) appear at
-    // their `next` position; destroyed entities (in `prev` not `next`)
-    // disappear cleanly. Rotation lerp uses short-way-around so
-    // asteroids don't flip direction at the seam.
-    const prevAst = new Map<number, LiveAsteroid>();
-    for (const a of prev.asteroids) prevAst.set(a.id, a);
-    const prevUfo = new Map<number, LiveUfo>();
-    for (const u of prev.ufos) prevUfo.set(u.id, u);
-    const prevMine = new Map<number, LiveMine>();
-    for (const m of prev.mines) prevMine.set(m.id, m);
-    const prevBullet = new Map<number, LiveBullet>();
-    for (const b of prev.bullets) prevBullet.set(b.id, b);
-
-    const lerpRot = (a: number, b: number, k: number): number => {
-      let d = b - a;
-      while (d > Math.PI) d -= Math.PI * 2;
-      while (d < -Math.PI) d += Math.PI * 2;
-      return a + d * k;
-    };
-
-    for (const aNext of next.asteroids) {
-      const aPrev = prevAst.get(aNext.id) ?? aNext;
-      const ax = interpAxis(aPrev.x, aNext.x, t, PALL_WORLD_W) * sx;
-      const ay = interpAxis(aPrev.y, aNext.y, t, PALL_WORLD_H) * sy;
-      const aRot = lerpRot(aPrev.rot, aNext.rot, t);
-      const rWorld = ASTEROID_RADIUS_WORLD[aNext.size];
-      const rCanvas = rWorld * sx;
-      const gameType = WIRE_TYPE_TO_GAME[aNext.type];
-      const style = getAsteroidStyle(gameType);
-      const wobble = asteroidShape(aNext.id);
-      // Stable per-id hue jitter so the asteroid doesn't flat-shade
-      // identically to its neighbours — game uses a.hue in 0..100 to
-      // perturb lightness around hueBase.
-      let h = (aNext.id * 2654435761) >>> 0;
-      h = (h * 1664525 + 1013904223) >>> 0;
-      const hueJitter = (h / 0x100000000) * 100;
-      const lightness = 60 + hueJitter * 0.2;
-      const stroke = `hsl(${style.hueBase}, 70%, ${lightness}%)`;
-      c2d.save();
-      c2d.translate(ax, ay);
-      c2d.rotate(aRot);
-      c2d.strokeStyle = stroke;
-      c2d.lineWidth = gameType === 'iron' ? 2.0 * dpr : 1.4 * dpr;
-      c2d.shadowColor = style.glow;
-      c2d.shadowBlur = (gameType === 'pallasite' ? 14 : 8) * dpr;
-      const SIDES = wobble.length;
-      c2d.beginPath();
-      for (let i = 0; i < SIDES; i++) {
-        const ang = (i / SIDES) * Math.PI * 2;
-        const r = rCanvas * wobble[i];
-        const px = Math.cos(ang) * r;
-        const py = Math.sin(ang) * r;
-        if (i === 0) c2d.moveTo(px, py); else c2d.lineTo(px, py);
-      }
-      c2d.closePath();
-      c2d.stroke();
-
-      // Iron: inner armour ring at 62% radius — game uses this while
-      // hp > 1. We don't know hp on the wire, so always show it (looks
-      // close enough; the ring strips on hit-flash via particles).
-      if (gameType === 'iron') {
-        c2d.lineWidth = 1.0 * dpr;
-        c2d.globalAlpha = 0.55;
-        c2d.beginPath();
-        for (let i = 0; i < SIDES; i++) {
-          const ang = (i / SIDES) * Math.PI * 2;
-          const r = rCanvas * wobble[i] * 0.62;
-          const px = Math.cos(ang) * r;
-          const py = Math.sin(ang) * r;
-          if (i === 0) c2d.moveTo(px, py); else c2d.lineTo(px, py);
-        }
-        c2d.closePath();
-        c2d.stroke();
-        c2d.globalAlpha = 1;
-      }
-
-      // Pallasite: olivine sparkle dots — animated, signals jackpot.
-      // Synthetic time-driven phase so the watcher sees it pulse even
-      // though we don't carry the player's animation clock.
-      if (gameType === 'pallasite') {
-        const count = aNext.size === 'l' ? 7 : aNext.size === 'm' ? 4 : 2;
-        const tnow = performance.now() * 0.001;
-        for (let i = 0; i < count; i++) {
-          const tt = tnow + i * 0.7;
-          const phase = (Math.sin(tt * 1.3 + i) + 1) * 0.5;
-          const ang = (Math.PI * 2 * i) / count + tt * 0.4;
-          const dist = rCanvas * (0.3 + 0.4 * Math.sin(tt + i));
-          c2d.fillStyle = '#ffd84a';
-          c2d.shadowColor = '#ffd84a';
-          c2d.shadowBlur = 8 * dpr;
-          c2d.globalAlpha = 0.5 + phase * 0.5;
-          c2d.beginPath();
-          c2d.arc(Math.cos(ang) * dist, Math.sin(ang) * dist, 1.6 * dpr, 0, Math.PI * 2);
-          c2d.fill();
-        }
-        c2d.globalAlpha = 1;
-      }
-
-      // Chondrite: short crystal accents on every other vertex — brittle look
-      if (gameType === 'chondrite') {
-        c2d.lineWidth = 0.8 * dpr;
-        c2d.globalAlpha = 0.55;
-        c2d.strokeStyle = '#cfeaff';
-        for (let i = 0; i < SIDES; i += 2) {
-          const ang = (i / SIDES) * Math.PI * 2;
-          const r = rCanvas * wobble[i];
-          const px = Math.cos(ang) * r;
-          const py = Math.sin(ang) * r;
-          c2d.beginPath();
-          c2d.moveTo(px * 0.9, py * 0.9);
-          c2d.lineTo(px, py);
-          c2d.stroke();
-        }
-        c2d.globalAlpha = 1;
-      }
-
-      c2d.restore();
-    }
-
-    // UFO drawing — per-type silhouettes matching render.ts so a
-    // spectator sees the same hunter saucer / sniper lozenge / boss
-    // monster they'd see in the player's canvas. Synthetic blink from
-    // wall-clock since we don't carry the player's animation state.
-    const ufoBlink = performance.now() * 0.001 * 1.4;
-    for (const uNext of next.ufos) {
-      const uPrev = prevUfo.get(uNext.id) ?? uNext;
-      const ux = interpAxis(uPrev.x, uNext.x, t, PALL_WORLD_W) * sx;
-      const uy = interpAxis(uPrev.y, uNext.y, t, PALL_WORLD_H) * sy;
-      // Derive facing from interpolated motion — sniper especially
-      // reads as "looking at you" with the cyclops eye aimed at +x.
-      const dxFacing = (uNext.x - uPrev.x);
-      const facing: 1 | -1 = dxFacing < -0.01 ? -1 : 1;
-      const col = UFO_PALETTE[uNext.type];
-      const rW = UFO_RADIUS_WORLD[uNext.type];
-      const r = rW * sx;
-      c2d.save();
-      c2d.translate(ux, uy);
-      c2d.lineWidth = 1.5 * dpr;
-      c2d.strokeStyle = col.primary;
-      c2d.shadowColor = col.primary;
-      c2d.shadowBlur = 12 * dpr;
-
-      if (uNext.type === 't') {
-        // Tank — squat hex with armour seams, rivets, gun barrels,
-        // top turret + antenna, viewport scanner, white running light,
-        // and bottom HP dots. Ported from render.ts drawUfo.tank.
-        const w = r * 2.6;
-        const h = r * 1.2;
-        const bodyGrad = c2d.createRadialGradient(0, -h * 0.2, h * 0.2, 0, 0, w * 0.55);
-        bodyGrad.addColorStop(0, col.accent);
-        bodyGrad.addColorStop(0.55, col.primary);
-        bodyGrad.addColorStop(1, col.shadow);
-        const hexPts: [number, number][] = [
-          [-w * 0.5, 0], [-w * 0.32, -h * 0.5], [w * 0.32, -h * 0.5],
-          [w * 0.5, 0], [w * 0.32, h * 0.5], [-w * 0.32, h * 0.5],
-        ];
-        c2d.beginPath();
-        hexPts.forEach((p, i) => i === 0 ? c2d.moveTo(p[0], p[1]) : c2d.lineTo(p[0], p[1]));
-        c2d.closePath();
-        c2d.fillStyle = bodyGrad;
-        c2d.fill();
-        c2d.stroke();
-        // Armour plate seams
-        c2d.lineWidth = 1 * dpr;
-        c2d.beginPath();
-        c2d.moveTo(-w * 0.4, -h * 0.18); c2d.lineTo(w * 0.4, -h * 0.18);
-        c2d.moveTo(-w * 0.4, h * 0.18); c2d.lineTo(w * 0.4, h * 0.18);
-        c2d.stroke();
-        // Bolt rivets at hex vertices
-        c2d.fillStyle = col.shadow;
-        c2d.shadowBlur = 0;
-        for (const [hx, hy] of hexPts) {
-          c2d.beginPath();
-          c2d.arc(hx * 0.92, hy * 0.92, 1.2 * dpr, 0, Math.PI * 2);
-          c2d.fill();
-        }
-        c2d.shadowBlur = 12 * dpr;
-        // Three gun barrels
-        c2d.fillStyle = col.shadow;
-        c2d.lineWidth = 2 * dpr;
-        for (const gx of [-w * 0.35, 0, w * 0.35]) {
-          c2d.beginPath();
-          c2d.rect(gx - 1.5 * dpr, h * 0.5, 3 * dpr, 6 * dpr);
-          c2d.fill();
-          c2d.stroke();
-        }
-        c2d.lineWidth = 1.5 * dpr;
-        c2d.strokeStyle = col.primary;
-        // Top turret with antenna
-        c2d.beginPath();
-        c2d.rect(-w * 0.1, -h * 0.5 - 5 * dpr, w * 0.2, 5 * dpr);
-        c2d.fillStyle = col.primary;
-        c2d.fill();
-        c2d.stroke();
-        c2d.beginPath();
-        c2d.moveTo(0, -h * 0.5 - 5 * dpr);
-        c2d.lineTo(0, -h * 0.5 - 11 * dpr);
-        c2d.stroke();
-        // Viewport scanner band
-        const tankPulse = 0.7 + 0.3 * Math.sin(ufoBlink * 3);
-        const vGrad = c2d.createLinearGradient(-w * 0.18, 0, w * 0.18, 0);
-        vGrad.addColorStop(0, col.shadow);
-        vGrad.addColorStop(0.5, col.cockpit);
-        vGrad.addColorStop(1, col.shadow);
-        c2d.fillStyle = vGrad;
-        c2d.shadowColor = col.cockpit;
-        c2d.shadowBlur = (10 + tankPulse * 4) * dpr;
-        c2d.globalAlpha = 0.7 + tankPulse * 0.3;
-        c2d.beginPath();
-        c2d.rect(-w * 0.18, -h * 0.34, w * 0.36, 4 * dpr);
-        c2d.fill();
-        c2d.globalAlpha = 1;
-        c2d.shadowBlur = 12 * dpr;
-        // Single bright white running light dead-centre
-        c2d.fillStyle = '#ffffff';
-        c2d.shadowColor = col.cockpit;
-        c2d.shadowBlur = 8 * dpr;
-        c2d.beginPath();
-        c2d.arc(0, -h * 0.32 + 2 * dpr, (1.4 + tankPulse * 0.6) * dpr, 0, Math.PI * 2);
-        c2d.fill();
-        // HP dots under the body
-        c2d.shadowBlur = 0;
-        const hpShown = Math.min(8, Math.max(0, uNext.hp));
-        for (let i = 0; i < hpShown; i++) {
-          const hpx = -7 * dpr + i * 7 * dpr;
-          c2d.fillStyle = col.primary;
-          c2d.beginPath();
-          c2d.arc(hpx, h * 0.5 + 13 * dpr, 2 * dpr, 0, Math.PI * 2);
-          c2d.fill();
-        }
-        c2d.shadowBlur = 12 * dpr;
-      } else if (uNext.type === 'p') {
-        // Sniper — sleek elongated lozenge with twin engine ribbons,
-        // single cyclops eye, swept fins. Ported from render.ts.
-        const len = r * 2.8;
-        const halfW = r * 0.85;
-        c2d.scale(facing, 1);
-        // Twin engine ribbons trailing behind — gradient triangles
-        // fading from primary → transparent.
-        for (const sign of [-1, 1]) {
-          const ey = sign * halfW * 0.35;
-          const ribbonLen = len * 0.45;
-          const grad = c2d.createLinearGradient(-len * 0.46, ey, -len * 0.46 - ribbonLen, ey);
-          grad.addColorStop(0, `${col.primary}cc`);
-          grad.addColorStop(0.5, `${col.primary}55`);
-          grad.addColorStop(1, `${col.primary}00`);
-          c2d.save();
-          c2d.fillStyle = grad;
-          c2d.shadowColor = col.primary;
-          c2d.shadowBlur = 12 * dpr;
-          c2d.globalAlpha = 0.8;
-          c2d.beginPath();
-          c2d.moveTo(-len * 0.46, ey - 3 * dpr);
-          c2d.lineTo(-len * 0.46 - ribbonLen, ey);
-          c2d.lineTo(-len * 0.46, ey + 3 * dpr);
-          c2d.closePath();
-          c2d.fill();
-          c2d.restore();
-        }
-        const bodyGrad = c2d.createLinearGradient(-len * 0.5, 0, len * 0.5, 0);
-        bodyGrad.addColorStop(0, col.shadow);
-        bodyGrad.addColorStop(0.5, col.primary);
-        bodyGrad.addColorStop(0.85, col.accent);
-        bodyGrad.addColorStop(1, col.shadow);
-        c2d.fillStyle = bodyGrad;
-        c2d.beginPath();
-        c2d.moveTo(len * 0.50, 0);
-        c2d.bezierCurveTo(len * 0.45, -halfW, -len * 0.20, -halfW, -len * 0.46, -halfW * 0.35);
-        c2d.lineTo(-len * 0.46, halfW * 0.35);
-        c2d.bezierCurveTo(-len * 0.20, halfW, len * 0.45, halfW, len * 0.50, 0);
-        c2d.closePath();
-        c2d.fill();
-        c2d.stroke();
-        // Swept fins
-        c2d.fillStyle = col.shadow;
-        for (const sgn of [-1, 1]) {
-          c2d.beginPath();
-          c2d.moveTo(-len * 0.15, sgn * halfW * 0.6);
-          c2d.lineTo(-len * 0.32, sgn * halfW * 1.85);
-          c2d.lineTo(len * 0.05, sgn * halfW * 0.6);
-          c2d.closePath();
-          c2d.fill();
-          c2d.stroke();
-        }
-        // Cyclops eye
-        const eyePulse = 0.65 + 0.35 * Math.sin(ufoBlink * 4);
-        c2d.fillStyle = col.shadow;
-        c2d.beginPath();
-        c2d.arc(len * 0.28, 0, halfW * 0.55, 0, Math.PI * 2);
-        c2d.fill();
-        c2d.stroke();
-        const irisGrad = c2d.createRadialGradient(len * 0.28, 0, 0, len * 0.28, 0, halfW * 0.5);
-        irisGrad.addColorStop(0, '#ffffff');
-        irisGrad.addColorStop(0.4, col.cockpit);
-        irisGrad.addColorStop(1, col.primary);
-        c2d.fillStyle = irisGrad;
-        c2d.shadowColor = col.cockpit;
-        c2d.shadowBlur = (10 + eyePulse * 8) * dpr;
-        c2d.globalAlpha = 0.85;
-        c2d.beginPath();
-        c2d.arc(len * 0.28, 0, halfW * 0.4 * eyePulse, 0, Math.PI * 2);
-        c2d.fill();
-        c2d.globalAlpha = 1;
-      } else if (uNext.type === 'b') {
-        // Boss — outer rotating ring with 8 ports, inner counter-ring,
-        // central body with pulsing core. Synthetic rotation from wall-
-        // clock so the rings spin even without the player's u.blink.
-        c2d.strokeStyle = col.primary;
-        c2d.lineWidth = 1 * dpr;
-        c2d.globalAlpha = 0.18 + 0.12 * Math.sin(ufoBlink * 2);
-        c2d.shadowBlur = 30 * dpr;
-        c2d.beginPath();
-        c2d.arc(0, 0, r * 1.35, 0, Math.PI * 2);
-        c2d.stroke();
-        c2d.globalAlpha = 1;
-        // Outer ring
-        c2d.save();
-        c2d.rotate(ufoBlink);
-        c2d.lineWidth = 2 * dpr;
-        c2d.beginPath();
-        c2d.arc(0, 0, r * 1.1, 0, Math.PI * 2);
-        c2d.stroke();
-        for (let i = 0; i < 8; i++) {
-          const a = (Math.PI * 2 * i) / 8;
-          const px = Math.cos(a) * r * 1.1;
-          const py = Math.sin(a) * r * 1.1;
-          c2d.fillStyle = col.primary;
-          c2d.shadowBlur = 12 * dpr;
-          c2d.beginPath();
-          c2d.arc(px, py, 4 * dpr, 0, Math.PI * 2);
-          c2d.fill();
-          c2d.fillStyle = col.cockpit;
-          c2d.shadowBlur = 6 * dpr;
-          c2d.beginPath();
-          c2d.arc(px, py, 1.5 * dpr, 0, Math.PI * 2);
-          c2d.fill();
-        }
-        c2d.restore();
-        // Counter-rotating inner ring
-        c2d.save();
-        c2d.rotate(-ufoBlink * 0.7);
-        c2d.lineWidth = 1.5 * dpr;
-        c2d.strokeStyle = col.primary;
-        c2d.shadowBlur = 14 * dpr;
-        c2d.beginPath();
-        c2d.arc(0, 0, r * 0.85, 0, Math.PI * 2);
-        c2d.stroke();
-        c2d.restore();
-        // Body
-        const bodyGrad = c2d.createRadialGradient(0, -r * 0.2, r * 0.1, 0, 0, r * 0.9);
-        bodyGrad.addColorStop(0, col.primary);
-        bodyGrad.addColorStop(0.6, col.shadow);
-        bodyGrad.addColorStop(1, '#000');
-        c2d.fillStyle = bodyGrad;
-        c2d.lineWidth = 2 * dpr;
-        c2d.shadowBlur = 14 * dpr;
-        c2d.beginPath();
-        c2d.ellipse(0, 0, r * 0.9, r * 0.5, 0, 0, Math.PI * 2);
-        c2d.fill();
-        c2d.stroke();
-        // Inner ring 6 tick marks (counter-rotation)
-        c2d.save();
-        c2d.rotate(-ufoBlink * 0.7);
-        c2d.lineWidth = 1.5 * dpr;
-        c2d.strokeStyle = col.primary;
-        for (let i = 0; i < 6; i++) {
-          const a = (Math.PI * 2 * i) / 6;
-          const x1 = Math.cos(a) * r * 0.85;
-          const y1 = Math.sin(a) * r * 0.85;
-          c2d.beginPath();
-          c2d.moveTo(x1 * 0.95, y1 * 0.95);
-          c2d.lineTo(x1 * 1.05, y1 * 1.05);
-          c2d.stroke();
-        }
-        c2d.restore();
-        // Pulsing core
-        const pulse = 0.7 + 0.3 * Math.sin(ufoBlink * 3);
-        c2d.fillStyle = `rgba(255,216,74,${pulse * 0.7})`;
-        c2d.shadowColor = col.cockpit;
-        c2d.shadowBlur = 30 * dpr;
-        c2d.beginPath();
-        c2d.arc(0, 0, r * 0.28 * pulse, 0, Math.PI * 2);
-        c2d.fill();
-        // Bright white eye dot
-        c2d.fillStyle = '#fff';
-        c2d.shadowBlur = 16 * dpr;
-        c2d.beginPath();
-        c2d.arc(0, 0, r * 0.07, 0, Math.PI * 2);
-        c2d.fill();
-        // Top dome
-        c2d.shadowColor = col.primary;
-        c2d.shadowBlur = 12 * dpr;
-        c2d.fillStyle = col.shadow;
-        c2d.beginPath();
-        c2d.arc(0, -r * 0.2, r * 0.35, Math.PI, 0);
-        c2d.fill();
-        c2d.stroke();
-        // HP bar above with segment markers (every 5 HP across max 25)
-        c2d.shadowBlur = 0;
-        const hpMax = 25;
-        const hpFrac = Math.max(0, Math.min(1, uNext.hp / hpMax));
-        c2d.fillStyle = 'rgba(0,0,0,0.55)';
-        c2d.fillRect(-r * 0.95, -r - 16 * dpr, r * 1.9, 7 * dpr);
-        c2d.fillStyle = '#ff5050';
-        c2d.fillRect(-r * 0.95, -r - 16 * dpr, r * 1.9 * hpFrac, 7 * dpr);
-        c2d.strokeStyle = 'rgba(255,255,255,0.35)';
-        c2d.lineWidth = 1 * dpr;
-        for (let s = 1; s < 5; s++) {
-          const segX = -r * 0.95 + (r * 1.9) * (s / 5);
-          c2d.beginPath();
-          c2d.moveTo(segX, -r - 16 * dpr);
-          c2d.lineTo(segX, -r - 9 * dpr);
-          c2d.stroke();
-        }
-        c2d.strokeStyle = col.primary;
-        c2d.lineWidth = 1.5 * dpr;
-        c2d.strokeRect(-r * 0.95, -r - 16 * dpr, r * 1.9, 7 * dpr);
-      } else if (uNext.type === 'e') {
-        // Elite — fast stealth saucer with twin engine pods. Distinct
-        // silhouette from cruiser: lower, sleeker, twin nacelles.
-        // Ported from render.ts drawUfo's elite branch.
-        const w = r * 2.6;
-        const h = r * 1.05;
-        c2d.scale(facing, 1);
-        // Lower hull
-        const hullGrad = c2d.createRadialGradient(0, h * 0.3, h * 0.15, 0, 0, w * 0.55);
-        hullGrad.addColorStop(0, col.accent);
-        hullGrad.addColorStop(0.55, col.primary);
-        hullGrad.addColorStop(1, col.shadow);
-        c2d.beginPath();
-        c2d.ellipse(0, h * 0.05, w * 0.5, h * 0.42, 0, 0, Math.PI * 2);
-        c2d.fillStyle = hullGrad;
-        c2d.fill();
-        c2d.stroke();
-        // Forward swept canopy
-        const canopyGrad = c2d.createLinearGradient(0, -h * 0.5, 0, 0);
-        canopyGrad.addColorStop(0, col.cockpit);
-        canopyGrad.addColorStop(1, col.shadow);
-        c2d.fillStyle = canopyGrad;
-        c2d.shadowColor = col.cockpit;
-        c2d.shadowBlur = 10 * dpr;
-        c2d.beginPath();
-        c2d.moveTo(w * 0.42, 0);
-        c2d.bezierCurveTo(w * 0.42, -h * 0.55, -w * 0.25, -h * 0.55, -w * 0.25, 0);
-        c2d.closePath();
-        c2d.fill();
-        c2d.stroke();
-        // Canopy reflection
-        c2d.shadowBlur = 0;
-        c2d.strokeStyle = `${col.accent}cc`;
-        c2d.lineWidth = 1 * dpr;
-        c2d.beginPath();
-        c2d.moveTo(w * 0.34, -h * 0.18);
-        c2d.bezierCurveTo(w * 0.30, -h * 0.42, -w * 0.10, -h * 0.42, -w * 0.18, -h * 0.18);
-        c2d.stroke();
-        c2d.strokeStyle = col.primary;
-        c2d.lineWidth = 1.5 * dpr;
-        c2d.shadowColor = col.primary;
-        c2d.shadowBlur = 12 * dpr;
-        // Twin engine pods + glowing intakes
-        const ePulse = ufoBlink * 5;
-        for (const py of [-h * 0.2, h * 0.2]) {
-          c2d.fillStyle = col.shadow;
-          c2d.beginPath();
-          c2d.ellipse(-w * 0.42, py, w * 0.08, h * 0.18, 0, 0, Math.PI * 2);
-          c2d.fill();
-          c2d.stroke();
-          const intakePulse = 0.6 + 0.4 * Math.sin(ePulse * 2 + (py > 0 ? 0 : Math.PI));
-          c2d.fillStyle = col.cockpit;
-          c2d.shadowColor = col.cockpit;
-          c2d.shadowBlur = (8 + intakePulse * 6) * dpr;
-          c2d.globalAlpha = 0.7 + intakePulse * 0.3;
-          c2d.beginPath();
-          c2d.arc(-w * 0.36, py, 1.6 * dpr, 0, Math.PI * 2);
-          c2d.fill();
-          c2d.globalAlpha = 1;
-        }
-        c2d.shadowColor = col.primary;
-        c2d.shadowBlur = 12 * dpr;
-        // Underside running lights
-        for (let i = 0; i < 3; i++) {
-          const x = -w * 0.18 + i * w * 0.18;
-          const phase = (Math.sin(ePulse + i * 1.6) + 1) / 2;
-          c2d.globalAlpha = 0.4 + phase * 0.5;
-          c2d.fillStyle = col.cockpit;
-          c2d.shadowColor = col.cockpit;
-          c2d.shadowBlur = 6 * dpr;
-          c2d.beginPath();
-          c2d.arc(x, h * 0.38, 1.6 * dpr, 0, Math.PI * 2);
-          c2d.fill();
-        }
-        c2d.globalAlpha = 1;
-      } else {
-        // Cruiser ('c') and any unknown — classic saucer with chrome-
-        // belly hull, equator ridge, top dome, underside porthole
-        // lights. Ported from render.ts drawUfo's cruiser branch.
-        const w = r * 2.4;
-        const h = r * 1.0;
-        c2d.scale(facing, 1);
-        const bodyGrad = c2d.createRadialGradient(0, -h * 0.4, h * 0.1, 0, h * 0.2, w * 0.55);
-        bodyGrad.addColorStop(0, col.accent);
-        bodyGrad.addColorStop(0.5, col.primary);
-        bodyGrad.addColorStop(1, col.shadow);
-        c2d.beginPath();
-        c2d.ellipse(0, 0, w * 0.5, h * 0.5, 0, 0, Math.PI * 2);
-        c2d.fillStyle = bodyGrad;
-        c2d.fill();
-        c2d.stroke();
-        // Equator seam
-        c2d.lineWidth = 1 * dpr;
-        c2d.strokeStyle = col.shadow;
-        c2d.beginPath();
-        c2d.moveTo(-w * 0.48, 0); c2d.lineTo(w * 0.48, 0);
-        c2d.stroke();
-        c2d.strokeStyle = col.primary;
-        c2d.lineWidth = 1.5 * dpr;
-        // Top dome
-        const domeGrad = c2d.createRadialGradient(0, -h * 0.45, 0, 0, -h * 0.3, w * 0.2);
-        domeGrad.addColorStop(0, col.cockpit);
-        domeGrad.addColorStop(1, col.shadow);
-        c2d.fillStyle = domeGrad;
-        c2d.shadowColor = col.cockpit;
-        c2d.shadowBlur = 10 * dpr;
-        c2d.beginPath();
-        c2d.arc(0, -h * 0.3, w * 0.2, Math.PI, 0);
-        c2d.fill();
-        c2d.stroke();
-        // Underside porthole round-robin blink
-        c2d.shadowBlur = 8 * dpr;
-        const cPulse = ufoBlink * 4;
-        for (let i = 0; i < 5; i++) {
-          const x = -w * 0.35 + (i / 4) * w * 0.7;
-          const phase = Math.sin(cPulse + i * 1.4);
-          c2d.fillStyle = phase > 0 ? col.cockpit : col.shadow;
-          c2d.beginPath();
-          c2d.arc(x, h * 0.32, 2.2 * dpr, 0, Math.PI * 2);
-          c2d.fill();
-        }
-      }
-      c2d.restore();
-    }
-
-    // Mines — match render.ts drawMine: outward-pulsing gravity rings,
-    // dark core, pulsing red ring, six rotating spikes. Constants
-    // mirror types.ts MINE_RADIUS (11) and game's gravityRange (60-ish).
-    for (const mNext of next.mines) {
-      const mPrev = prevMine.get(mNext.id) ?? mNext;
-      const mx = interpAxis(mPrev.x, mNext.x, t, PALL_WORLD_W) * sx;
-      const my = interpAxis(mPrev.y, mNext.y, t, PALL_WORLD_H) * sy;
-      const mineAge = nowPerf * 0.001;
-      const pulse = 0.5 + 0.5 * Math.sin(nowPerf * 0.005);
-      const mineR = 11 * sx;
-      const gravR = 80 * sx;
-      c2d.save();
-      c2d.translate(mx, my);
-      // Gravity well rings
-      c2d.lineWidth = 1 * dpr;
-      for (let i = 0; i < 3; i++) {
-        const phase = ((mineAge * 0.5 + i / 3) % 1);
-        const r = gravR * phase;
-        const alpha = (1 - phase) * 0.18;
-        c2d.strokeStyle = `rgba(255, 80, 80, ${alpha})`;
-        c2d.beginPath();
-        c2d.arc(0, 0, r, 0, Math.PI * 2);
-        c2d.stroke();
-      }
-      // Dark core
-      c2d.shadowColor = '#ff5050';
-      c2d.shadowBlur = (14 + pulse * 8) * dpr;
-      c2d.fillStyle = '#1a0808';
-      c2d.beginPath();
-      c2d.arc(0, 0, mineR, 0, Math.PI * 2);
-      c2d.fill();
-      // Pulsing red ring
-      c2d.lineWidth = 1.5 * dpr;
-      c2d.strokeStyle = `rgba(255, 80, 80, ${0.6 + pulse * 0.4})`;
-      c2d.beginPath();
-      c2d.arc(0, 0, mineR, 0, Math.PI * 2);
-      c2d.stroke();
-      // Spike pattern
-      for (let i = 0; i < 6; i++) {
-        const a = (Math.PI * 2 * i) / 6 + mineAge * 0.3;
-        const x1 = Math.cos(a) * (mineR - 2 * dpr);
-        const y1 = Math.sin(a) * (mineR - 2 * dpr);
-        const x2 = Math.cos(a) * (mineR + 4 * dpr);
-        const y2 = Math.sin(a) * (mineR + 4 * dpr);
-        c2d.strokeStyle = `rgba(255, 80, 80, ${0.7 + pulse * 0.3})`;
-        c2d.beginPath();
-        c2d.moveTo(x1, y1);
-        c2d.lineTo(x2, y2);
-        c2d.stroke();
-      }
-      c2d.restore();
-    }
-
-    // Bullets — extrapolate from the most recent frame using velocity
-    // on the wire (vx, vy). For bullets present in BOTH prev and next,
-    // extrapolate freely. For bullets only in next (just spawned
-    // between prev and next), skip drawing until playbackT actually
-    // reaches their spawn moment — otherwise we draw a phantom bullet
-    // flying backwards from the ship for the buffer's worth of time.
-    const bulletExtrapMs = playbackT - next.capturedAt;
-    const prevBulletIds = prevBullet;  // already a Map keyed by id
-    for (const bNext of next.bullets) {
-      if (!prevBulletIds.has(bNext.id) && bulletExtrapMs < 0) continue;
-      const vx = bNext.vx;
-      const vy = bNext.vy;
-      const speed = Math.hypot(vx, vy);
-      // Position = next.pos + velocity × (playbackT - next.capturedAt).
-      // If extrapMs is negative we're between prev and next — same
-      // formula works (it interpolates back from `next`).
-      const ext = bulletExtrapMs / 1000;
-      let xw = bNext.x + vx * ext;
-      let yw = bNext.y + vy * ext;
-      // World wrap — same behaviour the game enforces, so a bullet
-      // that crosses an edge in the extrapolated window still draws
-      // at the right side.
-      if (xw < 0) xw += PALL_WORLD_W;
-      if (xw > PALL_WORLD_W) xw -= PALL_WORLD_W;
-      if (yw < 0) yw += PALL_WORLD_H;
-      if (yw > PALL_WORLD_H) yw -= PALL_WORLD_H;
-      const bx = xw * sx;
-      const by = yw * sy;
-      let ux = 1, uy = 0;
-      if (speed > 0.01) { ux = vx / speed; uy = vy / speed; }
-      const len = Math.max(6 * dpr, Math.min(speed * 0.012 * sx, 30 * dpr));
-      const trailLen = len * 3.5;
-      c2d.save();
-      // Trail (faint, flat alpha — much cheaper than gradient)
-      c2d.strokeStyle = bNext.enemy ? 'rgba(255,170,40,0.30)' : 'rgba(255,90,90,0.30)';
-      c2d.lineWidth = 1.6 * dpr;
-      c2d.beginPath();
-      c2d.moveTo(bx, by);
-      c2d.lineTo(bx - ux * trailLen, by - uy * trailLen);
-      c2d.stroke();
-      // Glowing head streak
-      c2d.lineWidth = bNext.enemy ? 2.6 * dpr : 2.2 * dpr;
-      c2d.strokeStyle = bNext.enemy ? '#ffffff' : '#ff5050';
-      c2d.shadowColor = bNext.enemy ? '#ff6a00' : '#ff5050';
-      c2d.shadowBlur = (bNext.enemy ? 14 : 10) * dpr;
-      c2d.beginPath();
-      c2d.moveTo(bx - ux * len * 0.5, by - uy * len * 0.5);
-      c2d.lineTo(bx + ux * len * 0.5, by + uy * len * 0.5);
-      c2d.stroke();
-      if (bNext.enemy) {
-        c2d.fillStyle = '#ffd84a';
-        c2d.beginPath();
-        c2d.arc(bx, by, 1.6 * dpr, 0, Math.PI * 2);
-        c2d.fill();
-      }
-      c2d.restore();
-    }
-
-    // Coins — sat ₿ glyph (gold) or dust shard (source-tinted). The
-    // glyph approach matches render.ts drawCoin closely enough that a
-    // spectator sees the same "₿ here" flash that the player does.
-    // Dust shards use the asteroid glow palette so iron drops orange,
-    // pallasite drops yellow, etc.
-    const COIN_RADIUS_WORLD = 6;
-    const coinR = COIN_RADIUS_WORLD * sx;
-    const tnowS = nowPerf * 0.001;
-    const DUST_SOURCE_TYPES: Record<'s' | 'i' | 'c' | 'p', 'stony' | 'iron' | 'chondrite' | 'pallasite'> = {
-      s: 'stony', i: 'iron', c: 'chondrite', p: 'pallasite',
-    };
-    for (const cNext of next.coins) {
-      const cPrev = prev.coins.find((p) => p.id === cNext.id) ?? cNext;
-      const cx = interpAxis(cPrev.x, cNext.x, t, PALL_WORLD_W) * sx;
-      const cy = interpAxis(cPrev.y, cNext.y, t, PALL_WORLD_H) * sy;
-      if (cNext.kind === 's') {
-        // Sat coin — gold ₿ with stretching wobble.
-        const wobble = 1 + 0.08 * Math.sin(nowPerf * 0.008 + cNext.x);
-        c2d.save();
-        c2d.translate(cx, cy);
-        c2d.scale(wobble, 1 / wobble);
-        c2d.lineWidth = 1.6 * dpr;
-        c2d.strokeStyle = '#ffd84a';
-        c2d.shadowColor = '#ffd84a';
-        c2d.shadowBlur = 10 * dpr;
-        c2d.beginPath();
-        c2d.arc(0, 0, coinR, 0, Math.PI * 2);
-        c2d.stroke();
-        c2d.fillStyle = '#ffd84a';
-        c2d.font = `bold ${Math.round((COIN_RADIUS_WORLD + 2) * sx)}px ui-monospace, monospace`;
-        c2d.textAlign = 'center';
-        c2d.textBaseline = 'middle';
-        c2d.fillText('₿', 0, 0);
-        c2d.textAlign = 'start';
-        c2d.textBaseline = 'alphabetic';
-        c2d.restore();
-      } else {
-        // Dust shard — tumbling small facet, tinted by source type.
-        // Per-type silhouette mirrors render.ts drawDustShape so the
-        // four asteroid families read as distinct loot.
-        const sourceKey = cNext.sourceType === '' ? 'stony' : DUST_SOURCE_TYPES[cNext.sourceType];
-        const style = getAsteroidStyle(sourceKey);
-        const dustColour = sourceKey === 'stony' ? '#7fffb0' : style.glow;
-        const tumble = tnowS * 3 + cNext.x * 0.02;
-        const r = coinR * 0.95;
-        c2d.save();
-        c2d.translate(cx, cy);
-        c2d.rotate(tumble);
-        c2d.lineWidth = 1.4 * dpr;
-        c2d.strokeStyle = dustColour;
-        c2d.shadowColor = dustColour;
-        c2d.shadowBlur = 9 * dpr;
-        if (sourceKey === 'iron') {
-          // Hex nut — flat sides + bolt-mark.
-          c2d.beginPath();
-          for (let i = 0; i < 6; i++) {
-            const ang = (i / 6) * Math.PI * 2 - Math.PI / 2;
-            const px = Math.cos(ang) * r;
-            const py = Math.sin(ang) * r;
-            if (i === 0) c2d.moveTo(px, py); else c2d.lineTo(px, py);
-          }
-          c2d.closePath();
-          c2d.stroke();
-          c2d.lineWidth = 0.9 * dpr;
-          c2d.globalAlpha = 0.6;
-          c2d.beginPath();
-          c2d.arc(0, 0, r * 0.35, 0, Math.PI * 2);
-          c2d.stroke();
-          c2d.globalAlpha = 1;
-        } else if (sourceKey === 'chondrite') {
-          // Three-fragment cluster — chondrites split into three.
-          const off = r * 0.55;
-          const tri = (cxL: number, cyL: number): void => {
-            c2d.beginPath();
-            c2d.moveTo(cxL, cyL - r * 0.42);
-            c2d.lineTo(cxL + r * 0.36, cyL + r * 0.22);
-            c2d.lineTo(cxL - r * 0.36, cyL + r * 0.22);
-            c2d.closePath();
-            c2d.stroke();
-          };
-          tri(0, -off * 0.4);
-          tri(-off * 0.6, off * 0.4);
-          tri(off * 0.6, off * 0.4);
-        } else if (sourceKey === 'pallasite') {
-          // Six-point star — premium silhouette.
-          c2d.beginPath();
-          const points = 12;
-          for (let i = 0; i < points; i++) {
-            const ang = (i / points) * Math.PI * 2 - Math.PI / 2;
-            const radius = i % 2 === 0 ? r : r * 0.45;
-            const px = Math.cos(ang) * radius;
-            const py = Math.sin(ang) * radius;
-            if (i === 0) c2d.moveTo(px, py); else c2d.lineTo(px, py);
-          }
-          c2d.closePath();
-          c2d.stroke();
-        } else {
-          // Stony (default) — diamond facet with cross-hatch interior.
-          c2d.beginPath();
-          c2d.moveTo(0, -r);
-          c2d.lineTo(r * 0.78, 0);
-          c2d.lineTo(0, r);
-          c2d.lineTo(-r * 0.78, 0);
-          c2d.closePath();
-          c2d.stroke();
-          c2d.lineWidth = 0.9 * dpr;
-          c2d.globalAlpha = 0.6;
-          c2d.beginPath();
-          c2d.moveTo(0, -r * 0.6); c2d.lineTo(0, r * 0.6);
-          c2d.moveTo(-r * 0.5, 0); c2d.lineTo(r * 0.5, 0);
-          c2d.stroke();
-          c2d.globalAlpha = 1;
-        }
-        c2d.restore();
-      }
-    }
-
-    // Powerups — match render.ts drawPowerUp: outer halo + inner disc +
-    // bright core + glyph. POWERUP_CONFIG colours/glyphs are inlined so
-    // the viewer doesn't need to import the full game config.
-    const POWERUP_VIZ: Record<'r' | 'b' | 'n' | 't' | 'm', { glyph: string; colour: string }> = {
-      r: { glyph: '⚡', colour: '#ff8a3a' },
-      b: { glyph: '₿', colour: '#ffd84a' },
-      n: { glyph: '◉', colour: '#ff5050' },
-      t: { glyph: '🜂', colour: '#7fffea' },
-      m: { glyph: '☉', colour: '#b48cff' },
-    };
-    const POWERUP_RADIUS_WORLD = 16;
-    for (const pNext of next.powerups) {
-      const pPrev = prev.powerups.find((p) => p.id === pNext.id) ?? pNext;
-      const px = interpAxis(pPrev.x, pNext.x, t, PALL_WORLD_W) * sx;
-      const py = interpAxis(pPrev.y, pNext.y, t, PALL_WORLD_H) * sy;
-      const viz = POWERUP_VIZ[pNext.type];
-      const pr = POWERUP_RADIUS_WORLD * sx;
-      const pulse = 0.85 + 0.25 * Math.sin(nowPerf * 0.008);
-      const flash = (Math.sin(nowPerf * 0.012) + 1) * 0.5;
-      const trace = (tnowS) % 1.5;
-      const tracePhase = (trace / 1.5) % 1;
-      c2d.save();
-      c2d.translate(px, py);
-      // Expanding tracer ring
-      c2d.strokeStyle = viz.colour;
-      c2d.shadowColor = viz.colour;
-      c2d.shadowBlur = 12 * dpr;
-      c2d.lineWidth = 1.4 * dpr;
-      c2d.globalAlpha = (1 - tracePhase) * 0.7;
-      c2d.beginPath();
-      c2d.arc(0, 0, pr + tracePhase * 24 * dpr, 0, Math.PI * 2);
-      c2d.stroke();
-      c2d.globalAlpha = 1;
-      // Outer halo
-      c2d.shadowBlur = 20 * dpr;
-      c2d.lineWidth = 3 * dpr;
-      c2d.beginPath();
-      c2d.arc(0, 0, pr * pulse, 0, Math.PI * 2);
-      c2d.stroke();
-      // Inner disc
-      c2d.fillStyle = `${viz.colour}55`;
-      c2d.shadowBlur = 14 * dpr;
-      c2d.beginPath();
-      c2d.arc(0, 0, pr * 0.85, 0, Math.PI * 2);
-      c2d.fill();
-      // Hot core
-      c2d.fillStyle = `rgba(255,255,255,${0.4 + flash * 0.3})`;
-      c2d.shadowBlur = 8 * dpr;
-      c2d.beginPath();
-      c2d.arc(0, 0, pr * 0.4, 0, Math.PI * 2);
-      c2d.fill();
-      // Glyph
-      c2d.fillStyle = '#000';
-      c2d.shadowBlur = 0;
-      c2d.font = `bold ${Math.round(18 * sx)}px ui-monospace, monospace`;
-      c2d.textAlign = 'center';
-      c2d.textBaseline = 'middle';
-      c2d.fillText(viz.glyph, 0, 0);
-      c2d.textAlign = 'start';
-      c2d.textBaseline = 'alphabetic';
-      c2d.restore();
-    }
-
-    // 2c. Particles — local cosmetic burst on SFX events, ticked here
-    // each frame. Older particles fade and shrink; expired ones are
-    // swept out. Bounded to MAX_PARTICLES so a busy stream can't blow
-    // up frame time on weaker devices.
-    const dt = 1 / 60; // approximate; close enough for cosmetic decay
+    // 2b. Tick the viewer-side cosmetic pools (particles and debris
+    // spawned by SFX events). render() draws them; their motion and fade
+    // are stepped here so they stay independent of the wire cadence.
+    const dt = 1 / 60;
     for (let i = particles.length - 1; i >= 0; i--) {
       const p = particles[i];
       p.ttl -= dt * 1000;
@@ -4360,159 +3526,40 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
       p.y += p.vy * dt;
       p.vx *= 0.95;
       p.vy *= 0.95;
-      const k = Math.max(0, p.ttl / p.ttlMax);
-      c2d.save();
-      c2d.globalAlpha = k;
-      c2d.fillStyle = p.colour;
-      c2d.shadowColor = p.colour;
-      c2d.shadowBlur = 6 * dpr;
-      c2d.beginPath();
-      c2d.arc(p.x * sx, p.y * sy, p.size * dpr * (0.6 + k * 0.6), 0, Math.PI * 2);
-      c2d.fill();
-      c2d.restore();
     }
-    // 2d. Debris — line-segment shards from ship-destroyed bursts.
-    // Tumbling angled segments fading to zero, matching render.ts
-    // drawDebris. One save/restore for the lot per render-pass loop.
-    if (debris.length > 0) {
-      c2d.save();
-      c2d.lineCap = 'round';
-      c2d.lineWidth = 1.6 * dpr;
-      c2d.shadowBlur = 0;
-      for (let i = debris.length - 1; i >= 0; i--) {
-        const d = debris[i];
-        d.ttl -= dt * 1000;
-        if (d.ttl <= 0) { debris.splice(i, 1); continue; }
-        d.x += d.vx * dt;
-        d.y += d.vy * dt;
-        d.vx *= 0.96;
-        d.vy *= 0.96;
-        d.rot += d.rotV * dt;
-        const alpha = Math.max(0, Math.min(1, d.ttl / d.ttlMax));
-        if (alpha < 0.05) continue;
-        c2d.globalAlpha = alpha;
-        c2d.strokeStyle = d.colour;
-        c2d.save();
-        c2d.translate(d.x * sx, d.y * sy);
-        c2d.rotate(d.rot);
-        const half = (d.length / 2) * sx;
-        c2d.beginPath();
-        c2d.moveTo(-half, 0);
-        c2d.lineTo(half, 0);
-        c2d.stroke();
-        c2d.restore();
-      }
-      c2d.restore();
+    for (let i = debris.length - 1; i >= 0; i--) {
+      const d = debris[i];
+      d.ttl -= dt * 1000;
+      if (d.ttl <= 0) { debris.splice(i, 1); continue; }
+      d.x += d.vx * dt;
+      d.y += d.vy * dt;
+      d.vx *= 0.96;
+      d.vy *= 0.96;
+      d.rot += d.rotV * dt;
     }
-    c2d.shadowBlur = 0;
 
-    // 3. Ship — triangle outline, oriented by rot, scaled for DPR so
-    // it stays sharp on retina.
-    const shipAlive = (t < 0.5 ? prev.alive : next.alive);
-    const shielded = (t < 0.5 ? prev.shielded : next.shielded);
-    if (shipAlive) {
-      // Skin palette — mirrors src/skins.ts SKINS[].palette closely
-      // enough that the watcher renders the cosmetic the player picked.
-      // RGBA-fill / shadow tweaks land via a single PALETTE record so
-      // adding a new skin is just adding an entry here + matching the
-      // wire code in stream-session.ts. Default = ship-green, matching
-      // the game's STANDARD skin.
-      const skinCode = (t < 0.5 ? prev.skin : next.skin) ?? 'd';
-      const WATCHER_SHIP_SKIN: Record<'d' | 'i' | 'h', {
-        ship: string; fill: string; shadow: string;
-        thrust: string; thrustShadow: string;
-        bloomCore: string; bloomMid: string;
-      }> = {
-        d: { ship: '#8cffb4', fill: 'rgba(140,255,180,0.18)', shadow: 'rgba(140,255,180,0.7)',
-             thrust: '#ffd84a', thrustShadow: 'rgba(255,216,74,0.8)',
-             bloomCore: 'rgba(255,216,74,0.55)', bloomMid: 'rgba(255,138,58,0.25)' },
-        i: { ship: '#ff7a3a', fill: 'rgba(255,122,58,0.20)', shadow: 'rgba(255,122,58,0.7)',
-             thrust: '#ffd84a', thrustShadow: 'rgba(255,122,58,0.8)',
-             bloomCore: 'rgba(255,160,80,0.55)', bloomMid: 'rgba(220,90,30,0.22)' },
-        h: { ship: '#5be0ff', fill: 'rgba(91,224,255,0.20)', shadow: 'rgba(91,224,255,0.7)',
-             thrust: '#cfeefb', thrustShadow: 'rgba(91,224,255,0.8)',
-             bloomCore: 'rgba(150,230,255,0.55)', bloomMid: 'rgba(60,160,220,0.22)' },
-      };
-      const skinPal = WATCHER_SHIP_SKIN[skinCode];
-      // Match render.ts drawShip exactly — same triangle proportions
-      // (14, -10/8 wings, -6 notch). Scaled by sx so it occupies the
-      // same canvas fraction as in-game.
-      c2d.save();
-      c2d.translate(x, y);
-      c2d.rotate(rot);
-      c2d.scale(shipScale, shipScale);
-      c2d.lineWidth = 1.6;
-      c2d.strokeStyle = skinPal.ship;
-      c2d.fillStyle = skinPal.fill;
-      c2d.shadowColor = skinPal.shadow;
-      c2d.shadowBlur = 12;
-      c2d.beginPath();
-      c2d.moveTo(14, 0);
-      c2d.lineTo(-10, 8);
-      c2d.lineTo(-6, 0);
-      c2d.lineTo(-10, -8);
-      c2d.closePath();
-      c2d.fill();
-      c2d.stroke();
-      if (thrusting) {
-        c2d.save();
-        c2d.globalCompositeOperation = 'lighter';
-        const bloom = c2d.createRadialGradient(-10, 0, 0, -10, 0, 24);
-        bloom.addColorStop(0, skinPal.bloomCore);
-        bloom.addColorStop(0.5, skinPal.bloomMid);
-        bloom.addColorStop(1, 'rgba(0,0,0,0)');
-        c2d.fillStyle = bloom;
-        c2d.beginPath();
-        c2d.arc(-10, 0, 24, 0, Math.PI * 2);
-        c2d.fill();
-        c2d.restore();
-        c2d.strokeStyle = skinPal.thrust;
-        c2d.shadowColor = skinPal.thrustShadow;
-        c2d.shadowBlur = 10;
-        c2d.lineWidth = 1.4;
-        c2d.beginPath();
-        c2d.moveTo(-6, 4);
-        c2d.lineTo(-14, 0);
-        c2d.lineTo(-6, -4);
-        c2d.stroke();
-      }
-      c2d.restore();
-      if (shielded) {
-        // Match render.ts drawShield: outer-glow radial gradient + hex
-        // perimeter with 6 rotating dots. Sized off the ship's world
-        // radius (14) × 2.2 like the game so the bubble looks the same
-        // fraction of the canvas the player sees. Previous version was
-        // a single 17px arc — way smaller + flatter than the game's.
-        const shipR = 14 * shipScale;
-        const shieldR = shipR * 2.2 + Math.sin(nowPerf * 0.012) * 1.5 * dpr;
-        c2d.save();
-        c2d.translate(x, y);
-        const sg = c2d.createRadialGradient(0, 0, shipR * 1.2, 0, 0, shieldR);
-        sg.addColorStop(0, 'rgba(91,157,255,0)');
-        sg.addColorStop(0.7, 'rgba(91,157,255,0.18)');
-        sg.addColorStop(1, 'rgba(91,157,255,0.5)');
-        c2d.fillStyle = sg;
-        c2d.beginPath();
-        c2d.arc(0, 0, shieldR, 0, Math.PI * 2);
-        c2d.fill();
-        c2d.strokeStyle = 'rgba(91,157,255,0.85)';
-        c2d.lineWidth = 1.2 * dpr;
-        c2d.shadowColor = '#5b9dff';
-        c2d.shadowBlur = 14 * dpr;
-        c2d.beginPath();
-        c2d.arc(0, 0, shieldR, 0, Math.PI * 2);
-        c2d.stroke();
-        c2d.shadowBlur = 0;
-        for (let i = 0; i < 6; i++) {
-          const a = (Math.PI * 2 * i) / 6 + nowPerf * 0.001;
-          c2d.fillStyle = 'rgba(180,220,255,0.9)';
-          c2d.beginPath();
-          c2d.arc(Math.cos(a) * shieldR, Math.sin(a) * shieldR, 2 * dpr, 0, Math.PI * 2);
-          c2d.fill();
-        }
-        c2d.restore();
-      }
-    }
+    // 2c. Synthesise a GameState from the interpolated frame pair and
+    // draw it through the shared game renderer, the same render() the
+    // game uses, so the theatre inherits vector / shaded / mesh fidelity.
+    populateTheatreState(theatreState, {
+      prev, next, t, playbackT,
+      particles: particles.map((p) => ({
+        pos: { x: p.x, y: p.y }, vel: { x: p.vx, y: p.vy },
+        ttl: p.ttl, maxTtl: p.ttlMax, colour: p.colour, size: p.size,
+      })),
+      debris: debris.map((d) => ({
+        pos: { x: d.x, y: d.y }, vel: { x: d.vx, y: d.vy },
+        rot: d.rot, rotVel: d.rotV, length: d.length,
+        ttl: d.ttl, maxTtl: d.ttlMax, colour: d.colour,
+      })),
+    });
+    setRenderMode(theatreRenderMode);
+    render(canvas, theatreState, nowPerf);
+    // render() leaves the canvas in the game's world transform; the warp
+    // banner and status overlays below draw in raw device pixels, so step
+    // out of it here and restore at the end of the tick.
+    c2d.save();
+    c2d.setTransform(1, 0, 0, 1, 0, 0);
 
     // 3a. Warp-incoming banner — fires while the player is in 'warp'
     // phase (1.3s between waves). The host sends nextWave so we know
@@ -4659,6 +3706,9 @@ function renderLiveTheatre(input: LiveTheatreInput): void {
       c2d.textBaseline = 'alphabetic';
       c2d.restore();
     }
+    // Balance the save() before the device-pixel overlays above, so the
+    // next tick's render() starts from the world transform again.
+    c2d.restore();
   };
   rafId = requestAnimationFrame(tick);
 }
