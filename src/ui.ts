@@ -2997,12 +2997,14 @@ export function renderLiveTheatre(input: LiveTheatreInput): void {
   const frames: LiveFrame[] = [];
   let rafId: number | null = null;
   let cancelled = false;
+  let autoReturnTimer: number | null = null;
   const sockets: WebSocket[] = [];
 
   const cleanup = (): void => {
     cancelled = true;
     if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
     if (watchdog !== null) { window.clearTimeout(watchdog); watchdog = null; }
+    if (autoReturnTimer !== null) { window.clearTimeout(autoReturnTimer); autoReturnTimer = null; }
     for (const ws of sockets) { try { ws.close(); } catch { /* ignore */ } }
     window.removeEventListener('keydown', onKey);
     // Hand #game3d back to the game and let the watch-page loop resume.
@@ -3642,11 +3644,20 @@ export function renderLiveTheatre(input: LiveTheatreInput): void {
       if (ended && !replayAutoTried) {
         replayAutoTried = true;
         void tryFetchReplay();
+        // Bounce back to the watch landing a few seconds after the run
+        // ends. tryFetchReplay's own cleanup() clears this if it rolls
+        // into a replay; a manual close clears it via cleanup() too.
+        autoReturnTimer = window.setTimeout(() => {
+          autoReturnTimer = null;
+          cleanup();
+          input.onClose();
+        }, 6000);
       } else if (!ended && replayState !== 'hidden' && replayState !== 'loading') {
-        // Stream came back to life (rare — relay reconnect) — hide the
+        // Stream came back to life (rare relay reconnect): hide the
         // button so we don't strand a stale "TRY AGAIN" alongside live
-        // frames.
+        // frames, and cancel the pending bounce-to-watch.
         setReplayState('hidden');
+        if (autoReturnTimer !== null) { window.clearTimeout(autoReturnTimer); autoReturnTimer = null; }
       }
     }
 
