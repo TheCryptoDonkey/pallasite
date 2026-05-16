@@ -9,7 +9,7 @@ import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHype
 import { getFlavour } from './flavour.js';
 import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
-import { render, preloadBackground, setRenderMode, getRenderModeKind } from './render.js';
+import { render, preloadBackground, setRenderMode, getRenderModeKind, drawAsciiHud } from './render.js';
 import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage } from './ui.js';
 import { postHeartbeat } from './faucet.js';
 import {
@@ -610,6 +610,7 @@ function loop(now: number): void {
   updateGame(state, dt, now);
   render(canvas, state, now);
   applyThemeFrame(canvas, now);
+  if (getTheme() === 'ascii') drawAsciiHud(canvas, state, now);
 
   // Phase transitions render UI overlays
   if (state.phase !== lastPhase) {

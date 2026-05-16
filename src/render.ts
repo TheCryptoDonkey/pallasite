@@ -3084,12 +3084,16 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
   drawParticles(ctx, state.particles);
   drawDebris(ctx, state.debris);
 
-  // Red vignette — softer at the centre, stronger at the edges
-  const grad = ctx.createRadialGradient(WORLD_W / 2, WORLD_H / 2, 180, WORLD_W / 2, WORLD_H / 2, 620);
-  grad.addColorStop(0, 'rgba(255, 80, 80, 0)');
-  grad.addColorStop(1, 'rgba(120, 0, 0, 0.42)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, WORLD_W, WORLD_H);
+  // Red vignette: softer at the centre, stronger at the edges. Skipped
+  // under ASCII, where the postfx brightness-normalises each cell and
+  // would turn this wash into a screen-wide red flood.
+  if (getTheme() !== 'ascii') {
+    const grad = ctx.createRadialGradient(WORLD_W / 2, WORLD_H / 2, 180, WORLD_W / 2, WORLD_H / 2, 620);
+    grad.addColorStop(0, 'rgba(255, 80, 80, 0)');
+    grad.addColorStop(1, 'rgba(120, 0, 0, 0.42)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, WORLD_W, WORLD_H);
+  }
 
   // Slow-mo indicator — small "0.4x" mark when in the slow segment
   const slowGameTime = Math.min(REPLAY_SLOW_MS, dr.spanMs);
@@ -3335,6 +3339,33 @@ function drawShockwaves(ctx: CanvasRenderingContext2D, rings: Shockwave[], now: 
   }
 }
 
+// ── HUD layer ─────────────────────────────────────────────────────────────────
+
+/** The full HUD overlay layer: persistent readouts, transient wave
+ *  banners, and the intertitle. The intertitle draws last so its black
+ *  card can cover the readouts during act-boundary intros. */
+function drawHudLayer(ctx: CanvasRenderingContext2D, state: GameState, now: number): void {
+  drawHud(ctx, state, now);
+  drawWaveBanner(ctx, state, now);
+  drawBonusBanner(ctx, state, now);
+  drawWaveClearCountdown(ctx, state, now);
+  drawOffscreenIndicators(ctx, state, now);
+  drawIntertitle(ctx, state, now);
+}
+
+/** Crisp HUD pass for the ASCII theme. render() skips the HUD layer while
+ *  ASCII is active so it is not resampled into a smear; main.ts calls this
+ *  after the postfx so the readouts land sharp over the character field.
+ *  The 2D transform persists between calls, so the layer sees the same
+ *  world transform render() would have left it. */
+export function drawAsciiHud(canvas: HTMLCanvasElement, state: GameState, now: number): void {
+  if (hudHidden) return;
+  if (state.phase === 'warp' || state.phase === 'deathreplay') return;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  drawHudLayer(ctx, state, now);
+}
+
 // ── Main render ───────────────────────────────────────────────────────────────
 
 export function render(canvas: HTMLCanvasElement, state: GameState, now: number): void {
@@ -3358,9 +3389,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // small hits barely shake, big hits punch. Reduced-motion zeros amplitude.
   let shakeX = 0, shakeY = 0;
   const trauma = state.cameraTrauma;
-  // ASCII theme resamples the frame into a character grid every tick, so
-  // camera shake turns into flickering character noise — suppress it.
-  if (trauma > 0 && !shouldReduceMotion() && getTheme() !== 'ascii') {
+  if (trauma > 0 && !shouldReduceMotion()) {
     const amp = trauma * trauma * 14;
     shakeX = (Math.sin(now * 0.073) + Math.sin(now * 0.127) * 0.6) * amp;
     shakeY = (Math.cos(now * 0.091) + Math.cos(now * 0.151) * 0.6) * amp;
@@ -3492,8 +3521,10 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
 
   // 5x combo screen tint -- a faint warm wash that signals "we're at the
   // cap" without obscuring play. Only when combo is at COMBO_MAX; below
-  // that the bass-pulse stem alone carries the intensity.
-  if (state.combo >= COMBO_MAX) {
+  // that the bass-pulse stem alone carries the intensity. Skipped under
+  // ASCII, where the postfx brightness-normalises each cell and would
+  // amplify this faint wash into a screen-wide red flood.
+  if (state.combo >= COMBO_MAX && getTheme() !== 'ascii') {
     const alpha = shouldReduceMotion() ? 0.04 : 0.08;
     ctx.save();
     ctx.fillStyle = `rgba(255,80,40,${alpha})`;
@@ -3501,13 +3532,11 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     ctx.restore();
   }
 
-  if (!hudHidden) {
-    drawHud(ctx, state, now);
-    drawWaveBanner(ctx, state, now);
-    drawBonusBanner(ctx, state, now);
-    drawWaveClearCountdown(ctx, state, now);
-    drawOffscreenIndicators(ctx, state, now);
-    drawIntertitle(ctx, state, now);
+  // ASCII defers the HUD layer: drawing it now would feed the readouts
+  // through the character resample into an unreadable smear. main.ts
+  // re-runs drawAsciiHud crisp once the postfx has finished.
+  if (!hudHidden && getTheme() !== 'ascii') {
+    drawHudLayer(ctx, state, now);
   }
 
   // WebGL mesh overlay — runs only if any category is currently on
