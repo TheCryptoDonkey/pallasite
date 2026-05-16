@@ -428,8 +428,8 @@ export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?
   const speedBase = (ASTEROID_BASE_SPEED + wave * ASTEROID_SPEED_PER_WAVE) * mods.asteroidSpeedMul * depthCfg.speedMul;
   const sizeMul = size === 'large' ? 0.7 : size === 'medium' ? 1 : 1.5;
   const speed = isVein
-    ? speedBase * 0.2 * (0.7 + Math.random() * 0.6)
-    : speedBase * sizeMul * (0.7 + Math.random() * 0.6);
+    ? speedBase * 0.2 * (0.7 + gameRng() * 0.6)
+    : speedBase * sizeMul * (0.7 + gameRng() * 0.6);
 
   // For an edge-spawned asteroid (no explicit pos given), use the inward angle
   // ± 60° so velocity always has a meaningful inward component. For explicit
@@ -620,7 +620,7 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
       const aliveMinions = s.ufos.filter(u => u.alive && u.type !== 'boss').length;
       // Keep two cruisers in play until the kill target is reached.
       if (aliveMinions < 2 && (s.ufoKillsThisWave + aliveMinions) < s.bulletCurtainKillTarget) {
-        const dir: 1 | -1 = Math.random() < 0.5 ? 1 : -1;
+        const dir: 1 | -1 = gameRng() < 0.5 ? 1 : -1;
         s.ufos.push(makeCurtainCruiser(s, dir));
       }
     },
@@ -1381,7 +1381,7 @@ function updateUfos(s: GameState, dt: number): void {
       // Bounce off horizontal bounds
       if (u.pos.x < 120 || u.pos.x > WORLD_W - 120) u.vel.x *= -1;
       // Random vertical drift
-      if (Math.random() < dt * 0.4) u.vel.y = (Math.random() - 0.5) * 30;
+      if (gameRng() < dt * 0.4) u.vel.y = (gameRng() - 0.5) * 30;
       if (u.pos.y < 100 || u.pos.y > WORLD_H * 0.55) u.vel.y *= -1;
       // No traversal-edge despawn
     }
@@ -1425,8 +1425,8 @@ function updateUfos(s: GameState, dt: number): void {
     if (u.type !== 'sniper') {
       u.zigTimer -= dt * 1000;
       if (u.zigTimer <= 0) {
-        u.zigTimer = UFO_ZIG_INTERVAL_MS * (0.6 + Math.random() * 0.8);
-        u.vel.y = (Math.random() - 0.5) * UFO_SPEED[u.type] * 0.6;
+        u.zigTimer = UFO_ZIG_INTERVAL_MS * (0.6 + gameRng() * 0.8);
+        u.vel.y = (gameRng() - 0.5) * UFO_SPEED[u.type] * 0.6;
       }
     }
 
@@ -1456,17 +1456,17 @@ function updateUfos(s: GameState, dt: number): void {
           ufoShootAt(s, u, s.ship.pos);
         } else if (u.bossPhase === 2) {
           u.shootTimer = easy ? 900 : 700;
-          if (!easy && Math.random() < 0.45) ufoFanShoot(s, u, s.ship.pos);
+          if (!easy && gameRng() < 0.45) ufoFanShoot(s, u, s.ship.pos);
           else ufoShootAt(s, u, s.ship.pos);
         } else {
           u.shootTimer = easy ? 700 : 500;
           if (easy) {
             // No radial curtains on easy — aimed shots with the occasional
             // fan to keep the phase distinct from P2.
-            if (Math.random() < 0.35) ufoFanShoot(s, u, s.ship.pos);
+            if (gameRng() < 0.35) ufoFanShoot(s, u, s.ship.pos);
             else ufoShootAt(s, u, s.ship.pos);
           } else {
-            const roll = Math.random();
+            const roll = gameRng();
             if (roll < 0.30) ufoRadialShoot(s, u);
             else if (roll < 0.65) ufoFanShoot(s, u, s.ship.pos);
             else ufoShootAt(s, u, s.ship.pos);
@@ -1702,8 +1702,8 @@ function damageUfo(s: GameState, u: Ufo): void {
       ? (u.bossPhase === 3 ? 2 : 1)
       : (u.bossPhase === 3 ? 5 : 3);
     for (let i = 0; i < mineCount; i++) {
-      const angle = (Math.PI * 2 * i) / mineCount + Math.random() * 0.4;
-      const dist = 90 + Math.random() * 40;
+      const angle = (Math.PI * 2 * i) / mineCount + gameRng() * 0.4;
+      const dist = 90 + gameRng() * 40;
       const x = u.pos.x + Math.cos(angle) * dist;
       const y = u.pos.y + Math.sin(angle) * dist;
       if (x > 30 && x < WORLD_W - 30 && y > 30 && y < WORLD_H - 30) {
@@ -1932,7 +1932,7 @@ function rollPickupKind(s: GameState, asteroidType?: AsteroidType, size?: Astero
   if (size !== undefined && size !== 'small') return 'dust';
   if (asteroidType === 'pallasite' && size === 'small') return 'sat';
   const denom = Math.max(1, getGameConfig().sat_drop_denom);
-  return Math.random() < (1 / denom) ? 'sat' : 'dust';
+  return gameRng() < (1 / denom) ? 'sat' : 'dust';
 }
 
 /** Score awarded per dust shard, scaled to the source so a small asteroid
@@ -1948,8 +1948,8 @@ function spawnCoins(s: GameState, x: number, y: number, value: number, count: nu
   // recognition. Sat coins continue to split the cfg-scaled value.
   const dustMul = asteroidType ? ASTEROID_TYPE_CONFIG[asteroidType].scoreMul : 1;
   for (let i = 0; i < count; i++) {
-    const angle = Math.random() * Math.PI * 2;
-    const speed = 30 + Math.random() * 40;
+    const angle = gameRng() * Math.PI * 2;
+    const speed = 30 + gameRng() * 40;
     const perPickup = resolvedKind === 'sat' ? value / count : Math.round(DUST_SCORE_BASE * dustMul);
     s.coins.push({
       id: nextStreamEntityId(),
@@ -3362,9 +3362,9 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
       const pool: PowerUpType[] = s.session
         ? ['rapid', 'trident', 'satboost']
         : ['rapid', 'trident'];
-      const pick = pool[Math.floor(Math.random() * pool.length)];
-      const dropX = a.pos.x + (Math.random() - 0.5) * 120;
-      const dropY = a.pos.y + (Math.random() - 0.5) * 120;
+      const pick = pool[Math.floor(gameRng() * pool.length)];
+      const dropX = a.pos.x + (gameRng() - 0.5) * 120;
+      const dropY = a.pos.y + (gameRng() - 0.5) * 120;
       maybeDropPowerUp(s, dropX, dropY, pick);
     }
     return;
