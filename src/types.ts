@@ -472,6 +472,10 @@ export interface GameState {
    *  not. Used as the `started_at` field on faucet claim submissions. 0 when
    *  no run is in flight. */
   runStartedAt: number;
+  /** 32-bit RNG seed for this run. Set by seedRun() in startGame; recorded
+   *  so the run can be deterministically re-simulated (B3 verifiable
+   *  replay). 0 before the first run. */
+  seed: number;
   /** Wave 25 boss state */
   bossDefeated: boolean;
 

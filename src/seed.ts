@@ -36,6 +36,23 @@ export function setDailySeed(seedString: string | null): void {
 }
 
 /**
+ * Seed the RNG for one run and return the 32-bit seed used. A daily run keys
+ * off the UTC date so everyone shares the field; otherwise a fresh random seed
+ * is picked. Either way the seed is returned so the run can record it — a
+ * recorded run re-simulates exactly from this value (B3 verifiable replay).
+ *
+ * Does not touch `activeSeed`: that stays the daily date string for the score
+ * tag, managed by setDailySeed.
+ */
+export function seedRun(): number {
+  const seed = getStoredDailyPref()
+    ? fnv1a32(todayUTC())
+    : (Math.random() * 0x100000000) >>> 0;
+  rngState = seed;
+  return seed;
+}
+
+/**
  * Returns a pseudorandom number in [0, 1). Deterministic when a daily seed has
  * been set; otherwise falls through to Math.random().
  *
