@@ -208,7 +208,7 @@ const HEAT_LUT = buildRampLut([
 
 // Game Boy DMG: four flat green shades, hard-quantised, no blend.
 const GB_LUT = ((): Uint8Array => {
-  const shades = [[15, 56, 15], [48, 98, 48], [139, 172, 15], [155, 188, 15]];
+  const shades = [[14, 50, 24], [36, 94, 50], [78, 166, 86], [130, 216, 128]];
   const lut = new Uint8Array(768);
   for (let i = 0; i < 256; i++) {
     const s = shades[Math.min(3, i >> 6)];
@@ -254,10 +254,10 @@ function lutPass(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, lowW:
 
 /** Thermal camera: a coarse, soft luminance heat-map. */
 function applyThermal(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): void {
-  lutPass(ctx, canvas, 600, true, HEAT_LUT);
+  lutPass(ctx, canvas, 760, true, HEAT_LUT);
 }
 
 /** Game Boy DMG: 160-wide chunky pixels, four-shade green. */
 function applyGameBoy(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): void {
-  lutPass(ctx, canvas, 320, false, GB_LUT);
+  lutPass(ctx, canvas, 480, false, GB_LUT);
 }
