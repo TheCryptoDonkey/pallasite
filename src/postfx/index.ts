@@ -7,7 +7,7 @@
  * lift out into a shared package other games drop in.
  */
 
-export type ThemeId = 'none' | 'crt' | 'synthwave' | 'thermal' | 'gameboy';
+export type ThemeId = 'none' | 'crt' | 'synthwave' | 'thermal' | 'gameboy' | 'gameboycolor';
 
 export interface ThemeInfo {
   id: ThemeId;
@@ -21,6 +21,7 @@ export const THEMES: readonly ThemeInfo[] = [
   { id: 'synthwave', label: 'SYNTHWAVE' },
   { id: 'thermal', label: 'THERMAL' },
   { id: 'gameboy', label: 'GAME BOY' },
+  { id: 'gameboycolor', label: 'GB COLOR' },
 ];
 
 /** Coerce an unknown value (e.g. a stale localStorage entry) into a ThemeId.
@@ -48,6 +49,7 @@ export function applyPostFx(canvas: HTMLCanvasElement, theme: ThemeId, nowMs: nu
   else if (theme === 'synthwave') applySynthwave(ctx, canvas, nowMs);
   else if (theme === 'thermal') applyThermal(ctx, canvas);
   else if (theme === 'gameboy') applyGameBoy(ctx, canvas);
+  else if (theme === 'gameboycolor') applyGameBoyColor(ctx, canvas);
 }
 
 /**
@@ -260,4 +262,41 @@ function applyThermal(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement):
 /** Game Boy DMG: 160-wide chunky pixels, four-shade green. */
 function applyGameBoy(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): void {
   lutPass(ctx, canvas, 480, false, GB_LUT);
+}
+
+/** Game Boy Color: keeps the real hues but coarsens the palette and uses
+ *  the same chunky low-res pixels as the DMG mode, with a slight LCD wash
+ *  (lifted black floor) so it reads as backlit handheld glass. */
+function applyGameBoyColor(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): void {
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w === 0 || h === 0) return;
+  const lowW = 480;
+  const lowH = Math.max(1, Math.round(lowW * h / w));
+  const buf = getPixelBuf(lowW, lowH);
+  const bctx = buf.getContext('2d', { willReadFrequently: true });
+  if (!bctx) return;
+  bctx.setTransform(1, 0, 0, 1, 0, 0);
+  bctx.imageSmoothingEnabled = true;
+  bctx.clearRect(0, 0, lowW, lowH);
+  bctx.drawImage(canvas, 0, 0, w, h, 0, 0, lowW, lowH);
+  const img = bctx.getImageData(0, 0, lowW, lowH);
+  const d = img.data;
+  // Per-channel quantise to a coarse palette, keeping hue, then lift the
+  // black floor a touch for the LCD wash.
+  const steps = 6;
+  const q = 255 / (steps - 1);
+  for (let i = 0; i < d.length; i += 4) {
+    d[i] = 18 + Math.round(d[i] / q) * q * 0.93;
+    d[i + 1] = 20 + Math.round(d[i + 1] / q) * q * 0.93;
+    d[i + 2] = 26 + Math.round(d[i + 2] / q) * q * 0.93;
+  }
+  bctx.putImageData(img, 0, 0);
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.drawImage(buf, 0, 0, lowW, lowH, 0, 0, w, h);
+  ctx.restore();
 }
