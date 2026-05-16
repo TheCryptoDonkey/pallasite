@@ -113,6 +113,7 @@ export function makeInitialState(): GameState {
     satboostExpiresAt: 0,
     tridentExpiresAt: 0,
     magnetExpiresAt: 0,
+    fireCooldownUntil: 0,
     session: null,
     profile: null,
     keys: {},
@@ -190,8 +191,9 @@ export function hitStop(s: GameState, ms: number): void {
 // this id so it can interpolate positions smoothly — without it, the
 // viewer would snap entities to new positions at the 2 Hz wire rate.
 //
-// Module-local, never reset. Modulo bounds the value so JSON tuples
-// don't bloat across very long sessions.
+// Module-local; reset to 0 at startGame so a run's wire entity IDs
+// reproduce from a fresh start (deterministic re-simulation, B3). Modulo
+// bounds the value so JSON tuples don't bloat within a long run.
 let nextEntityId = 0;
 export function nextStreamEntityId(): number {
   nextEntityId = (nextEntityId + 1) % 1_000_000;
@@ -304,8 +306,13 @@ export function startGame(s: GameState): void {
   s.ghostSamples = [];
   s.ghostPoseSamples = [];
   s.cameraTrauma = 0;
+  s.fireCooldownUntil = 0;
   lastGhostSampleRunMs = -1;
   lastGhostPoseRunMs = -1;
+  lastReplayRecordedAt = 0;
+  // Entity-id counter resets per run so a run's wire IDs reproduce from a
+  // fresh start — needed for deterministic re-simulation (B3).
+  nextEntityId = 0;
   beginWave(s, 1);
   audio.startHeartbeat();
   audio.startAmbient();
@@ -2002,8 +2009,6 @@ function circlesHit(a: { pos: Vec2; radius: number }, b: { pos: Vec2; radius: nu
   return dx * dx + dy * dy <= r * r;
 }
 
-let fireCooldownUntil = 0;
-
 export function tryActivateShield(s: GameState, now: number): boolean {
   if (!s.ship.alive) return false;
   if (s.ship.shieldUp) return false;
@@ -2564,10 +2569,10 @@ export function updateGame(s: GameState, dt: number, now: number): void {
       s.ship.recoilOffset = Math.max(0, s.ship.recoilOffset - dt * 24);
     }
 
-    if (fire && now >= fireCooldownUntil) {
+    if (fire && now >= s.fireCooldownUntil) {
       fireBullet(s);
       const rapid = now < s.rapidExpiresAt;
-      fireCooldownUntil = now + (rapid ? FIRE_COOLDOWN_MS * RAPID_COOLDOWN_MUL : FIRE_COOLDOWN_MS);
+      s.fireCooldownUntil = now + (rapid ? FIRE_COOLDOWN_MS * RAPID_COOLDOWN_MUL : FIRE_COOLDOWN_MS);
     }
   }
 

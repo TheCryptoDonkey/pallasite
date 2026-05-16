@@ -493,6 +493,10 @@ export interface GameState {
   tridentExpiresAt: number;
   /** ms timestamp magnet (coin/dust pull) expires. */
   magnetExpiresAt: number;
+  /** ms timestamp the ship's gun is next free to fire. Was a game.ts
+   *  module-level var; moved onto state so a run is self-contained and
+   *  re-simulable (B3 determinism). */
+  fireCooldownUntil: number;
 
   /** auth state */
   session: SignetSession | null;
