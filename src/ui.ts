@@ -3232,7 +3232,10 @@ export function renderLiveTheatre(input: LiveTheatreInput): void {
     // overshoot, dropping most meshes off-canvas.
     g3d.width = CANVAS_W;
     g3d.height = CANVAS_H;
-    g3d.style.cssText = `position:absolute;left:0;top:0;width:${cssWidth}px;height:${cssHeight}px;display:block;pointer-events:none;`;
+    // transform:none cancels the #game3d stylesheet centring rule
+    // (translate(-50%,-50%)); without it the borrowed overlay is pulled
+    // half its size off the theatre game box in retro display mode.
+    g3d.style.cssText = `position:absolute;left:0;top:0;transform:none;width:${cssWidth}px;height:${cssHeight}px;display:block;pointer-events:none;`;
   }
   document.body.dataset.theatre = 'open';
 
