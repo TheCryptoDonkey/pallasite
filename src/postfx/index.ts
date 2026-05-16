@@ -449,7 +449,7 @@ function applyAscii(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): v
   const w = canvas.width;
   const h = canvas.height;
   if (w === 0 || h === 0) return;
-  const cols = 80;
+  const cols = 120;
   const rows = Math.max(1, Math.round(cols * (h / w) / 1.6));
   const buf = getPixelBuf(cols, rows);
   const bctx = buf.getContext('2d', { willReadFrequently: true });
@@ -467,7 +467,10 @@ function applyAscii(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): v
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalCompositeOperation = 'source-over';
   ctx.globalAlpha = 1;
-  ctx.fillStyle = '#020805';
+  // Dim the real frame rather than erasing it: the characters carry the
+  // look, but a faint ghost of the actual game underneath keeps the ship
+  // and bullets trackable enough to play.
+  ctx.fillStyle = 'rgba(2,8,5,0.8)';
   ctx.fillRect(0, 0, w, h);
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
