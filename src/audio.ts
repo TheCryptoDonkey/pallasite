@@ -146,11 +146,14 @@ export function suspendPlayback(): void {
 }
 
 /**
- * Reverse of suspendPlayback. Safe to call on a never-unlocked context;
- * resumes only when the context is in the suspended state.
+ * Reverse of suspendPlayback. Safe to call on a never-unlocked or already
+ * running context. Resumes whenever the context is not closed: the old
+ * `state === 'suspended'` check missed Safari's 'interrupted' state and
+ * raced the async suspend(), so a quick hide/show could strand the context
+ * suspended with the resume already no-op'd, killing every oscillator SFX.
  */
 export function resumePlayback(): void {
-  if (ctx && ctx.state === 'suspended') {
+  if (ctx && ctx.state !== 'closed') {
     void ctx.resume().catch(() => undefined);
   }
 }

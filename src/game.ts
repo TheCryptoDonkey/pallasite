@@ -853,6 +853,16 @@ export function beginWave(s: GameState, wave: number): void {
   s.ufoKilledThisWave = false;
   s.ufoKillsThisWave = 0;
   s.bulletCurtainKillTarget = 0;
+  // A new wave starts from a clean field. clearStage() empties these on
+  // the normal wave-clear path, but beginWave is also entered directly
+  // (skipWarp, set-piece setup), so clear leftover hazards and powerups
+  // here too rather than spawning on top of the old wave's survivors.
+  // Coins are left to clearStage, which banks their sat value first.
+  s.asteroids = [];
+  s.ufos = [];
+  s.mines = [];
+  s.powerups = [];
+  s.enemyBullets = [];
   // 1979 homage: each new wave re-centres the ship and grants brief invuln,
   // matching the original arcade behaviour. Skips on wave 1 (startGame already
   // placed the ship there) but harmless to repeat. Set pieces with their own
