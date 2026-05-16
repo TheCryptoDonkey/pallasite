@@ -434,7 +434,7 @@ function getAsciiAtlas(): HTMLCanvasElement {
     cx.font = `bold ${Math.round(ASCII_CELL * 0.95)}px ui-monospace, monospace`;
     cx.textAlign = 'center';
     cx.textBaseline = 'middle';
-    cx.fillStyle = '#7dff9b';
+    cx.fillStyle = '#ffffff';
     for (let i = 0; i < ASCII_RAMP.length; i++) {
       cx.fillText(ASCII_RAMP[i], i * ASCII_CELL + ASCII_CELL / 2, ASCII_CELL / 2 + 1);
     }
@@ -458,7 +458,8 @@ function applyAscii(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): v
   bctx.imageSmoothingEnabled = true;
   bctx.clearRect(0, 0, cols, rows);
   bctx.drawImage(canvas, 0, 0, w, h, 0, 0, cols, rows);
-  const d = bctx.getImageData(0, 0, cols, rows).data;
+  const img = bctx.getImageData(0, 0, cols, rows);
+  const d = img.data;
   const atlas = getAsciiAtlas();
   const last = ASCII_RAMP.length - 1;
   const cw = w / cols;
@@ -479,8 +480,21 @@ function applyAscii(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): v
       const idx = Math.round(Math.min(1, lum / 255 * 1.8) * last);
       if (idx <= 0) continue;
       ctx.drawImage(atlas, idx * ASCII_CELL, 0, ASCII_CELL, ASCII_CELL, c * cw, r * ch, cw, ch);
+      // Push the cell colour to full brightness so the glyph tint reads
+      // as a vivid hue, not the dim space-averaged colour.
+      const m = Math.max(d[i], d[i + 1], d[i + 2], 1);
+      const boost = 255 / m;
+      d[i] *= boost;
+      d[i + 1] *= boost;
+      d[i + 2] *= boost;
     }
   }
+  // Tint each glyph by its cell colour: multiply the brightness-normalised
+  // cell grid over the white characters so the ASCII carries the real hues.
+  bctx.putImageData(img, 0, 0);
+  ctx.globalCompositeOperation = 'multiply';
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(buf, 0, 0, cols, rows, 0, 0, w, h);
   ctx.restore();
 }
 
