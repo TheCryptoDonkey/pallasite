@@ -31,7 +31,7 @@ import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicSetMuted,
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, applyDisplayMode } from './display.js';
-import { warmWebGLIfPreviouslyEnabled, getTheme } from './visual-style.js';
+import { warmWebGLIfPreviouslyEnabled, getTheme, getAsciiCols } from './visual-style.js';
 import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
 import type { GameState } from './types.js';
@@ -593,7 +593,7 @@ function applyThemeFrame(target: HTMLCanvasElement, now: number): void {
     }
     overlay3d.style.visibility = 'hidden';
   }
-  applyPostFx(target, theme, now);
+  applyPostFx(target, theme, now, { asciiCols: getAsciiCols() });
 }
 
 function loop(now: number): void {

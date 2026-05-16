@@ -19,7 +19,7 @@
 
 import { getFlavour } from './flavour.js';
 import type { Asteroid, PowerUp, Ship, Ufo } from './types.js';
-import { coerceThemeId, type ThemeId } from './postfx/index.js';
+import { ASCII_COLS, coerceThemeId, type ThemeId } from './postfx/index.js';
 
 export type VisualTier = 'vector' | 'shaded' | 'mesh';
 export type VisualCategory = 'asteroid' | 'ship' | 'bullet' | 'particle';
@@ -35,6 +35,7 @@ interface State {
   bullet: VisualTier;
   particle: VisualTier;
   theme: ThemeId;
+  asciiCols: number;
 }
 
 function defaults(): State {
@@ -42,7 +43,7 @@ function defaults(): State {
   // overlay is the headline feature. Players on weak devices downshift
   // themselves via the settings panel (Player agency over defaults).
   const tier: VisualTier = getFlavour() === '600bn' ? 'mesh' : 'vector';
-  return { asteroid: tier, ship: tier, bullet: tier, particle: tier, theme: 'none' };
+  return { asteroid: tier, ship: tier, bullet: tier, particle: tier, theme: 'none', asciiCols: ASCII_COLS.default };
 }
 
 let cached: State | null = null;
@@ -51,6 +52,13 @@ let cached: State | null = null;
 function coerceTier(v: unknown): VisualTier {
   if (v === 'vector' || v === 'shaded' || v === 'mesh') return v;
   return 'vector';
+}
+
+/** Coerce an unknown value into a valid ASCII column count; clamps to the
+ *  supported range, unknown → the default. */
+function coerceAsciiCols(v: unknown): number {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) ? Math.max(ASCII_COLS.min, Math.min(ASCII_COLS.max, n)) : ASCII_COLS.default;
 }
 
 function load(): State {
@@ -66,6 +74,7 @@ function load(): State {
         bullet: coerceTier(parsed.bullet ?? base.bullet),
         particle: coerceTier(parsed.particle ?? base.particle),
         theme: coerceThemeId(parsed.theme ?? base.theme),
+        asciiCols: coerceAsciiCols(parsed.asciiCols ?? base.asciiCols),
       };
       return cached;
     }
@@ -131,6 +140,17 @@ export function getTheme(): ThemeId {
 /** Set the presentation theme. Persists and broadcasts like the tiers. */
 export function setTheme(theme: ThemeId): void {
   save({ ...load(), theme });
+}
+
+/** The ASCII theme's character-grid resolution (column count). */
+export function getAsciiCols(): number {
+  return load().asciiCols;
+}
+
+/** Set the ASCII resolution. Clamped to the supported range; persists and
+ *  broadcasts like the other visual prefs. */
+export function setAsciiCols(cols: number): void {
+  save({ ...load(), asciiCols: coerceAsciiCols(cols) });
 }
 
 /** Boot-time warm-up: if any category is already on 'mesh' from a
