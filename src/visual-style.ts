@@ -19,6 +19,7 @@
 
 import { getFlavour } from './flavour.js';
 import type { Asteroid, PowerUp, Ship, Ufo } from './types.js';
+import { coerceThemeId, type ThemeId } from './postfx/index.js';
 
 export type VisualTier = 'vector' | 'shaded' | 'mesh';
 export type VisualCategory = 'asteroid' | 'ship' | 'bullet' | 'particle';
@@ -33,6 +34,7 @@ interface State {
   ship: VisualTier;
   bullet: VisualTier;
   particle: VisualTier;
+  theme: ThemeId;
 }
 
 function defaults(): State {
@@ -40,7 +42,7 @@ function defaults(): State {
   // overlay is the headline feature. Players on weak devices downshift
   // themselves via the settings panel (Player agency over defaults).
   const tier: VisualTier = getFlavour() === '600bn' ? 'mesh' : 'vector';
-  return { asteroid: tier, ship: tier, bullet: tier, particle: tier };
+  return { asteroid: tier, ship: tier, bullet: tier, particle: tier, theme: 'none' };
 }
 
 let cached: State | null = null;
@@ -57,12 +59,13 @@ function load(): State {
   try {
     const raw = localStorage.getItem(KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as Partial<Record<VisualCategory, unknown>>;
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
       cached = {
         asteroid: coerceTier(parsed.asteroid ?? base.asteroid),
         ship: coerceTier(parsed.ship ?? base.ship),
         bullet: coerceTier(parsed.bullet ?? base.bullet),
         particle: coerceTier(parsed.particle ?? base.particle),
+        theme: coerceThemeId(parsed.theme ?? base.theme),
       };
       return cached;
     }
@@ -115,8 +118,19 @@ export function setVisualStyle(cat: VisualCategory, tier: VisualTier): void {
 /** Set every category to the same tier. Used by the quick-pick row in the
  *  settings panel. */
 export function setAllVisualStyles(tier: VisualTier): void {
-  save({ asteroid: tier, ship: tier, bullet: tier, particle: tier });
+  save({ ...load(), asteroid: tier, ship: tier, bullet: tier, particle: tier });
   if (tier === 'mesh') void warmWebGL();
+}
+
+/** The active presentation theme: the post-process look (CRT etc.). A
+ *  separate axis from the per-category fidelity tiers. */
+export function getTheme(): ThemeId {
+  return load().theme;
+}
+
+/** Set the presentation theme. Persists and broadcasts like the tiers. */
+export function setTheme(theme: ThemeId): void {
+  save({ ...load(), theme });
 }
 
 /** Boot-time warm-up: if any category is already on 'mesh' from a

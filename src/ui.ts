@@ -18,9 +18,12 @@ import {
   visualStyleIsUniform,
   hasStoredVisualStyle,
   setForcedVisualTier,
+  getTheme,
+  setTheme,
   type VisualCategory,
   type VisualTier,
 } from './visual-style.js';
+import { THEMES, type ThemeId } from './postfx/index.js';
 import {
   getReducedMotionPref, setReducedMotionPref, type ReducedMotionPref,
   getPalette, setPalette, type ColourPalette,
@@ -8137,6 +8140,30 @@ export function renderSettings(onBack: () => void): void {
     }
   }
   paintStyle();
+
+  // ── PRESENTATION ───────────────────────────────────────────────────────
+  // Post-process look (CRT etc.), a separate axis from the fidelity tiers
+  // above. Applies to the game canvas via the main loop's postfx pass.
+  const themeHeading = el('p', { parent: overlay, text: 'PRESENTATION' });
+  themeHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
+  const themeRow = el('div', { parent: overlay });
+  themeRow.style.cssText = 'display:flex;gap:6px;align-items:center;min-width:340px;';
+  const themeLabel = el('span', { parent: themeRow, text: 'LOOK' });
+  themeLabel.style.cssText = 'font-size:0.75rem;letter-spacing:0.18em;color:rgba(180,140,255,0.65);min-width:80px;';
+  const themeBtns = new Map<ThemeId, HTMLButtonElement>();
+  for (const t of THEMES) {
+    const btn = el('button', { parent: themeRow, text: t.label }) as HTMLButtonElement;
+    themeBtns.set(t.id, btn);
+    btn.addEventListener('click', () => {
+      setTheme(t.id);
+      paintTheme();
+    });
+  }
+  function paintTheme(): void {
+    const active = getTheme();
+    for (const [id, btn] of themeBtns) btn.style.cssText = styleBtnCss(id === active, false);
+  }
+  paintTheme();
 
   // ── PARALLAX ───────────────────────────────────────────────────────────
   // Three-state toggle: OFF (current behaviour, no depth bands),
