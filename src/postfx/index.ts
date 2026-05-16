@@ -443,13 +443,14 @@ function getAsciiAtlas(): HTMLCanvasElement {
   return asciiAtlas;
 }
 
-/** ASCII: sample the frame into an 80-column character grid and stamp
- *  ramp glyphs, terminal-green on near-black. */
+/** ASCII: sample the frame into a high-resolution character grid, stamp
+ *  ramp glyphs, and tint each glyph by its cell hue over a dimmed ghost
+ *  of the real frame. */
 function applyAscii(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): void {
   const w = canvas.width;
   const h = canvas.height;
   if (w === 0 || h === 0) return;
-  const cols = 120;
+  const cols = 160;
   const rows = Math.max(1, Math.round(cols * (h / w) / 1.6));
   const buf = getPixelBuf(cols, rows);
   const bctx = buf.getContext('2d', { willReadFrequently: true });
