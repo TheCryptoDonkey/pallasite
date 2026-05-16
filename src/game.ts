@@ -57,7 +57,7 @@ import { preloadBackground, getCollisionWrap, getVisibleBoundsW } from './render
 import { currentMods, lockInDifficulty, getStoredDifficulty, currentDifficulty } from './difficulty.js';
 import { lockInMode, getStoredMode, currentMode } from './mode.js';
 import { markAchievement, resetRunAchievements } from './achievements.js';
-import { gameRng } from './seed.js';
+import { gameRng, seedRun } from './seed.js';
 import { haptic } from './haptics.js';
 import { markSkinUnlocked } from './skins.js';
 import {
@@ -105,6 +105,7 @@ export function makeInitialState(): GameState {
     bonusPreludeSpawned: 0,
     runTimeMs: 0,
     runStartedAt: 0,
+    seed: 0,
     bossDefeated: false,
     combo: 0,
     comboExpiresAt: 0,
@@ -231,6 +232,11 @@ export function startGame(s: GameState): void {
   // That keeps the ship/HUD/IGNITE banner/claim flow identical to the
   // campaign — the 600bn theme is layered into the existing pipeline
   // rather than running a parallel game loop.
+
+  // Seed the run's RNG and record the seed on state. Every run is seeded
+  // now (daily mode keys off the date, otherwise a fresh random seed) so a
+  // run can be deterministically re-simulated from s.seed (B3).
+  s.seed = seedRun();
 
   // Defensive re-lock — the title-screen IGNITE path also locks, but the
   // gameover SPAWN AGAIN and completion IGNITE AGAIN buttons jump straight
