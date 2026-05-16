@@ -31,7 +31,8 @@ import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicSetMuted,
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, applyDisplayMode } from './display.js';
-import { warmWebGLIfPreviouslyEnabled } from './visual-style.js';
+import { warmWebGLIfPreviouslyEnabled, getTheme } from './visual-style.js';
+import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
 import type { GameState } from './types.js';
 import { DOWN_DOUBLE_TAP_WINDOW_MS } from './types.js';
@@ -583,6 +584,8 @@ function loop(now: number): void {
 
   updateGame(state, dt, now);
   render(canvas, state, now);
+  // Presentation theme post-process (CRT etc.); a no-op while the theme is 'none'.
+  applyPostFx(canvas, getTheme(), now);
 
   // Phase transitions render UI overlays
   if (state.phase !== lastPhase) {
