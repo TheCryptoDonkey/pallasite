@@ -440,8 +440,12 @@ export interface GameState {
   phaseStart: number;
   /** ms timestamp last update */
   lastUpdate: number;
-  /** total elapsed playtime ms (for music/audio if added) */
+  /** total elapsed playtime ms — the sim clock; advances by a fixed step
+   *  each tick, so it doubles as the deterministic time base for deadlines. */
   elapsed: number;
+  /** fixed sim step counter, +1 each updateGame tick. The canonical step
+   *  index for deterministic re-simulation and the B3 input log. */
+  frame: number;
 
   /** ms until next UFO spawn */
   nextUfoSpawn: number;
@@ -483,11 +487,10 @@ export interface GameState {
   combo: number;
   /** ms timestamp the combo window closes. */
   comboExpiresAt: number;
-  /** ms timestamp the simulation should resume after a hit-stop freeze.
-   *  Set on milestone moments (currently: first time the chain lands on
-   *  COMBO_MAX in a string) to give the punch a frame of weight.
-   *  updateGame early-returns while now < hitStopUntil. */
-  hitStopUntil: number;
+  /** Number of fixed sim steps still to skip for a hit-stop freeze (0 when
+   *  not frozen). Set on milestone moments to give a punch a frame of
+   *  weight; the loop skips updateGame while this is positive. */
+  hitStopSteps: number;
 
   /** ms timestamp rapid-fire buff expires (0 when inactive). */
   rapidExpiresAt: number;

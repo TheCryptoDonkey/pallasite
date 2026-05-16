@@ -5,7 +5,7 @@
  * stored Signet session, and routes between title/playing/paused/game-over.
  */
 
-import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHyperspace, tryActivateShield, cheatJumpToWave, cheatJumpToBonus, skipDeathReplay, skipWaveStart, skipWarp } from './game.js';
+import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHyperspace, tryActivateShield, cheatJumpToWave, cheatJumpToBonus, skipDeathReplay, skipWaveStart, skipWarp, FIXED_STEP_S } from './game.js';
 import { getFlavour } from './flavour.js';
 import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
@@ -164,7 +164,7 @@ function setupWaveLongPress(): void {
       timer = null;
       if (getActiveSeed() !== null) {
         state.toast = 'CHEATS LOCKED · DAILY RUN';
-        state.toastUntil = performance.now() + 1800;
+        state.toastUntil = state.elapsed + 1800;
         return;
       }
       openCheatInput();
@@ -191,7 +191,7 @@ function setupWaveLongPress(): void {
       lastTapAt = 0;
       if (getActiveSeed() !== null) {
         state.toast = 'CHEATS LOCKED · DAILY RUN';
-        state.toastUntil = performance.now() + 1800;
+        state.toastUntil = state.elapsed + 1800;
         return;
       }
       cheatJumpToWave(state, state.wave + 1);
@@ -276,7 +276,7 @@ window.addEventListener('keydown', e => {
   // sees it.
   if (state.phase === 'deathreplay') {
     if (e.repeat) return;
-    if (performance.now() - state.phaseStart < 250) return;
+    if (state.elapsed - state.phaseStart < 250) return;
     skipDeathReplay(state);
     e.preventDefault();
     return;
@@ -337,17 +337,17 @@ window.addEventListener('keydown', e => {
   }
   // Hyperspace via Shift / H — instant
   if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyH') && state.phase === 'playing') {
-    tryHyperspace(state, performance.now());
+    tryHyperspace(state, state.elapsed);
   }
   // Down-arrow: shield on first press, hyperspace on double-tap
   if (e.code === 'ArrowDown' && state.phase === 'playing' && !e.repeat) {
     const now = performance.now();
     const sinceLast = now - lastDownArrowAt;
     if (lastDownArrowAt > 0 && sinceLast < DOWN_DOUBLE_TAP_WINDOW_MS) {
-      tryHyperspace(state, now);
+      tryHyperspace(state, state.elapsed);
       lastDownArrowAt = 0;  // consume — prevent triple-tap chain
     } else {
-      tryActivateShield(state, now);
+      tryActivateShield(state, state.elapsed);
       lastDownArrowAt = now;
     }
   }
@@ -355,7 +355,7 @@ window.addEventListener('keydown', e => {
   if ((e.code === 'Equal' || e.code === 'NumpadAdd') && (state.phase === 'playing' || state.phase === 'wavestart' || state.phase === 'warp')) {
     if (getActiveSeed() !== null) {
       state.toast = 'CHEATS LOCKED · DAILY RUN';
-      state.toastUntil = performance.now() + 1800;
+      state.toastUntil = state.elapsed + 1800;
     } else {
       openCheatInput();
     }
@@ -364,7 +364,7 @@ window.addEventListener('keydown', e => {
   if ((e.code === 'Minus' || e.code === 'NumpadSubtract') && (state.phase === 'playing' || state.phase === 'wavestart')) {
     if (getActiveSeed() !== null) {
       state.toast = 'CHEATS LOCKED · DAILY RUN';
-      state.toastUntil = performance.now() + 1800;
+      state.toastUntil = state.elapsed + 1800;
     } else {
       cheatJumpToWave(state, Math.max(1, state.wave - 1));
     }
@@ -568,7 +568,13 @@ document.addEventListener('resume', hardResume);
 
 // ── Game loop ─────────────────────────────────────────────────────────────────
 
+// Fixed-timestep loop. The sim advances in exact FIXED_STEP_S quanta
+// decoupled from the display refresh rate; the accumulator banks real
+// time and spends it one whole step at a time. MAX_CATCHUP_STEPS caps a
+// single frame's catch-up so a backgrounded tab can't trigger a step storm.
+const MAX_CATCHUP_STEPS = 5;
 let lastFrame = performance.now();
+let stepAccumulator = 0;
 let lastPhase = state.phase;
 
 /** Apply the active presentation theme to the finished frame. With a theme
@@ -601,13 +607,25 @@ function loop(now: number): void {
   // render.ts's module-level render mode itself. Yield the loop to it so
   // the two never contend; it resumes the moment the theatre closes.
   if (document.body.dataset.theatre === 'open') {
+    // Drop the elapsed gap so the sim doesn't fast-forward when handed back.
+    lastFrame = now;
+    stepAccumulator = 0;
     requestAnimationFrame(loop);
     return;
   }
-  const dt = Math.min(0.05, (now - lastFrame) / 1000);  // cap to 50ms (20fps minimum step)
+  // Bank real time, clamped, then spend it one fixed sim step at a time.
+  stepAccumulator += Math.min(MAX_CATCHUP_STEPS * FIXED_STEP_S, (now - lastFrame) / 1000);
   lastFrame = now;
+  while (stepAccumulator >= FIXED_STEP_S) {
+    if (state.hitStopSteps > 0) {
+      // Hit-stop freeze: the step's time passes but the sim does not tick.
+      state.hitStopSteps--;
+    } else {
+      updateGame(state);
+    }
+    stepAccumulator -= FIXED_STEP_S;
+  }
 
-  updateGame(state, dt, now);
   render(canvas, state, now);
   applyThemeFrame(canvas, now);
   if (getTheme() === 'ascii') drawAsciiHud(canvas, state, now);
