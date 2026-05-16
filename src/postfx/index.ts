@@ -36,6 +36,17 @@ export function coerceThemeId(v: unknown): ThemeId {
   return typeof v === 'string' && THEMES.some((t) => t.id === v) ? (v as ThemeId) : 'none';
 }
 
+/** ASCII presentation resolution: the character-grid column count. Exposed
+ *  so the game can offer it as a slider — finer grids cost frame budget. */
+export const ASCII_COLS = { min: 80, max: 320, step: 20, default: 160 } as const;
+
+/** Per-call tuning passed to applyPostFx. All fields optional; an omitted
+ *  field falls back to the effect's built-in default. */
+export interface PostFxOptions {
+  /** ASCII character-grid column count (see ASCII_COLS). */
+  asciiCols?: number;
+}
+
 // Scratch canvas holding a clean snapshot of the frame, so a multi-pass
 // effect samples the original rather than a half-processed result.
 let scratch: HTMLCanvasElement | null = null;
@@ -47,7 +58,7 @@ function getScratch(w: number, h: number): HTMLCanvasElement {
 }
 
 /** Apply the active theme's post-process pass to a finished frame, in place. */
-export function applyPostFx(canvas: HTMLCanvasElement, theme: ThemeId, nowMs: number): void {
+export function applyPostFx(canvas: HTMLCanvasElement, theme: ThemeId, nowMs: number, opts?: PostFxOptions): void {
   if (theme === 'none') return;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -58,7 +69,7 @@ export function applyPostFx(canvas: HTMLCanvasElement, theme: ThemeId, nowMs: nu
   else if (theme === 'gameboycolor') applyGameBoyColor(ctx, canvas);
   else if (theme === 'hologram') applyHologram(ctx, canvas, nowMs);
   else if (theme === 'blueprint') applyBlueprint(ctx, canvas);
-  else if (theme === 'ascii') applyAscii(ctx, canvas);
+  else if (theme === 'ascii') applyAscii(ctx, canvas, opts?.asciiCols ?? ASCII_COLS.default);
   else if (theme === 'handdrawn') applyHandDrawn(ctx, canvas, nowMs);
 }
 
@@ -446,11 +457,11 @@ function getAsciiAtlas(): HTMLCanvasElement {
 /** ASCII: sample the frame into a high-resolution character grid, stamp
  *  ramp glyphs, and tint each glyph by its cell hue over a dimmed ghost
  *  of the real frame. */
-function applyAscii(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): void {
+function applyAscii(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, requestedCols: number): void {
   const w = canvas.width;
   const h = canvas.height;
   if (w === 0 || h === 0) return;
-  const cols = 160;
+  const cols = Math.max(ASCII_COLS.min, Math.min(ASCII_COLS.max, Math.round(requestedCols)));
   const rows = Math.max(1, Math.round(cols * (h / w) / 1.6));
   const buf = getPixelBuf(cols, rows);
   const bctx = buf.getContext('2d', { willReadFrequently: true });
@@ -499,9 +510,41 @@ function applyAscii(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): v
   ctx.restore();
 }
 
-/** Hand-drawn: dark ink on cream paper with a gentle wobble. Inverts the
- *  frame so bright strokes become ink, multiplies that onto a paper fill,
- *  and draws it in wavy horizontal strips so straight lines wobble. */
+let paperTex: HTMLCanvasElement | null = null;
+/** Lazily build a small tiling paper-grain texture: mostly bright with a
+ *  sparse scatter of darker flecks, so multiplying it onto the cream base
+ *  reads as fibrous stock rather than a flat fill. */
+function getPaperTexture(): HTMLCanvasElement {
+  if (paperTex) return paperTex;
+  const size = 128;
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  const cx = c.getContext('2d');
+  if (cx) {
+    const img = cx.createImageData(size, size);
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      // Bright pixels are a near no-op under multiply; the sparse darker
+      // flecks are what the eye reads as paper fibre.
+      const v = Math.random() > 0.9
+        ? 198 + Math.floor(Math.random() * 34)
+        : 246 + Math.floor(Math.random() * 9);
+      d[i] = v;
+      d[i + 1] = v;
+      d[i + 2] = v;
+      d[i + 3] = 255;
+    }
+    cx.putImageData(img, 0, 0);
+  }
+  paperTex = c;
+  return paperTex;
+}
+
+/** Hand-drawn: a graphite-and-ink sketch on grained cream paper. Inverts
+ *  the frame so bright strokes become ink, warms it towards sepia, then
+ *  multiplies it onto textured paper in wavy strips — twice and slightly
+ *  offset, so the linework reads as sketched rather than printed. */
 function applyHandDrawn(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, nowMs: number): void {
   const w = canvas.width;
   const h = canvas.height;
@@ -517,31 +560,52 @@ function applyHandDrawn(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-  // Cream paper.
+  // Warm cream paper.
   ctx.globalCompositeOperation = 'source-over';
   ctx.globalAlpha = 1;
-  ctx.fillStyle = '#e9e1c6';
+  ctx.fillStyle = '#e8debb';
   ctx.fillRect(0, 0, w, h);
 
-  // Ink: invert the frame so bright strokes go dark, multiply it onto the
-  // paper, drawn in wavy strips so straight lines pick up a wobble.
+  // Paper grain — a tiled speckle multiplied down so the page reads as
+  // fibrous stock rather than a flat fill.
+  const grain = ctx.createPattern(getPaperTexture(), 'repeat');
+  if (grain) {
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.globalAlpha = 0.7;
+    ctx.fillStyle = grain;
+    ctx.fillRect(0, 0, w, h);
+    ctx.globalAlpha = 1;
+  }
+
+  // Ink: invert the frame so bright strokes go dark, warm it towards
+  // sepia and punch the contrast so the lines read as confident ink.
+  // Drawn in wavy strips so straight lines pick up a wobble; a second
+  // fainter offset pass gives the linework a sketched double-stroke.
   ctx.globalCompositeOperation = 'multiply';
-  ctx.filter = 'invert(1) contrast(1.7)';
+  ctx.filter = 'invert(1) sepia(0.55) contrast(2.25)';
   const strips = 48;
   const stripH = h / strips;
-  const amp = 3.2 * k;
+  const amp = 3.4 * k;
+  const wob = (s: number, phase: number): number =>
+    Math.sin(s * 0.5 + nowMs * 0.0011 + phase) * amp
+    + Math.sin(s * 1.7 + nowMs * 0.0007 + phase) * amp * 0.5;
   for (let s = 0; s < strips; s++) {
     const sy = s * stripH;
-    const dx = Math.sin(s * 0.5 + nowMs * 0.0011) * amp
-      + Math.sin(s * 1.7 + nowMs * 0.0007) * amp * 0.5;
-    ctx.drawImage(sc, 0, sy, w, stripH + 1, dx, sy, w, stripH + 1);
+    ctx.drawImage(sc, 0, sy, w, stripH + 1, wob(s, 0), sy, w, stripH + 1);
   }
+  ctx.globalAlpha = 0.5;
+  for (let s = 0; s < strips; s++) {
+    const sy = s * stripH;
+    ctx.drawImage(sc, 0, sy, w, stripH + 1, wob(s, 2.4) + 1.5 * k, sy + 0.9 * k, w, stripH + 1);
+  }
+  ctx.globalAlpha = 1;
   ctx.filter = 'none';
 
-  // Soft page vignette.
-  const vig = ctx.createRadialGradient(w / 2, h / 2, h * 0.5, w / 2, h / 2, h * 0.95);
+  // Soft page vignette — a gentle warm darkening towards the edges.
+  ctx.globalCompositeOperation = 'multiply';
+  const vig = ctx.createRadialGradient(w / 2, h / 2, h * 0.6, w / 2, h / 2, h * 1.05);
   vig.addColorStop(0, 'rgba(255,255,255,1)');
-  vig.addColorStop(1, 'rgba(202,192,162,1)');
+  vig.addColorStop(1, 'rgba(216,205,170,1)');
   ctx.fillStyle = vig;
   ctx.fillRect(0, 0, w, h);
 

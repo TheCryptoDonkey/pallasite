@@ -20,10 +20,12 @@ import {
   setForcedVisualTier,
   getTheme,
   setTheme,
+  getAsciiCols,
+  setAsciiCols,
   type VisualCategory,
   type VisualTier,
 } from './visual-style.js';
-import { THEMES, applyPostFx, type ThemeId } from './postfx/index.js';
+import { THEMES, applyPostFx, ASCII_COLS, type ThemeId } from './postfx/index.js';
 import {
   getReducedMotionPref, setReducedMotionPref, type ReducedMotionPref,
   getPalette, setPalette, type ColourPalette,
@@ -3599,7 +3601,7 @@ export function renderLiveTheatre(input: LiveTheatreInput): void {
         c2d.restore();
         g3d.style.visibility = 'hidden';
       }
-      applyPostFx(canvas, theatreTheme, nowPerf);
+      applyPostFx(canvas, theatreTheme, nowPerf, { asciiCols: getAsciiCols() });
     } else if (g3d && g3d.style.visibility === 'hidden') {
       g3d.style.visibility = '';
     }
@@ -8198,9 +8200,32 @@ export function renderSettings(onBack: () => void): void {
       paintTheme();
     });
   }
+  // ASCII resolution — the character grid is the dial: finer grids trade
+  // frame budget for detail. Only shown while ASCII is the active look,
+  // since it does nothing for the other themes.
+  const asciiRow = el('div', { parent: overlay });
+  asciiRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr 44px;gap:14px;align-items:center;min-width:340px;';
+  el('label', { parent: asciiRow, text: 'RESOLUTION' })
+    .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
+  const asciiSlider = el('input', { parent: asciiRow });
+  asciiSlider.type = 'range';
+  asciiSlider.min = String(ASCII_COLS.min);
+  asciiSlider.max = String(ASCII_COLS.max);
+  asciiSlider.step = String(ASCII_COLS.step);
+  asciiSlider.value = String(getAsciiCols());
+  asciiSlider.style.cssText = 'width:100%;accent-color:#b48cff;cursor:pointer;';
+  const asciiVal = el('span', { parent: asciiRow, text: String(getAsciiCols()) });
+  asciiVal.style.cssText = 'font-size:0.85rem;color:#ffd84a;text-align:right;font-variant-numeric:tabular-nums;';
+  asciiSlider.addEventListener('input', () => {
+    const n = Number(asciiSlider.value);
+    setAsciiCols(n);
+    asciiVal.textContent = String(n);
+  });
+
   function paintTheme(): void {
     const active = getTheme();
     for (const [id, btn] of themeBtns) btn.style.cssText = styleBtnCss(id === active, false);
+    asciiRow.style.display = active === 'ascii' ? 'grid' : 'none';
   }
   paintTheme();
 
