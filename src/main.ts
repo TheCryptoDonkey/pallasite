@@ -752,15 +752,20 @@ async function boot(): Promise<void> {
     if (mode === 'modern') {
       // Modern fill: the canvas spans the entire viewport. The world is a
       // fixed 16:9 shape; contain-scale fits the whole of it into the
-      // viewport. On a 16:9 screen that's an exact edge-to-edge fill; off
-      // 16:9 (incl. portrait) it letterboxes. The world never crops, so the
-      // whole playfield is always visible and no follow camera is needed.
+      // viewport. On a 16:9 screen that's an exact edge-to-edge fill; off-16:9
+      // landscape it letterboxes. Portrait is the exception: there `follow`
+      // tells render() to switch to the follow camera. The contain transform
+      // below is still what the non-follow phases (warp, title, game-over)
+      // use in portrait, so it is always computed.
       canvas.width = Math.round(vw * dpr);
       canvas.height = Math.round(vh * dpr);
       canvas.style.width = vw + 'px';
       canvas.style.height = vh + 'px';
       canvas.style.imageRendering = 'auto';
       const ctx = canvas.getContext('2d')!;
+      // Portrait phones get the follow camera (see render.ts); landscape and
+      // square viewports keep the contain transform.
+      const follow = vh > vw;
       const scale = Math.min(vw / WORLD_W, vh / WORLD_H);
       const tx = (vw - WORLD_W * scale) / 2;
       const ty = (vh - WORLD_H * scale) / 2;
@@ -771,7 +776,7 @@ async function boot(): Promise<void> {
         overlay3d.style.width = vw + 'px';
         overlay3d.style.height = vh + 'px';
       }
-      setRenderMode({ kind: 'modern', vw, vh, dpr, scale, tx, ty, insets });
+      setRenderMode({ kind: 'modern', vw, vh, dpr, scale, tx, ty, insets, follow });
       return;
     }
 
@@ -822,6 +827,15 @@ async function boot(): Promise<void> {
   // trustworthy single signal iOS gives us, free of the event-timing
   // race above.
   window.visualViewport?.addEventListener('resize', fit);
+  // Backgrounding the tab/app can leave the canvas sized for a stale viewport,
+  // or on iOS bfcache restore not laid out at all, so a resumed portrait
+  // session drops back to the contain band. On resume, re-fit with the same
+  // multi-pass settle used for rotation so a later pass lands on the real
+  // dimensions and `follow` is recomputed for the actual orientation.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') scheduleRefit();
+  });
+  window.addEventListener('pageshow', scheduleRefit);
 
   // First, consume an in-flight signet redirect callback if one's on the URL —
   // returning from signet with auth params persists a session and strips them

@@ -22,6 +22,7 @@ import { getMemberImage } from './sanctum-avatars.js';
 import { getFlavour } from './flavour.js';
 import { getVisualStyle, getTheme, isWebGLOverlayReady, callWebGLOverlay } from './visual-style.js';
 import { DEPTH_CONFIGS } from './parallax.js';
+import { getRadarVisible } from './radar.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
 
@@ -239,9 +240,44 @@ export interface RenderModeInfo {
   tx: number;
   ty: number;
   insets: SafeInsets;
+  /** Portrait-modern follow camera active: render() applies a per-frame
+   *  horizontal camera translate that tracks the ship. Unset (falsy) for
+   *  landscape-modern and retro, which keep the static contain transform. */
+  follow?: boolean;
 }
 let renderMode: RenderModeInfo = { kind: 'retro', vw: WORLD_W, vh: WORLD_H, dpr: 1, scale: 1, tx: 0, ty: 0, insets: ZERO_INSETS };
 export function setRenderMode(info: RenderModeInfo): void { renderMode = info; }
+
+// ── Portrait follow camera ────────────────────────────────────────────────────
+
+/** Smoothed camera-centre X in world coords. Render-only state: the sim never
+ *  reads it, so it cannot affect B3 determinism. */
+let camX = WORLD_W / 2;
+/** False until the camera has been seeded onto the ship for the current run. */
+let camInit = false;
+/** Timestamp of the previous follow frame, for frame-rate-independent easing. */
+let camPrevNow = 0;
+
+/** Wrap a world X into [0, WORLD_W). */
+function wrapInto(x: number): number {
+  return ((x % WORLD_W) + WORLD_W) % WORLD_W;
+}
+
+/** Shortest signed delta from -> to on the WORLD_W ring (-WORLD_W/2 .. WORLD_W/2).
+ *  The world wraps, so the camera must chase the ship the short way round. */
+function wrapDelta(from: number, to: number): number {
+  let d = (to - from) % WORLD_W;
+  if (d < -WORLD_W / 2) d += WORLD_W;
+  if (d > WORLD_W / 2) d -= WORLD_W;
+  return d;
+}
+
+/** Phases the follow camera tracks the ship through. Menus, game-over, the
+ *  warp tunnel and the death replay keep the static contain transform. */
+function isFollowPhase(phase: GameState['phase']): boolean {
+  return phase === 'playing' || phase === 'wavestart'
+    || phase === 'bonus' || phase === 'paused';
+}
 
 /** Re-assert the clean centred world transform for UI overlays (wave banner,
  *  intertitle, countdown, bonus banner) laid out in WORLD coords, dropping any
@@ -249,9 +285,13 @@ export function setRenderMode(info: RenderModeInfo): void { renderMode = info; }
 function applyOverlayTransform(ctx: CanvasRenderingContext2D): void {
   const t = renderMode;
   if (t.kind === 'modern') {
-    const txc = t.vw / 2 - (WORLD_W / 2) * t.scale;
-    const tyc = t.vh / 2 - (WORLD_H / 2) * t.scale;
-    ctx.setTransform(t.dpr * t.scale, 0, 0, t.dpr * t.scale, t.dpr * txc, t.dpr * tyc);
+    // Follow mode shows the world at full height; lay banners out at that
+    // scale, centred horizontally on the viewport, so they read full-size
+    // rather than shrunk into the old contain band.
+    const s = t.follow ? t.vh / WORLD_H : t.scale;
+    const txc = t.vw / 2 - (WORLD_W / 2) * s;
+    const tyc = t.vh / 2 - (WORLD_H / 2) * s;
+    ctx.setTransform(t.dpr * s, 0, 0, t.dpr * s, t.dpr * txc, t.dpr * tyc);
   } else {
     ctx.setTransform(t.dpr, 0, 0, t.dpr, 0, 0);
   }
@@ -3275,11 +3315,79 @@ function drawShockwaves(ctx: CanvasRenderingContext2D, rings: Shockwave[], now: 
 
 // ── HUD layer ─────────────────────────────────────────────────────────────────
 
+/** Defender-style radar. Portrait-follow only: the player sees a vertical
+ *  slice of the world, so a compressed whole-world map with blips keeps them
+ *  aware of the field that is off-screen. Drawn in device space, like the HUD. */
+function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
+  if (!renderMode.follow || !isFollowPhase(s.phase) || !getRadarVisible()) return;
+
+  ctx.save();
+  ctx.setTransform(renderMode.dpr, 0, 0, renderMode.dpr, 0, 0);
+
+  const insets = renderMode.insets;
+  const x0 = 24 + insets.left;
+  const w = renderMode.vw - 48 - insets.left - insets.right;
+  // Below the HUD top block — the SCORE / SATS stack reaches roughly topY+110.
+  const y0 = 16 + insets.top + 120;
+  const h = 76;
+  if (w < 80) { ctx.restore(); return; }  // too cramped to be useful
+
+  // Panel. Near-opaque: a translucent panel let a bright asteroid drifting
+  // behind it bleed through and wash out the blips.
+  ctx.fillStyle = 'rgba(6, 10, 20, 0.94)';
+  ctx.fillRect(x0, y0, w, h);
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(120, 150, 255, 0.32)';
+  ctx.strokeRect(x0 + 0.5, y0 + 0.5, w - 1, h - 1);
+  ctx.beginPath();
+  ctx.rect(x0, y0, w, h);
+  ctx.clip();
+
+  // World -> radar mapping: linear on X over the full WORLD_W, compressed on Y
+  // (WORLD_H into ~76px). The Y squash is intentional, as Defender's radar did.
+  const blip = (wx: number, wy: number, r: number, fill: string): void => {
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    ctx.arc(x0 + (wrapInto(wx) / WORLD_W) * w, y0 + (wy / WORLD_H) * h, r, 0, Math.PI * 2);
+    ctx.fill();
+  };
+  // Asteroid blips scale with the rock's real radius (14 small .. 48 large, or
+  // bigger for a vein) so the player reads big vs small at a glance.
+  for (const a of s.asteroids) {
+    blip(a.pos.x, a.pos.y, Math.max(1.4, Math.min(5.5, a.radius * 0.082 + 0.85)), '#9aa6c8');
+  }
+  // Enemy fire — incoming shots from off the visible strip are the whole point
+  // of the radar; player bullets are left off to keep it readable.
+  for (const b of s.enemyBullets) blip(b.pos.x, b.pos.y, 1.8, '#ff8a1e');
+  for (const p of s.powerups) blip(p.pos.x, p.pos.y, 3.4, '#5be8ff');
+  for (const m of s.mines) blip(m.pos.x, m.pos.y, 3, '#ff5a4a');
+  for (const u of s.ufos) blip(u.pos.x, u.pos.y, 3.6, '#ff4af0');
+  if (s.ship.alive) blip(s.ship.pos.x, s.ship.pos.y, 4.5, '#58ff58');
+
+  // Visible-strip box — the slice the follow camera currently shows. Drawn as
+  // one or two rects so it wraps cleanly around the radar's edges.
+  const strip = renderMode.vw / (renderMode.vh / WORLD_H);
+  const boxW = Math.min(strip / WORLD_W, 1) * w;
+  const boxX = x0 + (wrapInto(camX - strip / 2) / WORLD_W) * w;
+  ctx.strokeStyle = 'rgba(255, 240, 180, 0.95)';
+  ctx.lineWidth = 1.5;
+  if (boxX + boxW <= x0 + w) {
+    ctx.strokeRect(boxX, y0 + 1, boxW, h - 2);
+  } else {
+    const first = x0 + w - boxX;
+    ctx.strokeRect(boxX, y0 + 1, first, h - 2);
+    ctx.strokeRect(x0, y0 + 1, boxW - first, h - 2);
+  }
+
+  ctx.restore();
+}
+
 /** The full HUD overlay layer: persistent readouts, transient wave
  *  banners, and the intertitle. The intertitle draws last so its black
  *  card can cover the readouts during act-boundary intros. */
 function drawHudLayer(ctx: CanvasRenderingContext2D, state: GameState): void {
   drawHud(ctx, state);
+  drawRadar(ctx, state);
   drawWaveBanner(ctx, state);
   drawBonusBanner(ctx, state);
   drawWaveClearCountdown(ctx, state);
@@ -3308,13 +3416,58 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  // World-to-device transform fit() computed: contain-scale plus the letterbox
-  // centring offset. Set before the phase branches so the warp and death-replay
-  // paths — which draw in world coords and set no transform of their own —
-  // render at the right scale too.
+  // Portrait follow camera. In portrait-modern the renderer shows the world at
+  // full height and scrolls a horizontal slice to track the ship; everywhere
+  // else it keeps fit()'s static contain transform. Computed here, before the
+  // phase branches, so the transform, the seam-wrap offsets, the clip and the
+  // star field all share one camera. Render-only: the sim never sees any of
+  // this, so B3 determinism is untouched.
+  const followActive = !!renderMode.follow && isFollowPhase(state.phase);
+  let scale = renderMode.scale;
+  let tx = renderMode.tx;
+  let ty = renderMode.ty;
+  let camStrip = 0;
+  const followXs: number[] = [0];
+  if (followActive) {
+    scale = renderMode.vh / WORLD_H;        // full world height fills the viewport
+    camStrip = renderMode.vw / scale;       // visible world width
+    const sx = state.ship.pos.x;
+    if (!camInit) {
+      // Fresh run, post-death respawn, or a rotation into portrait: snap on.
+      camX = wrapInto(sx);
+      camInit = true;
+    } else if (state.ship.alive) {
+      // Dead-zone follow: the camera holds until the ship leaves a central
+      // band, then eases toward the band edge. Held entirely while the ship is
+      // dead so a death is not yanked off-centre.
+      const dz = camStrip * 0.16;
+      const d = wrapDelta(camX, sx);
+      let target = camX;
+      if (d > dz) target = camX + (d - dz);
+      else if (d < -dz) target = camX + (d + dz);
+      const dt = Math.min(0.05, Math.max(0, (now - camPrevNow) / 1000));
+      const k = 1 - Math.exp(-dt / 0.12);   // ~120ms time constant
+      camX = wrapInto(camX + wrapDelta(camX, target) * k);
+    }
+    camPrevNow = now;
+    tx = renderMode.vw / 2 - camX * scale;
+    ty = 0;
+    // Seam-wrap copies: pull in a world-neighbour copy only when the visible
+    // strip actually overruns a seam, so calm frames stay single-pass.
+    if (camX - camStrip / 2 < 0) followXs.push(-WORLD_W);
+    if (camX + camStrip / 2 > WORLD_W) followXs.push(WORLD_W);
+  } else {
+    // Not following: re-seed onto the ship next time the camera engages.
+    camInit = false;
+  }
+
+  // World-to-device transform: fit()'s contain transform, or the follow
+  // camera's per-frame transform. Set before the phase branches so the warp
+  // and death-replay paths, which draw in world coords and set no transform of
+  // their own, render at the right scale too.
   ctx.setTransform(
-    renderMode.dpr * renderMode.scale, 0, 0, renderMode.dpr * renderMode.scale,
-    renderMode.dpr * renderMode.tx, renderMode.dpr * renderMode.ty,
+    renderMode.dpr * scale, 0, 0, renderMode.dpr * scale,
+    renderMode.dpr * tx, renderMode.dpr * ty,
   );
 
   if (state.phase === 'warp') {
@@ -3328,7 +3481,18 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   }
 
   drawBackground(ctx, state, now);
-  drawStars(ctx, now);
+  // Stars ride the world transform; under the follow camera draw them at each
+  // visible seam copy so a strip straddling x=0 / WORLD_W stays starred.
+  for (const dx of followXs) {
+    if (dx === 0) {
+      drawStars(ctx, now);
+    } else {
+      ctx.save();
+      ctx.translate(dx, 0);
+      drawStars(ctx, now);
+      ctx.restore();
+    }
+  }
 
   // Camera shake from accumulated trauma. trauma² gives a quadratic feel —
   // small hits barely shake, big hits punch. Reduced-motion zeros amplitude.
@@ -3345,7 +3509,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // offset is added only when some entity is actually near that seam, so calm
   // frames stay single-pass. Entities wrap at the exact edge, so the teleport
   // is exactly WORLD_W and the ghost hands off to the real copy with no jump.
-  const ghostXs: number[] = [0];
+  const ghostXs: number[] = followActive ? followXs : [0];
   const ghostYs: number[] = [0];
   {
     const BAND = 140;  // largest entity radius plus a lead-in
@@ -3362,8 +3526,12 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     for (const c of state.coins) scan(c.pos.x, c.pos.y);
     for (const p of state.powerups) scan(p.pos.x, p.pos.y);
     scan(state.ship.pos.x, state.ship.pos.y);
-    if (nearL) ghostXs.push(WORLD_W);
-    if (nearR) ghostXs.push(-WORLD_W);
+    // The follow camera derives its X copies from the visible strip
+    // (followXs); only the contain modes need the proximity scan for X.
+    if (!followActive) {
+      if (nearL) ghostXs.push(WORLD_W);
+      if (nearR) ghostXs.push(-WORLD_W);
+    }
     if (nearT) ghostYs.push(WORLD_H);
     if (nearB) ghostYs.push(-WORLD_H);
   }
@@ -3378,7 +3546,13 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // device-space full-screen effects (combo tint, HUD) run after the restore
   // below, so they still cover the gutters.
   ctx.beginPath();
-  ctx.rect(0, 0, WORLD_W, WORLD_H);
+  if (followActive) {
+    // The follow camera fills the viewport with the strip; clip to the strip
+    // so the seam-wrap world copies are trimmed to what is actually visible.
+    ctx.rect(camX - camStrip / 2, 0, camStrip, WORLD_H);
+  } else {
+    ctx.rect(0, 0, WORLD_W, WORLD_H);
+  }
   ctx.clip();
   ctx.translate(shakeX, shakeY);
 
@@ -3404,9 +3578,11 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
           drawAsteroid(ctx, a, now);
         }
       }
-      // Mines and UFOs never wrap, so they draw once, in the real pass only —
-      // a ghost copy would be a phantom on the opposite edge.
-      if (!isGhost) {
+      // Mines and UFOs never wrap. In the contain modes that means one draw,
+      // in the real pass. Under the follow camera the X-offset copies are the
+      // genuine wrapped world and must include them; the Y-ghost passes still
+      // must not, or a phantom appears on the off-screen opposite edge.
+      if (dy === 0 && (dx === 0 || followActive)) {
         for (const m of state.mines) drawMine(ctx, m, now);
         for (const u of state.ufos) drawUfo(ctx, u, now);
       }
@@ -3494,9 +3670,14 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       ship: !holding && shipTier === 'mesh' ? state.ship : null,
       elapsed: state.elapsed,
       dpr: renderMode.dpr,
-      scale: renderMode.scale,
-      tx: renderMode.tx,
-      ty: renderMode.ty,
+      // Camera-adjusted transform so mesh-tier entities track the follow
+      // camera; identical to renderMode's values outside portrait-follow.
+      scale,
+      tx,
+      ty,
+      // Seam-wrap copies for the follow camera, so mesh entities wrap at the
+      // world edge like the 2D layer. Just [0] outside portrait-follow.
+      wrapXs: followXs,
     });
   }
 

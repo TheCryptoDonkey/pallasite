@@ -179,6 +179,10 @@ export interface WebGLOverlayCall {
   scale: number;
   tx: number;
   ty: number;
+  /** World-X seam offsets for the portrait follow camera. The overlay
+   *  renders the scene once per entry so mesh entities wrap at the world
+   *  edge. Absent (treated as [0]) outside portrait-follow. */
+  wrapXs?: number[];
 }
 let overlayRenderFn: ((opts: WebGLOverlayCall) => void) | null = null;
 let overlayShipExplosionFn: ((pos: { x: number; y: number }, vel: { x: number; y: number }, rot: number) => void) | null = null;
