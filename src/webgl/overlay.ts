@@ -1627,6 +1627,9 @@ export function renderOverlay(opts: {
   scale: number;
   tx: number;
   ty: number;
+  /** World-X seam offsets for the portrait follow camera; one render pass
+   *  per entry so mesh entities wrap. Absent / [0] off the follow camera. */
+  wrapXs?: number[];
 }): void {
   if (!handle) return;
   const { renderer, scene, camera, canvas } = handle;
@@ -1644,9 +1647,6 @@ export function renderOverlay(opts: {
   const vpX = opts.tx * opts.dpr;
   const vpYTopDown = opts.ty * opts.dpr;
   const vpY = canvas.height - vpYTopDown - vpH;
-  renderer.setViewport(vpX, vpY, vpW, vpH);
-  renderer.setScissor(vpX, vpY, vpW, vpH);
-  renderer.setScissorTest(true);
   frameCounter += 1;
 
   // ── Asteroids ────────────────────────────────────────────────────
@@ -2139,7 +2139,22 @@ export function renderOverlay(opts: {
     handle.lastFrameMs = 0;
   }
 
-  renderer.render(scene, camera);
+  // Wrap-aware draw. The world is a torus; under the portrait follow camera
+  // the visible strip can straddle the x=0 / WORLD_W seam, so render the scene
+  // once per visible world copy, shifting the viewport a full world width each
+  // time. The framebuffer bounds clip each pass. Off the follow camera wrapXs
+  // is a single [0] and this is one ordinary pass.
+  const wrapXs = opts.wrapXs ?? [0];
+  renderer.autoClear = false;
+  renderer.setScissorTest(false);
+  renderer.clear();
+  renderer.setScissorTest(true);
+  for (const dx of wrapXs) {
+    const ox = vpX + dx * opts.scale * opts.dpr;
+    renderer.setViewport(ox, vpY, vpW, vpH);
+    renderer.setScissor(ox, vpY, vpW, vpH);
+    renderer.render(scene, camera);
+  }
 }
 
 /** Drop entries the renderer hasn't seen for ≥30 frames (entity died

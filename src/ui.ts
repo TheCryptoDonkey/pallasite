@@ -64,6 +64,7 @@ import {
 } from './install-fullscreen.js';
 import { type ParallaxTier, getParallaxTier, setParallaxTier } from './parallax.js';
 import { type BounceMode, getBounceMode, setBounceMode } from './bounce.js';
+import { getRadarVisible, setRadarVisible } from './radar.js';
 import { type KnockbackMode, getKnockbackMode, setKnockbackMode } from './knockback.js';
 import { followUser, shareCompletion, endorseSubject, rankFromWave } from './social.js';
 import { shareRunCard } from './sharecard.js';
@@ -8309,6 +8310,47 @@ export function renderSettings(onBack: () => void): void {
     paintBounce();
     const bounceHint = el('p', { parent: overlay, text: 'AUTO: off on easy · on for normal / hard' });
     bounceHint.style.cssText = 'font-size:0.62rem;letter-spacing:0.1em;color:rgba(180,140,255,0.5);margin:-6px 0 0;';
+  }
+
+  // ── PORTRAIT RADAR ───────────────────────────────────────────────────────
+  // Display setting: the Defender-style radar drawn by the portrait follow
+  // camera. On by default; off for players who prefer the bare slice. Only
+  // ever shown in portrait, so it is a plain on / off, not a tri-state.
+  {
+    const radarHeading = el('p', { parent: overlay, text: 'PORTRAIT RADAR' });
+    radarHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
+    const radarRow = el('div', { parent: overlay });
+    radarRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;min-width:340px;';
+    el('label', { parent: radarRow, text: 'MINIMAP' })
+      .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
+    const radarBtnWrap = el('div', { parent: radarRow });
+    radarBtnWrap.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;';
+    const radarOpts: ReadonlyArray<{ value: boolean; label: string }> = [
+      { value: true,  label: 'ON' },
+      { value: false, label: 'OFF' },
+    ];
+    const radarBtns = new Map<boolean, HTMLButtonElement>();
+    const paintRadar = (): void => {
+      const cur = getRadarVisible();
+      for (const [val, btn] of radarBtns) {
+        const on = val === cur;
+        btn.style.background = on ? 'rgba(255,216,74,0.18)' : 'rgba(20,12,36,0.6)';
+        btn.style.color = on ? '#ffd84a' : 'rgba(220,210,255,0.7)';
+        btn.style.borderColor = on ? '#ffd84a' : 'rgba(180,140,255,0.45)';
+      }
+    };
+    for (const o of radarOpts) {
+      const btn = el('button', { className: 'menu-btn secondary', parent: radarBtnWrap, text: o.label }) as HTMLButtonElement;
+      btn.style.cssText += 'font-size:0.72rem;padding:6px 14px;letter-spacing:0.14em;';
+      btn.addEventListener('click', () => {
+        setRadarVisible(o.value);
+        paintRadar();
+      });
+      radarBtns.set(o.value, btn);
+    }
+    paintRadar();
+    const radarHint = el('p', { parent: overlay, text: 'Whole-world map for portrait phones' });
+    radarHint.style.cssText = 'font-size:0.62rem;letter-spacing:0.1em;color:rgba(180,140,255,0.5);margin:-6px 0 0;';
   }
 
   // ── SHOT KNOCKBACK ───────────────────────────────────────────────────────
