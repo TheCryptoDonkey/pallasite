@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>determinism harness</title>
+<style>html,body{margin:0;background:#06080f;color:#8cffb4;font:14px/1.6 ui-monospace,monospace;padding:24px}</style>
+</head>
+<body>
+<pre id="out">running determinism check...</pre>
+<script type="module">
+// B3.0 regression harness. Runs the campaign sim twice from the same seed
+// and the same scripted input, hashing the gameplay-relevant slice of
+// GameState every fixed step. Identical hash sequences prove the sim is
+// deterministic — the basis for B3 verifiable replay.
+//
+// Cosmetic pools (particles, debris, shockwave rings) are deliberately
+// excluded: they ride Math.random, never feed gameplay, and a verifier
+// never renders. Math.random is NOT reset between the two runs, so a pass
+// also proves cosmetic RNG never leaks into the simulation.
+import { makeInitialState, startGame, updateGame, tryActivateShield, tryHyperspace } from '/src/game.ts';
+import { getRngState } from '/src/seed.ts';
+
+const STEPS = 6000;            // ~100s of sim at a fixed 60Hz
+const SEED = 0x1234abcd;
+
+function fnv1a(str) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+// The gameplay-relevant slice. Entity cosmetic fields (asteroid hue /
+// rotation / shape, hitFlash) and the particle / debris pools are omitted.
+function serialize(s) {
+  const ent = (e) => [e.pos.x, e.pos.y, e.vel ? e.vel.x : 0, e.vel ? e.vel.y : 0];
+  return JSON.stringify({
+    f: s.frame, ph: s.phase, sc: s.score, w: s.wave, lv: s.lives,
+    st: s.sats, cb: s.combo, el: s.elapsed, hs: s.hitStopSteps,
+    rng: getRngState(),
+    sh: [s.ship.pos.x, s.ship.pos.y, s.ship.vel.x, s.ship.vel.y, s.ship.rot,
+         s.ship.alive, s.ship.shieldUp, s.ship.shieldExpiresAt,
+         s.ship.invulnerableUntil, s.ship.hyperspaceReadyAt, s.ship.hyperspaceCloakMs],
+    ast: s.asteroids.map((a) => [a.pos.x, a.pos.y, a.vel.x, a.vel.y, a.radius, a.id, a.hp]),
+    ufo: s.ufos.map((u) => [u.pos.x, u.pos.y, u.vel.x, u.vel.y, u.hp ?? 0]),
+    bul: s.bullets.map(ent),
+    ebul: s.enemyBullets.map(ent),
+    mine: s.mines.map((m) => [m.pos.x, m.pos.y]),
+    coin: s.coins.map((c) => [c.pos.x, c.pos.y, c.vel ? c.vel.x : 0, c.vel ? c.vel.y : 0]),
+    pow: s.powerups.map((p) => [p.pos.x, p.pos.y]),
+  });
+}
+
+// Deterministic input script — identical for every run.
+function applyInput(s, step) {
+  const k = s.keys;
+  k['ArrowUp'] = (step % 3) !== 0;
+  k['ArrowLeft'] = (step % 7) < 2;
+  k['ArrowRight'] = (step % 11) < 3;
+  k['Space'] = (step % 5) === 0;
+}
+
+function runOnce(seed, steps) {
+  const s = makeInitialState();
+  startGame(s, seed);
+  const hashes = new Array(steps);
+  for (let step = 0; step < steps; step++) {
+    applyInput(s, step);
+    // Exercise the converted shield / hyperspace deadlines too.
+    if (step % 240 === 120) tryActivateShield(s, s.elapsed);
+    if (step % 600 === 360) tryHyperspace(s, s.elapsed);
+    // Mirror the loop: a hit-stop step skips the sim tick.
+    if (s.hitStopSteps > 0) s.hitStopSteps--;
+    else updateGame(s);
+    hashes[step] = fnv1a(serialize(s));
+  }
+  return hashes;
+}
+
+const out = document.getElementById('out');
+let verdict;
+try {
+  const t0 = performance.now();
+  const a = runOnce(SEED, STEPS);
+  const b = runOnce(SEED, STEPS);
+  const ms = Math.round(performance.now() - t0);
+  let firstDiff = -1;
+  for (let i = 0; i < STEPS; i++) { if (a[i] !== b[i]) { firstDiff = i; break; } }
+  if (firstDiff === -1) {
+    verdict = 'DETERMINISM-PASS';
+    out.textContent = 'DETERMINISM-PASS\n\n' + STEPS + ' steps, two runs, identical hash sequence.\n' +
+      'seed = 0x' + SEED.toString(16) + '\nfinal hash = ' + a[STEPS - 1] + '\n' + ms + 'ms';
+  } else {
+    verdict = 'DETERMINISM-FAIL';
+    out.textContent = 'DETERMINISM-FAIL\n\nfirst divergence at step ' + firstDiff +
+      '\nrun A hash = ' + a[firstDiff] + '\nrun B hash = ' + b[firstDiff] +
+      '\n(steps 0.. ' + (firstDiff - 1) + ' matched)';
+  }
+} catch (e) {
+  verdict = 'DETERMINISM-ERROR';
+  out.textContent = 'DETERMINISM-ERROR\n\n' + ((e && e.stack) || e);
+}
+document.title = verdict;
+</script>
+</body>
+</html>

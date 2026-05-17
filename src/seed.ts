@@ -44,10 +44,12 @@ export function setDailySeed(seedString: string | null): void {
  * Does not touch `activeSeed`: that stays the daily date string for the score
  * tag, managed by setDailySeed.
  */
-export function seedRun(): number {
-  const seed = getStoredDailyPref()
-    ? fnv1a32(todayUTC())
-    : (Math.random() * 0x100000000) >>> 0;
+export function seedRun(forced?: number): number {
+  const seed = forced !== undefined
+    ? forced >>> 0
+    : getStoredDailyPref()
+      ? fnv1a32(todayUTC())
+      : (Math.random() * 0x100000000) >>> 0;
   rngState = seed;
   return seed;
 }
@@ -79,6 +81,13 @@ export function todayUTC(): string {
 /** Currently active seed (null when daily mode is off). For telemetry/score tag. */
 export function getActiveSeed(): string | null {
   return activeSeed;
+}
+
+/** The live 32-bit RNG state. Exposed for the determinism harness so a
+ *  re-simulation can be checked for divergence at the RNG level, not just
+ *  via its downstream effect on gameplay. */
+export function getRngState(): number | null {
+  return rngState;
 }
 
 /** Stored preference for daily mode (persists across sessions). */
