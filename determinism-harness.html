@@ -8,20 +8,46 @@
 <body>
 <pre id="out">running determinism check...</pre>
 <script type="module">
-// B3.0 regression harness. Runs the campaign sim twice from the same seed
-// and the same scripted input, hashing the gameplay-relevant slice of
-// GameState every fixed step. Identical hash sequences prove the sim is
-// deterministic — the basis for B3 verifiable replay.
+// B3.0 regression harness. Runs the campaign sim from a fixed seed and a
+// fixed scripted input, hashing the gameplay-relevant slice of GameState
+// every fixed step. Identical hash sequences prove the sim is deterministic,
+// the basis for B3 verifiable replay.
+//
+// Three runs, two checks:
+//   A vs B   same render mode: proves run-to-run determinism.
+//   A vs C   retro vs modern-portrait render mode: proves the sim is
+//            viewport-independent. Display mode, orientation and window size
+//            must never reach the simulation, or a phone-recorded run cannot
+//            be re-verified on a desktop. See b3-verifiable-replay.md.
 //
 // Cosmetic pools (particles, debris, shockwave rings) are deliberately
 // excluded: they ride Math.random, never feed gameplay, and a verifier
-// never renders. Math.random is NOT reset between the two runs, so a pass
-// also proves cosmetic RNG never leaks into the simulation.
+// never renders. Math.random is NOT reset between runs, so a pass also
+// proves cosmetic RNG never leaks into the simulation.
 import { makeInitialState, startGame, updateGame, tryActivateShield, tryHyperspace } from '/src/game.ts';
 import { getRngState } from '/src/seed.ts';
+import { setRenderMode } from '/src/render.ts';
 
 const STEPS = 6000;            // ~100s of sim at a fixed 60Hz
 const SEED = 0x1234abcd;
+
+// Two render modes the runs execute under. The sim must produce an identical
+// hash sequence in both: the camera adapts the view, never the world. RETRO
+// is the full 960x720 world; PORTRAIT is a cover-scaled phone band, the case
+// that used to crop the sim's wrap distance before the B3 decoupling.
+const RETRO_MODE = {
+  kind: 'retro', vw: 960, vh: 720, dpr: 1, scale: 1, tx: 0, ty: 0,
+  insets: { top: 0, right: 0, bottom: 0, left: 0 },
+};
+const PORTRAIT_MODE = (() => {
+  const vw = 390, vh = 844, dpr = 2;
+  const scale = Math.max(vw / 960, vh / 720);
+  return {
+    kind: 'modern', vw, vh, dpr, scale,
+    tx: (vw - 960 * scale) / 2, ty: (vh - 720 * scale) / 2,
+    insets: { top: 47, right: 0, bottom: 34, left: 0 },
+  };
+})();
 
 function fnv1a(str) {
   let h = 2166136261 >>> 0;
@@ -62,7 +88,8 @@ function applyInput(s, step) {
   k['Space'] = (step % 5) === 0;
 }
 
-function runOnce(seed, steps) {
+function runOnce(seed, steps, mode) {
+  setRenderMode(mode);
   const s = makeInitialState();
   startGame(s, seed);
   const hashes = new Array(steps);
@@ -83,20 +110,33 @@ const out = document.getElementById('out');
 let verdict;
 try {
   const t0 = performance.now();
-  const a = runOnce(SEED, STEPS);
-  const b = runOnce(SEED, STEPS);
+  const a = runOnce(SEED, STEPS, RETRO_MODE);
+  const b = runOnce(SEED, STEPS, RETRO_MODE);
+  const c = runOnce(SEED, STEPS, PORTRAIT_MODE);
   const ms = Math.round(performance.now() - t0);
-  let firstDiff = -1;
-  for (let i = 0; i < STEPS; i++) { if (a[i] !== b[i]) { firstDiff = i; break; } }
-  if (firstDiff === -1) {
+  const diff = (x, y) => {
+    for (let i = 0; i < STEPS; i++) if (x[i] !== y[i]) return i;
+    return -1;
+  };
+  const dab = diff(a, b);   // run-to-run determinism
+  const dac = diff(a, c);   // viewport-independence
+  if (dab === -1 && dac === -1) {
     verdict = 'DETERMINISM-PASS';
-    out.textContent = 'DETERMINISM-PASS\n\n' + STEPS + ' steps, two runs, identical hash sequence.\n' +
+    out.textContent = 'DETERMINISM-PASS\n\n' + STEPS + ' steps, three runs, identical hash sequence.\n' +
+      'A vs B (run-to-run) and A vs C (retro vs modern-portrait) both match.\n' +
       'seed = 0x' + SEED.toString(16) + '\nfinal hash = ' + a[STEPS - 1] + '\n' + ms + 'ms';
+  } else if (dab !== -1) {
+    verdict = 'DETERMINISM-FAIL';
+    out.textContent = 'DETERMINISM-FAIL (run-to-run)\n\nfirst divergence at step ' + dab +
+      '\nrun A hash = ' + a[dab] + '\nrun B hash = ' + b[dab] +
+      '\n(steps 0.. ' + (dab - 1) + ' matched)';
   } else {
     verdict = 'DETERMINISM-FAIL';
-    out.textContent = 'DETERMINISM-FAIL\n\nfirst divergence at step ' + firstDiff +
-      '\nrun A hash = ' + a[firstDiff] + '\nrun B hash = ' + b[firstDiff] +
-      '\n(steps 0.. ' + (firstDiff - 1) + ' matched)';
+    out.textContent = 'DETERMINISM-FAIL (viewport coupling)\n\n' +
+      'retro and modern-portrait runs diverge at step ' + dac +
+      '\nretro hash = ' + a[dac] + '\nportrait hash = ' + c[dac] +
+      '\n(steps 0.. ' + (dac - 1) + ' matched)\n\n' +
+      'The sim is reading render/viewport state. See b3-verifiable-replay.md.';
   }
 } catch (e) {
   verdict = 'DETERMINISM-ERROR';

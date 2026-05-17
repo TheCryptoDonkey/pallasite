@@ -243,6 +243,57 @@ export interface RenderModeInfo {
 let renderMode: RenderModeInfo = { kind: 'retro', vw: 960, vh: 720, dpr: 1, scale: 1, tx: 0, ty: 0, insets: ZERO_INSETS };
 export function setRenderMode(info: RenderModeInfo): void { renderMode = info; }
 
+// ── Follow camera ─────────────────────────────────────────────────────────────
+// Modern portrait shows a band narrower than the fixed WORLD_W world. A
+// dead-zone camera pans that band to keep the ship on screen. updateCamera
+// reads state.ship.pos and writes only cameraX and renderMode.tx — never sim
+// state — so it cannot affect determinism. Landscape and retro disengage it
+// and keep the static centred view fit() computed.
+
+/** Half-width of the central dead-zone the ship roams before the camera
+ *  scrolls, as a fraction of the visible band width. */
+const CAMERA_DEADZONE_FRAC = 0.15;
+/** Exponential follow rate per second — higher tracks the ship more tightly. */
+const CAMERA_FOLLOW_K = 10;
+
+let cameraX = WORLD_W / 2;   // band centre in world coords, continuous
+let cameraEngaged = false;
+let cameraLastNow = 0;
+
+/** Shortest signed delta on a wrapping span; result in [-span/2, span/2]. */
+function wrapDelta(d: number, span: number): number {
+  d = ((d % span) + span) % span;
+  return d > span / 2 ? d - span : d;
+}
+
+/** Advance the follow camera and write the world-to-device tx into renderMode.
+ *  Call once per frame before drawing. Render-only — never mutates sim state. */
+function updateCamera(state: GameState, now: number): void {
+  const visW = renderMode.vw / renderMode.scale;
+  if (renderMode.kind !== 'modern' || visW >= WORLD_W - 1) {
+    cameraEngaged = false;   // band covers the world — fit()'s static tx stands
+    return;
+  }
+  const shipX = state.ship.pos.x;
+  if (!cameraEngaged) {
+    cameraX = shipX;         // snap on first engaged frame — no opening pan
+    cameraEngaged = true;
+    cameraLastNow = now;
+  }
+  const dt = Math.min(0.1, Math.max(0, (now - cameraLastNow) / 1000));
+  cameraLastNow = now;
+  const d = wrapDelta(shipX - cameraX, WORLD_W);
+  if (Math.abs(d) > visW / 2) {
+    cameraX = shipX;         // ship teleported (hyperspace/respawn) — snap
+  } else {
+    const dzHalf = visW * CAMERA_DEADZONE_FRAC;
+    const move = d > dzHalf ? d - dzHalf : d < -dzHalf ? d + dzHalf : 0;
+    cameraX += move * (1 - Math.exp(-CAMERA_FOLLOW_K * dt));
+  }
+  cameraX = ((cameraX % WORLD_W) + WORLD_W) % WORLD_W;
+  renderMode.tx = renderMode.vw / 2 - cameraX * renderMode.scale;
+}
+
 /** Hide the on-canvas HUD and banners for render() calls. The watch
  *  live tiles use this so the small preview shows only the entity
  *  layer; score / wave / sats sit in the tile's own chrome instead. */
@@ -3382,6 +3433,15 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     return;
   }
 
+  // Advance the follow camera (modern portrait) and apply the world-to-device
+  // transform for this frame. The camera owns tx in portrait; retro and
+  // landscape reuse the static transform fit() computed.
+  updateCamera(state, now);
+  ctx.setTransform(
+    renderMode.dpr * renderMode.scale, 0, 0, renderMode.dpr * renderMode.scale,
+    renderMode.dpr * renderMode.tx, renderMode.dpr * renderMode.ty,
+  );
+
   drawBackground(ctx, state, now);
   drawStars(ctx, now);
 
@@ -3395,59 +3455,22 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     shakeY = (Math.cos(now * 0.091) + Math.cos(now * 0.151) * 0.6) * amp;
   }
 
-  // Ghost-render offsets so wraps look seamless at visible-band edges.
-  // We only spend the 3-pass cost when there's actually an entity near a
-  // wrap edge — in most frames every asteroid is mid-band, so a single pass
-  // is correct and 3× cheaper. When something approaches an edge we flip to
-  // full 3-pass for that axis so the wrap-copy can fade in smoothly. Cheap
-  // to detect: ~30 entities × a couple of comparisons each.
+  // Ghost-render offsets so the world wrap reads as seamless. In modern
+  // portrait the camera band is narrower than the world; when it straddles
+  // the world seam, far-side entities must be drawn one WORLD_W over so the
+  // wrap looks continuous. O(1): the band position alone says whether a seam
+  // is in view. M is world-units of lead time so a wrap-copy is already
+  // painting before the seam itself reaches the band edge. Portrait never
+  // crops the Y axis (cover-scale fills height), so Y stays single-pass.
   const ghostXs: number[] = [0];
   const ghostYs: number[] = [0];
   if (renderMode.kind === 'modern') {
     const visW = renderMode.vw / renderMode.scale;
-    const visH = renderMode.vh / renderMode.scale;
-    const cropX = visW < WORLD_W - 1;
-    const cropY = visH < WORLD_H - 1;
-    if (cropX || cropY) {
-      const visLeftW = -renderMode.tx / renderMode.scale;
-      const visRightW = (renderMode.vw - renderMode.tx) / renderMode.scale;
-      const visTopW = -renderMode.ty / renderMode.scale;
-      const visBotW = (renderMode.vh - renderMode.ty) / renderMode.scale;
-      // Margin chosen for *visual lead time*, not entity radius. With
-      // M=50 the previous build gave the player ~160ms warning before an
-      // asteroid popped at the wrap edge (max asteroid speed ~315 px/s),
-      // which read as "that hit came out of nowhere" and "my bullet
-      // disappeared". M=150 gives ~480ms of visible wrap-ghost — well
-      // above human reaction time — so the wrap looks continuous instead
-      // of teleporty. Cheap: probe stays O(entities), and the 3-pass cost
-      // only kicks in when something is actually within the buffer.
+    if (visW < WORLD_W - 1) {
+      const bandL = -renderMode.tx / renderMode.scale;
+      const bandR = (renderMode.vw - renderMode.tx) / renderMode.scale;
       const M = 150;
-      let needX = false, needY = false;
-      const probe = (x: number, y: number): void => {
-        if (cropX && !needX && (x < visLeftW + M || x > visRightW - M)) needX = true;
-        if (cropY && !needY && (y < visTopW + M || y > visBotW - M)) needY = true;
-      };
-      for (const a of state.asteroids) { probe(a.pos.x, a.pos.y); if (needX && needY) break; }
-      if (!(needX && needY)) {
-        for (const u of state.ufos) { probe(u.pos.x, u.pos.y); if (needX && needY) break; }
-      }
-      if (!(needX && needY)) {
-        for (const m of state.mines) { probe(m.pos.x, m.pos.y); if (needX && needY) break; }
-      }
-      // Bullets too — player shots and UFO shots BOTH wrap on collide
-      // (game.ts circlesHit uses wrap-aware delta), so the visual must
-      // wrap too or a bullet appears to vanish into the edge and an
-      // incoming enemy shot pops in with no telegraph.
-      if (!(needX && needY)) {
-        for (const b of state.bullets) { probe(b.pos.x, b.pos.y); if (needX && needY) break; }
-      }
-      if (!(needX && needY)) {
-        for (const b of state.enemyBullets) { probe(b.pos.x, b.pos.y); if (needX && needY) break; }
-      }
-      // Ship near edge counts too — its ghost is visible to the player.
-      if (!(needX && needY)) probe(state.ship.pos.x, state.ship.pos.y);
-      if (needX) ghostXs.push(-visW, visW);
-      if (needY) ghostYs.push(-visH, visH);
+      if (bandL < M || bandR > WORLD_W - M) ghostXs.push(-WORLD_W, WORLD_W);
     }
   }
 
@@ -3479,14 +3502,10 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
         }
       }
       for (const m of state.mines) drawMine(ctx, m, now);
-      // UFOs and mines don't wrap — they traverse the world (or sit
-      // stationary) without crossing the wrap cycle. Drawing them in
-      // ghost passes paints a phantom copy at ±visW that the player
-      // reads as a duplicate UFO, especially during the spawn approach
-      // where the real UFO is just off the visible band.
-      if (!isGhost) {
-        for (const u of state.ufos) drawUfo(ctx, u, now);
-      }
+      // UFOs draw in every ghost pass: with the band narrower than the
+      // world at most one WORLD_W-offset copy lands on-screen, so a UFO
+      // near a straddled seam still shows without a phantom double.
+      for (const u of state.ufos) drawUfo(ctx, u, now);
       for (const b of state.bullets) drawBullet(ctx, b, true);
       for (const b of state.enemyBullets) drawBullet(ctx, b, false);
       for (const c of state.coins) drawCoin(ctx, c, now);
