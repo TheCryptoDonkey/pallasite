@@ -84,7 +84,7 @@ function applyCrt(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, nowM
   const h = canvas.height;
   if (w === 0 || h === 0) return;
   // Blur radius scales with resolution so the bloom reads the same at any dpr.
-  const k = w / 960;
+  const k = w / 1280;
   const flicker = 0.985 + 0.015 * Math.sin(nowMs * 0.05);
 
   // Snapshot the clean frame so both blurred passes sample the original.
@@ -128,7 +128,7 @@ function applySynthwave(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement
   const w = canvas.width;
   const h = canvas.height;
   if (w === 0 || h === 0) return;
-  const k = w / 960;
+  const k = w / 1280;
   const pulse = 0.5 + 0.12 * Math.sin(nowMs * 0.0016);
 
   const sc = getScratch(w, h);
@@ -330,7 +330,7 @@ function applyHologram(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement,
   const w = canvas.width;
   const h = canvas.height;
   if (w === 0 || h === 0) return;
-  const k = w / 960;
+  const k = w / 1280;
   const sc = getScratch(w, h);
   const scx = sc.getContext('2d');
   if (!scx) return;
@@ -392,7 +392,7 @@ function applyBlueprint(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement
   const w = canvas.width;
   const h = canvas.height;
   if (w === 0 || h === 0) return;
-  const k = w / 960;
+  const k = w / 1280;
 
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -549,7 +549,7 @@ function applyHandDrawn(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement
   const w = canvas.width;
   const h = canvas.height;
   if (w === 0 || h === 0) return;
-  const k = w / 960;
+  const k = w / 1280;
   const sc = getScratch(w, h);
   const scx = sc.getContext('2d');
   if (!scx) return;

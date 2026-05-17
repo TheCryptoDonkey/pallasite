@@ -819,9 +819,9 @@ function spawnSanctumFillers(s: GameState, count: number): void {
 /** Maximum live asteroids during the 600bn infinity wave. Counts ALL
  *  sizes (large + medium + small fragments) — a single large break can
  *  spawn up to 4-7 children, so the cap needs headroom or filler/council
- *  spawns immediately stall. 18 holds framerate on mid-range mobile and
- *  keeps the playfield busy after big breaks. */
-const SANCTUM_ASTEROID_CAP = 18;
+ *  spawns immediately stall. 24 fills the 16:9 playfield at the density
+ *  the old 4:3 world held at 18; watch framerate on mid-range mobile. */
+const SANCTUM_ASTEROID_CAP = 24;
 /** Spawn cadence on 600bn — when the count is below the cap, a new
  *  filler drifts in every ~1.8s. */
 const SANCTUM_FILLER_INTERVAL_MS = 1_800;
@@ -918,7 +918,7 @@ export function beginWave(s: GameState, wave: number): void {
     sanctumStats.councilTotal = getCouncil().length;
     sanctumStats.asteroidsDestroyed = 0;
     // Opening field of textured fillers — "normal game" entry beat.
-    spawnSanctumFillers(s, 10);
+    spawnSanctumFillers(s, 13);
     // UFO spawning kept — the 600bn UFO renders as the $600B sacred-
     // number badge. Mines suppressed.
     s.nextUfoSpawn = 8_000;
@@ -933,12 +933,13 @@ export function beginWave(s: GameState, wave: number): void {
       s.asteroids.push(spawnAsteroid('large', wave));
     }
   } else {
-    // Standard wave — count plateaus at 10 asteroids, then scaled
+    // Standard wave — count ramps 5 to 13 then plateaus, then scaled
     // by the admin-tunable asteroid_count_multiplier. 1.0 keeps the
-    // pre-config behaviour; lower values thin the field for casual
-    // sessions, higher values cram more rocks per wave.
+    // default; lower values thin the field for casual sessions,
+    // higher values cram more rocks per wave. The 5-13 curve is the
+    // 16:9 rebalance of the old 4-10: the world is ~33% wider.
     const multiplier = getGameConfig().asteroid_count_multiplier;
-    const count = Math.max(1, Math.round(Math.min(10, 3 + wave) * multiplier));
+    const count = Math.max(1, Math.round(Math.min(13, 4 + wave) * multiplier));
     for (let i = 0; i < count; i++) {
       s.asteroids.push(spawnAsteroid('large', wave));
     }
@@ -2716,7 +2717,9 @@ export function updateGame(s: GameState): void {
       }
     }
     if (a.hitFlash > 0) a.hitFlash = Math.max(0, a.hitFlash - dt * 4);
-    wrap(a.pos, RADIUS_PER_SIZE.large);
+    // Exact-edge wrap (no courtesy margin): render ghosts the seam, so the
+    // teleport must land exactly WORLD_W over or the ghost hand-off jumps.
+    wrap(a.pos);
   }
 
   // Asteroid-asteroid elastic bounce on the gameplay plane. Decorative

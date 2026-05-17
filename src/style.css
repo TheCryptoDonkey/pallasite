@@ -654,16 +654,16 @@ body[data-display="modern"] #game3d {
 }
 
 @media (max-width: 768px) {
-  /* Fit the 4:3 canvas inside the viewport in BOTH dimensions — width
-     constrained by either the viewport width or by the height-derived 4:3
+  /* Fit the 16:9 canvas inside the viewport in BOTH dimensions — width
+     constrained by either the viewport width or by the height-derived 16:9
      equivalent, whichever is smaller. Result: in landscape the canvas
      enlarges to fill the available height; in portrait it sits within the
      width. dvh dodges the iOS URL-bar 100vh bug. */
   #game {
-    width: min(100vw, calc(100dvh * 4 / 3));
+    width: min(100vw, calc(100dvh * 16 / 9));
     height: auto;
     max-width: 100vw;
-    aspect-ratio: 4 / 3;
+    aspect-ratio: 16 / 9;
     border-radius: 0;
   }
   .overlay {
@@ -676,13 +676,99 @@ body[data-display="modern"] #game3d {
 }
 
 /* Portrait + landscape both supported — fit() in main.ts sizes the canvas
-   to the largest 4:3 box that fits in either orientation. */
+   to the largest 16:9 box that fits in either orientation. */
 
-/* In retro mode portrait, the 4:3 canvas centres in the viewport (default
+/* In retro mode portrait, the canvas centres in the viewport (default
    positioning). Centring keeps the HUD clear of notches/status bars at the
    top of the device, with body-bg gutters filling the space above and below.
    Modern mode handles fill-the-screen separately via the body[data-display]
    block above. */
+
+/* ── Rotate-to-play hint ─────────────────────────────────────────────────── */
+/* The world is a fixed 16:9 shape, so a portrait phone shows a thin
+   letterbox strip. This overlay nudges the player to turn the device.
+   Shown by CSS only, gated on (orientation: portrait) and (pointer:
+   coarse), so it never appears on desktop or in landscape.
+   #rotate-hint-dismiss (wired in main.ts) sets body.rotate-hint-dismissed
+   to opt out; the choice persists in localStorage, so a player who wants
+   portrait is never nagged again. */
+#rotate-hint {
+  display: none;
+}
+
+@media (orientation: portrait) and (pointer: coarse) {
+  #rotate-hint {
+    display: flex;
+    position: fixed;
+    inset: 0;
+    z-index: 400;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(ellipse at center, #160a2e 0%, #06030f 78%);
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  body.rotate-hint-dismissed #rotate-hint {
+    display: none;
+  }
+}
+
+.rotate-hint-inner {
+  text-align: center;
+  max-width: 22rem;
+  padding: 2rem 1.6rem;
+}
+
+.rotate-hint-phone {
+  width: 52px;
+  height: 92px;
+  margin: 0 auto 1.7rem;
+  border: 3px solid var(--hud-purple);
+  border-radius: 11px;
+  box-shadow: 0 0 18px rgba(180, 140, 255, 0.45);
+  transform-origin: 50% 50%;
+  animation: rotate-hint-tip 2.6s ease-in-out infinite;
+}
+
+@keyframes rotate-hint-tip {
+  0%, 26%   { transform: rotate(0deg); }
+  58%, 100% { transform: rotate(-90deg); }
+}
+
+.rotate-hint-title {
+  margin: 0 0 0.5rem;
+  font-size: 2rem;
+  letter-spacing: 0.04em;
+  color: var(--hud-yellow);
+}
+
+.rotate-hint-sub {
+  margin: 0 0 1.8rem;
+  font-size: 1.15rem;
+  line-height: 1.4;
+  color: rgba(220, 224, 255, 0.78);
+}
+
+#rotate-hint-dismiss {
+  font-family: var(--font-vec);
+  font-size: 1.05rem;
+  color: rgba(200, 210, 255, 0.62);
+  background: transparent;
+  border: 1px solid rgba(160, 150, 220, 0.4);
+  border-radius: 8px;
+  padding: 0.55rem 1.1rem;
+  cursor: pointer;
+}
+#rotate-hint-dismiss:active {
+  color: var(--hud-green);
+  border-color: rgba(160, 150, 220, 0.7);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rotate-hint-phone {
+    animation: none;
+    transform: rotate(-90deg);
+  }
+}
 
 /* ── Touch controls ──────────────────────────────────────────────────────── */
 /* Hidden by default. main.ts adds .touch-active to body on first touch and

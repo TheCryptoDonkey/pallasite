@@ -88,8 +88,8 @@ export const DEPTH_CONFIGS: Record<number, DepthConfig> = {
 /** Decorative-asteroid spawn count per wave, by tier. */
 export function decorativeSpawnCount(tier: ParallaxTier): number {
   if (tier === 'off') return 0;
-  if (tier === 'subtle') return 4;
-  return 8;
+  if (tier === 'subtle') return 5;
+  return 11;
 }
 
 /** Pick a depth for a decorative spawn. Weighted so deepest/farthest

@@ -33,18 +33,18 @@ const SEED = 0x1234abcd;
 
 // Two render modes the runs execute under. The sim must produce an identical
 // hash sequence in both: the camera adapts the view, never the world. RETRO
-// is the full 960x720 world; PORTRAIT is a cover-scaled phone band, the case
+// is the full 1280x720 world; PORTRAIT is a cover-scaled phone band, the case
 // that used to crop the sim's wrap distance before the B3 decoupling.
 const RETRO_MODE = {
-  kind: 'retro', vw: 960, vh: 720, dpr: 1, scale: 1, tx: 0, ty: 0,
+  kind: 'retro', vw: 1280, vh: 720, dpr: 1, scale: 1, tx: 0, ty: 0,
   insets: { top: 0, right: 0, bottom: 0, left: 0 },
 };
 const PORTRAIT_MODE = (() => {
   const vw = 390, vh = 844, dpr = 2;
-  const scale = Math.max(vw / 960, vh / 720);
+  const scale = Math.max(vw / 1280, vh / 720);
   return {
     kind: 'modern', vw, vh, dpr, scale,
-    tx: (vw - 960 * scale) / 2, ty: (vh - 720 * scale) / 2,
+    tx: (vw - 1280 * scale) / 2, ty: (vh - 720 * scale) / 2,
     insets: { top: 47, right: 0, bottom: 34, left: 0 },
   };
 })();
