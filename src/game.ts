@@ -233,7 +233,7 @@ function makeShip(): Ship {
   };
 }
 
-export function startGame(s: GameState): void {
+export function startGame(s: GameState, forcedSeed?: number): void {
   // 600bn flavour now runs through the standard Pallasite startGame +
   // beginWave path. beginWave(s, 1) detects flavour=600bn and spawns
   // council-member-textured asteroids instead of the wave-1 default.
@@ -244,7 +244,7 @@ export function startGame(s: GameState): void {
   // Seed the run's RNG and record the seed on state. Every run is seeded
   // now (daily mode keys off the date, otherwise a fresh random seed) so a
   // run can be deterministically re-simulated from s.seed (B3).
-  s.seed = seedRun();
+  s.seed = seedRun(forcedSeed);
 
   // Defensive re-lock — the title-screen IGNITE path also locks, but the
   // gameover SPAWN AGAIN and completion IGNITE AGAIN buttons jump straight
