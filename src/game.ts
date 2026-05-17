@@ -53,7 +53,7 @@ import {
 } from './types.js';
 import type { PowerUp, PowerUpType } from './types.js';
 import * as audio from './audio.js';
-import { preloadBackground, getCollisionWrap, getVisibleBoundsW } from './render.js';
+import { preloadBackground } from './render.js';
 import { currentMods, lockInDifficulty, getStoredDifficulty, currentDifficulty } from './difficulty.js';
 import { lockInMode, getStoredMode, currentMode } from './mode.js';
 import { markAchievement, resetRunAchievements } from './achievements.js';
@@ -690,13 +690,12 @@ function spawnVein(s: GameState, wave: number): void {
   toastNow(s, 'PALLASITE VEIN · STAKE YOUR CLAIM');
 }
 
-/** Spawn a UFO from the visible band edge so it enters on-screen even on
- *  cropped portrait. Used by the curtain (cruisers) and vein-swarm (elites)
- *  paths that need direction control beyond the random spawnUfo. */
+/** Spawn a UFO from the fixed world edge. Used by the curtain (cruisers)
+ *  and vein-swarm (elites) paths that need direction control beyond the
+ *  random spawnUfo. */
 function makeEdgeUfo(type: UfoType, dir: 1 | -1): Ufo {
-  const visBounds = getVisibleBoundsW();
-  const y = visBounds.top + (visBounds.bottom - visBounds.top) * (0.25 + gameRng() * 0.5);
-  const x = dir === 1 ? visBounds.left - UFO_RADIUS[type] : visBounds.right + UFO_RADIUS[type];
+  const y = WORLD_H * (0.25 + gameRng() * 0.5);
+  const x = dir === 1 ? -UFO_RADIUS[type] : WORLD_W + UFO_RADIUS[type];
   return {
     pos: { x, y },
     vel: { x: dir * UFO_SPEED[type], y: 0 },
@@ -1344,15 +1343,11 @@ function spawnUfo(s: GameState): void {
   s.ufoSpawnedThisWave = true;
   const type = pickUfoType(s.wave);
   const dir: 1 | -1 = gameRng() < 0.5 ? 1 : -1;
-  // Spawn the UFO just off the *visible* edge so it drifts onto the screen
-  // from off-screen on phones. Spawning at the world edge (-radius) in
-  // modern portrait crop puts the +visW ghost copy directly in the middle
-  // of the visible band — the player sees a UFO blink into existence
-  // mid-screen instead of arriving from outside. getVisibleBoundsW returns
-  // the world-edge in retro/landscape, so this is a no-op there.
-  const visBounds = getVisibleBoundsW();
-  const y = visBounds.top + (visBounds.bottom - visBounds.top) * (0.15 + gameRng() * 0.7);
-  const x = dir === 1 ? visBounds.left - UFO_RADIUS[type] : visBounds.right + UFO_RADIUS[type];
+  // Spawn just off the fixed world edge so the UFO drifts in from
+  // off-screen. The world is the same fixed size on every device, so the
+  // spawn point never depends on the viewport.
+  const y = WORLD_H * (0.15 + gameRng() * 0.7);
+  const x = dir === 1 ? -UFO_RADIUS[type] : WORLD_W + UFO_RADIUS[type];
   const speed = UFO_SPEED[type];
   s.ufos.push({
     pos: { x, y },
@@ -1414,15 +1409,11 @@ function updateUfos(s: GameState, dt: number): void {
     u.pos.x += u.vel.x * dt;
     u.pos.y += u.vel.y * dt;
 
-    // Despawn when the UFO leaves the visible band on its travel side. Using
-    // the visible band rather than the world edge so a UFO that spawns at
-    // the band edge in modern portrait actually exits cleanly — otherwise
-    // it lingers off-screen for seconds while traversing the wider world.
-    // Boss never despawns this way.
+    // Despawn once the UFO has fully left the fixed world on its travel
+    // side. Boss never despawns this way.
     if (u.type !== 'boss') {
-      const visBounds = getVisibleBoundsW();
-      if (u.dir === 1  && u.pos.x > visBounds.right + u.radius * 2) u.alive = false;
-      if (u.dir === -1 && u.pos.x < visBounds.left  - u.radius * 2) u.alive = false;
+      if (u.dir === 1  && u.pos.x > WORLD_W + u.radius * 2) u.alive = false;
+      if (u.dir === -1 && u.pos.x < -u.radius * 2) u.alive = false;
     }
 
     // Wrap Y so vertical drift stays on-screen
@@ -1982,43 +1973,23 @@ function wrap(p: Vec2, margin = 0): void {
   // near-zero perpendicular velocity could sit off-screen forever, blocking
   // wave-clear. Inclusive `<=` / `>=` ensures any contact with the boundary
   // teleports.
-  // Use the same effective wrap dims that collisions use (= visible band in
-  // modern portrait crop, = WORLD_W/H elsewhere). Without this the ship
-  // would visibly skip across the screen on every WORLD_W traversal in
-  // zoomed-out portrait, because visW doesn't divide WORLD_W cleanly:
-  // physics wraps at 960 while the renderer ghosts at ±visW.
-  //
-  // Per-axis margin gating: on a cropped axis (ew.w !== WORLD_W or
-  // ew.h !== WORLD_H) the wrap cycle IS the visible band and the ghost
-  // renderer offsets at ±ew. A non-zero margin makes the physics wrap cycle
-  // ew + 2·margin while the ghost cycle stays ew, so a wrapping asteroid
-  // appears to jump backwards by exactly 2·margin world units — visible as
-  // an asteroid that "travels, jumps back, then travels the same path
-  // again" on iPhone modern portrait. Force margin to 0 on each cropped
-  // axis individually so the wrap cycle matches the ghost cycle. Uncropped
-  // axes (e.g. Y in iPhone portrait, both axes in retro) keep the courtesy
-  // margin so an asteroid flies its radius off-screen before reappearing.
-  const ew = getCollisionWrap();
-  const mx = ew.w !== WORLD_W ? 0 : margin;
-  const my = ew.h !== WORLD_H ? 0 : margin;
-  if (p.x <= -mx) p.x += ew.w + mx * 2;
-  if (p.x >= ew.w + mx) p.x -= ew.w + mx * 2;
-  if (p.y <= -my) p.y += ew.h + my * 2;
-  if (p.y >= ew.h + my) p.y -= ew.h + my * 2;
+  // The world is a fixed WORLD_W x WORLD_H on every device — the camera, not
+  // the sim, adapts to the viewport — so the wrap cycle is always the world
+  // plus the courtesy margin (an entity flies its radius off-screen before
+  // reappearing).
+  if (p.x <= -margin) p.x += WORLD_W + margin * 2;
+  if (p.x >= WORLD_W + margin) p.x -= WORLD_W + margin * 2;
+  if (p.y <= -margin) p.y += WORLD_H + margin * 2;
+  if (p.y >= WORLD_H + margin) p.y -= WORLD_H + margin * 2;
 }
 
 function circlesHit(a: { pos: Vec2; radius: number }, b: { pos: Vec2; radius: number }): boolean {
-  // Wrap-aware shortest delta. In modern portrait mode the world is rendered
-  // cropped with ghosts at ±visW; collisions must use the same shorter wrap
-  // distance or the player aims at a visible ghost and the bullet passes
-  // through it (the real entity sits one full visW away in world coords).
-  // Use proper modulo so positions further than one wrap apart still fold
-  // back correctly — visW need not divide WORLD_W cleanly.
-  const wrap = getCollisionWrap();
-  let dx = (((a.pos.x - b.pos.x) % wrap.w) + wrap.w) % wrap.w;
-  if (dx > wrap.w / 2) dx -= wrap.w;
-  let dy = (((a.pos.y - b.pos.y) % wrap.h) + wrap.h) % wrap.h;
-  if (dy > wrap.h / 2) dy -= wrap.h;
+  // Wrap-aware shortest delta on the fixed WORLD_W x WORLD_H torus. Proper
+  // modulo so positions more than one wrap apart still fold back correctly.
+  let dx = (((a.pos.x - b.pos.x) % WORLD_W) + WORLD_W) % WORLD_W;
+  if (dx > WORLD_W / 2) dx -= WORLD_W;
+  let dy = (((a.pos.y - b.pos.y) % WORLD_H) + WORLD_H) % WORLD_H;
+  if (dy > WORLD_H / 2) dy -= WORLD_H;
   const r = a.radius + b.radius;
   return dx * dx + dy * dy <= r * r;
 }
@@ -2900,11 +2871,10 @@ export function updateGame(s: GameState): void {
       if (circlesHit(s.ship, a)) {
         // Use wrap-aware delta so reflections at the edges push the asteroid
         // along the actual contact normal, not a normal flipped by the wrap.
-        const wrap = getCollisionWrap();
-        let dx = (((a.pos.x - s.ship.pos.x) % wrap.w) + wrap.w) % wrap.w;
-        if (dx > wrap.w / 2) dx -= wrap.w;
-        let dy = (((a.pos.y - s.ship.pos.y) % wrap.h) + wrap.h) % wrap.h;
-        if (dy > wrap.h / 2) dy -= wrap.h;
+        let dx = (((a.pos.x - s.ship.pos.x) % WORLD_W) + WORLD_W) % WORLD_W;
+        if (dx > WORLD_W / 2) dx -= WORLD_W;
+        let dy = (((a.pos.y - s.ship.pos.y) % WORLD_H) + WORLD_H) % WORLD_H;
+        if (dy > WORLD_H / 2) dy -= WORLD_H;
         const distSq = dx * dx + dy * dy;
         const dist = Math.sqrt(distSq) || 1;
         const nx = dx / dist;
