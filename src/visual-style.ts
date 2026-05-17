@@ -19,7 +19,7 @@
 
 import { getFlavour } from './flavour.js';
 import type { Asteroid, PowerUp, Ship, Ufo } from './types.js';
-import { ASCII_COLS, coerceThemeId, type ThemeId } from './postfx/index.js';
+import { ASCII_COLS, BIT_DEPTH, coerceThemeId, type ThemeId } from './postfx/index.js';
 
 export type VisualTier = 'vector' | 'shaded' | 'mesh';
 export type VisualCategory = 'asteroid' | 'ship' | 'bullet' | 'particle';
@@ -36,6 +36,8 @@ interface State {
   particle: VisualTier;
   theme: ThemeId;
   asciiCols: number;
+  bitDepth: number;
+  bitColour: boolean;
 }
 
 function defaults(): State {
@@ -43,7 +45,7 @@ function defaults(): State {
   // overlay is the headline feature. Players on weak devices downshift
   // themselves via the settings panel (Player agency over defaults).
   const tier: VisualTier = getFlavour() === '600bn' ? 'mesh' : 'vector';
-  return { asteroid: tier, ship: tier, bullet: tier, particle: tier, theme: 'none', asciiCols: ASCII_COLS.default };
+  return { asteroid: tier, ship: tier, bullet: tier, particle: tier, theme: 'none', asciiCols: ASCII_COLS.default, bitDepth: BIT_DEPTH.default, bitColour: false };
 }
 
 let cached: State | null = null;
@@ -61,6 +63,13 @@ function coerceAsciiCols(v: unknown): number {
   return Number.isFinite(n) ? Math.max(ASCII_COLS.min, Math.min(ASCII_COLS.max, n)) : ASCII_COLS.default;
 }
 
+/** Coerce an unknown value into a valid bit-depth stop; unknown or
+ *  off-grid → the default. */
+function coerceBitDepth(v: unknown): number {
+  const n = Math.round(Number(v));
+  return (BIT_DEPTH.stops as readonly number[]).includes(n) ? n : BIT_DEPTH.default;
+}
+
 function load(): State {
   if (cached) return cached;
   const base = defaults();
@@ -75,6 +84,8 @@ function load(): State {
         particle: coerceTier(parsed.particle ?? base.particle),
         theme: coerceThemeId(parsed.theme ?? base.theme),
         asciiCols: coerceAsciiCols(parsed.asciiCols ?? base.asciiCols),
+        bitDepth: coerceBitDepth(parsed.bitDepth ?? base.bitDepth),
+        bitColour: typeof parsed.bitColour === 'boolean' ? parsed.bitColour : base.bitColour,
       };
       return cached;
     }
@@ -151,6 +162,27 @@ export function getAsciiCols(): number {
  *  broadcasts like the other visual prefs. */
 export function setAsciiCols(cols: number): void {
   save({ ...load(), asciiCols: coerceAsciiCols(cols) });
+}
+
+/** The bit-depth theme's colour depth (bits per pixel). */
+export function getBitDepth(): number {
+  return load().bitDepth;
+}
+
+/** Set the bit-depth theme's colour depth. Snapped to a valid stop;
+ *  persists and broadcasts like the other visual prefs. */
+export function setBitDepth(depth: number): void {
+  save({ ...load(), bitDepth: coerceBitDepth(depth) });
+}
+
+/** The bit-depth theme's palette mode — true colour, false greyscale. */
+export function getBitColour(): boolean {
+  return load().bitColour;
+}
+
+/** Set the bit-depth theme's palette mode. Persists and broadcasts. */
+export function setBitColour(on: boolean): void {
+  save({ ...load(), bitColour: on });
 }
 
 /** Boot-time warm-up: if any category is already on 'mesh' from a

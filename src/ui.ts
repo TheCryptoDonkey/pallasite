@@ -22,10 +22,14 @@ import {
   setTheme,
   getAsciiCols,
   setAsciiCols,
+  getBitDepth,
+  setBitDepth,
+  getBitColour,
+  setBitColour,
   type VisualCategory,
   type VisualTier,
 } from './visual-style.js';
-import { THEMES, applyPostFx, ASCII_COLS, type ThemeId } from './postfx/index.js';
+import { THEMES, applyPostFx, ASCII_COLS, BIT_DEPTH, type ThemeId } from './postfx/index.js';
 import {
   getReducedMotionPref, setReducedMotionPref, type ReducedMotionPref,
   getPalette, setPalette, type ColourPalette,
@@ -3602,7 +3606,7 @@ export function renderLiveTheatre(input: LiveTheatreInput): void {
         c2d.restore();
         g3d.style.visibility = 'hidden';
       }
-      applyPostFx(canvas, theatreTheme, nowPerf, { asciiCols: getAsciiCols() });
+      applyPostFx(canvas, theatreTheme, nowPerf, { asciiCols: getAsciiCols(), bitDepth: getBitDepth(), bitColour: getBitColour() });
     } else if (g3d && g3d.style.visibility === 'hidden') {
       g3d.style.visibility = '';
     }
@@ -8223,10 +8227,60 @@ export function renderSettings(onBack: () => void): void {
     asciiVal.textContent = String(n);
   });
 
+  // Bit-depth controls — a depth slider (1 / 2 / 4 / 8 / 16 / 32-bit) and
+  // a greyscale/colour toggle. Shown only while BIT DEPTH is the look.
+  const bitRow = el('div', { parent: overlay });
+  bitRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr 60px;gap:14px;align-items:center;min-width:340px;';
+  el('label', { parent: bitRow, text: 'DEPTH' })
+    .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
+  const bitSlider = el('input', { parent: bitRow });
+  bitSlider.type = 'range';
+  bitSlider.min = '0';
+  bitSlider.max = String(BIT_DEPTH.stops.length - 1);
+  bitSlider.step = '1';
+  bitSlider.value = String(Math.max(0, (BIT_DEPTH.stops as readonly number[]).indexOf(getBitDepth())));
+  bitSlider.style.cssText = 'width:100%;accent-color:#b48cff;cursor:pointer;';
+  const bitVal = el('span', { parent: bitRow, text: `${getBitDepth()}-BIT` });
+  bitVal.style.cssText = 'font-size:0.85rem;color:#ffd84a;text-align:right;font-variant-numeric:tabular-nums;';
+  bitSlider.addEventListener('input', () => {
+    const depth = BIT_DEPTH.stops[Number(bitSlider.value)];
+    setBitDepth(depth);
+    bitVal.textContent = `${depth}-BIT`;
+  });
+
+  const bitColourRow = el('div', { parent: overlay });
+  bitColourRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;min-width:340px;';
+  el('label', { parent: bitColourRow, text: 'PALETTE' })
+    .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
+  const bitColourWrap = el('div', { parent: bitColourRow });
+  bitColourWrap.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;';
+  const bitColourBtns = new Map<boolean, HTMLButtonElement>();
+  const paintBitColour = (): void => {
+    const cur = getBitColour();
+    for (const [v, btn] of bitColourBtns) {
+      const on = v === cur;
+      btn.style.background = on ? 'rgba(255,216,74,0.18)' : 'rgba(20,12,36,0.6)';
+      btn.style.color = on ? '#ffd84a' : 'rgba(220,210,255,0.7)';
+      btn.style.borderColor = on ? '#ffd84a' : 'rgba(180,140,255,0.45)';
+    }
+  };
+  for (const o of [{ value: false, label: 'B&W' }, { value: true, label: 'COLOUR' }] as const) {
+    const btn = el('button', { className: 'menu-btn secondary', parent: bitColourWrap, text: o.label }) as HTMLButtonElement;
+    btn.style.cssText += 'font-size:0.72rem;padding:6px 14px;letter-spacing:0.14em;';
+    btn.addEventListener('click', () => {
+      setBitColour(o.value);
+      paintBitColour();
+    });
+    bitColourBtns.set(o.value, btn);
+  }
+  paintBitColour();
+
   function paintTheme(): void {
     const active = getTheme();
     for (const [id, btn] of themeBtns) btn.style.cssText = styleBtnCss(id === active, false);
     asciiRow.style.display = active === 'ascii' ? 'grid' : 'none';
+    bitRow.style.display = active === 'bitdepth' ? 'grid' : 'none';
+    bitColourRow.style.display = active === 'bitdepth' ? 'grid' : 'none';
   }
   paintTheme();
 
