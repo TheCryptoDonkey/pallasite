@@ -10,7 +10,7 @@
 export type ThemeId =
   | 'none' | 'crt' | 'synthwave' | 'thermal' | 'gameboy' | 'gameboycolor'
   | 'hologram' | 'blueprint' | 'ascii' | 'handdrawn'
-  | 'vhs' | 'nightvision' | 'comic' | 'onebit';
+  | 'vhs' | 'nightvision' | 'comic' | 'bitdepth';
 
 export interface ThemeInfo {
   id: ThemeId;
@@ -32,7 +32,7 @@ export const THEMES: readonly ThemeInfo[] = [
   { id: 'vhs', label: 'VHS' },
   { id: 'nightvision', label: 'NIGHT VISION' },
   { id: 'comic', label: 'COMIC' },
-  { id: 'onebit', label: '1-BIT' },
+  { id: 'bitdepth', label: 'BIT DEPTH' },
 ];
 
 /** Coerce an unknown value (e.g. a stale localStorage entry) into a ThemeId.
@@ -45,11 +45,21 @@ export function coerceThemeId(v: unknown): ThemeId {
  *  so the game can offer it as a slider — finer grids cost frame budget. */
 export const ASCII_COLS = { min: 80, max: 320, step: 20, default: 160 } as const;
 
+/** Bit-depth theme stops — bits-per-pixel the depth slider snaps to, from
+ *  1-bit (two inks) up to effectively full colour. The low stops are
+ *  where the quantise + dither bites; the high stops read as near-original. */
+export const BIT_DEPTH = { stops: [1, 2, 4, 8, 16, 32], default: 1 } as const;
+
 /** Per-call tuning passed to applyPostFx. All fields optional; an omitted
  *  field falls back to the effect's built-in default. */
 export interface PostFxOptions {
   /** ASCII character-grid column count (see ASCII_COLS). */
   asciiCols?: number;
+  /** 'bitdepth' theme — bits per pixel to crush the frame to (see BIT_DEPTH). */
+  bitDepth?: number;
+  /** 'bitdepth' theme — true quantises the RGB channels (colour), false
+   *  quantises luminance (greyscale). */
+  bitColour?: boolean;
 }
 
 // Scratch canvas holding a clean snapshot of the frame, so a multi-pass
@@ -79,7 +89,7 @@ export function applyPostFx(canvas: HTMLCanvasElement, theme: ThemeId, nowMs: nu
   else if (theme === 'vhs') applyVhs(ctx, canvas, nowMs);
   else if (theme === 'nightvision') applyNightvision(ctx, canvas, nowMs);
   else if (theme === 'comic') applyComic(ctx, canvas);
-  else if (theme === 'onebit') applyOnebit(ctx, canvas);
+  else if (theme === 'bitdepth') applyBitDepth(ctx, canvas, opts?.bitDepth ?? BIT_DEPTH.default, opts?.bitColour ?? false);
 }
 
 /**
@@ -900,24 +910,44 @@ function applyComic(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): v
   ctx.restore();
 }
 
-// ── 1-bit ────────────────────────────────────────────────────────────
+// ── Bit depth ────────────────────────────────────────────────────────
 
 // 4x4 ordered-dither (Bayer) thresholds, normalised to 0..1.
 const BAYER4: readonly number[] = [
   0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5,
 ].map((v) => (v + 0.5) / 16);
 
+/** Values at or below this (0..1) are forced to solid black before the
+ *  quantise, so the game's near-black void doesn't speckle under the
+ *  ordered dither. */
+const BLACK_POINT = 0.08;
+
+/** Quantise a 0..1 value to `levels` steps (>= 2) with an ordered-dither
+ *  nudge from `t` (a 0..1 Bayer threshold). Returns a 0..255 byte. */
+function ditherQuant(v: number, levels: number, t: number): number {
+  const span = levels - 1;
+  const q = Math.max(0, Math.min(span, Math.round(v * span + (t - 0.5))));
+  return (q / span) * 255;
+}
+
 /**
- * 1-bit: quantise the frame to two warm-tinted inks through a 4x4
- * ordered-dither screen, the way a monochrome handheld or e-reader
- * does. Runs on a coarse buffer, upscaled with no smoothing so the
- * dither pattern stays crisp.
+ * Bit depth: crush the frame to a chosen colour depth — from 1-bit (two
+ * inks) up to effectively full — through a 4x4 ordered-dither screen.
+ * Greyscale mode quantises luminance; colour mode quantises the RGB
+ * channels with the bits split across them (R and G favoured, as 8-bit
+ * 3-3-2 colour did). Runs on a lightly-downscaled buffer so the dither
+ * stays legible after upscaling.
  */
-function applyOnebit(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): void {
+function applyBitDepth(
+  ctx: CanvasRenderingContext2D,
+  canvas: HTMLCanvasElement,
+  depth: number,
+  colour: boolean,
+): void {
   const w = canvas.width;
   const h = canvas.height;
   if (w === 0 || h === 0) return;
-  const lowW = 540;
+  const lowW = Math.min(w, 1280);
   const lowH = Math.max(1, Math.round(lowW * h / w));
   const buf = getPixelBuf(lowW, lowH);
   const bctx = buf.getContext('2d', { willReadFrequently: true });
@@ -928,17 +958,41 @@ function applyOnebit(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): 
   bctx.drawImage(canvas, 0, 0, w, h, 0, 0, lowW, lowH);
   const img = bctx.getImageData(0, 0, lowW, lowH);
   const d = img.data;
-  for (let y = 0; y < lowH; y++) {
-    for (let x = 0; x < lowW; x++) {
-      const i = (y * lowW + x) * 4;
-      const lum = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) / 255;
-      // Gamma-crush so the dark void falls to solid black and only real
-      // scene content carries the dither.
-      const v = Math.pow(lum, 1.2);
-      const lit = v > BAYER4[(y & 3) * 4 + (x & 3)];
-      d[i] = lit ? 244 : 15;
-      d[i + 1] = lit ? 240 : 14;
-      d[i + 2] = lit ? 228 : 20;
+
+  // Colour needs >= 2 bits to split across channels; 1-bit is greyscale
+  // whichever mode is picked.
+  if (colour && depth >= 2) {
+    // Split `depth` bits across R, G, B (R and G favoured), each channel
+    // capped at 8 bits. A 0-bit channel collapses to a flat 0.
+    const bR = Math.min(8, Math.ceil(depth / 3));
+    const bG = Math.min(8, Math.ceil((depth - bR) / 2));
+    const bB = Math.min(8, Math.max(0, depth - bR - bG));
+    const lR = Math.max(2, 2 ** bR);
+    const lG = Math.max(2, 2 ** bG);
+    const lB = 2 ** bB;
+    for (let y = 0; y < lowH; y++) {
+      for (let x = 0; x < lowW; x++) {
+        const i = (y * lowW + x) * 4;
+        const t = BAYER4[(y & 3) * 4 + (x & 3)];
+        const cr = d[i] / 255;
+        const cg = d[i + 1] / 255;
+        const cb = d[i + 2] / 255;
+        d[i] = cr <= BLACK_POINT ? 0 : ditherQuant(cr, lR, t);
+        d[i + 1] = cg <= BLACK_POINT ? 0 : ditherQuant(cg, lG, t);
+        d[i + 2] = (lB > 1 && cb > BLACK_POINT) ? ditherQuant(cb, lB, t) : 0;
+      }
+    }
+  } else {
+    const levels = Math.min(256, 2 ** depth);
+    for (let y = 0; y < lowH; y++) {
+      for (let x = 0; x < lowW; x++) {
+        const i = (y * lowW + x) * 4;
+        const lum = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) / 255;
+        const g = lum <= BLACK_POINT ? 0 : ditherQuant(lum, levels, BAYER4[(y & 3) * 4 + (x & 3)]);
+        d[i] = g;
+        d[i + 1] = g;
+        d[i + 2] = g;
+      }
     }
   }
   bctx.putImageData(img, 0, 0);
