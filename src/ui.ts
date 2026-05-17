@@ -624,6 +624,11 @@ function renderArcadeName(
       window.removeEventListener('keydown', keyHandler, true);
       return;
     }
+    // Shortcut combos (Cmd/Ctrl/Alt + key) are never initials input, so
+    // let them through. Otherwise Cmd/Ctrl+V paste into another focused
+    // field (e.g. the bunker URI input) is swallowed by this capture
+    // handler before the input sees it.
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
     // Only intercept arrow keys when focus is on one of OUR buttons
     // or the wrap itself — otherwise the user is trying to navigate
     // the surrounding overlay and we shouldn't steal arrows.
