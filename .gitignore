@@ -9,10 +9,6 @@ dist/
 # DAW exports stay on disk only. ~600MB total, would bloat the repo permanently.
 /music/
 
-# Wave background source PNGs — too large for git. The optimised webp versions
-# in public/backgrounds/ are what ships.
-/originals/
-
 # OS
 .DS_Store
 Thumbs.db
