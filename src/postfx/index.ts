@@ -9,7 +9,8 @@
 
 export type ThemeId =
   | 'none' | 'crt' | 'synthwave' | 'thermal' | 'gameboy' | 'gameboycolor'
-  | 'hologram' | 'blueprint' | 'ascii' | 'handdrawn';
+  | 'hologram' | 'blueprint' | 'ascii' | 'handdrawn'
+  | 'vhs' | 'nightvision' | 'comic' | 'onebit';
 
 export interface ThemeInfo {
   id: ThemeId;
@@ -28,6 +29,10 @@ export const THEMES: readonly ThemeInfo[] = [
   { id: 'blueprint', label: 'BLUEPRINT' },
   { id: 'ascii', label: 'ASCII' },
   { id: 'handdrawn', label: 'HAND DRAWN' },
+  { id: 'vhs', label: 'VHS' },
+  { id: 'nightvision', label: 'NIGHT VISION' },
+  { id: 'comic', label: 'COMIC' },
+  { id: 'onebit', label: '1-BIT' },
 ];
 
 /** Coerce an unknown value (e.g. a stale localStorage entry) into a ThemeId.
@@ -71,6 +76,10 @@ export function applyPostFx(canvas: HTMLCanvasElement, theme: ThemeId, nowMs: nu
   else if (theme === 'blueprint') applyBlueprint(ctx, canvas);
   else if (theme === 'ascii') applyAscii(ctx, canvas, opts?.asciiCols ?? ASCII_COLS.default);
   else if (theme === 'handdrawn') applyHandDrawn(ctx, canvas, nowMs);
+  else if (theme === 'vhs') applyVhs(ctx, canvas, nowMs);
+  else if (theme === 'nightvision') applyNightvision(ctx, canvas, nowMs);
+  else if (theme === 'comic') applyComic(ctx, canvas);
+  else if (theme === 'onebit') applyOnebit(ctx, canvas);
 }
 
 /**
@@ -609,5 +618,335 @@ function applyHandDrawn(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement
   ctx.fillStyle = vig;
   ctx.fillRect(0, 0, w, h);
 
+  ctx.restore();
+}
+
+// ── VHS / camcorder ──────────────────────────────────────────────────
+
+/**
+ * VHS: an analogue-tape look. Runs on a downscaled buffer (tape is soft):
+ * splits the colour channels sideways for chroma bleed, dusts in luma
+ * noise, and tears a wandering tracking-error band across the picture.
+ * Finished with soft scanlines and a camcorder PLAY tag.
+ */
+function applyVhs(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, nowMs: number): void {
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w === 0 || h === 0) return;
+  const lowW = 640;
+  const lowH = Math.max(1, Math.round(lowW * h / w));
+  const buf = getPixelBuf(lowW, lowH);
+  const bctx = buf.getContext('2d', { willReadFrequently: true });
+  if (!bctx) return;
+  bctx.setTransform(1, 0, 0, 1, 0, 0);
+  bctx.imageSmoothingEnabled = true;
+  bctx.clearRect(0, 0, lowW, lowH);
+  bctx.drawImage(canvas, 0, 0, w, h, 0, 0, lowW, lowH);
+  const img = bctx.getImageData(0, 0, lowW, lowH);
+  const d = img.data;
+  const src = new Uint8ClampedArray(d); // clean copy to sample neighbours from
+  const split = Math.max(1, Math.round(lowW / 320)); // chroma offset
+  // Tracking-error band — a strip that tears sideways, wandering down-frame.
+  const trackY = ((nowMs * 0.045) % (lowH + 80)) - 40;
+  for (let y = 0; y < lowH; y++) {
+    const row = y * lowW;
+    const bandDist = Math.abs(y - trackY);
+    let shift = Math.round(Math.sin(y * 0.08 + nowMs * 0.003) * 1.3); // base wobble
+    if (bandDist < 16) {
+      const f = 1 - bandDist / 16;
+      shift += Math.round(f * f * 17 * Math.sin(nowMs * 0.021 + y * 0.4));
+    }
+    const scan = (y & 1) === 0 ? 1 : 0.87; // soft scanline
+    for (let x = 0; x < lowW; x++) {
+      const o = (row + x) * 4;
+      const xr = Math.min(lowW - 1, Math.max(0, x + shift + split));
+      const xg = Math.min(lowW - 1, Math.max(0, x + shift));
+      const xb = Math.min(lowW - 1, Math.max(0, x + shift - split));
+      const n = (Math.random() - 0.5) * 44; // tape luma noise
+      d[o] = (src[(row + xr) * 4] + n) * scan;
+      d[o + 1] = (src[(row + xg) * 4 + 1] + n) * scan;
+      d[o + 2] = (src[(row + xb) * 4 + 2] + n) * scan;
+    }
+  }
+  bctx.putImageData(img, 0, 0);
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(buf, 0, 0, lowW, lowH, 0, 0, w, h);
+  // Camcorder on-screen tag.
+  const k = w / 1280;
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.shadowColor = 'rgba(0,0,0,0.65)';
+  ctx.shadowBlur = 4 * k;
+  ctx.font = `bold ${Math.round(30 * k)}px ui-monospace, monospace`;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText('▶ PLAY', 30 * k, 26 * k);
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+
+// ── Night vision ─────────────────────────────────────────────────────
+
+let noiseTex: HTMLCanvasElement | null = null;
+/** Small tiling monochrome-noise tile, drawn at a random offset each
+ *  frame for cheap animated sensor grain. */
+function getNoiseTexture(): HTMLCanvasElement {
+  if (noiseTex) return noiseTex;
+  const size = 168;
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  const cx = c.getContext('2d');
+  if (cx) {
+    const img = cx.createImageData(size, size);
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const v = Math.floor(Math.random() * 256);
+      d[i] = v;
+      d[i + 1] = v;
+      d[i + 2] = v;
+      d[i + 3] = 255;
+    }
+    cx.putImageData(img, 0, 0);
+  }
+  noiseTex = c;
+  return noiseTex;
+}
+
+/**
+ * Night vision: a light-amplified sensor look. Blow the highlights out
+ * with additive bloom, lift the black floor, recolour to phosphor green,
+ * lay scanlines and animated grain, then mask to a circular goggle
+ * aperture with a faint reticle.
+ */
+function applyNightvision(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, nowMs: number): void {
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w === 0 || h === 0) return;
+  const k = w / 1280;
+  const sc = getScratch(w, h);
+  const scx = sc.getContext('2d');
+  if (!scx) return;
+  scx.setTransform(1, 0, 0, 1, 0, 0);
+  scx.clearRect(0, 0, w, h);
+  scx.drawImage(canvas, 0, 0);
+
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  // Heavy additive bloom — the amplifier blows highlights out.
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.filter = `blur(${(2 * k).toFixed(2)}px)`;
+  ctx.globalAlpha = 0.7;
+  ctx.drawImage(sc, 0, 0);
+  ctx.filter = `blur(${(7 * k).toFixed(2)}px)`;
+  ctx.globalAlpha = 0.55;
+  ctx.drawImage(sc, 0, 0);
+  ctx.filter = 'none';
+
+  // Lift the black floor (still additive) — an amplified sensor never
+  // sits at true black.
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#0c220c';
+  ctx.fillRect(0, 0, w, h);
+
+  // Recolour to phosphor green, luminance preserved.
+  ctx.globalCompositeOperation = 'color';
+  ctx.fillStyle = '#3bff6e';
+  ctx.fillRect(0, 0, w, h);
+
+  // Animated sensor grain — a cached noise tile at a random offset.
+  ctx.globalCompositeOperation = 'overlay';
+  ctx.globalAlpha = 0.22;
+  const noise = getNoiseTexture();
+  const pat = ctx.createPattern(noise, 'repeat');
+  if (pat) {
+    const ox = Math.floor(Math.random() * noise.width);
+    const oy = Math.floor(Math.random() * noise.height);
+    ctx.save();
+    ctx.translate(-ox, -oy);
+    ctx.fillStyle = pat;
+    ctx.fillRect(ox, oy, w, h);
+    ctx.restore();
+  }
+
+  // Scanlines.
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = 'rgba(0,14,0,0.3)';
+  const step = Math.max(2, Math.round(3 * k));
+  for (let y = 0; y < h; y += step) ctx.fillRect(0, y, w, 1);
+
+  // Circular goggle aperture.
+  const cx = w / 2;
+  const cy = h / 2;
+  const rad = Math.hypot(w, h) * 0.44;
+  const mask = ctx.createRadialGradient(cx, cy, rad * 0.6, cx, cy, rad);
+  mask.addColorStop(0, 'rgba(0,5,0,0)');
+  mask.addColorStop(0.85, 'rgba(0,5,0,0.9)');
+  mask.addColorStop(1, 'rgba(0,3,0,1)');
+  ctx.fillStyle = mask;
+  ctx.fillRect(0, 0, w, h);
+
+  // Faint pulsing reticle.
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.strokeStyle = `rgba(130,255,160,${(0.17 + 0.05 * Math.sin(nowMs * 0.004)).toFixed(3)})`;
+  ctx.lineWidth = Math.max(1, k);
+  const ret = h * 0.07;
+  ctx.beginPath();
+  ctx.moveTo(cx - ret, cy);
+  ctx.lineTo(cx + ret, cy);
+  ctx.moveTo(cx, cy - ret);
+  ctx.lineTo(cx, cy + ret);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(cx, cy, ret * 0.62, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+// ── Comic / halftone ─────────────────────────────────────────────────
+
+let halftoneTex: HTMLCanvasElement | null = null;
+/** A single tiling dot cell — multiplied over the comic page as a
+ *  newsprint screen so the flat colours read as printed, not digital. */
+function getHalftoneTexture(): HTMLCanvasElement {
+  if (halftoneTex) return halftoneTex;
+  const cell = 6;
+  const c = document.createElement('canvas');
+  c.width = cell;
+  c.height = cell;
+  const cx = c.getContext('2d');
+  if (cx) {
+    cx.fillStyle = '#ffffff';
+    cx.fillRect(0, 0, cell, cell);
+    cx.fillStyle = '#000000';
+    cx.beginPath();
+    cx.arc(cell / 2, cell / 2, cell * 0.34, 0, Math.PI * 2);
+    cx.fill();
+  }
+  halftoneTex = c;
+  return halftoneTex;
+}
+
+/**
+ * Comic book: a printed-page look. The dark void becomes cream paper and
+ * the bright vector strokes become bold ink — luminance posterised into
+ * flat cel bands — then a tiling halftone dot screen is multiplied over
+ * the page and a heavy panel border framed around it.
+ */
+function applyComic(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): void {
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w === 0 || h === 0) return;
+  const k = w / 1280;
+
+  // Flat cel pass on a half-res buffer: posterise luminance into bands
+  // and remap cream-paper -> dark-ink, so a bright stroke prints as ink.
+  const lowW = Math.max(2, Math.round(w / 2));
+  const lowH = Math.max(2, Math.round(h / 2));
+  const buf = getPixelBuf(lowW, lowH);
+  const bctx = buf.getContext('2d', { willReadFrequently: true });
+  if (!bctx) return;
+  bctx.setTransform(1, 0, 0, 1, 0, 0);
+  bctx.imageSmoothingEnabled = true;
+  bctx.clearRect(0, 0, lowW, lowH);
+  bctx.drawImage(canvas, 0, 0, w, h, 0, 0, lowW, lowH);
+  const img = bctx.getImageData(0, 0, lowW, lowH);
+  const d = img.data;
+  const levels = 4;
+  for (let i = 0; i < d.length; i += 4) {
+    const lum = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) / 255;
+    const ink = Math.round(Math.pow(lum, 0.85) * (levels - 1)) / (levels - 1);
+    d[i] = 240 + (24 - 240) * ink;
+    d[i + 1] = 232 + (22 - 232) * ink;
+    d[i + 2] = 208 + (30 - 208) * ink;
+  }
+  bctx.putImageData(img, 0, 0);
+
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(buf, 0, 0, lowW, lowH, 0, 0, w, h);
+
+  // Newsprint halftone screen — a tiling dot pattern multiplied over the
+  // whole page so the flats read as printed.
+  const tex = getHalftoneTexture();
+  const pat = ctx.createPattern(tex, 'repeat');
+  if (pat) {
+    const scl = Math.max(1, 2 * k);
+    ctx.save();
+    ctx.scale(scl, scl);
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = pat;
+    ctx.fillRect(0, 0, w / scl, h / scl);
+    ctx.restore();
+  }
+
+  // Heavy comic-panel border.
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = '#14121a';
+  ctx.lineWidth = Math.max(3, 9 * k);
+  ctx.strokeRect(0, 0, w, h);
+
+  ctx.restore();
+}
+
+// ── 1-bit ────────────────────────────────────────────────────────────
+
+// 4x4 ordered-dither (Bayer) thresholds, normalised to 0..1.
+const BAYER4: readonly number[] = [
+  0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5,
+].map((v) => (v + 0.5) / 16);
+
+/**
+ * 1-bit: quantise the frame to two warm-tinted inks through a 4x4
+ * ordered-dither screen, the way a monochrome handheld or e-reader
+ * does. Runs on a coarse buffer, upscaled with no smoothing so the
+ * dither pattern stays crisp.
+ */
+function applyOnebit(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): void {
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w === 0 || h === 0) return;
+  const lowW = 540;
+  const lowH = Math.max(1, Math.round(lowW * h / w));
+  const buf = getPixelBuf(lowW, lowH);
+  const bctx = buf.getContext('2d', { willReadFrequently: true });
+  if (!bctx) return;
+  bctx.setTransform(1, 0, 0, 1, 0, 0);
+  bctx.imageSmoothingEnabled = true;
+  bctx.clearRect(0, 0, lowW, lowH);
+  bctx.drawImage(canvas, 0, 0, w, h, 0, 0, lowW, lowH);
+  const img = bctx.getImageData(0, 0, lowW, lowH);
+  const d = img.data;
+  for (let y = 0; y < lowH; y++) {
+    for (let x = 0; x < lowW; x++) {
+      const i = (y * lowW + x) * 4;
+      const lum = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) / 255;
+      // Gamma-crush so the dark void falls to solid black and only real
+      // scene content carries the dither.
+      const v = Math.pow(lum, 1.2);
+      const lit = v > BAYER4[(y & 3) * 4 + (x & 3)];
+      d[i] = lit ? 244 : 15;
+      d[i + 1] = lit ? 240 : 14;
+      d[i + 2] = lit ? 228 : 20;
+    }
+  }
+  bctx.putImageData(img, 0, 0);
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.drawImage(buf, 0, 0, lowW, lowH, 0, 0, w, h);
   ctx.restore();
 }
