@@ -13,6 +13,10 @@
  */
 
 let ctx: AudioContext | null = null;
+// True only while WE deliberately suspended the context (page hidden /
+// backgrounded). Lets the onstatechange handler tell an intentional
+// suspend apart from an iOS audio-session interruption it must fight.
+let intentionalSuspend = false;
 let masterGain: GainNode | null = null;
 let compressor: DynamicsCompressorNode | null = null;
 let sfxBus: GainNode | null = null;
@@ -110,6 +114,20 @@ function getCtx(): AudioContext {
     musicBus.connect(masterGain);
     masterGain.connect(compressor);
     compressor.connect(ctx.destination);
+
+    // iOS drops the AudioContext to 'suspended'/'interrupted' on any
+    // audio-session interruption — an incoming call, Siri, another app
+    // taking the output, Control Centre, sometimes a device rotation.
+    // No event reaches the HTMLAudio elements, so music.ts's el.paused
+    // health check never notices and the music stays dead until the
+    // next user gesture. Resume the moment the context leaves 'running'
+    // for any reason that wasn't our own suspendPlayback().
+    ctx.onstatechange = (): void => {
+      if (!ctx || intentionalSuspend) return;
+      if (ctx.state === 'running' || ctx.state === 'closed') return;
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      void ctx.resume().catch(() => undefined);
+    };
   }
   return ctx;
 }
@@ -125,7 +143,9 @@ function rampGain(node: GainNode | null, target: number, ms = 60): void {
 /** Resume the audio context — must be called from a user gesture handler. */
 export async function unlockAudio(): Promise<void> {
   const c = getCtx();
-  if (c.state === 'suspended') {
+  intentionalSuspend = false;
+  // Cover Safari's 'interrupted' state too, not just 'suspended'.
+  if (c.state !== 'running' && c.state !== 'closed') {
     await c.resume();
   }
 }
@@ -140,6 +160,7 @@ export async function unlockAudio(): Promise<void> {
  * context is already suspended.
  */
 export function suspendPlayback(): void {
+  intentionalSuspend = true;
   if (ctx && ctx.state === 'running') {
     void ctx.suspend().catch(() => undefined);
   }
@@ -153,6 +174,7 @@ export function suspendPlayback(): void {
  * suspended with the resume already no-op'd, killing every oscillator SFX.
  */
 export function resumePlayback(): void {
+  intentionalSuspend = false;
   if (ctx && ctx.state !== 'closed') {
     void ctx.resume().catch(() => undefined);
   }

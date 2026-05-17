@@ -464,6 +464,16 @@ export function musicSetTrackForState(state: GameState): void {
   if (nowMs - lastVerifyMs > VERIFY_INTERVAL_MS) {
     lastVerifyMs = nowMs;
     if (currentId && state.phase !== 'paused' && state.phase !== 'deathreplay') {
+      // An iOS interruption can suspend the whole AudioContext while
+      // leaving el.paused === false — the element thinks it's playing
+      // but the suspended context emits silence. Checking only el.paused
+      // misses that, so verify (and revive) the context first. The
+      // audio.ts onstatechange handler covers this too; this is the
+      // belt-and-braces retry for when its resume() was rejected.
+      const ctx = getMusicDestination().context as AudioContext;
+      if (ctx.state !== 'running' && ctx.state !== 'closed') {
+        try { void ctx.resume().catch(() => undefined); } catch { /* ignore */ }
+      }
       const entry = loaded.get(currentId);
       if (entry && !entry.failed && entry.el.paused) {
         try { void entry.el.play().catch(() => undefined); } catch { /* ignore */ }
