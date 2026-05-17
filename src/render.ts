@@ -3562,6 +3562,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       ufos: !holding && ufosMesh ? state.ufos : [],
       powerups: !holding && particleTier === 'mesh' ? state.powerups : [],
       ship: !holding && shipTier === 'mesh' ? state.ship : null,
+      elapsed: state.elapsed,
       dpr: renderMode.dpr,
       scale: renderMode.scale,
       tx: renderMode.tx,

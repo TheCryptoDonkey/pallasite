@@ -171,6 +171,10 @@ export interface WebGLOverlayCall {
   ufos: ReadonlyArray<Ufo>;
   powerups: ReadonlyArray<PowerUp>;
   ship: Ship | null;
+  /** Sim clock (ms) for time-based overlay effects such as the shield
+   *  dome's expiry fade. Wall-clock would mismatch the sim-clock deadlines
+   *  the gameplay state now carries (B3 determinism). */
+  elapsed: number;
   dpr: number;
   scale: number;
   tx: number;

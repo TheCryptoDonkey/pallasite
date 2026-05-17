@@ -1621,6 +1621,8 @@ export function renderOverlay(opts: {
   ufos: ReadonlyArray<Ufo>;
   powerups: ReadonlyArray<PowerUp>;
   ship: Ship | null;
+  /** Sim clock (ms) — time base for the shield-dome expiry fade. */
+  elapsed: number;
   dpr: number;
   scale: number;
   tx: number;
@@ -2083,7 +2085,7 @@ export function renderOverlay(opts: {
     shield.rotation.x += 0.004;
     shield.rotation.y += 0.006;
     // Final-300ms fade so the shield isn't yanked off the screen at expiry.
-    const remaining = Math.max(0, opts.ship.shieldExpiresAt - performance.now());
+    const remaining = Math.max(0, opts.ship.shieldExpiresAt - opts.elapsed);
     const fade = Math.min(1, remaining / 300);
     const hit = Math.max(0, Math.min(1, opts.ship.shieldHitFlash));
     if (handle.shieldSphereMat) {
