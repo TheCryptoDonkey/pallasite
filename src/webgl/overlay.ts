@@ -8,7 +8,7 @@
  * user actually flips a category to MESH.
  *
  * Coordinate system:
- *   World is 960×720 with Y down (screen convention). The
+ *   World is 1280×720 with Y down (screen convention). The
  *   OrthographicCamera uses three.js's standard Y-up frustum
  *   (top=720, bottom=0); mesh positions invert Y at the boundary
  *   (mesh.position.y = WORLD_H - a.pos.y), and rotation is negated
@@ -22,7 +22,7 @@
 
 import * as THREE from 'three';
 import type { Asteroid, PowerUp, PowerUpType, Ship, Ufo } from '../types.js';
-import { POWERUP_CONFIG, POWERUP_RADIUS } from '../types.js';
+import { POWERUP_CONFIG, POWERUP_RADIUS, WORLD_W, WORLD_H } from '../types.js';
 import { getMemberImage } from '../sanctum-avatars.js';
 import { getFlavour } from '../flavour.js';
 import { DEPTH_CONFIGS } from '../parallax.js';
@@ -496,7 +496,7 @@ export function ensureWebGLOverlay(): Promise<OverlayHandle> {
     renderer.setClearColor(0x000000, 0);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     const scene = new THREE.Scene();
-    const camera = new THREE.OrthographicCamera(0, 960, 720, 0, 0.1, 1000);
+    const camera = new THREE.OrthographicCamera(0, WORLD_W, WORLD_H, 0, 0.1, 1000);
     camera.position.set(0, 0, 500);
     camera.lookAt(0, 0, 0);
     console.info('[webgl-overlay] init', {
@@ -1639,8 +1639,8 @@ export function renderOverlay(opts: {
   }
   // Viewport matches the 2D ctx.setTransform so meshes pixel-align
   // with HUD/coins/etc. WebGL viewport y is bottom-up.
-  const vpW = 960 * opts.scale * opts.dpr;
-  const vpH = 720 * opts.scale * opts.dpr;
+  const vpW = WORLD_W * opts.scale * opts.dpr;
+  const vpH = WORLD_H * opts.scale * opts.dpr;
   const vpX = opts.tx * opts.dpr;
   const vpYTopDown = opts.ty * opts.dpr;
   const vpY = canvas.height - vpYTopDown - vpH;

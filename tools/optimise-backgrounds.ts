@@ -22,9 +22,16 @@ const force = args.includes('--force');
 const waveArgIdx = args.indexOf('--wave');
 const onlyWave = waveArgIdx >= 0 ? parseInt(args[waveArgIdx + 1], 10) : null;
 
-/** Output dimensions — 1280x960 covers up to ~1.3x DPI of the 960x720 canvas. */
-const TARGET_W = 1280;
-const TARGET_H = 960;
+/** Background output — 1920x1080 is 1.5x the 1280x720 world, crisp on
+ *  modern landscape screens. True 16:9, so cover-fit cleanly scales the
+ *  QHD master with no crop; the full-quality master stays in originals/. */
+const BG_W = 1920;
+const BG_H = 1080;
+/** Asteroid surface textures keep their legacy target — they are polygon
+ *  fills / mesh diffuse maps, not 16:9 art, so they sit outside the
+ *  background rework and the previous pipeline dimensions are preserved. */
+const ASTEROID_W = 1280;
+const ASTEROID_H = 960;
 /** WebP quality — 78 is a sweet spot of detail vs file size for nebulae. */
 const QUALITY = 78;
 
@@ -50,6 +57,9 @@ interface Job {
   order: number;
   src: string;
   dst: string;
+  /** Output dimensions — 16:9 for backgrounds, legacy size for asteroids. */
+  w: number;
+  h: number;
 }
 const jobs: Job[] = [];
 for (const file of files) {
@@ -62,6 +72,8 @@ for (const file of files) {
       order: wave,
       src: join(SRC_DIR, file),
       dst: join(OUT_DIR, `wave-${wave}.webp`),
+      w: BG_W,
+      h: BG_H,
     });
     continue;
   }
@@ -69,11 +81,14 @@ for (const file of files) {
   if (namedMatch) {
     if (onlyWave !== null) continue;
     const name = namedMatch[1].toLowerCase();
+    const isAsteroid = name.startsWith('asteroid-');
     jobs.push({
       label: name,
       order: Infinity,
       src: join(SRC_DIR, file),
       dst: join(OUT_DIR, `${name}.webp`),
+      w: isAsteroid ? ASTEROID_W : BG_W,
+      h: isAsteroid ? ASTEROID_H : BG_H,
     });
   }
 }
@@ -84,7 +99,7 @@ if (jobs.length === 0) {
   process.exit(1);
 }
 
-console.log(`Optimising ${jobs.length} background${jobs.length === 1 ? '' : 's'} → ${TARGET_W}x${TARGET_H} WebP q${QUALITY}`);
+console.log(`Optimising ${jobs.length} image${jobs.length === 1 ? '' : 's'} → WebP q${QUALITY} (backgrounds ${BG_W}x${BG_H})`);
 console.log('');
 
 let totalIn = 0;
@@ -105,7 +120,7 @@ for (const job of jobs) {
 
   process.stdout.write(`  ${job.label}: optimising… `);
   await sharp(job.src)
-    .resize(TARGET_W, TARGET_H, { fit: 'cover', position: 'centre' })
+    .resize(job.w, job.h, { fit: 'cover', position: 'centre' })
     .webp({ quality: QUALITY, effort: 5 })
     .toFile(job.dst);
 

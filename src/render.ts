@@ -240,58 +240,21 @@ export interface RenderModeInfo {
   ty: number;
   insets: SafeInsets;
 }
-let renderMode: RenderModeInfo = { kind: 'retro', vw: 960, vh: 720, dpr: 1, scale: 1, tx: 0, ty: 0, insets: ZERO_INSETS };
+let renderMode: RenderModeInfo = { kind: 'retro', vw: WORLD_W, vh: WORLD_H, dpr: 1, scale: 1, tx: 0, ty: 0, insets: ZERO_INSETS };
 export function setRenderMode(info: RenderModeInfo): void { renderMode = info; }
 
-// ── Follow camera ─────────────────────────────────────────────────────────────
-// Modern portrait shows a band narrower than the fixed WORLD_W world. A
-// dead-zone camera pans that band to keep the ship on screen. updateCamera
-// reads state.ship.pos and writes only cameraX and renderMode.tx — never sim
-// state — so it cannot affect determinism. Landscape and retro disengage it
-// and keep the static centred view fit() computed.
-
-/** Half-width of the central dead-zone the ship roams before the camera
- *  scrolls, as a fraction of the visible band width. */
-const CAMERA_DEADZONE_FRAC = 0.15;
-/** Exponential follow rate per second — higher tracks the ship more tightly. */
-const CAMERA_FOLLOW_K = 10;
-
-let cameraX = WORLD_W / 2;   // band centre in world coords, continuous
-let cameraEngaged = false;
-let cameraLastNow = 0;
-
-/** Shortest signed delta on a wrapping span; result in [-span/2, span/2]. */
-function wrapDelta(d: number, span: number): number {
-  d = ((d % span) + span) % span;
-  return d > span / 2 ? d - span : d;
-}
-
-/** Advance the follow camera and write the world-to-device tx into renderMode.
- *  Call once per frame before drawing. Render-only — never mutates sim state. */
-function updateCamera(state: GameState, now: number): void {
-  const visW = renderMode.vw / renderMode.scale;
-  if (renderMode.kind !== 'modern' || visW >= WORLD_W - 1) {
-    cameraEngaged = false;   // band covers the world — fit()'s static tx stands
-    return;
-  }
-  const shipX = state.ship.pos.x;
-  if (!cameraEngaged) {
-    cameraX = shipX;         // snap on first engaged frame — no opening pan
-    cameraEngaged = true;
-    cameraLastNow = now;
-  }
-  const dt = Math.min(0.1, Math.max(0, (now - cameraLastNow) / 1000));
-  cameraLastNow = now;
-  const d = wrapDelta(shipX - cameraX, WORLD_W);
-  if (Math.abs(d) > visW / 2) {
-    cameraX = shipX;         // ship teleported (hyperspace/respawn) — snap
+/** Re-assert the clean centred world transform for UI overlays (wave banner,
+ *  intertitle, countdown, bonus banner) laid out in WORLD coords, dropping any
+ *  screen-shake translate so the banners stay rock-steady during impacts. */
+function applyOverlayTransform(ctx: CanvasRenderingContext2D): void {
+  const t = renderMode;
+  if (t.kind === 'modern') {
+    const txc = t.vw / 2 - (WORLD_W / 2) * t.scale;
+    const tyc = t.vh / 2 - (WORLD_H / 2) * t.scale;
+    ctx.setTransform(t.dpr * t.scale, 0, 0, t.dpr * t.scale, t.dpr * txc, t.dpr * tyc);
   } else {
-    const dzHalf = visW * CAMERA_DEADZONE_FRAC;
-    const move = d > dzHalf ? d - dzHalf : d < -dzHalf ? d + dzHalf : 0;
-    cameraX += move * (1 - Math.exp(-CAMERA_FOLLOW_K * dt));
+    ctx.setTransform(t.dpr, 0, 0, t.dpr, 0, 0);
   }
-  cameraX = ((cameraX % WORLD_W) + WORLD_W) % WORLD_W;
-  renderMode.tx = renderMode.vw / 2 - cameraX * renderMode.scale;
 }
 
 /** Hide the on-canvas HUD and banners for render() calls. The watch
@@ -300,51 +263,6 @@ function updateCamera(state: GameState, now: number): void {
 let hudHidden = false;
 export function setHudHidden(hidden: boolean): void { hudHidden = hidden; }
 export function getRenderModeKind(): 'retro' | 'modern' { return renderMode.kind; }
-
-/**
- * Effective wrap distance for collisions. In modern portrait mode the canvas
- * shows a cropped slice of the 960×720 world and we ghost-render entities at
- * ±visW so the wrap appears seamless to the player. Collisions must use the
- * same shorter wrap distance — otherwise a bullet aimed at a visible ghost
- * asteroid passes through it because the real entity sits one full visW away
- * in world coordinates. Returns world dimensions for retro/landscape, where
- * the visible band already covers the world.
- */
-export function getCollisionWrap(): { w: number; h: number } {
-  if (renderMode.kind !== 'modern') return { w: WORLD_W, h: WORLD_H };
-  const visW = renderMode.vw / renderMode.scale;
-  const visH = renderMode.vh / renderMode.scale;
-  return {
-    w: Math.min(WORLD_W, visW),
-    h: Math.min(WORLD_H, visH),
-  };
-}
-
-/**
- * Visible world bounds for the current render mode. Used by entity spawn
- * logic that wants to enter/exit the visible band cleanly: in modern
- * portrait the world is wider than the band, so spawning at world-edge
- * (x=-radius) hides the entity off-screen for seconds AND the +visW ghost
- * pops it into the middle of the visible band immediately. UFOs and other
- * "drift across the screen" entities should spawn at the band edge instead.
- *
- * Retro mode returns the full world rect (band == world). Modern landscape
- * with visW>=WORLD_W also returns the full world (no horizontal crop).
- * Modern portrait crop on iPhone returns the narrower visible band.
- */
-export function getVisibleBoundsW(): { left: number; right: number; top: number; bottom: number } {
-  if (renderMode.kind !== 'modern') return { left: 0, right: WORLD_W, top: 0, bottom: WORLD_H };
-  const visLeft = -renderMode.tx / renderMode.scale;
-  const visRight = (renderMode.vw - renderMode.tx) / renderMode.scale;
-  const visTop = -renderMode.ty / renderMode.scale;
-  const visBot = (renderMode.vh - renderMode.ty) / renderMode.scale;
-  return {
-    left: Math.max(0, visLeft),
-    right: Math.min(WORLD_W, visRight),
-    top: Math.max(0, visTop),
-    bottom: Math.min(WORLD_H, visBot),
-  };
-}
 
 /** Title-screen background cycling: rotates through wave bgs every 30s,
  *  skipping the wave-25 finale image so the boss reveal stays for in-game. */
@@ -369,7 +287,7 @@ function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: nu
 
   if (renderMode.kind === 'modern') {
     // Modern fill: bg covers the entire canvas in canvas-pixel space, not the
-    // 960×720 world rect. Save/restore the world transform around it so other
+    // 1280×720 world rect. Save/restore the world transform around it so other
     // draw calls keep using world coords.
     ctx.save();
     ctx.setTransform(renderMode.dpr, 0, 0, renderMode.dpr, 0, 0);
@@ -400,11 +318,14 @@ function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: nu
     return;
   }
 
-  // Retro: draw bg in 960×720 world space (unchanged behaviour).
+  // Retro: draw bg in 1280×720 world space. Cover-scale the source so a 4:3
+  // wave image crops into the 16:9 world rather than squashing — wave art is
+  // regenerated 16:9 separately; this keeps the interim look clean.
   if (override) {
     const breath = 1.025 + Math.sin(now * 0.00038) * 0.006;
-    const w = WORLD_W * breath;
-    const h = WORLD_H * breath;
+    const coverScale = Math.max(WORLD_W / override.width, WORLD_H / override.height) * breath;
+    const w = override.width * coverScale;
+    const h = override.height * coverScale;
     const dx = (WORLD_W - w) / 2 + Math.sin(now * 0.00029) * 9;
     const dy = (WORLD_H - h) / 2 + Math.cos(now * 0.00021) * 5;
     ctx.drawImage(override, dx, dy, w, h);
@@ -2300,7 +2221,7 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   }
   // Notch / Dynamic Island awareness — push the HUD inside the safe area so
   // labels don't sit under the cutout on iPhone X+ in modern fullscreen mode.
-  // Retro letterboxes the canvas inside the inscribed 4:3 area, so insets
+  // Retro letterboxes the canvas inside the inscribed 16:9 area, so insets
   // are zero there by design.
   const insets = renderMode.insets;
   const topY = 16 + insets.top;
@@ -2514,6 +2435,7 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState): void {
   alpha = Math.max(0, Math.min(1, alpha));
 
   ctx.save();
+  applyOverlayTransform(ctx);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
@@ -2646,13 +2568,23 @@ function drawIntertitle(ctx: CanvasRenderingContext2D, s: GameState): void {
   alpha = Math.max(0, Math.min(1, alpha));
 
   ctx.save();
+  applyOverlayTransform(ctx);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  // Full-screen black hold — covers HUD, background, the lot.
+  // Full-screen black hold — covers HUD, background, the lot. Filled in
+  // device space so the modern-mode letterbox gutters black out too; the
+  // transform is restored straight after for the world-space text below.
   ctx.globalAlpha = alpha;
   ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, WORLD_W, WORLD_H);
+  if (renderMode.kind === 'modern') {
+    ctx.save();
+    ctx.setTransform(renderMode.dpr, 0, 0, renderMode.dpr, 0, 0);
+    ctx.fillRect(0, 0, renderMode.vw, renderMode.vh);
+    ctx.restore();
+  } else {
+    ctx.fillRect(0, 0, WORLD_W, WORLD_H);
+  }
 
   const cx = WORLD_W / 2;
   const cy = WORLD_H / 2;
@@ -3107,6 +3039,14 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
   const gameTime = replayGameTime(dr.spanMs, wallElapsed);
   const snap = pickSnapshot(dr.snapshots, gameTime);
 
+  // Clip replayed entities and debris to the world rect, the same letterbox-
+  // gutter guard as the live path. The vignette below is device space and is
+  // left unclipped on purpose so it still frames the whole screen.
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, WORLD_W, WORLD_H);
+  ctx.clip();
+
   for (const a of snap.asteroids) drawAsteroid(ctx, a, now);
   for (const m of snap.mines) drawMine(ctx, m, now);
   for (const u of snap.ufos) drawUfo(ctx, u, now);
@@ -3134,16 +3074,26 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
   // overlay is gone — particles + debris carry the moment.
   drawParticles(ctx, state.particles);
   drawDebris(ctx, state.debris);
+  ctx.restore();  // release the world-rect clip before the device-space vignette
 
-  // Red vignette: softer at the centre, stronger at the edges. Skipped
-  // under ASCII, where the postfx brightness-normalises each cell and
-  // would turn this wash into a screen-wide red flood.
+  // Red vignette: clear at the centre, deepening to red at the edges. Drawn
+  // in device space so it frames the whole screen — modern-mode letterbox
+  // gutters included — not just the world rect. Skipped under ASCII, where
+  // the postfx brightness-normalises each cell into a harsh red flood.
   if (getTheme() !== 'ascii') {
-    const grad = ctx.createRadialGradient(WORLD_W / 2, WORLD_H / 2, 180, WORLD_W / 2, WORLD_H / 2, 620);
+    ctx.save();
+    const vigW = renderMode.kind === 'modern' ? renderMode.vw : WORLD_W;
+    const vigH = renderMode.kind === 'modern' ? renderMode.vh : WORLD_H;
+    if (renderMode.kind === 'modern') ctx.setTransform(renderMode.dpr, 0, 0, renderMode.dpr, 0, 0);
+    const grad = ctx.createRadialGradient(
+      vigW / 2, vigH / 2, vigH * 0.25,
+      vigW / 2, vigH / 2, Math.hypot(vigW, vigH) / 2,
+    );
     grad.addColorStop(0, 'rgba(255, 80, 80, 0)');
     grad.addColorStop(1, 'rgba(120, 0, 0, 0.42)');
     ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, WORLD_W, WORLD_H);
+    ctx.fillRect(0, 0, vigW, vigH);
+    ctx.restore();
   }
 
   // Slow-mo indicator — small "0.4x" mark when in the slow segment
@@ -3257,74 +3207,6 @@ function drawHyperspaceEffects(ctx: CanvasRenderingContext2D, effects: Hyperspac
   }
 }
 
-// ── Offscreen asteroid indicators ───────────────────────────────────────────
-//
-// In modern-mode portrait the visible viewport is narrower than the 960×720
-// world, so when the wave is nearly cleared a stray gameplay-plane rock
-// can sit wholly off-camera and force the player to wrap-hunt for it.
-// Draw a chevron on the visible-band edge pointing toward each remaining
-// rock when only a few are left. Wrap-aware: picks the nearest copy of
-// the asteroid across the world wrap.
-
-function drawOffscreenIndicators(ctx: CanvasRenderingContext2D, state: GameState, now: number): void {
-  if (state.phase !== 'playing') return;
-  const collide = state.asteroids.filter(a => a.alive && (a.depth ?? 3) === 3);
-  // Only when the wave is nearly clear — otherwise the screen would be
-  // covered in arrows during a busy frame, which is noise.
-  if (collide.length === 0 || collide.length > 3) return;
-
-  const bounds = getVisibleBoundsW();
-  const visW = bounds.right - bounds.left;
-  const visH = bounds.bottom - bounds.top;
-  // If the whole world is visible, nothing is offscreen.
-  if (visW >= WORLD_W && visH >= WORLD_H) return;
-
-  const cx = (bounds.left + bounds.right) / 2;
-  const cy = (bounds.top + bounds.bottom) / 2;
-  const halfW = visW / 2;
-  const halfH = visH / 2;
-  const margin = 32;
-
-  for (const a of collide) {
-    // Wrap-aware delta from visible-band centre to asteroid: take the
-    // shortest signed offset across the world wrap on each axis.
-    let dx = ((a.pos.x - cx) % WORLD_W + WORLD_W * 1.5) % WORLD_W - WORLD_W / 2;
-    let dy = ((a.pos.y - cy) % WORLD_H + WORLD_H * 1.5) % WORLD_H - WORLD_H / 2;
-    const wx = cx + dx;
-    const wy = cy + dy;
-    const visible = wx >= bounds.left && wx <= bounds.right && wy >= bounds.top && wy <= bounds.bottom;
-    if (visible) continue;
-
-    const angle = Math.atan2(dy, dx);
-    // Place the chevron along the ray from centre, stopping at the
-    // nearest visible-band edge minus margin so it isn't half-clipped.
-    const cosA = Math.cos(angle);
-    const sinA = Math.sin(angle);
-    const tx = cosA !== 0 ? Math.abs((halfW - margin) / cosA) : Number.POSITIVE_INFINITY;
-    const ty = sinA !== 0 ? Math.abs((halfH - margin) / sinA) : Number.POSITIVE_INFINITY;
-    const t = Math.min(tx, ty);
-    const ax = cx + cosA * t;
-    const ay = cy + sinA * t;
-
-    const pulse = 0.85 + 0.15 * Math.sin(now * 0.008);
-    const size = 14 * pulse;
-    ctx.save();
-    ctx.translate(ax, ay);
-    ctx.rotate(angle);
-    ctx.fillStyle = '#ffd84a';
-    ctx.shadowColor = '#ff8a3a';
-    ctx.shadowBlur = 14;
-    ctx.beginPath();
-    ctx.moveTo(size, 0);
-    ctx.lineTo(-size * 0.6, -size * 0.7);
-    ctx.lineTo(-size * 0.25, 0);
-    ctx.lineTo(-size * 0.6, size * 0.7);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
 // ── Wave-clear pickup countdown ─────────────────────────────────────────────
 //
 // The grab-everything grace window after a wave clears. A gentle 5→1
@@ -3345,6 +3227,7 @@ function drawWaveClearCountdown(ctx: CanvasRenderingContext2D, state: GameState)
   const fracInSecond = (remainingMs % 1000) / 1000;
   const pulse = 0.9 + 0.1 * Math.sin(fracInSecond * Math.PI * 2);
   ctx.save();
+  applyOverlayTransform(ctx);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = '#ffd84a';
@@ -3395,12 +3278,11 @@ function drawShockwaves(ctx: CanvasRenderingContext2D, rings: Shockwave[], now: 
 /** The full HUD overlay layer: persistent readouts, transient wave
  *  banners, and the intertitle. The intertitle draws last so its black
  *  card can cover the readouts during act-boundary intros. */
-function drawHudLayer(ctx: CanvasRenderingContext2D, state: GameState, now: number): void {
+function drawHudLayer(ctx: CanvasRenderingContext2D, state: GameState): void {
   drawHud(ctx, state);
   drawWaveBanner(ctx, state);
   drawBonusBanner(ctx, state);
   drawWaveClearCountdown(ctx, state);
-  drawOffscreenIndicators(ctx, state, now);
   drawIntertitle(ctx, state);
 }
 
@@ -3409,19 +3291,31 @@ function drawHudLayer(ctx: CanvasRenderingContext2D, state: GameState, now: numb
  *  after the postfx so the readouts land sharp over the character field.
  *  The 2D transform persists between calls, so the layer sees the same
  *  world transform render() would have left it. */
-export function drawAsciiHud(canvas: HTMLCanvasElement, state: GameState, now: number): void {
+export function drawAsciiHud(canvas: HTMLCanvasElement, state: GameState): void {
   if (hudHidden) return;
   if (state.phase === 'warp' || state.phase === 'deathreplay') return;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
-  drawHudLayer(ctx, state, now);
+  drawHudLayer(ctx, state);
 }
 
 // ── Main render ───────────────────────────────────────────────────────────────
 
 export function render(canvas: HTMLCanvasElement, state: GameState, now: number): void {
   const ctx = canvas.getContext('2d')!;
+  // Clear in identity space — the ctx still holds the previous frame's world
+  // transform, and clearRect under it would miss the device-pixel edges.
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // World-to-device transform fit() computed: contain-scale plus the letterbox
+  // centring offset. Set before the phase branches so the warp and death-replay
+  // paths — which draw in world coords and set no transform of their own —
+  // render at the right scale too.
+  ctx.setTransform(
+    renderMode.dpr * renderMode.scale, 0, 0, renderMode.dpr * renderMode.scale,
+    renderMode.dpr * renderMode.tx, renderMode.dpr * renderMode.ty,
+  );
 
   if (state.phase === 'warp') {
     drawWarp(ctx, state, now);
@@ -3432,15 +3326,6 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     drawReplay(ctx, state, now);
     return;
   }
-
-  // Advance the follow camera (modern portrait) and apply the world-to-device
-  // transform for this frame. The camera owns tx in portrait; retro and
-  // landscape reuse the static transform fit() computed.
-  updateCamera(state, now);
-  ctx.setTransform(
-    renderMode.dpr * renderMode.scale, 0, 0, renderMode.dpr * renderMode.scale,
-    renderMode.dpr * renderMode.tx, renderMode.dpr * renderMode.ty,
-  );
 
   drawBackground(ctx, state, now);
   drawStars(ctx, now);
@@ -3455,28 +3340,46 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     shakeY = (Math.cos(now * 0.091) + Math.cos(now * 0.151) * 0.6) * amp;
   }
 
-  // Ghost-render offsets so the world wrap reads as seamless. In modern
-  // portrait the camera band is narrower than the world; when it straddles
-  // the world seam, far-side entities must be drawn one WORLD_W over so the
-  // wrap looks continuous. O(1): the band position alone says whether a seam
-  // is in view. M is world-units of lead time so a wrap-copy is already
-  // painting before the seam itself reaches the band edge. Portrait never
-  // crops the Y axis (cover-scale fills height), so Y stays single-pass.
+  // Seamless wrap: when an entity straddles a world seam it must show on both
+  // edges at once, so draw a ghost copy a full WORLD_W / WORLD_H over. A ghost
+  // offset is added only when some entity is actually near that seam, so calm
+  // frames stay single-pass. Entities wrap at the exact edge, so the teleport
+  // is exactly WORLD_W and the ghost hands off to the real copy with no jump.
   const ghostXs: number[] = [0];
   const ghostYs: number[] = [0];
-  if (renderMode.kind === 'modern') {
-    const visW = renderMode.vw / renderMode.scale;
-    if (visW < WORLD_W - 1) {
-      const bandL = -renderMode.tx / renderMode.scale;
-      const bandR = (renderMode.vw - renderMode.tx) / renderMode.scale;
-      const M = 150;
-      if (bandL < M || bandR > WORLD_W - M) ghostXs.push(-WORLD_W, WORLD_W);
-    }
+  {
+    const BAND = 140;  // largest entity radius plus a lead-in
+    let nearL = false, nearR = false, nearT = false, nearB = false;
+    const scan = (x: number, y: number): void => {
+      if (x < BAND) nearL = true;
+      if (x > WORLD_W - BAND) nearR = true;
+      if (y < BAND) nearT = true;
+      if (y > WORLD_H - BAND) nearB = true;
+    };
+    for (const a of state.asteroids) scan(a.pos.x, a.pos.y);
+    for (const b of state.bullets) scan(b.pos.x, b.pos.y);
+    for (const b of state.enemyBullets) scan(b.pos.x, b.pos.y);
+    for (const c of state.coins) scan(c.pos.x, c.pos.y);
+    for (const p of state.powerups) scan(p.pos.x, p.pos.y);
+    scan(state.ship.pos.x, state.ship.pos.y);
+    if (nearL) ghostXs.push(WORLD_W);
+    if (nearR) ghostXs.push(-WORLD_W);
+    if (nearT) ghostYs.push(WORLD_H);
+    if (nearB) ghostYs.push(-WORLD_H);
   }
 
   // Shake wraps the entity layer only — HUD stays steady so readouts don't
   // judder during impacts.
   ctx.save();
+  // Clip the entity layer to the world rect so nothing spills into the
+  // modern-mode letterbox gutters: wrap ghosts straddling a seam, an asteroid
+  // poking past an edge, scattered debris. Set before the shake translate so
+  // the clip stays pinned to the world rather than riding the shake. The
+  // device-space full-screen effects (combo tint, HUD) run after the restore
+  // below, so they still cover the gutters.
+  ctx.beginPath();
+  ctx.rect(0, 0, WORLD_W, WORLD_H);
+  ctx.clip();
   ctx.translate(shakeX, shakeY);
 
   for (const dx of ghostXs) {
@@ -3501,11 +3404,12 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
           drawAsteroid(ctx, a, now);
         }
       }
-      for (const m of state.mines) drawMine(ctx, m, now);
-      // UFOs draw in every ghost pass: with the band narrower than the
-      // world at most one WORLD_W-offset copy lands on-screen, so a UFO
-      // near a straddled seam still shows without a phantom double.
-      for (const u of state.ufos) drawUfo(ctx, u, now);
+      // Mines and UFOs never wrap, so they draw once, in the real pass only —
+      // a ghost copy would be a phantom on the opposite edge.
+      if (!isGhost) {
+        for (const m of state.mines) drawMine(ctx, m, now);
+        for (const u of state.ufos) drawUfo(ctx, u, now);
+      }
       for (const b of state.bullets) drawBullet(ctx, b, true);
       for (const b of state.enemyBullets) drawBullet(ctx, b, false);
       for (const c of state.coins) drawCoin(ctx, c, now);
@@ -3547,7 +3451,14 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     const alpha = shouldReduceMotion() ? 0.04 : 0.08;
     ctx.save();
     ctx.fillStyle = `rgba(255,80,40,${alpha})`;
-    ctx.fillRect(0, 0, WORLD_W, WORLD_H);
+    if (renderMode.kind === 'modern') {
+      // Device space so the tint covers the whole screen, letterbox gutters
+      // included — not just the world rect.
+      ctx.setTransform(renderMode.dpr, 0, 0, renderMode.dpr, 0, 0);
+      ctx.fillRect(0, 0, renderMode.vw, renderMode.vh);
+    } else {
+      ctx.fillRect(0, 0, WORLD_W, WORLD_H);
+    }
     ctx.restore();
   }
 
@@ -3555,7 +3466,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // through the character resample into an unreadable smear. main.ts
   // re-runs drawAsciiHud crisp once the postfx has finished.
   if (!hudHidden && getTheme() !== 'ascii') {
-    drawHudLayer(ctx, state, now);
+    drawHudLayer(ctx, state);
   }
 
   // WebGL mesh overlay — runs only if any category is currently on
@@ -3604,6 +3515,7 @@ function drawBonusBanner(ctx: CanvasRenderingContext2D, s: GameState): void {
   const subPhase = elapsed < 45_000 ? 'HYPER BLITZ' : 'EVENT HORIZON PRELUDE';
 
   ctx.save();
+  applyOverlayTransform(ctx);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
@@ -3669,18 +3581,26 @@ function drawChromaticSplit(ctx: CanvasRenderingContext2D, now: number): void {
   const t = (now * 0.012) % 1;
   const amp = 6 + Math.sin(now * 0.04) * 2;
   const alpha = 0.18 + 0.10 * t;
-  const cx = WORLD_W / 2, cy = WORLD_H / 2;
+  // Device space so the split covers the whole screen — letterbox gutters
+  // included — not just the world rect. Radii scale to the viewport.
+  const modern = renderMode.kind === 'modern';
+  const w = modern ? renderMode.vw : WORLD_W;
+  const h = modern ? renderMode.vh : WORLD_H;
+  const cx = w / 2, cy = h / 2;
+  const inner = Math.hypot(w, h) / 12;
+  const outer = Math.hypot(w, h) / 2;
   ctx.save();
+  if (modern) ctx.setTransform(renderMode.dpr, 0, 0, renderMode.dpr, 0, 0);
   ctx.globalCompositeOperation = 'lighter';
-  const red = ctx.createRadialGradient(cx - amp, cy, 100, cx - amp, cy, 600);
+  const red = ctx.createRadialGradient(cx - amp, cy, inner, cx - amp, cy, outer);
   red.addColorStop(0, 'rgba(255,80,80,0)');
   red.addColorStop(1, `rgba(255,60,60,${alpha})`);
   ctx.fillStyle = red;
-  ctx.fillRect(0, 0, WORLD_W, WORLD_H);
-  const cyan = ctx.createRadialGradient(cx + amp, cy, 100, cx + amp, cy, 600);
+  ctx.fillRect(0, 0, w, h);
+  const cyan = ctx.createRadialGradient(cx + amp, cy, inner, cx + amp, cy, outer);
   cyan.addColorStop(0, 'rgba(80,255,255,0)');
   cyan.addColorStop(1, `rgba(60,200,255,${alpha})`);
   ctx.fillStyle = cyan;
-  ctx.fillRect(0, 0, WORLD_W, WORLD_H);
+  ctx.fillRect(0, 0, w, h);
   ctx.restore();
 }

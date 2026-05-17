@@ -62,7 +62,7 @@ export interface GameConfig {
   ufo_respawn_base_ms: number;
   ufo_respawn_per_wave_ms: number;
   ufo_respawn_min_ms: number;
-  /** Multiplier on per-wave asteroid count (base = min(10, 3+wave)). */
+  /** Multiplier on per-wave asteroid count (base = min(13, 4+wave)). */
   asteroid_count_multiplier: number;
 }
 

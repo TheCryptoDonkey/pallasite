@@ -3256,7 +3256,7 @@ export function renderLiveTheatre(input: LiveTheatreInput): void {
   if (g3d) {
     stage.appendChild(g3d);
     // Match the 2D canvas backing store: the WebGL overlay sizes its
-    // viewport as 960 * scale * dpr and expects #game3d's backing to
+    // viewport as WORLD_W * scale * dpr and expects #game3d's backing to
     // match. Leaving it at the default resolution makes the overlay
     // overshoot, dropping most meshes off-canvas.
     g3d.width = CANVAS_W;
@@ -8045,14 +8045,14 @@ export function renderSettings(onBack: () => void): void {
   }
   paintInput();
 
-  // Display mode — retro pixelated 4:3 vs smooth uncapped modern
+  // Display mode — retro pixelated vs smooth uncapped modern
   const displayHeading = el('p', { parent: overlay, text: 'DISPLAY' });
   displayHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
 
   const displayPanel = el('div', { parent: overlay });
   displayPanel.style.cssText = 'display:flex;gap:8px;align-items:center;justify-content:center;';
   const displayOpts: ReadonlyArray<{ value: DisplayMode; label: string; hint: string }> = [
-    { value: 'retro',  label: 'RETRO',  hint: 'Pixelated 4:3 — capped at 960×720, faithful to the cabinet' },
+    { value: 'retro',  label: 'RETRO',  hint: 'Pixelated, hard-edged — faithful to the arcade-cabinet look' },
     { value: 'modern', label: 'MODERN', hint: 'Smooth scaling — fills viewport, supersampled, sharper backgrounds' },
   ];
   const displayHint = el('p', { parent: overlay });

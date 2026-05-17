@@ -733,7 +733,10 @@ export const REPLAY_TOTAL_WALL_MS = REPLAY_FAST_MS + Math.round(REPLAY_SLOW_MS /
 export const REPLAY_EXPLOSION_MS = 500;
 export const REPLAY_EXPLOSION_WALL_MS = Math.round(REPLAY_EXPLOSION_MS / REPLAY_SLOW_RATE);
 
-export const WORLD_W = 960;
+/** Fixed 16:9 sim world. Display modes scale a *view* of this; the sim
+ *  itself never reads the viewport, so one recording verifies in any
+ *  display mode (the B3 determinism invariant). */
+export const WORLD_W = 1280;
 export const WORLD_H = 720;
 
 /** Grab-everything grace window after a wave is cleared, before the warp.
@@ -1079,21 +1082,21 @@ export const COMBO_MAX = 5;
  * Candidate static mine positions — chosen by hand to be tactically interesting:
  * quadrant centres, edge midpoints, between asteroid spawn lanes.
  * Per wave we pick N of these deterministically (wave-seeded).
- * Coordinates are within the 960x720 playfield with healthy edge buffer.
+ * Coordinates are within the 1280x720 playfield with healthy edge buffer.
  */
 export const MINE_CANDIDATE_POSITIONS: ReadonlyArray<{ x: number; y: number }> = [
-  { x: 240, y: 180 },   // top-left quadrant centre
-  { x: 720, y: 180 },   // top-right
-  { x: 240, y: 540 },   // bottom-left
-  { x: 720, y: 540 },   // bottom-right
-  { x: 480, y: 200 },   // top-centre
-  { x: 480, y: 520 },   // bottom-centre
-  { x: 200, y: 360 },   // left-centre
-  { x: 760, y: 360 },   // right-centre
-  { x: 360, y: 320 },   // inner ring NW
-  { x: 600, y: 320 },   // inner ring NE
-  { x: 360, y: 420 },   // inner ring SW
-  { x: 600, y: 420 },   // inner ring SE
+  { x: 320, y: 180 },   // top-left quadrant centre
+  { x: 960, y: 180 },   // top-right
+  { x: 320, y: 540 },   // bottom-left
+  { x: 960, y: 540 },   // bottom-right
+  { x: 640, y: 200 },   // top-centre
+  { x: 640, y: 520 },   // bottom-centre
+  { x: 267, y: 360 },   // left-centre
+  { x: 1013, y: 360 },  // right-centre
+  { x: 480, y: 320 },   // inner ring NW
+  { x: 800, y: 320 },   // inner ring NE
+  { x: 480, y: 420 },   // inner ring SW
+  { x: 800, y: 420 },   // inner ring SE
 ];
 
 /**

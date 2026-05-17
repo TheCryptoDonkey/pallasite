@@ -35,7 +35,7 @@ import { warmWebGLIfPreviouslyEnabled, getTheme, getAsciiCols } from './visual-s
 import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
 import type { GameState } from './types.js';
-import { DOWN_DOUBLE_TAP_WINDOW_MS } from './types.js';
+import { DOWN_DOUBLE_TAP_WINDOW_MS, WORLD_W, WORLD_H } from './types.js';
 
 const PAUSE_DUCK = 0.3;
 
@@ -550,6 +550,10 @@ const VISIBILITY_SILENCE_DEBOUNCE_MS = 800;
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     if (visibilityTimer !== null) { clearTimeout(visibilityTimer); visibilityTimer = null; }
+    // Returning to the tab: wake the AudioContext too. An interruption
+    // (or our own debounced hide) can have left it suspended; softUnmute
+    // alone only clears el.muted and would unmute into a dead context.
+    audio.resumePlayback();
     softUnmute();
   } else {
     if (visibilityTimer !== null) clearTimeout(visibilityTimer);
@@ -628,7 +632,7 @@ function loop(now: number): void {
 
   render(canvas, state, now);
   applyThemeFrame(canvas, now);
-  if (getTheme() === 'ascii') drawAsciiHud(canvas, state, now);
+  if (getTheme() === 'ascii') drawAsciiHud(canvas, state);
 
   // Phase transitions render UI overlays
   if (state.phase !== lastPhase) {
@@ -681,7 +685,7 @@ async function boot(): Promise<void> {
   applyDisplayMode(getDisplayMode());
   // Fullscreen entry/exit re-applies the mode + re-runs fit() so the
   // canvas resizes to match. Without this, fullscreen leaves the retro
-  // 960×720 canvas centred with the wave-N body background bleeding
+  // 1280×720 canvas centred with the wave-N body background bleeding
   // through the letterbox area — visible as a "red square" during
   // screen shake / hits when the canvas translates against the bg.
   // Listen on BOTH the standard and webkit-prefixed events because
@@ -692,15 +696,30 @@ async function boot(): Promise<void> {
   };
   document.addEventListener('fullscreenchange', onFullscreenToggle);
   document.addEventListener('webkitfullscreenchange', onFullscreenToggle);
+  // Rotate hint: the 16:9 world is a thin strip on a portrait phone, so
+  // #rotate-hint (CSS, portrait + touch only) nudges a turn. Wire the
+  // opt-out so a player who wants portrait keeps it, and remember it.
+  const rotateDismiss = document.getElementById('rotate-hint-dismiss');
+  if (rotateDismiss) {
+    try {
+      if (localStorage.getItem('pallasite:rotateHintDismissed') === '1') {
+        document.body.classList.add('rotate-hint-dismissed');
+      }
+    } catch { /* ignore */ }
+    rotateDismiss.addEventListener('click', () => {
+      document.body.classList.add('rotate-hint-dismissed');
+      try { localStorage.setItem('pallasite:rotateHintDismissed', '1'); } catch { /* ignore */ }
+    });
+  }
   // Kick off WebGL overlay load if the player had a mesh-tier category
   // selected last session. Fire-and-forget — render loop uses 2D
   // shaded fallbacks while three.js streams in.
   warmWebGLIfPreviouslyEnabled();
 
-  // Resize canvas to fit viewport in BOTH dimensions while preserving 4:3
-  // aspect — internal pixel resolution stays 960×720 (× dpr) so the game
-  // logic and HUD coords don't need to know about display size; the browser
-  // scales the bitmap. Centring is handled by the CSS absolute-translate.
+  // Resize canvas to fit viewport in BOTH dimensions while preserving the
+  // 16:9 world aspect — internal pixel resolution stays WORLD_W×WORLD_H
+  // (× dpr) so the game logic and HUD coords don't need to know about
+  // display size; the browser scales the bitmap. Centring via CSS.
   // Read env(safe-area-inset-*) into pixel numbers via a sentinel div. iPhone
   // notch / Dynamic Island / rounded corners surface here when the canvas runs
   // edge-to-edge under viewport-fit=cover. Non-zero values get applied by the
@@ -731,33 +750,20 @@ async function boot(): Promise<void> {
     const insets = readSafeInsets();
 
     if (mode === 'modern') {
-      // Modern fill: canvas spans the entire viewport. World stays 960×720 so
-      // gameplay constants are unchanged; only the visual presentation differs.
-      // - Landscape (incl. 4:3): contain-scale — full world visible, the wave
-      //   bg drawn cover-style fills any leftover gutters.
-      // - Portrait: cover-scale — game world fills the screen vertically and
-      //   crops on the horizontal axis. The world wraps, so cropped asteroids
-      //   are still in play, just less visible until they cross the visible band.
+      // Modern fill: the canvas spans the entire viewport. The world is a
+      // fixed 16:9 shape; contain-scale fits the whole of it into the
+      // viewport. On a 16:9 screen that's an exact edge-to-edge fill; off
+      // 16:9 (incl. portrait) it letterboxes. The world never crops, so the
+      // whole playfield is always visible and no follow camera is needed.
       canvas.width = Math.round(vw * dpr);
       canvas.height = Math.round(vh * dpr);
       canvas.style.width = vw + 'px';
       canvas.style.height = vh + 'px';
       canvas.style.imageRendering = 'auto';
       const ctx = canvas.getContext('2d')!;
-      const isPortrait = vh > vw;
-      // Portrait modern fills the screen — pure cover-scale, no zoom-out.
-      // The 0.55 / 0.65 / 0.85 zoom-outs that crept in over the previous
-      // few days made the playfield read as letterboxed instead of using
-      // the whole screen; the user wanted the original full-fill back.
-      // Landscape stays at plain contain — zooming in makes cropY true
-      // with visW > WORLD_W, which triggers the horizontal gutter ghost
-      // and the player sees their ship doubled near the wrap edges.
-      const PORTRAIT_ZOOM = 1.0;
-      const scale = isPortrait
-        ? Math.max(vw / 960, vh / 720) * PORTRAIT_ZOOM
-        : Math.min(vw / 960, vh / 720);
-      const tx = (vw - 960 * scale) / 2;
-      const ty = (vh - 720 * scale) / 2;
+      const scale = Math.min(vw / WORLD_W, vh / WORLD_H);
+      const tx = (vw - WORLD_W * scale) / 2;
+      const ty = (vh - WORLD_H * scale) / 2;
       ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * tx, dpr * ty);
       if (overlay3d) {
         overlay3d.width = canvas.width;
@@ -769,13 +775,14 @@ async function boot(): Promise<void> {
       return;
     }
 
-    // Retro: 4:3 inscribed in viewport, capped at 960 native source.
-    const aspect = 4 / 3;
+    // Retro: the 16:9 world inscribed in the viewport, capped at WORLD_W
+    // native source and pixel-upscaled for the arcade-cabinet look.
+    const aspect = WORLD_W / WORLD_H;
     let w = Math.min(vw, vh * aspect);
-    if (w > 960) w = 960;
+    if (w > WORLD_W) w = WORLD_W;
     const h = w / aspect;
-    canvas.width = Math.round(960 * dpr);
-    canvas.height = Math.round(720 * dpr);
+    canvas.width = Math.round(WORLD_W * dpr);
+    canvas.height = Math.round(WORLD_H * dpr);
     canvas.style.width = w + 'px';
     canvas.style.height = h + 'px';
     canvas.style.imageRendering = 'pixelated';
@@ -791,11 +798,30 @@ async function boot(): Promise<void> {
   }
   // Expose to the settings panel — flipping the mode needs to re-fit.
   (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit = fit;
+  // iOS Safari reports stale window.innerWidth/innerHeight for a beat
+  // or two after `orientationchange`, and streams intermediate sizes
+  // during the rotation animation. A single fit() bound straight to the
+  // event lands on one of those wrong sizes — the canvas backing store +
+  // ctx transform end up sized for the *previous* orientation while CSS
+  // has already snapped the element to the new one. Visible result: a
+  // distorted / doubled playfield that settles wrong (ship off the
+  // visible band). Re-run fit() across the next ~650ms so a later pass
+  // always lands on the settled dimensions.
+  let refitTimers: number[] = [];
+  function scheduleRefit(): void {
+    for (const id of refitTimers) clearTimeout(id);
+    refitTimers = [120, 280, 480, 650].map(ms => window.setTimeout(fit, ms));
+    fit();
+    requestAnimationFrame(fit);
+  }
   fit();
   window.addEventListener('resize', fit);
-  // iOS fires `orientationchange` slightly differently; resize covers both modern
-  // browsers but the explicit listener catches stragglers.
-  window.addEventListener('orientationchange', fit);
+  window.addEventListener('orientationchange', scheduleRefit);
+  // visualViewport's resize fires only once the viewport has actually
+  // settled after a rotation, with correct dimensions — the most
+  // trustworthy single signal iOS gives us, free of the event-timing
+  // race above.
+  window.visualViewport?.addEventListener('resize', fit);
 
   // First, consume an in-flight signet redirect callback if one's on the URL —
   // returning from signet with auth params persists a session and strips them

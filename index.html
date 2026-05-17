@@ -17,13 +17,24 @@
   <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
-  <canvas id="game" width="960" height="720" aria-label="Pallasite game"></canvas>
+  <canvas id="game" width="1280" height="720" aria-label="Pallasite game"></canvas>
   <!-- WebGL overlay: transparent canvas stacked over #game for the mesh
        visual tier. Lazy-initialised on first mesh-tier render; absent
        browsers / users on vector/shaded never pay the three.js cost. -->
-  <canvas id="game3d" width="960" height="720" aria-hidden="true"></canvas>
+  <canvas id="game3d" width="1280" height="720" aria-hidden="true"></canvas>
   <div id="ui-root"></div>
   <div id="touch-controls"></div>
+  <!-- Portrait nudge: the 16:9 world is a thin strip on a portrait phone.
+       CSS shows this on portrait + touch only; #rotate-hint-dismiss (wired
+       in main.ts) lets the player keep portrait if they prefer it. -->
+  <div id="rotate-hint">
+    <div class="rotate-hint-inner">
+      <div class="rotate-hint-phone" aria-hidden="true"></div>
+      <p class="rotate-hint-title">Turn your device</p>
+      <p class="rotate-hint-sub">Pallasite plays widescreen. Rotate to landscape for the full field.</p>
+      <button type="button" id="rotate-hint-dismiss">Play in portrait anyway</button>
+    </div>
+  </div>
   <!-- Signet SDKs share window.Signet. signet-verify replaces window.Signet
        on load; signet-login is additive (Object.assign) and merges its login
        methods on top. So signet-verify MUST load first or login will be lost. -->
