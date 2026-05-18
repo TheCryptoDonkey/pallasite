@@ -913,6 +913,35 @@ function arenaSpawnWave(s: GameState): void {
   spawnDecorativeAsteroids(s, s.wave);
 }
 
+/** Continuous-spawn timer for the arena infinity loop. Module-level,
+ *  reset at the start of each arena run. */
+let arenaSpawnTimer = 0;
+
+/** Arena continuous spawn — trickles rocks in from the cage edge to hold
+ *  a target field count. Count, cadence and rock speed all ramp on the
+ *  run timer, so arena reads as one continuous escalating level rather
+ *  than discrete waves. */
+function arenaTickSpawn(s: GameState, dtMs: number): void {
+  if (!arenaActive() || s.phase !== 'playing') return;
+  const t = s.runTimeMs;
+  const target = Math.min(18, 7 + Math.floor(t / 22_000));
+  let live = 0;
+  for (const a of s.asteroids) {
+    if (a.alive && (a.depth ?? 3) === 3) live++;
+  }
+  if (live >= target) return;
+  arenaSpawnTimer -= dtMs;
+  // Near-empty field: spawn fast so the cage never goes dead.
+  if (live < 3 && arenaSpawnTimer > 500) arenaSpawnTimer = 500;
+  if (arenaSpawnTimer <= 0) {
+    // Effective wave climbs on the timer; spawnAsteroid scales rock speed
+    // by it, and arena's pickAsteroidType already draws the full roster.
+    const effWave = 1 + Math.floor(t / 22_000);
+    s.asteroids.push(spawnAsteroid('large', effWave));
+    arenaSpawnTimer = Math.max(850, 2100 - t / 200);
+  }
+}
+
 export function beginWave(s: GameState, wave: number): void {
   s.wave = wave;
   // Milestone achievements on wave entry — fired here so the badge lands
@@ -958,6 +987,7 @@ export function beginWave(s: GameState, wave: number): void {
     // field, with no set pieces, veins, mines or boss, and no wavestart
     // banner or warp. Drop straight into play with a generous invuln.
     arenaSpawnWave(s);
+    arenaSpawnTimer = 0;
     s.ship.invulnerableUntil = s.elapsed + ARENA_INVULN_MS;
     s.phase = 'playing';
     s.phaseStart = s.elapsed;
@@ -2497,6 +2527,8 @@ export function updateGame(s: GameState): void {
   tickBonus(s);
   // 600bn infinity-wave filler spawner — no-op on every other path.
   tickSanctumFillers(s, dt * 1000);
+  // Arena infinity spawner — keeps the cage populated continuously.
+  arenaTickSpawn(s, dt * 1000);
 
   // Detect the 1979 lurking exploit so coin credit can be withheld for it.
   updateLurkState(s, now);
@@ -3170,7 +3202,7 @@ export function updateGame(s: GameState): void {
 
     // Stage 1 — first frame of clear: award bonuses, then either open the
     // grab-everything grace window or transition straight away.
-    if (conditionClear && s.waveClearAt === null) {
+    if (conditionClear && s.waveClearAt === null && !arena) {
       awardWaveClearBonuses(s);
       bumpTrauma(s, isFinalWave ? 0.40 : 0.30);
       hitStop(s, isFinalWave ? 220 : 180);
@@ -3179,22 +3211,6 @@ export function updateGame(s: GameState): void {
         // Infinity wave — sweep, refill, keep going; no grace, no transition.
         clearStage(s, { autoCollect: true });
         spawnSanctumFillers(s, 5);
-      } else if (arena) {
-        // Arena infinity level: refill the rock field in place. No warp,
-        // no banner, and no auto-collect — loose coins and power-ups are
-        // left on the field for the player to grab while the next batch
-        // closes in. The round counter ramps difficulty and score.
-        s.wave += 1;
-        s.asteroids = [];
-        arenaSpawnWave(s);
-        if (s.ship.alive) s.ship.invulnerableUntil = s.elapsed + ARENA_INVULN_MS;
-        audio.setHeartbeatPeriod(Math.max(0.35, 1.0 - s.wave * 0.06));
-        s.shieldUsedThisWave = false;
-        s.bulletsFiredThisWave = 0;
-        s.missedShotsThisWave = 0;
-        s.ufoSpawnedThisWave = false;
-        s.ufoKilledThisWave = false;
-        s.ufoKillsThisWave = 0;
       } else {
         spawnWaveClearStreak(s);
         // Set-piece clear achievements land on the wave-clear beat.

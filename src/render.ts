@@ -2482,6 +2482,7 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   // entry. Keeps the column position + font sizes identical so layout
   // stays stable.
   const is600bn = getFlavour() === '600bn';
+  const isArena = arenaActive();
   ctx.fillStyle = is600bn ? '#ffd84a' : '#5b9dff';
   ctx.shadowColor = is600bn ? '#ff8a3a' : '#5b9dff';
   ctx.shadowBlur = 8;
@@ -2489,6 +2490,9 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   if (is600bn) {
     ctx.fillText('$600B', w / 2, topY);
     ctx.fillText('WAVE', w / 2, topY + 26);
+  } else if (isArena) {
+    // Arena is a continuous infinity run — no wave number or name.
+    ctx.fillText('ARENA', w / 2, topY + 14);
   } else {
     ctx.fillText('WAVE', w / 2, topY);
     ctx.fillText(pad(s.wave, 2), w / 2, topY + 26);
@@ -2497,7 +2501,9 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   ctx.font = 'bold 13px ui-monospace, monospace';
   ctx.fillStyle = '#fff5d8';
   ctx.letterSpacing = '0.18em' as unknown as string;
-  ctx.fillText(is600bn ? 'THE SIGNAL' : waveName(s.wave).toUpperCase(), w / 2, topY + 56);
+  if (!isArena) {
+    ctx.fillText(is600bn ? 'THE SIGNAL' : waveName(s.wave).toUpperCase(), w / 2, topY + 56);
+  }
   ctx.letterSpacing = '0em' as unknown as string;
 
   ctx.font = '24px ui-monospace, monospace';
