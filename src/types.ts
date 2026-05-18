@@ -416,6 +416,33 @@ export interface DeathReplay {
  *  happens when getFlavour() === '600bn'). */
 import type { SanctumState } from './sanctum.js';
 
+/** Kinds of deferred sim transition — the deterministic replacement for
+ *  the wall-clock setTimeout deferrals that used to live in game.ts. Each
+ *  is scheduled against the sim clock so both lockstep clients and the B3
+ *  verifier fire it on the identical sim frame. */
+export type SimTransitionKind =
+  | 'wave-reveal'        // beginWave: wave-name chime + toast
+  | 'wave-begin-play'    // beginWave: wavestart/warp -> playing
+  | 'warp-begin-wave'    // startWarp: warp -> beginWave(target)
+  | 'bonus-end'          // startBonus: bonus -> clear + warp to wave 10
+  | 'hyperspace-emerge'  // tryHyperspace: re-emerge from cloak
+  | 'respawn'            // killShip / hyperspace breach: respawn the ship
+  | 'deathreplay-end';   // startDeathReplay: deathreplay -> gameover
+
+/** A pending deferred sim transition. Plain data (no closures) so
+ *  GameState stays snapshot- and replay-safe. */
+export interface SimTransition {
+  kind: SimTransitionKind;
+  /** Absolute s.elapsed (sim-clock ms) at or after which it fires. */
+  due: number;
+  /** s.phaseEpoch captured when scheduled; epoch-gated handlers no-op if
+   *  superseded. 0 when the handler does not gate on epoch. */
+  epoch: number;
+  /** Kind-specific payload: wave number, warp target wave, or the respawn
+   *  max-wait deadline. 0 when unused. */
+  arg: number;
+}
+
 export interface GameState {
   phase: GamePhase;
   ship: Ship;
@@ -502,6 +529,11 @@ export interface GameState {
    *  not frozen). Set on milestone moments to give a punch a frame of
    *  weight; the loop skips updateGame while this is positive. */
   hitStopSteps: number;
+
+  /** Deferred sim transitions pending against the sim clock — the
+   *  deterministic replacement for wall-clock setTimeout deferrals.
+   *  Drained each step in updateGame. */
+  pendingTransitions: SimTransition[];
 
   /** ms timestamp rapid-fire buff expires (0 when inactive). */
   rapidExpiresAt: number;

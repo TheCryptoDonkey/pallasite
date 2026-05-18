@@ -9965,7 +9965,7 @@ function renderRunCredits(
       onTap(replay, () => {
         cleanup();
         clearOverlay();
-        startDeathReplay(state, 'gameover');
+        startDeathReplay(state);
       });
       // SHARE CLIP — re-trigger the death replay AND record the canvas
       // for the same window via MediaRecorder, then hand the resulting
@@ -9986,7 +9986,7 @@ function renderRunCredits(
           }
           // Trigger replay first so frames flow, then capture for the
           // full replay window plus a small tail so the explosion lands.
-          startDeathReplay(state, 'gameover');
+          startDeathReplay(state);
           const captureMs = REPLAY_TOTAL_WALL_MS + REPLAY_EXPLOSION_WALL_MS + 200;
           void captureClip(canvas, captureMs).then(async (captured) => {
             if (!captured) {
