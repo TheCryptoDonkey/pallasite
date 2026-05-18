@@ -23,6 +23,7 @@ import { getFlavour } from './flavour.js';
 import { getVisualStyle, getTheme, isWebGLOverlayReady, callWebGLOverlay } from './visual-style.js';
 import { DEPTH_CONFIGS } from './parallax.js';
 import { getRadarVisible } from './radar.js';
+import { arenaActive, arenaBox, type ArenaBox } from './arena.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
 
@@ -310,7 +311,101 @@ let titleBgStartedAt = 0;
 const TITLE_BG_INTERVAL_MS = 30_000;
 const TITLE_BG_MAX = 24;  // wave 25 (Event Horizon) excluded — saves the reveal
 
+/** Arena containment void: a flat dark field that replaces the wave
+ *  backdrop. Mirrors drawBackground's modern/retro split, modern fills the
+ *  whole canvas in device space, retro fills the 1280x720 world rect. */
+function drawArenaVoid(ctx: CanvasRenderingContext2D): void {
+  if (renderMode.kind === 'modern') {
+    ctx.save();
+    ctx.setTransform(renderMode.dpr, 0, 0, renderMode.dpr, 0, 0);
+    ctx.fillStyle = '#04060e';
+    ctx.fillRect(0, 0, renderMode.vw, renderMode.vh);
+    ctx.restore();
+  } else {
+    ctx.fillStyle = '#04060e';
+    ctx.fillRect(0, 0, WORLD_W, WORLD_H);
+  }
+}
+
+/** Arena cage floor: a faint world-anchored grid clipped to the current
+ *  box, so the playable area reads as a measured space. As the box shrinks
+ *  the same grid simply shows cropped smaller. Drawn under the entities. */
+function drawArenaGrid(ctx: CanvasRenderingContext2D, box: ArenaBox, now: number): void {
+  const STEP = 80;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(box.l, box.t, box.w, box.h);
+  ctx.clip();
+  ctx.strokeStyle = `rgba(96, 156, 200, ${0.085 + 0.025 * Math.sin(now * 0.0014)})`;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = Math.ceil(box.l / STEP) * STEP; x <= box.r; x += STEP) {
+    ctx.moveTo(x, box.t);
+    ctx.lineTo(x, box.b);
+  }
+  for (let y = Math.ceil(box.t / STEP) * STEP; y <= box.b; y += STEP) {
+    ctx.moveTo(box.l, y);
+    ctx.lineTo(box.r, y);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** Arena cage walls: four glowing energy borders at the box edges. Each
+ *  wall flushes from calm cyan toward hot red as the ship closes on it, so
+ *  the shrinking box telegraphs its danger. Drawn over the entity layer. */
+function drawArenaWalls(
+  ctx: CanvasRenderingContext2D, state: GameState, box: ArenaBox, now: number,
+): void {
+  const ship = state.ship;
+  const DANGER = 140;  // world-px ship-to-wall gap at which a wall heats up
+  const heat = (gap: number): number =>
+    ship.alive ? Math.max(0, Math.min(1, 1 - gap / DANGER)) : 0;
+  const hl = heat(ship.pos.x - box.l);
+  const hr = heat(box.r - ship.pos.x);
+  const ht = heat(ship.pos.y - box.t);
+  const hb = heat(box.b - ship.pos.y);
+  const breath = 0.5 + 0.5 * Math.sin(now * 0.0022);
+
+  ctx.save();
+  ctx.lineCap = 'round';
+  const wall = (x1: number, y1: number, x2: number, y2: number, danger: number): void => {
+    const r = Math.round(96 + danger * 159);
+    const g = Math.round(206 - danger * 136);
+    const b = Math.round(232 - danger * 182);
+    ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${0.5 + 0.18 * breath + danger * 0.3})`;
+    ctx.shadowColor = `rgb(${r}, ${g}, ${b})`;
+    ctx.shadowBlur = 12 + danger * 22 + breath * 6;
+    ctx.lineWidth = 2.6 + danger * 2.6;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  };
+  wall(box.l, box.t, box.l, box.b, hl);
+  wall(box.r, box.t, box.r, box.b, hr);
+  wall(box.l, box.t, box.r, box.t, ht);
+  wall(box.l, box.b, box.r, box.b, hb);
+
+  // Corner nodes so the cage reads as a built structure, not loose lines.
+  ctx.shadowColor = '#9fe6f5';
+  ctx.shadowBlur = 9;
+  ctx.fillStyle = `rgba(170, 232, 246, ${0.55 + 0.35 * breath})`;
+  const node = (x: number, y: number): void => ctx.fillRect(x - 3, y - 3, 6, 6);
+  node(box.l, box.t);
+  node(box.r, box.t);
+  node(box.l, box.b);
+  node(box.r, box.b);
+  ctx.restore();
+}
+
 function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: number): void {
+  // Arena replaces the wave backdrop with a flat containment void; the grid
+  // and cage walls (drawArenaGrid / drawArenaWalls) carry the look instead.
+  if (arenaActive() && state.phase !== 'title') {
+    drawArenaVoid(ctx);
+    return;
+  }
   let wave: number;
   if (state.phase === 'title') {
     if (titleBgStartedAt === 0) titleBgStartedAt = now;
@@ -3423,6 +3518,9 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // star field all share one camera. Render-only: the sim never sees any of
   // this, so B3 determinism is untouched.
   const followActive = !!renderMode.follow && isFollowPhase(state.phase);
+  // Arena cage: shown from wavestart onward (title keeps the bg cycle).
+  const arenaRun = arenaActive() && state.phase !== 'title';
+  const arenaBoxR = arenaRun ? arenaBox(state.runTimeMs) : null;
   let scale = renderMode.scale;
   let tx = renderMode.tx;
   let ty = renderMode.ty;
@@ -3454,8 +3552,11 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     ty = 0;
     // Seam-wrap copies: pull in a world-neighbour copy only when the visible
     // strip actually overruns a seam, so calm frames stay single-pass.
-    if (camX - camStrip / 2 < 0) followXs.push(-WORLD_W);
-    if (camX + camStrip / 2 > WORLD_W) followXs.push(WORLD_W);
+    // Arena has no wrap, so no seam copies: the camera simply scrolls.
+    if (!arenaRun) {
+      if (camX - camStrip / 2 < 0) followXs.push(-WORLD_W);
+      if (camX + camStrip / 2 > WORLD_W) followXs.push(WORLD_W);
+    }
   } else {
     // Not following: re-seed onto the ship next time the camera engages.
     camInit = false;
@@ -3511,7 +3612,9 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // is exactly WORLD_W and the ghost hands off to the real copy with no jump.
   const ghostXs: number[] = followActive ? followXs : [0];
   const ghostYs: number[] = [0];
-  {
+  // Arena confines entities to the inset box, so they never straddle a world
+  // seam: skip the ghost scan and leave ghostXs / ghostYs single-pass.
+  if (!arenaRun) {
     const BAND = 140;  // largest entity radius plus a lead-in
     let nearL = false, nearR = false, nearT = false, nearB = false;
     const scan = (x: number, y: number): void => {
@@ -3555,6 +3658,9 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   }
   ctx.clip();
   ctx.translate(shakeX, shakeY);
+
+  // Arena cage floor — the grid sits beneath the entity layer.
+  if (arenaBoxR) drawArenaGrid(ctx, arenaBoxR, now);
 
   for (const dx of ghostXs) {
     for (const dy of ghostYs) {
@@ -3608,6 +3714,10 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   drawDebris(ctx, state.debris);
   drawShockwaves(ctx, state.shockwaveRings, now);
   drawHyperspaceEffects(ctx, state.hyperspaceEffects, now);
+
+  // Arena cage walls — glowing borders over the entity layer, flushing red
+  // as the ship nears a wall.
+  if (arenaBoxR) drawArenaWalls(ctx, state, arenaBoxR, now);
 
   ctx.restore();
 
