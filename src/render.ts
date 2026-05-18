@@ -989,6 +989,86 @@ function bakeAsteroidTexture(type: AsteroidType): HTMLCanvasElement {
 
 // ── Asteroid ──────────────────────────────────────────────────────────────────
 
+/** Behavioural-type glow tell, drawn over the rock (in the rotated frame)
+ *  so it reads in both the vector and shaded tiers. Gameplay plane only;
+ *  the inert meteorite types fall straight through. */
+function drawTypeTell(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): void {
+  if ((a.depth ?? 3) !== 3) return;
+  const r = a.radius;
+  if (a.type === 'volatile') {
+    // Unstable molten core — a fast hot throb.
+    const pulse = 0.55 + 0.45 * Math.sin(now * 0.011);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const g = ctx.createRadialGradient(0, 0, r * 0.1, 0, 0, r * 1.05);
+    g.addColorStop(0, `rgba(255, 232, 150, ${0.55 * pulse})`);
+    g.addColorStop(0.5, `rgba(255, 130, 40, ${0.4 * pulse})`);
+    g.addColorStop(1, 'rgba(255, 90, 20, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 1.05, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  } else if (a.type === 'lodestone') {
+    // Magnetic field — two slow concentric rings.
+    const pulse = 0.72 + 0.28 * Math.sin(now * 0.004);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `rgba(208, 96, 224, ${0.42 * pulse})`;
+    ctx.lineWidth = 1.4;
+    ctx.shadowColor = '#d060e0';
+    ctx.shadowBlur = 12;
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 1.34 * pulse, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 1.72 * pulse, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  } else if (a.type === 'kinetic') {
+    // Charge halo — brightens and widens with the rock's speed.
+    const charge = Math.max(0, Math.min(1, Math.hypot(a.vel.x, a.vel.y) / 420));
+    if (charge > 0.05) {
+      const shimmer = 0.7 + 0.3 * Math.sin(now * 0.02);
+      const rr = r * (1.18 + charge * 0.5);
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const g = ctx.createRadialGradient(0, 0, r * 0.7, 0, 0, rr);
+      g.addColorStop(0, 'rgba(58, 214, 200, 0)');
+      g.addColorStop(1, `rgba(58, 214, 200, ${0.5 * charge * shimmer})`);
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(0, 0, rr, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  } else if (a.type === 'tektite') {
+    // Glassy sheen — a cool, sharp highlight.
+    const pulse = 0.6 + 0.4 * Math.sin(now * 0.006);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const g = ctx.createRadialGradient(-r * 0.32, -r * 0.32, 0, -r * 0.32, -r * 0.32, r * 0.95);
+    g.addColorStop(0, `rgba(190, 255, 224, ${0.5 * pulse})`);
+    g.addColorStop(1, 'rgba(120, 230, 170, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  } else if (a.type === 'ballast') {
+    // Dense mass — a dim, slow inner ring suggesting a heavy core.
+    const pulse = 0.55 + 0.45 * Math.sin(now * 0.003);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `rgba(120, 150, 196, ${0.34 * pulse})`;
+    ctx.lineWidth = 2.6;
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.55, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
 function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): void {
   if (!a.alive) return;
   const style = getAsteroidStyle(a.type);
@@ -1136,6 +1216,10 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
     ctx.fill();
     ctx.restore();
   }
+
+  // Behavioural-type glow tell, over the rock so it reads in vector and
+  // shaded alike.
+  drawTypeTell(ctx, a, now);
 
   // 600bn council-textured asteroids — clip the member portrait inside
   // the lumpy outline. Renders at every size; texture is pre-baked to

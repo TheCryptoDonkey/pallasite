@@ -353,37 +353,44 @@ function makeAsteroidShape(): number[] {
  *   mesosiderite  (~W18) — rare end-game armoured stony-iron mix
  */
 function pickAsteroidType(wave: number): AsteroidType {
+  const arena = arenaActive();
   const r = gameRng();
-  if (wave <= 3) return 'stony';
+  // Campaign eases in with three stony-only waves; arena wants variety
+  // from round one, so it skips that onboarding.
+  if (!arena && wave <= 3) return 'stony';
   // Behavioural specials roll on their own draw so they do not skew the
-  // meteorite-type bands below. Kinetic is arena-only (it needs cage walls).
-  if (wave >= 5) {
+  // meteorite-type bands below. Kinetic is arena-only (it needs cage
+  // walls). Arena rolls them from round one; campaign/drift from wave 5.
+  if (arena || wave >= 5) {
     const sp = gameRng();
     if (sp < 0.05) return 'volatile';
     if (sp < 0.09) return 'tektite';
     if (sp < 0.12) return 'ballast';
     if (sp < 0.15) return 'lodestone';
-    if (arenaActive() && sp < 0.22) return 'kinetic';
+    if (arena && sp < 0.22) return 'kinetic';
   }
-  if (wave <= 6) {
+  // Arena draws the full meteorite roster from the start; campaign widens
+  // it wave by wave.
+  const w = arena ? 20 : wave;
+  if (w <= 6) {
     if (r < 0.05) return 'pallasite';
     if (r < 0.30) return 'iron';
     return 'stony';
   }
-  if (wave <= 10) {
+  if (w <= 10) {
     if (r < 0.06) return 'pallasite';
     if (r < 0.30) return 'iron';
     if (r < 0.50) return 'chondrite';
     return 'stony';
   }
-  if (wave <= 13) {
+  if (w <= 13) {
     if (r < 0.06) return 'pallasite';
     if (r < 0.22) return 'achondrite';
     if (r < 0.40) return 'iron';
     if (r < 0.60) return 'chondrite';
     return 'stony';
   }
-  if (wave <= 17) {
+  if (w <= 17) {
     if (r < 0.07) return 'pallasite';
     if (r < 0.18) return 'carbonaceous';
     if (r < 0.30) return 'achondrite';
@@ -888,6 +895,12 @@ const KINETIC_MAX_SPEED = 540;
 /** Lodestone asteroid: ship-pull reach (world px) and pull strength. */
 const LODESTONE_RANGE = 230;
 const LODESTONE_PULL = 150;
+/** Respawn: invuln granted on a fresh life, the clear-zone radius the
+ *  spawn point must be free of, and the cap on how long the respawn waits
+ *  for that zone to clear before spawning anyway. */
+const RESPAWN_INVULN_MS = 2_000;
+const SAFE_SPAWN_RADIUS = 150;
+const RESPAWN_MAX_WAIT_MS = 2_500;
 
 /** Arena round spawn: a procedural rock field scaled by s.wave. Arena is
  *  pure rock-survival, so no set pieces, veins, mines or boss. */
@@ -3881,19 +3894,50 @@ function killShip(s: GameState): void {
   }
 }
 
-function respawnShip(s: GameState): void {
-  if (s.phase === 'gameover') return;
-  s.ship = makeShip();
+/** True when the spawn point has no gameplay asteroid, UFO or mine within
+ *  SAFE_SPAWN_RADIUS — the respawn holds until this reads clear. */
+function spawnPointClear(s: GameState, x: number, y: number): boolean {
+  const rSq = SAFE_SPAWN_RADIUS * SAFE_SPAWN_RADIUS;
+  for (const a of s.asteroids) {
+    if (!a.alive || (a.depth ?? 3) !== 3) continue;
+    const dx = a.pos.x - x, dy = a.pos.y - y;
+    if (dx * dx + dy * dy < rSq) return false;
+  }
+  for (const u of s.ufos) {
+    if (!u.alive) continue;
+    const dx = u.pos.x - x, dy = u.pos.y - y;
+    if (dx * dx + dy * dy < rSq) return false;
+  }
+  for (const m of s.mines) {
+    if (!m.alive) continue;
+    const dx = m.pos.x - x, dy = m.pos.y - y;
+    if (dx * dx + dy * dy < rSq) return false;
+  }
+  return true;
+}
+
+function respawnShip(s: GameState, deadline?: number): void {
+  if (s.phase === 'gameover' || s.phase === 'title') return;
   // Set-piece waves with a custom player spawn (e.g. heist drops you at
-  // the bottom edge) need the same coords on respawn — otherwise the
-  // player's lost a life only to be re-dropped on the hand-placed hazard.
+  // the bottom edge) need the same coords on respawn.
   const spawn = arenaActive() ? undefined : WAVE_SET_PIECES[s.wave]?.playerSpawn;
+  const px = spawn?.x ?? WORLD_W / 2;
+  const py = spawn?.y ?? WORLD_H / 2;
+  // Hold the respawn until the spawn point is clear of hazards so the
+  // player never materialises onto a rock. Capped so a hazard parked on
+  // the point cannot soft-lock the respawn; the invuln covers that case.
+  const wait = deadline ?? (s.elapsed + RESPAWN_MAX_WAIT_MS);
+  if (s.elapsed < wait && !spawnPointClear(s, px, py)) {
+    setTimeout(() => respawnShip(s, wait), 150);
+    return;
+  }
+  s.ship = makeShip();
   if (spawn) {
     s.ship.pos.x = spawn.x;
     s.ship.pos.y = spawn.y;
     s.ship.rot = spawn.rot ?? -Math.PI / 2;
   }
-  s.ship.invulnerableUntil = s.elapsed + SHIP_INVULN_MS;
+  s.ship.invulnerableUntil = s.elapsed + RESPAWN_INVULN_MS;
   toastNow(s, '');
 }
 
