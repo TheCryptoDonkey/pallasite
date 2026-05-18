@@ -1,5 +1,10 @@
 # Idea: Async PvP via dispatch + Lightning escrow
 
+> **Superseded (2026-05-18).** The chosen direction is real-time shared-arena
+> multiplayer — see `shared-arena-multiplayer.md`. The `pallasite-duel`
+> "dispatch capability" idea below does not work: dispatch is encrypted-DM
+> agent negotiation, not a public matchmaking board.
+
 Parked for later. Sketches the design across three layers, in build order. The user-facing goal is "play 2P asteroids on a single TV"; the dispatch + escrow layer is what makes it ranked and stake-backed.
 
 ## Layer 1: Couch 2-player (no Nostr, no escrow)
