@@ -122,6 +122,9 @@ const ASTEROID_TYPE_COLOR: Record<string, number> = {
 interface AsteroidTypeMaterial {
   shininess: number;
   specular: number;
+  /** Self-illumination — gives the behavioural types a mesh-tier glow
+   *  tell. Omitted (treated as 0) for the inert meteorite types. */
+  emissive?: number;
 }
 const ASTEROID_TYPE_MAT: Record<string, AsteroidTypeMaterial> = {
   stony:        { shininess: 18,  specular: 0x404040 },
@@ -135,12 +138,12 @@ const ASTEROID_TYPE_MAT: Record<string, AsteroidTypeMaterial> = {
   mesosiderite: { shininess: 70,  specular: 0x806040 },
   // Volcanic basalt — matte with a hint of glaze from fusion crust.
   achondrite:   { shininess: 22,  specular: 0x4a2818 },
-  // Behavioural types.
-  kinetic:      { shininess: 60,  specular: 0x308078 },
-  volatile:     { shininess: 40,  specular: 0x804020 },
-  ballast:      { shininess: 30,  specular: 0x303840 },
-  tektite:      { shininess: 95,  specular: 0x70b090 },
-  lodestone:    { shininess: 70,  specular: 0x603068 },
+  // Behavioural types — emissive gives the mesh tier its glow tell.
+  kinetic:      { shininess: 60,  specular: 0x308078, emissive: 0x0c3a34 },
+  volatile:     { shininess: 40,  specular: 0x804020, emissive: 0x5a2008 },
+  ballast:      { shininess: 30,  specular: 0x303840, emissive: 0x000000 },
+  tektite:      { shininess: 95,  specular: 0x70b090, emissive: 0x0c3826 },
+  lodestone:    { shininess: 70,  specular: 0x603068, emissive: 0x381040 },
 };
 
 /** Per-UFO-type palette + form factor. */
@@ -1693,6 +1696,7 @@ export function renderOverlay(opts: {
           color: baseColor,
           shininess: matCfg.shininess,
           specular: matCfg.specular,
+          emissive: matCfg.emissive ?? 0x000000,
         });
         const diffuseKey = diffuseTypeFor(a.type);
         const cachedTypeMap = getDiffuseTexture(handle, diffuseKey);
