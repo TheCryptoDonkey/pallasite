@@ -7,6 +7,7 @@
 
 import type {
   GameState, Ship, Asteroid, AsteroidSize, AsteroidType, Ufo, UfoType, Mine, Vec2,
+  SimTransition, SimTransitionKind,
 } from './types.js';
 import { recordStreamEvent } from './stream-session.js';
 import { getGameConfig } from './faucet.js';
@@ -92,6 +93,7 @@ export function makeInitialState(): GameState {
     hyperspaceEffects: [],
     waveClearAt: null,
     phaseEpoch: 0,
+    pendingTransitions: [],
     score: 0,
     sats: 0,
     displaySats: 0,
@@ -273,6 +275,7 @@ export function startGame(s: GameState, forcedSeed?: number): void {
   s.coins = [];
   s.powerups = [];
   s.particles = [];
+  s.pendingTransitions = [];
   s.ship = makeShip();
   s.ship.invulnerableUntil = s.elapsed + SHIP_INVULN_MS;
   s.nextUfoSpawn = getGameConfig().ufo_first_spawn_ms;
@@ -1064,8 +1067,8 @@ export function beginWave(s: GameState, wave: number): void {
   s.phase = 'wavestart';
   s.phaseStart = s.elapsed;
   // Transition token — bumped by every wave-progression change. The
-  // setTimeouts below capture it and no-op if a newer transition (a
-  // cheat-warp, a death) supersedes this one mid-flight.
+  // scheduled transitions below capture it and no-op if a newer
+  // transition (a cheat-warp, a death) supersedes this one mid-flight.
   const epoch = ++s.phaseEpoch;
   // Heartbeat speeds up with wave
   audio.setHeartbeatPeriod(Math.max(0.35, 1.0 - wave * 0.06));
@@ -1078,12 +1081,8 @@ export function beginWave(s: GameState, wave: number): void {
   // intertitle card that carries the wave name itself. Campaign flavour
   // only — the 600bn Sanctum is a one-level teaser.
   const isActWave = getFlavour() !== '600bn' && intertitleForWave(wave) !== null;
-  setTimeout(() => {
-    if (s.phaseEpoch !== epoch || s.phase !== 'wavestart') return;
-    audio.levelUp();
-    // The intertitle card shows the wave name itself, so skip the toast there.
-    if (!isActWave) toastNow(s, `WAVE ${wave} · ${waveName(wave)}`);
-  }, WAVE_REVEAL_DELAY_MS);
+  // Wave-name chime + toast, scheduled on the sim clock.
+  scheduleSimTransition(s, 'wave-reveal', s.elapsed + WAVE_REVEAL_DELAY_MS, epoch, wave);
   // Act waves hold for the whole intertitle card (campaign wave 1 is always
   // ACT I, so it keeps a long, spectator-friendly opening — the watch page
   // discovers new runs on a 5s heartbeat). 600bn wave 1 holds longest so the
@@ -1093,11 +1092,8 @@ export function beginWave(s: GameState, wave: number): void {
   const wavestartMs = isActWave
     ? INTERTITLE_MS
     : (wave === 1 && getFlavour() === '600bn' ? 9_000 : WAVESTART_MS);
-  setTimeout(() => {
-    if (s.phaseEpoch !== epoch) return;
-    audio.setMusicDuck(1);
-    if (s.phase === 'wavestart' || s.phase === 'warp') s.phase = 'playing';
-  }, wavestartMs);
+  // Hand control to the player once the wavestart banner has held.
+  scheduleSimTransition(s, 'wave-begin-play', s.elapsed + wavestartMs, epoch);
 }
 
 const WAVESTART_MS = 4000;
@@ -1124,15 +1120,12 @@ function startWarp(s: GameState, targetWave?: number): void {
   s.phaseStart = s.elapsed;
   s.warpTargetWave = next;
   // Transition token — a second startWarp (e.g. a cheat-warp taken while
-  // this one is still animating) bumps it, so this timer's beginWave is
-  // suppressed and only the latest warp lands. Without this the first
-  // stale timer wins and drags the player to the wrong wave.
+  // this one is still animating) bumps it, so the stale warp transition
+  // is suppressed and only the latest warp lands.
   const epoch = ++s.phaseEpoch;
   audio.warpJump();
   haptic('celebrate');
-  setTimeout(() => {
-    if (s.phaseEpoch === epoch && s.phase === 'warp') beginWave(s, next);
-  }, WARP_MS);
+  scheduleSimTransition(s, 'warp-begin-wave', s.elapsed + WARP_MS, epoch, next);
 }
 
 /** BONUS phase length + sub-phase split. 60s total: 45s HYPER BLITZ
@@ -1181,13 +1174,7 @@ export function startBonus(s: GameState): void {
   toastNow(s, 'B · O · N · U · S');
   // Auto-exit after the full 60s window — startWarp lands the player
   // in wave 10 the same way a normal wave-clear would.
-  setTimeout(() => {
-    if (s.phase === 'bonus') {
-      clearStage(s, { autoCollect: true });
-      s.ship.invulnerableUntil = s.elapsed + SHIP_INVULN_MS;
-      startWarp(s, 10);
-    }
-  }, BONUS_TOTAL_MS);
+  scheduleSimTransition(s, 'bonus-end', s.elapsed + BONUS_TOTAL_MS);
 }
 
 /** Tick called every frame from updateGame while in bonus phase.
@@ -2218,8 +2205,8 @@ export function tryHyperspace(s: GameState, now: number): void {
     }
   }
   audio.thrustOff();
-  // Re-emerge timer
-  setTimeout(() => emergeHyperspace(s), HYPERSPACE_CLOAK_MS);
+  // Re-emerge from the cloak window, on the sim clock.
+  scheduleSimTransition(s, 'hyperspace-emerge', now + HYPERSPACE_CLOAK_MS);
 }
 
 function emergeHyperspace(s: GameState): void {
@@ -2243,8 +2230,8 @@ function emergeHyperspace(s: GameState): void {
       audio.ufoSirenStop();
       audio.stopAmbient();
     } else {
-      // Respawn at centre after malfunction
-      setTimeout(() => respawnShip(s), 1200);
+      // Respawn after the malfunction, scheduled on the sim clock.
+      scheduleSimTransition(s, 'respawn', s.elapsed + 1200, 0, s.elapsed + 1200 + RESPAWN_MAX_WAIT_MS);
       s.ship.alive = false;
     }
     return;
@@ -2373,11 +2360,10 @@ function stopGameplayAudio(): void {
 
 /**
  * Begin (or restart, from the gameover REPLAY button) the death replay using
- * whatever's currently in `s.deathReplay`. Schedules the post-replay phase via
- * setTimeout — caller picks the destination ('gameover' on first run; back to
- * 'gameover' on replay-button restarts).
+ * whatever's currently in `s.deathReplay`. The post-replay transition to the
+ * gameover screen is scheduled on the sim clock.
  */
-export function startDeathReplay(s: GameState, after: 'gameover'): void {
+export function startDeathReplay(s: GameState): void {
   if (!s.deathReplay) return;
   s.deathReplay.startedAt = s.elapsed;
   // Re-arm the impact-frame explosion spawn — the flag is sticky from the
@@ -2392,16 +2378,12 @@ export function startDeathReplay(s: GameState, after: 'gameover'): void {
   audio.thrustOff();
   audio.ufoSirenStop();
   audio.setMusicDuck(0.2);
-  setTimeout(() => {
-    if (s.phase !== 'deathreplay') return;
-    audio.setMusicDuck(1);
-    s.phase = after;
-    s.phaseStart = s.elapsed;
-    if (after === 'gameover') {
-      // Hull-breached music carries it; no synth chime.
-      stopGameplayAudio();
-    }
-  }, REPLAY_TOTAL_WALL_MS + REPLAY_EXPLOSION_WALL_MS);
+  // Post-replay transition to the gameover screen, on the sim clock.
+  scheduleSimTransition(
+    s,
+    'deathreplay-end',
+    s.elapsed + REPLAY_TOTAL_WALL_MS + REPLAY_EXPLOSION_WALL_MS,
+  );
 }
 
 /** Skip the in-progress replay — fast-forward to the gameover screen. */
@@ -2482,6 +2464,87 @@ function updateDisplaySats(s: GameState, dt: number): void {
   s.displaySats = Math.min(s.sats, s.displaySats + step);
 }
 
+/** Schedule a deferred sim transition. A fresh schedule replaces any
+ *  pending transition of the same kind, so it supersedes a stale one. */
+function scheduleSimTransition(
+  s: GameState,
+  kind: SimTransitionKind,
+  due: number,
+  epoch = 0,
+  arg = 0,
+): void {
+  const existing = s.pendingTransitions.findIndex((t) => t.kind === kind);
+  if (existing >= 0) s.pendingTransitions.splice(existing, 1);
+  s.pendingTransitions.push({ kind, due, epoch, arg });
+}
+
+/** Fire one due transition. Returns true when consumed (drop it), false
+ *  when it should retry on a later step — only 'respawn' does that, while
+ *  it waits for a clear spawn point. */
+function runSimTransition(s: GameState, t: SimTransition): boolean {
+  switch (t.kind) {
+    case 'wave-reveal': {
+      if (s.phaseEpoch === t.epoch && s.phase === 'wavestart') {
+        audio.levelUp();
+        // Act-boundary waves carry the name on the intertitle card, so the
+        // toast is skipped there. Deterministic from the wave number.
+        const isActWave = getFlavour() !== '600bn' && intertitleForWave(t.arg) !== null;
+        if (!isActWave) toastNow(s, `WAVE ${t.arg} · ${waveName(t.arg)}`);
+      }
+      return true;
+    }
+    case 'wave-begin-play': {
+      if (s.phaseEpoch === t.epoch) {
+        audio.setMusicDuck(1);
+        if (s.phase === 'wavestart' || s.phase === 'warp') s.phase = 'playing';
+      }
+      return true;
+    }
+    case 'warp-begin-wave': {
+      if (s.phaseEpoch === t.epoch && s.phase === 'warp') beginWave(s, t.arg);
+      return true;
+    }
+    case 'bonus-end': {
+      if (s.phase === 'bonus') {
+        clearStage(s, { autoCollect: true });
+        s.ship.invulnerableUntil = s.elapsed + SHIP_INVULN_MS;
+        startWarp(s, 10);
+      }
+      return true;
+    }
+    case 'hyperspace-emerge':
+      emergeHyperspace(s);
+      return true;
+    case 'respawn':
+      return respawnShip(s, t.arg);
+    case 'deathreplay-end': {
+      if (s.phase === 'deathreplay') {
+        audio.setMusicDuck(1);
+        s.phase = 'gameover';
+        s.phaseStart = s.elapsed;
+        stopGameplayAudio();
+      }
+      return true;
+    }
+  }
+}
+
+/** Fire every deferred transition whose sim-clock deadline has arrived.
+ *  Due entries are collected before any handler runs, so a handler that
+ *  schedules new transitions (beginWave, startWarp) cannot have them fire
+ *  this same step or disturb the iteration. */
+function drainSimTransitions(s: GameState): void {
+  const due: SimTransition[] = [];
+  for (const t of s.pendingTransitions) {
+    if (s.elapsed >= t.due) due.push(t);
+  }
+  for (const t of due) {
+    const idx = s.pendingTransitions.indexOf(t);
+    if (idx < 0) continue;  // superseded by an earlier handler's schedule
+    if (runSimTransition(s, t)) s.pendingTransitions.splice(idx, 1);
+  }
+}
+
 export function updateGame(s: GameState): void {
   // One fixed sim step. `dt` is the constant timestep; `now` is the sim
   // clock (s.elapsed), not wall time, so every deadline runs on a clock
@@ -2498,6 +2561,10 @@ export function updateGame(s: GameState): void {
   // 'sanctum' phase from the previous iteration is no longer reached
   // — startGame no longer routes there. Branch left out intentionally.
   s.elapsed += dt * 1000;
+
+  // Fire deferred sim transitions whose sim-clock deadline has arrived —
+  // the deterministic replacement for wall-clock setTimeout.
+  drainSimTransitions(s);
 
   // Arena run: the playfield is an oval cage that bounces entities off its
   // wall instead of wrapping; the cage breathes and shrinks over the run.
@@ -3876,7 +3943,7 @@ function killShip(s: GameState): void {
   if (s.lives <= 0) {
     // Final death — capture the buffer for the replay, then route through
     // 'deathreplay' (provided we have something worth showing). The post-replay
-    // setTimeout stops the ambient bed; hull-breached music carries the moment.
+    // transition stops the ambient bed; hull-breached music carries the moment.
     if (s.replayBuffer.length >= 8) {
       s.deathReplay = {
         snapshots: s.replayBuffer.slice(),
@@ -3898,7 +3965,7 @@ function killShip(s: GameState): void {
       // Drop any WebGL ship-explosion chunks left over from the live death
       // too — the replay re-fires the mesh explosion at its impact frame.
       callWebGLClearShipChunks();
-      startDeathReplay(s, 'gameover');
+      startDeathReplay(s);
     } else {
       s.phase = 'gameover';
       s.phaseStart = s.elapsed;
@@ -3906,7 +3973,7 @@ function killShip(s: GameState): void {
       stopGameplayAudio();
     }
   } else {
-    setTimeout(() => respawnShip(s), 1500);
+    scheduleSimTransition(s, 'respawn', s.elapsed + 1500, 0, s.elapsed + 1500 + RESPAWN_MAX_WAIT_MS);
   }
 }
 
@@ -3932,20 +3999,22 @@ function spawnPointClear(s: GameState, x: number, y: number): boolean {
   return true;
 }
 
-function respawnShip(s: GameState, deadline?: number): void {
-  if (s.phase === 'gameover' || s.phase === 'title') return;
+/** Attempt a ship respawn. Returns true when the ship is placed — the
+ *  caller then drops the pending 'respawn' transition — and false while
+ *  the spawn point is still blocked, so the attempt retries next step.
+ *  `deadline` is the sim-clock time past which the respawn goes ahead
+ *  regardless, so a hazard parked on the point cannot soft-lock it. */
+function respawnShip(s: GameState, deadline: number): boolean {
+  if (s.phase === 'gameover' || s.phase === 'title') return true;
   // Set-piece waves with a custom player spawn (e.g. heist drops you at
   // the bottom edge) need the same coords on respawn.
   const spawn = arenaActive() ? undefined : WAVE_SET_PIECES[s.wave]?.playerSpawn;
   const px = spawn?.x ?? WORLD_W / 2;
   const py = spawn?.y ?? WORLD_H / 2;
   // Hold the respawn until the spawn point is clear of hazards so the
-  // player never materialises onto a rock. Capped so a hazard parked on
-  // the point cannot soft-lock the respawn; the invuln covers that case.
-  const wait = deadline ?? (s.elapsed + RESPAWN_MAX_WAIT_MS);
-  if (s.elapsed < wait && !spawnPointClear(s, px, py)) {
-    setTimeout(() => respawnShip(s, wait), 150);
-    return;
+  // player never materialises onto a rock — retry next step until then.
+  if (s.elapsed < deadline && !spawnPointClear(s, px, py)) {
+    return false;
   }
   s.ship = makeShip();
   if (spawn) {
@@ -3955,6 +4024,7 @@ function respawnShip(s: GameState, deadline?: number): void {
   }
   s.ship.invulnerableUntil = s.elapsed + RESPAWN_INVULN_MS;
   toastNow(s, '');
+  return true;
 }
 
 export function pauseGame(s: GameState): void {
