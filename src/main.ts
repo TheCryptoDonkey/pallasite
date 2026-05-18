@@ -12,6 +12,7 @@ import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './see
 import { render, preloadBackground, setRenderMode, getRenderModeKind, drawAsciiHud } from './render.js';
 import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage } from './ui.js';
 import { postHeartbeat } from './faucet.js';
+import { currentMode } from './mode.js';
 import {
   startStreamSession,
   publishStreamFrame,
@@ -954,6 +955,7 @@ async function boot(): Promise<void> {
       wave: state.wave,
       started_at: Math.floor(state.runStartedAt / 1000),
       run_id: runId,
+      mode: currentMode(),
     });
   };
   window.setInterval(fireHeartbeat, 4_000);

@@ -44,6 +44,9 @@ export interface WatchEntry {
   /** True when state==='active' AND the event is fresh enough that the
    *  player is plausibly still in the run. */
   isLive: boolean;
+  /** Run mode from the score event's 'mode' tag — campaign, drift or
+   *  arena. Defaults to campaign when the tag is absent. */
+  mode: 'campaign' | 'drift' | 'arena';
 }
 
 /** Live entries older than this with no fresh heartbeat are considered
@@ -119,6 +122,13 @@ function parseEntry(event: ScoreEvent, nowMs: number = Date.now()): WatchEntry |
   const isLive = isActive && ageMs < LIVE_FRESHNESS_MS;
   const stateOut: 'active' | 'final' | null =
     isActive ? 'active' : stateTag === 'final' ? 'final' : null;
+  // Run mode rides the standard NIP-12 't' topic tag — the same channel
+  // the faucet already uses to mark 600bn-flavour runs (['t','600bn']).
+  // No bespoke tag, so the gamestr kind-30762 score schema is unchanged.
+  const mode: WatchEntry['mode'] =
+    hasTagValue(event.tags, 't', 'arena') ? 'arena'
+      : hasTagValue(event.tags, 't', 'drift') ? 'drift'
+        : 'campaign';
   return {
     pubkey: playerPubkey,
     score,
@@ -129,6 +139,7 @@ function parseEntry(event: ScoreEvent, nowMs: number = Date.now()): WatchEntry |
     seed: readTag(event.tags, 'seed'),
     state: stateOut,
     isLive,
+    mode,
   };
 }
 

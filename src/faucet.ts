@@ -12,6 +12,7 @@
  */
 
 import type { SignetSession } from 'signet-login';
+import type { RunMode } from './mode.js';
 
 const API_BASE = '/api';
 
@@ -263,6 +264,11 @@ export interface ClaimInput {
    *  claim row for audit. */
   lightning_address?: string;
   cheated?: boolean;
+  /** Locked-in run mode (campaign / drift / arena). The faucet marks
+   *  non-campaign runs with the standard NIP-12 ['t', mode] topic tag on
+   *  the kind 30762 event — the same channel it already uses for the
+   *  600bn flavour — so no bespoke tag is added to the gamestr schema. */
+  mode?: RunMode;
   daily_seed?: string;
   /** Deploy flavour the run came from. '600bn' routes through the
    *  Sanctum teaser daily-cap budget and stamps a `['t','600bn']` tag
@@ -430,7 +436,7 @@ export async function submitClaim(
  */
 export async function postHeartbeat(
   session: SignetSession,
-  body: { score: number; wave: number; started_at: number; run_id: string },
+  body: { score: number; wave: number; started_at: number; run_id: string; mode?: RunMode },
 ): Promise<boolean> {
   if (!session.signer.capabilities.canSignEvents) return false;
   const url = `${location.origin}${API_BASE}/heartbeat`;

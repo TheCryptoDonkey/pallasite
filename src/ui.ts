@@ -59,7 +59,7 @@ import { getMusicAnalyser } from './audio.js';
 import { fetchProfile, getCachedProfile, bestName } from './profile.js';
 import { type Difficulty, getStoredDifficulty, setStoredDifficulty, lockInDifficulty } from './difficulty.js';
 import { getStoredDailyPref, setStoredDailyPref, todayUTC, getActiveSeed } from './seed.js';
-import { getStoredMode, setStoredMode, MODE_LIST, type RunMode } from './mode.js';
+import { getStoredMode, setStoredMode, currentMode, MODE_LIST, type RunMode } from './mode.js';
 import { DEV } from './credits.js';
 import {
   isStandalone, isIosSafari, isMobileViewport, canInstallNow,
@@ -5976,15 +5976,16 @@ export function renderWatchPage(state: GameState): void {
   // in renderEntry. Tabs always render so the user knows the dimension
   // exists; counts update when entries land. ZAPPED also re-sorts the
   // grid by aggregate sats received instead of newest-first.
-  type FilterKind = 'live' | 'today' | 'mine' | 'zapped' | 'all';
+  type FilterKind = 'live' | 'today' | 'arena' | 'mine' | 'zapped' | 'all';
   let activeFilter: FilterKind = 'all';
   const filterRow = el('div', { parent: overlay });
   filterRow.style.cssText = 'display:flex;justify-content:center;gap:6px;margin:0 auto 12px;max-width:760px;width:100%;flex-wrap:wrap;';
-  const filterCounts: Record<FilterKind, HTMLSpanElement> = { live: el('span'), today: el('span'), mine: el('span'), zapped: el('span'), all: el('span') };
+  const filterCounts: Record<FilterKind, HTMLSpanElement> = { live: el('span'), today: el('span'), arena: el('span'), mine: el('span'), zapped: el('span'), all: el('span') };
   const filterBtns: Record<FilterKind, HTMLButtonElement> = {} as Record<FilterKind, HTMLButtonElement>;
   const FILTER_DEFS: Array<{ k: FilterKind; label: string; visible: boolean }> = [
     { k: 'live', label: 'LIVE', visible: true },
     { k: 'today', label: 'TODAY', visible: true },
+    { k: 'arena', label: 'ARENA', visible: true },
     { k: 'zapped', label: '⚡ ZAPPED', visible: true },
     { k: 'mine', label: 'MINE', visible: !!state.session },
     { k: 'all', label: 'ALL', visible: true },
@@ -5992,6 +5993,7 @@ export function renderWatchPage(state: GameState): void {
   const FILTER_COLOUR: Record<FilterKind, string> = {
     live: '#8cffb4',
     today: '#ffd84a',
+    arena: '#5cd0e8',
     zapped: '#ff8a3a',
     mine: '#cbb6ff',
     all: 'rgba(220,210,255,0.85)',
@@ -6155,6 +6157,7 @@ export function renderWatchPage(state: GameState): void {
       else if (activeFilter === 'today') show = isToday;
       else if (activeFilter === 'mine') show = isMine;
       else if (activeFilter === 'zapped') show = zapSats > 0;
+      else if (activeFilter === 'arena') show = card.dataset.mode === 'arena';
       // Person filter — prefix match against the card's pubkey. Empty
       // filter means "no constraint". A short prefix matches several
       // cards; the 64-char form pins it to exactly one.
@@ -6199,22 +6202,25 @@ export function renderWatchPage(state: GameState): void {
       if (whenPill) whenPill.textContent = entry.isLive ? 'LIVE' : timeAgo(entry.createdAt);
       existing.dataset.createdAt = String(entry.createdAt);
       existing.dataset.mine = isMine ? '1' : '0';
+      existing.dataset.mode = entry.mode;
       setCardLiveState(existing, entry.isLive);
       return;
     }
     const card = renderWatchCard(entry, state);
     card.dataset.mine = isMine ? '1' : '0';
+    card.dataset.mode = entry.mode;
     cardByPubkey.set(entry.pubkey, card);
     setCardLiveState(card, entry.isLive);
     grid.appendChild(card);
   };
 
   const refreshFilterCounts = (): void => {
-    let live = 0, today = 0, mine = 0, zapped = 0;
+    let live = 0, today = 0, arena = 0, mine = 0, zapped = 0;
     const now = Date.now();
     for (const card of cardByPubkey.values()) {
       if (card.dataset.live === '1') live += 1;
       if (card.dataset.mine === '1') mine += 1;
+      if (card.dataset.mode === 'arena') arena += 1;
       const at = parseInt(card.dataset.createdAt ?? '0', 10);
       if (at > 0 && (now - at * 1000) < 24 * 60 * 60_000) today += 1;
       const zapSats = parseInt(card.dataset.zapSats ?? '0', 10) || 0;
@@ -6222,6 +6228,7 @@ export function renderWatchPage(state: GameState): void {
     }
     filterCounts.live.textContent = String(live);
     filterCounts.today.textContent = String(today);
+    filterCounts.arena.textContent = String(arena);
     filterCounts.mine.textContent = String(mine);
     filterCounts.zapped.textContent = String(zapped);
     filterCounts.all.textContent = String(cardByPubkey.size);
@@ -9193,6 +9200,7 @@ async function maybePublishScore(
         finished_at: finishedAt,
         sats_claimed: state.sats,
         cheated: state.cheatedThisRun,
+        mode: currentMode(),
         ...(seed ? { daily_seed: seed } : {}),
         // Flag 600bn-flavour runs so the faucet enforces the
         // daily_cap_600bn budget + appends the ['t','600bn'] tag on
