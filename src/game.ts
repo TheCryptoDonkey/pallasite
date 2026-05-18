@@ -55,7 +55,8 @@ import type { PowerUp, PowerUpType } from './types.js';
 import * as audio from './audio.js';
 import { preloadBackground } from './render.js';
 import { currentMods, lockInDifficulty, getStoredDifficulty, currentDifficulty } from './difficulty.js';
-import { lockInMode, getStoredMode, currentMode } from './mode.js';
+import { lockInMode, getStoredMode, currentMode, isEndlessMode } from './mode.js';
+import { arenaActive, arenaBox, confineToArena, clampToArena, outsideArena } from './arena.js';
 import { markAchievement, resetRunAchievements } from './achievements.js';
 import { gameRng, seedRun } from './seed.js';
 import { haptic } from './haptics.js';
@@ -955,7 +956,7 @@ export function beginWave(s: GameState, wave: number): void {
   // explicitly included so an endless run keeps getting vein rolls;
   // VEIN_SPAWN_MAX_WAVE only applies in campaign mode where the run
   // ends at 25 anyway.
-  const wavePastWindow = wave > VEIN_SPAWN_MAX_WAVE && currentMode() !== 'drift';
+  const wavePastWindow = wave > VEIN_SPAWN_MAX_WAVE && !isEndlessMode();
   if (!setPiece && wave >= VEIN_SPAWN_MIN_WAVE && !wavePastWindow
       && wave !== FINAL_WAVE) {
     const roll = gameRng();
@@ -1410,6 +1411,11 @@ function updateUfos(s: GameState, dt: number): void {
     u.pos.x += u.vel.x * dt;
     u.pos.y += u.vel.y * dt;
 
+    // Arena: confine UFOs to the shrinking cage too, so they bounce off the
+    // walls rather than phasing through. The off-world despawn below is then
+    // unreachable; the UFO lifetime timer still retires it.
+    if (arenaActive()) confineToArena(u.pos, u.vel, u.radius, arenaBox(s.runTimeMs), 0.95);
+
     // Despawn once the UFO has fully left the fixed world on its travel
     // side. Boss never despawns this way.
     if (u.type !== 'boss') {
@@ -1618,7 +1624,10 @@ function updateMines(s: GameState, dt: number, _now: number): void {
     m.age += dt * 1000;
     if (m.hitFlash > 0) m.hitFlash = Math.max(0, m.hitFlash - dt * 4);
 
-    // Mines are static — no movement physics.
+    // Mines are static — no movement physics. Arena is the one exception:
+    // the shrinking cage sweeps a mine inward so it never strands outside
+    // the playable box.
+    if (arenaActive()) clampToArena(m.pos, m.radius, arenaBox(s.runTimeMs));
 
     // Gravity well — pulls ship in (skipped during shield/hyperspace cloak)
     if (s.ship.alive && s.ship.hyperspaceCloakMs <= 0) {
@@ -1985,13 +1994,20 @@ function wrap(p: Vec2, margin = 0): void {
 }
 
 function circlesHit(a: { pos: Vec2; radius: number }, b: { pos: Vec2; radius: number }): boolean {
+  const r = a.radius + b.radius;
+  if (arenaActive()) {
+    // Arena has hard walls and no wrap, so the torus fold (which can pull two
+    // entities near opposite world edges into a false hit) must not run.
+    const ex = a.pos.x - b.pos.x;
+    const ey = a.pos.y - b.pos.y;
+    return ex * ex + ey * ey <= r * r;
+  }
   // Wrap-aware shortest delta on the fixed WORLD_W x WORLD_H torus. Proper
   // modulo so positions more than one wrap apart still fold back correctly.
   let dx = (((a.pos.x - b.pos.x) % WORLD_W) + WORLD_W) % WORLD_W;
   if (dx > WORLD_W / 2) dx -= WORLD_W;
   let dy = (((a.pos.y - b.pos.y) % WORLD_H) + WORLD_H) % WORLD_H;
   if (dy > WORLD_H / 2) dy -= WORLD_H;
-  const r = a.radius + b.radius;
   return dx * dx + dy * dy <= r * r;
 }
 
@@ -2388,6 +2404,13 @@ export function updateGame(s: GameState): void {
   // — startGame no longer routes there. Branch left out intentionally.
   s.elapsed += dt * 1000;
 
+  // Arena run: the playfield is a hard-walled box that bounces entities off
+  // its edges instead of wrapping, and that box slowly shrinks over the run.
+  // Both derive from s.runTimeMs and are read by every entity loop below;
+  // campaign and drift leave `arena` false and behave exactly as before.
+  const arena = arenaActive();
+  const box = arenaBox(s.runTimeMs);
+
   // HUD ticker eases toward s.sats every frame regardless of phase, so the
   // counter still finishes its run-up under gameover / wavestart overlays.
   updateDisplaySats(s, dt);
@@ -2473,7 +2496,8 @@ export function updateGame(s: GameState): void {
       d.rot += d.rotVel * dt;
       d.ttl -= dt * 1000;
       d.vel.x *= Math.exp(-0.6 * dt); d.vel.y *= Math.exp(-0.6 * dt);
-      wrap(d.pos, 20);
+      if (arena) confineToArena(d.pos, d.vel, 0, box, 0.5);
+      else wrap(d.pos, 20);
     }
     s.debris = s.debris.filter(d => d.ttl > 0);
     return;
@@ -2552,7 +2576,8 @@ export function updateGame(s: GameState): void {
 
     s.ship.pos.x += s.ship.vel.x * dt;
     s.ship.pos.y += s.ship.vel.y * dt;
-    wrap(s.ship.pos);
+    if (arena) confineToArena(s.ship.pos, s.ship.vel, s.ship.radius, box, 0.4);
+    else wrap(s.ship.pos);
 
     // Recoil decays linearly — a 1.8px kick fades in ~75ms at 24 px/s.
     if (s.ship.recoilOffset > 0) {
@@ -2580,6 +2605,16 @@ export function updateGame(s: GameState): void {
         s.missedShotsThisWave += 1;
         s.runStats.bulletsMissed += 1;
       }
+    } else if (arena) {
+      // No wrap in arena: a bullet that reaches the wall is spent. An
+      // unlanded wall-expiry still counts as a miss, like a TTL expiry.
+      if (outsideArena(b.pos, b.radius, box)) {
+        b.alive = false;
+        if (!b.hasLanded) {
+          s.missedShotsThisWave += 1;
+          s.runStats.bulletsMissed += 1;
+        }
+      }
     } else {
       // Detect wrap so a hit landed on the far side counts as a WRAP KILL.
       // wrap() only mutates pos when the bullet actually crosses an edge, so a
@@ -2597,7 +2632,10 @@ export function updateGame(s: GameState): void {
     b.pos.x += b.vel.x * dt;
     b.pos.y += b.vel.y * dt;
     b.ttl -= dt * 1000;
-    if (b.ttl <= 0 || b.pos.x < -10 || b.pos.x > WORLD_W + 10 || b.pos.y < -10 || b.pos.y > WORLD_H + 10) {
+    const offField = arena
+      ? outsideArena(b.pos, b.radius, box)
+      : (b.pos.x < -10 || b.pos.x > WORLD_W + 10 || b.pos.y < -10 || b.pos.y > WORLD_H + 10);
+    if (b.ttl <= 0 || offField) {
       b.alive = false;
     }
   }
@@ -2719,7 +2757,10 @@ export function updateGame(s: GameState): void {
     if (a.hitFlash > 0) a.hitFlash = Math.max(0, a.hitFlash - dt * 4);
     // Exact-edge wrap (no courtesy margin): render ghosts the seam, so the
     // teleport must land exactly WORLD_W over or the ghost hand-off jumps.
-    wrap(a.pos);
+    // Arena instead bounces the rock off the cage wall, fully elastic so the
+    // field stays lively as the box shrinks.
+    if (arena) confineToArena(a.pos, a.vel, a.radius, box, 1);
+    else wrap(a.pos);
   }
 
   // Asteroid-asteroid elastic bounce on the gameplay plane. Decorative
@@ -2752,7 +2793,8 @@ export function updateGame(s: GameState): void {
     // Mild drag so pieces decelerate as they tumble outward
     d.vel.x *= Math.exp(-0.6 * dt);
     d.vel.y *= Math.exp(-0.6 * dt);
-    wrap(d.pos, 20);
+    if (arena) confineToArena(d.pos, d.vel, 0, box, 0.5);
+    else wrap(d.pos, 20);
   }
   s.debris = s.debris.filter(d => d.ttl > 0);
 
@@ -2765,7 +2807,8 @@ export function updateGame(s: GameState): void {
     c.vel.x *= Math.exp(-0.8 * dt);
     c.vel.y *= Math.exp(-0.8 * dt);
     if (c.ttl <= 0) c.alive = false;
-    wrap(c.pos);
+    if (arena) confineToArena(c.pos, c.vel, c.radius, box, 0.55);
+    else wrap(c.pos);
 
     // Pull toward ship — short-range natural magnetism always, plus a strong
     // whole-screen pull while the MAGNET powerup is active.
@@ -2874,10 +2917,17 @@ export function updateGame(s: GameState): void {
       if (circlesHit(s.ship, a)) {
         // Use wrap-aware delta so reflections at the edges push the asteroid
         // along the actual contact normal, not a normal flipped by the wrap.
-        let dx = (((a.pos.x - s.ship.pos.x) % WORLD_W) + WORLD_W) % WORLD_W;
-        if (dx > WORLD_W / 2) dx -= WORLD_W;
-        let dy = (((a.pos.y - s.ship.pos.y) % WORLD_H) + WORLD_H) % WORLD_H;
-        if (dy > WORLD_H / 2) dy -= WORLD_H;
+        // Arena has no wrap, so a plain delta is already the real normal.
+        let dx: number, dy: number;
+        if (arena) {
+          dx = a.pos.x - s.ship.pos.x;
+          dy = a.pos.y - s.ship.pos.y;
+        } else {
+          dx = (((a.pos.x - s.ship.pos.x) % WORLD_W) + WORLD_W) % WORLD_W;
+          if (dx > WORLD_W / 2) dx -= WORLD_W;
+          dy = (((a.pos.y - s.ship.pos.y) % WORLD_H) + WORLD_H) % WORLD_H;
+          if (dy > WORLD_H / 2) dy -= WORLD_H;
+        }
         const distSq = dx * dx + dy * dy;
         const dist = Math.sqrt(distSq) || 1;
         const nx = dx / dist;
@@ -2990,7 +3040,8 @@ export function updateGame(s: GameState): void {
       p.vel.y *= Math.exp(-0.6 * dt);
       p.ttl -= dt * 1000;
       if (p.ttl <= 0) p.alive = false;
-      wrap(p.pos);
+      if (arena) confineToArena(p.pos, p.vel, p.radius, box, 0.55);
+      else wrap(p.pos);
       if (s.ship.alive && circlesHit(s.ship, p)) {
         p.collected = true;
         s.runStats.powerupsCollected += 1;
@@ -3067,8 +3118,10 @@ export function updateGame(s: GameState): void {
       clearStage(s, { autoCollect: true });
       audio.ufoSirenStop();
       if (isFinalWave) {
-        if (currentMode() === 'drift') {
-          toastNow(s, 'DRIFT · BEYOND THE HORIZON');
+        if (isEndlessMode()) {
+          toastNow(s, currentMode() === 'arena'
+            ? 'ARENA · NO RETREAT'
+            : 'DRIFT · BEYOND THE HORIZON');
           startWarp(s);
         } else {
           triggerCompletion(s);
