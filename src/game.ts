@@ -56,7 +56,7 @@ import * as audio from './audio.js';
 import { preloadBackground } from './render.js';
 import { currentMods, lockInDifficulty, getStoredDifficulty, currentDifficulty } from './difficulty.js';
 import { lockInMode, getStoredMode, currentMode, isEndlessMode } from './mode.js';
-import { arenaActive, arenaBox, confineToArena, clampToArena, outsideArena } from './arena.js';
+import { arenaActive, arenaCage, confineToArena, clampToArena, outsideArena } from './arena.js';
 import { markAchievement, resetRunAchievements } from './achievements.js';
 import { gameRng, seedRun } from './seed.js';
 import { haptic } from './haptics.js';
@@ -355,6 +355,16 @@ function makeAsteroidShape(): number[] {
 function pickAsteroidType(wave: number): AsteroidType {
   const r = gameRng();
   if (wave <= 3) return 'stony';
+  // Behavioural specials roll on their own draw so they do not skew the
+  // meteorite-type bands below. Kinetic is arena-only (it needs cage walls).
+  if (wave >= 5) {
+    const sp = gameRng();
+    if (sp < 0.05) return 'volatile';
+    if (sp < 0.09) return 'tektite';
+    if (sp < 0.12) return 'ballast';
+    if (sp < 0.15) return 'lodestone';
+    if (arenaActive() && sp < 0.22) return 'kinetic';
+  }
   if (wave <= 6) {
     if (r < 0.05) return 'pallasite';
     if (r < 0.30) return 'iron';
@@ -433,7 +443,7 @@ export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?
   // Veins are oversized and drift slowly — they're a fixed-position target,
   // not a hazard the player has to dodge. Standard asteroids use the per-wave
   // speed band as before.
-  const radius = RADIUS_PER_SIZE[size] * (isVein ? VEIN_RADIUS_MUL : 1) * depthCfg.sizeMul;
+  let radius = RADIUS_PER_SIZE[size] * (isVein ? VEIN_RADIUS_MUL : 1) * depthCfg.sizeMul;
   const speedBase = (ASTEROID_BASE_SPEED + wave * ASTEROID_SPEED_PER_WAVE) * mods.asteroidSpeedMul * depthCfg.speedMul;
   const sizeMul = size === 'large' ? 0.7 : size === 'medium' ? 1 : 1.5;
   const speed = isVein
@@ -462,6 +472,13 @@ export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?
   }
 
   const t = isVein ? 'pallasite' : (type ?? pickAsteroidType(wave));
+  // Ballast is an oversized, sluggish obstacle — bigger and much slower
+  // than a standard rock of the same size.
+  if (t === 'ballast') {
+    radius *= 1.55;
+    velocity.x *= 0.4;
+    velocity.y *= 0.4;
+  }
   const cfg = ASTEROID_TYPE_CONFIG[t];
 
   // HP — veins use their own scaled HP, council members get the
@@ -859,6 +876,30 @@ function tickSanctumFillers(s: GameState, dtMs: number): void {
   }
 }
 
+/** Invuln granted at the start of every arena round (run start and each
+ *  refill) — longer than the campaign SHIP_INVULN_MS so the player can
+ *  read the fresh field before the cage and rocks bear down. */
+const ARENA_INVULN_MS = 5_000;
+
+/** Kinetic asteroid: speed multiplier applied on each cage-wall bounce, and
+ *  the hard speed cap that stops it running away forever. */
+const KINETIC_GAIN = 1.12;
+const KINETIC_MAX_SPEED = 540;
+/** Lodestone asteroid: ship-pull reach (world px) and pull strength. */
+const LODESTONE_RANGE = 230;
+const LODESTONE_PULL = 150;
+
+/** Arena round spawn: a procedural rock field scaled by s.wave. Arena is
+ *  pure rock-survival, so no set pieces, veins, mines or boss. */
+function arenaSpawnWave(s: GameState): void {
+  const multiplier = getGameConfig().asteroid_count_multiplier;
+  const count = Math.max(1, Math.round(Math.min(13, 4 + s.wave) * multiplier));
+  for (let i = 0; i < count; i++) {
+    s.asteroids.push(spawnAsteroid('large', s.wave));
+  }
+  spawnDecorativeAsteroids(s, s.wave);
+}
+
 export function beginWave(s: GameState, wave: number): void {
   s.wave = wave;
   // Milestone achievements on wave entry — fired here so the badge lands
@@ -898,6 +939,17 @@ export function beginWave(s: GameState, wave: number): void {
     s.ship.rotVel = 0;
     s.ship.rot = spawn?.rot ?? -Math.PI / 2;
     s.ship.invulnerableUntil = s.elapsed + SHIP_INVULN_MS;
+  }
+  if (arenaActive()) {
+    // Arena is one continuous infinity level: a plain procedural rock
+    // field, with no set pieces, veins, mines or boss, and no wavestart
+    // banner or warp. Drop straight into play with a generous invuln.
+    arenaSpawnWave(s);
+    s.ship.invulnerableUntil = s.elapsed + ARENA_INVULN_MS;
+    s.phase = 'playing';
+    s.phaseStart = s.elapsed;
+    audio.setHeartbeatPeriod(Math.max(0.35, 1.0 - wave * 0.06));
+    return;
   }
   const setPiece = WAVE_SET_PIECES[wave];
   // 600bn flavour overrides wave 1 with the council ring — every
@@ -1414,7 +1466,7 @@ function updateUfos(s: GameState, dt: number): void {
     // Arena: confine UFOs to the shrinking cage too, so they bounce off the
     // walls rather than phasing through. The off-world despawn below is then
     // unreachable; the UFO lifetime timer still retires it.
-    if (arenaActive()) confineToArena(u.pos, u.vel, u.radius, arenaBox(s.runTimeMs), 0.95);
+    if (arenaActive()) confineToArena(u.pos, u.vel, u.radius, arenaCage(s.runTimeMs), 0.95);
 
     // Despawn once the UFO has fully left the fixed world on its travel
     // side. Boss never despawns this way.
@@ -1626,8 +1678,8 @@ function updateMines(s: GameState, dt: number, _now: number): void {
 
     // Mines are static — no movement physics. Arena is the one exception:
     // the shrinking cage sweeps a mine inward so it never strands outside
-    // the playable box.
-    if (arenaActive()) clampToArena(m.pos, m.radius, arenaBox(s.runTimeMs));
+    // the playable cage.
+    if (arenaActive()) clampToArena(m.pos, m.radius, arenaCage(s.runTimeMs));
 
     // Gravity well — pulls ship in (skipped during shield/hyperspace cloak)
     if (s.ship.alive && s.ship.hyperspaceCloakMs <= 0) {
@@ -2404,12 +2456,12 @@ export function updateGame(s: GameState): void {
   // — startGame no longer routes there. Branch left out intentionally.
   s.elapsed += dt * 1000;
 
-  // Arena run: the playfield is a hard-walled box that bounces entities off
-  // its edges instead of wrapping, and that box slowly shrinks over the run.
+  // Arena run: the playfield is an oval cage that bounces entities off its
+  // wall instead of wrapping; the cage breathes and shrinks over the run.
   // Both derive from s.runTimeMs and are read by every entity loop below;
   // campaign and drift leave `arena` false and behave exactly as before.
   const arena = arenaActive();
-  const box = arenaBox(s.runTimeMs);
+  const cage = arenaCage(s.runTimeMs);
 
   // HUD ticker eases toward s.sats every frame regardless of phase, so the
   // counter still finishes its run-up under gameover / wavestart overlays.
@@ -2496,7 +2548,7 @@ export function updateGame(s: GameState): void {
       d.rot += d.rotVel * dt;
       d.ttl -= dt * 1000;
       d.vel.x *= Math.exp(-0.6 * dt); d.vel.y *= Math.exp(-0.6 * dt);
-      if (arena) confineToArena(d.pos, d.vel, 0, box, 0.5);
+      if (arena) confineToArena(d.pos, d.vel, 0, cage, 0.5);
       else wrap(d.pos, 20);
     }
     s.debris = s.debris.filter(d => d.ttl > 0);
@@ -2576,7 +2628,7 @@ export function updateGame(s: GameState): void {
 
     s.ship.pos.x += s.ship.vel.x * dt;
     s.ship.pos.y += s.ship.vel.y * dt;
-    if (arena) confineToArena(s.ship.pos, s.ship.vel, s.ship.radius, box, 0.4);
+    if (arena) confineToArena(s.ship.pos, s.ship.vel, s.ship.radius, cage, 0.4);
     else wrap(s.ship.pos);
 
     // Recoil decays linearly — a 1.8px kick fades in ~75ms at 24 px/s.
@@ -2608,7 +2660,7 @@ export function updateGame(s: GameState): void {
     } else if (arena) {
       // No wrap in arena: a bullet that reaches the wall is spent. An
       // unlanded wall-expiry still counts as a miss, like a TTL expiry.
-      if (outsideArena(b.pos, b.radius, box)) {
+      if (outsideArena(b.pos, b.radius, cage)) {
         b.alive = false;
         if (!b.hasLanded) {
           s.missedShotsThisWave += 1;
@@ -2633,7 +2685,7 @@ export function updateGame(s: GameState): void {
     b.pos.y += b.vel.y * dt;
     b.ttl -= dt * 1000;
     const offField = arena
-      ? outsideArena(b.pos, b.radius, box)
+      ? outsideArena(b.pos, b.radius, cage)
       : (b.pos.x < -10 || b.pos.x > WORLD_W + 10 || b.pos.y < -10 || b.pos.y > WORLD_H + 10);
     if (b.ttl <= 0 || offField) {
       b.alive = false;
@@ -2646,8 +2698,8 @@ export function updateGame(s: GameState): void {
   // is enough fight on its own. Set-piece waves with their own UFO logic
   // (curtain) also suppress the default spawn timer.
   const mods = currentMods();
-  const easyBossArena = s.wave === FINAL_WAVE && currentDifficulty() === 'easy';
-  const setPiece = WAVE_SET_PIECES[s.wave];
+  const easyBossArena = !arena && s.wave === FINAL_WAVE && currentDifficulty() === 'easy';
+  const setPiece = arena ? undefined : WAVE_SET_PIECES[s.wave];
   const suppressSpawn = easyBossArena || setPiece?.suppressDefaultUfos === true;
   const minionCount = s.ufos.filter(u => u.type !== 'boss').length;
   s.nextUfoSpawn -= dt * 1000;
@@ -2717,6 +2769,20 @@ export function updateGame(s: GameState): void {
     a.pos.x += a.vel.x * dt;
     a.pos.y += a.vel.y * dt;
     a.rot += a.rotVel * dt;
+    // Lodestone rocks tug the ship toward them — a mobile gravity well,
+    // gameplay-plane only, skipped while the ship is cloaked.
+    if (a.type === 'lodestone' && a.alive && (a.depth ?? 3) === 3
+        && s.ship.alive && s.ship.hyperspaceCloakMs <= 0) {
+      const dx = a.pos.x - s.ship.pos.x;
+      const dy = a.pos.y - s.ship.pos.y;
+      const distSq = dx * dx + dy * dy;
+      if (distSq < LODESTONE_RANGE * LODESTONE_RANGE && distSq > 16) {
+        const dist = Math.sqrt(distSq);
+        const pull = LODESTONE_PULL * (1 - dist / LODESTONE_RANGE);
+        s.ship.vel.x += (dx / dist) * pull * dt;
+        s.ship.vel.y += (dy / dist) * pull * dt;
+      }
+    }
     // 600bn council shedding — periodic tiny gold particles spit off
     // the polygon edge while the rock still has mass to shed. Per-
     // frame poisson roll, rate scales with hp-remaining ratio so a
@@ -2758,9 +2824,19 @@ export function updateGame(s: GameState): void {
     // Exact-edge wrap (no courtesy margin): render ghosts the seam, so the
     // teleport must land exactly WORLD_W over or the ghost hand-off jumps.
     // Arena instead bounces the rock off the cage wall, fully elastic so the
-    // field stays lively as the box shrinks.
-    if (arena) confineToArena(a.pos, a.vel, a.radius, box, 1);
-    else wrap(a.pos);
+    // field stays lively as the cage shrinks.
+    if (arena) {
+      const bounced = confineToArena(a.pos, a.vel, a.radius, cage, 1);
+      // Kinetic rocks feed on wall impacts: each bounce ratchets the speed
+      // up a notch, up to a hard cap so they cannot run away forever.
+      if (bounced && a.type === 'kinetic') {
+        const sp = Math.hypot(a.vel.x, a.vel.y);
+        if (sp > 1 && sp < KINETIC_MAX_SPEED) {
+          a.vel.x *= KINETIC_GAIN;
+          a.vel.y *= KINETIC_GAIN;
+        }
+      }
+    } else wrap(a.pos);
   }
 
   // Asteroid-asteroid elastic bounce on the gameplay plane. Decorative
@@ -2793,7 +2869,7 @@ export function updateGame(s: GameState): void {
     // Mild drag so pieces decelerate as they tumble outward
     d.vel.x *= Math.exp(-0.6 * dt);
     d.vel.y *= Math.exp(-0.6 * dt);
-    if (arena) confineToArena(d.pos, d.vel, 0, box, 0.5);
+    if (arena) confineToArena(d.pos, d.vel, 0, cage, 0.5);
     else wrap(d.pos, 20);
   }
   s.debris = s.debris.filter(d => d.ttl > 0);
@@ -2807,7 +2883,7 @@ export function updateGame(s: GameState): void {
     c.vel.x *= Math.exp(-0.8 * dt);
     c.vel.y *= Math.exp(-0.8 * dt);
     if (c.ttl <= 0) c.alive = false;
-    if (arena) confineToArena(c.pos, c.vel, c.radius, box, 0.55);
+    if (arena) confineToArena(c.pos, c.vel, c.radius, cage, 0.55);
     else wrap(c.pos);
 
     // Pull toward ship — short-range natural magnetism always, plus a strong
@@ -3040,7 +3116,7 @@ export function updateGame(s: GameState): void {
       p.vel.y *= Math.exp(-0.6 * dt);
       p.ttl -= dt * 1000;
       if (p.ttl <= 0) p.alive = false;
-      if (arena) confineToArena(p.pos, p.vel, p.radius, box, 0.55);
+      if (arena) confineToArena(p.pos, p.vel, p.radius, cage, 0.55);
       else wrap(p.pos);
       if (s.ship.alive && circlesHit(s.ship, p)) {
         p.collected = true;
@@ -3065,7 +3141,7 @@ export function updateGame(s: GameState): void {
     // can't even hit them.
     const collideAsteroids = s.asteroids.filter(a => a.alive && (a.depth ?? 3) === 3);
     const asteroidsClear = collideAsteroids.length === 0;
-    const setPiece = WAVE_SET_PIECES[s.wave];
+    const setPiece = arena ? undefined : WAVE_SET_PIECES[s.wave];
     // Set-piece waves can override the clear condition (e.g. bullet curtain
     // clears on UFO kill count, not on empty asteroid array). Falls back to
     // the standard asteroidsClear check.
@@ -3073,7 +3149,7 @@ export function updateGame(s: GameState): void {
     const ufosClear = s.ufos.length === 0;
     const wave25Clear = s.bossDefeated && asteroidsClear && ufosClear;
     const isFinalWave = s.wave === FINAL_WAVE;
-    const conditionClear = isFinalWave ? wave25Clear : cleared;
+    const conditionClear = (isFinalWave && !arena) ? wave25Clear : cleared;
 
     // 600bn flavour wave 1 is an infinity wave — a clear just respawns
     // fillers and keeps going; the Sanctum is a continuous engagement.
@@ -3090,6 +3166,22 @@ export function updateGame(s: GameState): void {
         // Infinity wave — sweep, refill, keep going; no grace, no transition.
         clearStage(s, { autoCollect: true });
         spawnSanctumFillers(s, 5);
+      } else if (arena) {
+        // Arena infinity level: refill the rock field in place. No warp,
+        // no banner, and no auto-collect — loose coins and power-ups are
+        // left on the field for the player to grab while the next batch
+        // closes in. The round counter ramps difficulty and score.
+        s.wave += 1;
+        s.asteroids = [];
+        arenaSpawnWave(s);
+        if (s.ship.alive) s.ship.invulnerableUntil = s.elapsed + ARENA_INVULN_MS;
+        audio.setHeartbeatPeriod(Math.max(0.35, 1.0 - s.wave * 0.06));
+        s.shieldUsedThisWave = false;
+        s.bulletsFiredThisWave = 0;
+        s.missedShotsThisWave = 0;
+        s.ufoSpawnedThisWave = false;
+        s.ufoKilledThisWave = false;
+        s.ufoKillsThisWave = 0;
       } else {
         spawnWaveClearStreak(s);
         // Set-piece clear achievements land on the wave-clear beat.
@@ -3251,6 +3343,7 @@ function computeRiskBonus(s: GameState): { mul: number; tier: 'risk' | 'close' |
 function asteroidMass(a: Asteroid): number {
   const sizeFactor = a.size === 'large' ? 4 : a.size === 'medium' ? 2 : 1;
   const typeFactor =
+    a.type === 'ballast' ? 2.6 :
     a.type === 'iron' || a.type === 'mesosiderite' ? 1.5 :
     a.type === 'pallasite' ? 1.3 :
     a.type === 'carbonaceous' ? 0.8 :
@@ -3412,6 +3505,36 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
   spawnParticles(s, a.pos.x, a.pos.y, 5, cfg.glow, 110, 280);
 }
 
+/** Volatile asteroid detonation — a shockwave that shoves every nearby
+ *  asteroid and the ship outward from the blast point. Pure math, no RNG,
+ *  so it stays deterministic; particles/shockwave are cosmetic pools. */
+function volatileBlast(s: GameState, x: number, y: number, size: AsteroidSize): void {
+  const radius = size === 'large' ? 220 : size === 'medium' ? 150 : 95;
+  const force = size === 'large' ? 270 : size === 'medium' ? 175 : 115;
+  spawnShockwave(s, x, y, radius * 0.5, '#ff7a2a');
+  spawnParticles(s, x, y, size === 'large' ? 22 : 13, '#ff9a3a', 320, 620);
+  for (const a of s.asteroids) {
+    if (!a.alive) continue;
+    const dx = a.pos.x - x, dy = a.pos.y - y;
+    const dist = Math.hypot(dx, dy);
+    if (dist >= radius || dist < 1) continue;
+    const push = force * (1 - dist / radius);
+    a.vel.x += (dx / dist) * push;
+    a.vel.y += (dy / dist) * push;
+  }
+  if (s.ship.alive) {
+    const dx = s.ship.pos.x - x, dy = s.ship.pos.y - y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < radius && dist > 1) {
+      const push = force * (1 - dist / radius);
+      s.ship.vel.x += (dx / dist) * push;
+      s.ship.vel.y += (dy / dist) * push;
+    }
+  }
+  bumpTrauma(s, size === 'large' ? 0.3 : 0.18);
+  audio.explosion(size === 'large' ? 1.1 : 0.8);
+}
+
 function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boolean; isCarom?: boolean; isWrap?: boolean; bulletVel?: Vec2 }): void {
   // Two shrink-rather-than-fragment cases:
   //   - Council members on the gameplay plane (chip a sculpture down).
@@ -3542,10 +3665,13 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
 
   // Spawn smaller children — same type carries over so a chondrite swarm stays a swarm
   if (a.size === 'large' || a.size === 'medium') {
-    const childSize: AsteroidSize = a.size === 'large' ? 'medium' : 'small';
+    // Tektite is impact glass — it shatters straight to a fast, wide spray
+    // of small shards rather than the usual halving into the next size.
+    const tektite = a.type === 'tektite';
+    const childSize: AsteroidSize = tektite ? 'small' : (a.size === 'large' ? 'medium' : 'small');
     const count = cfg.breakInto;
     const baseAngle = Math.atan2(a.vel.y, a.vel.x);
-    const spread = count === 2 ? 1.2 : 0.6;
+    const spread = tektite ? 1.9 : (count === 2 ? 1.2 : 0.6);
     // Bullet impulse blended into every child — without this, a near-stationary
     // parent produces near-stationary kids whose only motion is the spread
     // offset around a zero-length vector. With it, the shot's direction
@@ -3559,7 +3685,7 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
     for (let i = 0; i < count; i++) {
       const offset = (i - (count - 1) / 2) * spread;
       const angle = baseAngle + offset;
-      const speed = Math.hypot(a.vel.x, a.vel.y) * 1.2;
+      const speed = Math.hypot(a.vel.x, a.vel.y) * (tektite ? 1.4 : 1.2) + (tektite ? 90 : 0);
       const vel: Vec2 = {
         x: Math.cos(angle) * speed + bulletKickX,
         y: Math.sin(angle) * speed + bulletKickY,
@@ -3578,6 +3704,10 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
       s.asteroids.push(child);
     }
   }
+
+  // Volatile rocks detonate on break: a shockwave that shoves nearby rocks
+  // and the ship outward. Cascades when a volatile chain breaks.
+  if (a.type === 'volatile') volatileBlast(s, a.pos.x, a.pos.y, a.size);
 
   // Pallasite jackpot signal on the final shard
   if (a.type === 'pallasite' && a.size === 'small') {
@@ -3757,7 +3887,7 @@ function respawnShip(s: GameState): void {
   // Set-piece waves with a custom player spawn (e.g. heist drops you at
   // the bottom edge) need the same coords on respawn — otherwise the
   // player's lost a life only to be re-dropped on the hand-placed hazard.
-  const spawn = WAVE_SET_PIECES[s.wave]?.playerSpawn;
+  const spawn = arenaActive() ? undefined : WAVE_SET_PIECES[s.wave]?.playerSpawn;
   if (spawn) {
     s.ship.pos.x = spawn.x;
     s.ship.pos.y = spawn.y;

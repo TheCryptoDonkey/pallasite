@@ -77,7 +77,12 @@ export type AsteroidType =
   | 'pallasite'     // olivine + iron — rare jackpot
   | 'carbonaceous'  // CI/CM/CV — very dark primitive, fragile
   | 'mesosiderite'  // stony-iron mix — late-wave armoured
-  | 'achondrite';   // basaltic/HED — volcanic, breaks into more
+  | 'achondrite'    // basaltic/HED — volcanic, breaks into more
+  | 'kinetic'       // ricochet rock: speeds up on every cage-wall bounce (arena)
+  | 'volatile'      // detonates on break, shoving nearby rocks and the ship
+  | 'ballast'       // oversized, slow, very heavy: a drifting obstacle
+  | 'tektite'       // impact glass: shatters into a fast spray of shards
+  | 'lodestone';    // magnetic: tugs the ship toward it
 
 /** Pointer to a 600bn council member when this asteroid is themed
  *  to a member portrait. Renderer clips the member.img inside the
@@ -158,6 +163,12 @@ export const ASTEROID_TYPE_CONFIG: Record<AsteroidType, AsteroidTypeConfig> = {
   mesosiderite: { hp: 2, satMul: 1.3, scoreMul: 1.5, breakInto: 2, hueBase: 30,  glow: '#c0884a', label: 'MESOSIDERITE' },
   // Basaltic/HED — volcanic origin, fragile, shatters into more fragments.
   achondrite:   { hp: 1, satMul: 0.9, scoreMul: 1.3, breakInto: 3, hueBase: 0,   glow: '#d05a3a', label: 'ACHONDRITE' },
+  // Behavioural types — the gimmick lives in game.ts, not these stats.
+  kinetic:      { hp: 1, satMul: 1.0, scoreMul: 1.4, breakInto: 2, hueBase: 175, glow: '#3ad6c8', label: 'KINETIC' },
+  volatile:     { hp: 1, satMul: 1.1, scoreMul: 1.4, breakInto: 2, hueBase: 32,  glow: '#ff8a2a', label: 'VOLATILE' },
+  ballast:      { hp: 3, satMul: 1.4, scoreMul: 1.7, breakInto: 2, hueBase: 212, glow: '#6c8cb8', label: 'BALLAST' },
+  tektite:      { hp: 1, satMul: 0.8, scoreMul: 1.1, breakInto: 4, hueBase: 152, glow: '#5fe0a0', label: 'TEKTITE' },
+  lodestone:    { hp: 2, satMul: 1.2, scoreMul: 1.5, breakInto: 2, hueBase: 304, glow: '#d060e0', label: 'LODESTONE' },
 };
 
 export interface Bullet extends Entity {

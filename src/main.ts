@@ -1079,9 +1079,10 @@ async function boot(): Promise<void> {
       //   b = carbonaceous (black-ish primitive)
       //   m = mesosiderite (stony-iron mix)
       //   a = achondrite   (basaltic/HED)
-      const ASTEROID_TYPE_CODE: Record<string, 's' | 'i' | 'c' | 'p' | 'b' | 'm' | 'a'> = {
+      const ASTEROID_TYPE_CODE: Record<string, 's' | 'i' | 'c' | 'p' | 'b' | 'm' | 'a' | 'k' | 'v' | 'l' | 't' | 'o'> = {
         stony: 's', iron: 'i', chondrite: 'c', pallasite: 'p',
         carbonaceous: 'b', mesosiderite: 'm', achondrite: 'a',
+        kinetic: 'k', volatile: 'v', ballast: 'l', tektite: 't', lodestone: 'o',
       };
       const ASTEROID_SIZE_CODE: Record<string, 'l' | 'm' | 's'> = {
         large: 'l', medium: 'm', small: 's',
@@ -1103,7 +1104,7 @@ async function boot(): Promise<void> {
           ASTEROID_SIZE_CODE[a.size] ?? 's',
           ASTEROID_TYPE_CODE[a.type] ?? 's',
           a.rot,
-        ] as [number, number, number, 'l' | 'm' | 's', 's' | 'i' | 'c' | 'p', number]);
+        ] as [number, number, number, 'l' | 'm' | 's', 's' | 'i' | 'c' | 'p' | 'b' | 'm' | 'a' | 'k' | 'v' | 'l' | 't' | 'o', number]);
 
       const ufos = (state.ufos ?? [])
         .filter((u) => u.alive)
@@ -1137,8 +1138,9 @@ async function boot(): Promise<void> {
           c.sourceType ? ({
             stony: 's', iron: 'i', chondrite: 'c', pallasite: 'p',
             carbonaceous: 'b', mesosiderite: 'm', achondrite: 'a',
+            kinetic: 'k', volatile: 'v', ballast: 'l', tektite: 't', lodestone: 'o',
           } as const)[c.sourceType] : '',
-        ] as [number, number, number, 's' | 'd', 's' | 'i' | 'c' | 'p' | 'b' | 'm' | 'a' | '']);
+        ] as [number, number, number, 's' | 'd', 's' | 'i' | 'c' | 'p' | 'b' | 'm' | 'a' | 'k' | 'v' | 'l' | 't' | 'o' | '']);
 
       // Powerups — rare, usually 0-2 on screen. Cap at 4 anyway.
       const powerups = (state.powerups ?? [])

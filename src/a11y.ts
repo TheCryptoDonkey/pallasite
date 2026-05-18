@@ -141,6 +141,11 @@ const HIGH_CONTRAST_PALETTE: Record<AsteroidType, AsteroidStyle> = {
   mesosiderite: { hueBase: 320, glow: '#ff80c0' },
   // Saturated lime — distinct from the others on the wheel.
   achondrite:   { hueBase: 90,  glow: '#a8ff60' },
+  kinetic:      { hueBase: 195, glow: '#60d0ff' },
+  volatile:     { hueBase: 28,  glow: '#ff8030' },
+  ballast:      { hueBase: 240, glow: '#8090ff' },
+  tektite:      { hueBase: 140, glow: '#80ffb0' },
+  lodestone:    { hueBase: 300, glow: '#ff80e0' },
 };
 
 const DEFAULT_PALETTE: Record<AsteroidType, AsteroidStyle> = {
@@ -151,6 +156,11 @@ const DEFAULT_PALETTE: Record<AsteroidType, AsteroidStyle> = {
   carbonaceous: { hueBase: 280, glow: '#7a5aa0' },
   mesosiderite: { hueBase: 30,  glow: '#c0884a' },
   achondrite:   { hueBase: 0,   glow: '#d05a3a' },
+  kinetic:      { hueBase: 175, glow: '#3ad6c8' },
+  volatile:     { hueBase: 32,  glow: '#ff8a2a' },
+  ballast:      { hueBase: 212, glow: '#6c8cb8' },
+  tektite:      { hueBase: 152, glow: '#5fe0a0' },
+  lodestone:    { hueBase: 304, glow: '#d060e0' },
 };
 
 /** Resolve hue + glow for an asteroid type under the active palette.
