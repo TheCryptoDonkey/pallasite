@@ -23,7 +23,7 @@ import { getFlavour } from './flavour.js';
 import { getVisualStyle, getTheme, isWebGLOverlayReady, callWebGLOverlay } from './visual-style.js';
 import { DEPTH_CONFIGS } from './parallax.js';
 import { getRadarVisible } from './radar.js';
-import { arenaActive, arenaBox, type ArenaBox } from './arena.js';
+import { arenaActive, arenaCage, type ArenaCage } from './arena.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
 
@@ -328,74 +328,76 @@ function drawArenaVoid(ctx: CanvasRenderingContext2D): void {
 }
 
 /** Arena cage floor: a faint world-anchored grid clipped to the current
- *  box, so the playable area reads as a measured space. As the box shrinks
- *  the same grid simply shows cropped smaller. Drawn under the entities. */
-function drawArenaGrid(ctx: CanvasRenderingContext2D, box: ArenaBox, now: number): void {
+ *  cage ellipse, so the playable area reads as a measured space. As the
+ *  cage shrinks the grid simply shows cropped smaller. Under the entities. */
+function drawArenaGrid(ctx: CanvasRenderingContext2D, cage: ArenaCage, now: number): void {
   const STEP = 80;
+  const l = cage.cx - cage.rx, r = cage.cx + cage.rx;
+  const t = cage.cy - cage.ry, b = cage.cy + cage.ry;
   ctx.save();
   ctx.beginPath();
-  ctx.rect(box.l, box.t, box.w, box.h);
+  ctx.ellipse(cage.cx, cage.cy, cage.rx, cage.ry, 0, 0, Math.PI * 2);
   ctx.clip();
   ctx.strokeStyle = `rgba(96, 156, 200, ${0.085 + 0.025 * Math.sin(now * 0.0014)})`;
   ctx.lineWidth = 1;
   ctx.beginPath();
-  for (let x = Math.ceil(box.l / STEP) * STEP; x <= box.r; x += STEP) {
-    ctx.moveTo(x, box.t);
-    ctx.lineTo(x, box.b);
+  for (let x = Math.ceil(l / STEP) * STEP; x <= r; x += STEP) {
+    ctx.moveTo(x, t);
+    ctx.lineTo(x, b);
   }
-  for (let y = Math.ceil(box.t / STEP) * STEP; y <= box.b; y += STEP) {
-    ctx.moveTo(box.l, y);
-    ctx.lineTo(box.r, y);
+  for (let y = Math.ceil(t / STEP) * STEP; y <= b; y += STEP) {
+    ctx.moveTo(l, y);
+    ctx.lineTo(r, y);
   }
   ctx.stroke();
   ctx.restore();
 }
 
-/** Arena cage walls: four glowing energy borders at the box edges. Each
- *  wall flushes from calm cyan toward hot red as the ship closes on it, so
- *  the shrinking box telegraphs its danger. Drawn over the entity layer. */
+/** Arena cage wall: a glowing, breathing ellipse. The ring stays calm cyan
+ *  except for a hot arc that tracks the ship and flushes red as the ship
+ *  closes on the wall, so the shrinking cage telegraphs its danger. The
+ *  ellipse geometry itself already breathes; this adds the glow. Drawn
+ *  over the entity layer. */
 function drawArenaWalls(
-  ctx: CanvasRenderingContext2D, state: GameState, box: ArenaBox, now: number,
+  ctx: CanvasRenderingContext2D, state: GameState, cage: ArenaCage, now: number,
 ): void {
-  const ship = state.ship;
-  const DANGER = 140;  // world-px ship-to-wall gap at which a wall heats up
-  const heat = (gap: number): number =>
-    ship.alive ? Math.max(0, Math.min(1, 1 - gap / DANGER)) : 0;
-  const hl = heat(ship.pos.x - box.l);
-  const hr = heat(box.r - ship.pos.x);
-  const ht = heat(ship.pos.y - box.t);
-  const hb = heat(box.b - ship.pos.y);
   const breath = 0.5 + 0.5 * Math.sin(now * 0.0022);
-
   ctx.save();
   ctx.lineCap = 'round';
-  const wall = (x1: number, y1: number, x2: number, y2: number, danger: number): void => {
-    const r = Math.round(96 + danger * 159);
-    const g = Math.round(206 - danger * 136);
-    const b = Math.round(232 - danger * 182);
-    ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${0.5 + 0.18 * breath + danger * 0.3})`;
-    ctx.shadowColor = `rgb(${r}, ${g}, ${b})`;
-    ctx.shadowBlur = 12 + danger * 22 + breath * 6;
-    ctx.lineWidth = 2.6 + danger * 2.6;
-    ctx.beginPath();
-    ctx.moveTo(x1, y1);
-    ctx.lineTo(x2, y2);
-    ctx.stroke();
-  };
-  wall(box.l, box.t, box.l, box.b, hl);
-  wall(box.r, box.t, box.r, box.b, hr);
-  wall(box.l, box.t, box.r, box.t, ht);
-  wall(box.l, box.b, box.r, box.b, hb);
 
-  // Corner nodes so the cage reads as a built structure, not loose lines.
-  ctx.shadowColor = '#9fe6f5';
-  ctx.shadowBlur = 9;
-  ctx.fillStyle = `rgba(170, 232, 246, ${0.55 + 0.35 * breath})`;
-  const node = (x: number, y: number): void => ctx.fillRect(x - 3, y - 3, 6, 6);
-  node(box.l, box.t);
-  node(box.r, box.t);
-  node(box.l, box.b);
-  node(box.r, box.b);
+  // Base ring — calm cyan, gently shimmering.
+  ctx.strokeStyle = `rgba(96, 206, 232, ${0.5 + 0.2 * breath})`;
+  ctx.shadowColor = 'rgb(96, 206, 232)';
+  ctx.shadowBlur = 14 + breath * 8;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.ellipse(cage.cx, cage.cy, cage.rx, cage.ry, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Danger arc — when the ship nears the wall a hot segment of the ring,
+  // centred on the nearest point, flushes red. norm is 0 at the cage
+  // centre and 1 at the wall.
+  const ship = state.ship;
+  if (ship.alive) {
+    const ex = (ship.pos.x - cage.cx) / cage.rx;
+    const ey = (ship.pos.y - cage.cy) / cage.ry;
+    const norm = Math.hypot(ex, ey);
+    const heat = Math.max(0, Math.min(1, (norm - 0.62) / 0.38));
+    if (heat > 0) {
+      const ang = Math.atan2(ey, ex);
+      const span = 0.5 + 0.7 * heat;
+      const rr = Math.round(120 + heat * 135);
+      const gg = Math.round(180 - heat * 150);
+      const bb = Math.round(210 - heat * 170);
+      ctx.strokeStyle = `rgba(${rr}, ${gg}, ${bb}, ${0.55 + 0.4 * heat})`;
+      ctx.shadowColor = `rgb(${rr}, ${gg}, ${bb})`;
+      ctx.shadowBlur = 16 + heat * 26;
+      ctx.lineWidth = 3 + heat * 4;
+      ctx.beginPath();
+      ctx.ellipse(cage.cx, cage.cy, cage.rx, cage.ry, 0, ang - span, ang + span);
+      ctx.stroke();
+    }
+  }
   ctx.restore();
 }
 
@@ -830,6 +832,11 @@ function bakeAsteroidTexture(type: AsteroidType): HTMLCanvasElement {
     carbonaceous: { lit: '#605866', mid: '#2a2832', shadow: '#0c0a14', rim: '#040208' },
     mesosiderite: { lit: '#b89868', mid: '#5a3e22', shadow: '#221408', rim: '#100804' },
     achondrite:   { lit: '#b06848', mid: '#5a2818', shadow: '#1e0a04', rim: '#0a0402' },
+    kinetic:      { lit: '#6fd0c8', mid: '#2a6058', shadow: '#0c2420', rim: '#04100e' },
+    volatile:     { lit: '#e08848', mid: '#7a3818', shadow: '#2a1006', rim: '#100602' },
+    ballast:      { lit: '#8090a4', mid: '#3a4452', shadow: '#141820', rim: '#080a10' },
+    tektite:      { lit: '#88c0a0', mid: '#3a6048', shadow: '#142418', rim: '#08100c' },
+    lodestone:    { lit: '#a878b0', mid: '#503058', shadow: '#1c1020', rim: '#0c0610' },
   };
   const p = palettes[type];
   const rng = makePrng(
@@ -3520,7 +3527,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   const followActive = !!renderMode.follow && isFollowPhase(state.phase);
   // Arena cage: shown from wavestart onward (title keeps the bg cycle).
   const arenaRun = arenaActive() && state.phase !== 'title';
-  const arenaBoxR = arenaRun ? arenaBox(state.runTimeMs) : null;
+  const arenaCageR = arenaRun ? arenaCage(state.runTimeMs) : null;
   let scale = renderMode.scale;
   let tx = renderMode.tx;
   let ty = renderMode.ty;
@@ -3660,7 +3667,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   ctx.translate(shakeX, shakeY);
 
   // Arena cage floor — the grid sits beneath the entity layer.
-  if (arenaBoxR) drawArenaGrid(ctx, arenaBoxR, now);
+  if (arenaCageR) drawArenaGrid(ctx, arenaCageR, now);
 
   for (const dx of ghostXs) {
     for (const dy of ghostYs) {
@@ -3717,7 +3724,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
 
   // Arena cage walls — glowing borders over the entity layer, flushing red
   // as the ship nears a wall.
-  if (arenaBoxR) drawArenaWalls(ctx, state, arenaBoxR, now);
+  if (arenaCageR) drawArenaWalls(ctx, state, arenaCageR, now);
 
   ctx.restore();
 

@@ -157,7 +157,7 @@ export interface StreamFrame {
    *  interpolate positions smoothly at 60fps despite the 2 Hz wire
    *  cadence. Particles + coins + powerups are omitted (decorative,
    *  numerous, cheap to re-spawn). */
-  asteroids?: ReadonlyArray<readonly [number, number, number, 'l' | 'm' | 's', 's' | 'i' | 'c' | 'p' | 'b' | 'm' | 'a', number]>;
+  asteroids?: ReadonlyArray<readonly [number, number, number, 'l' | 'm' | 's', 's' | 'i' | 'c' | 'p' | 'b' | 'm' | 'a' | 'k' | 'v' | 'l' | 't' | 'o', number]>;
   /** UFO tuple: [id, x, y, typeCode, hp]. hp drives HP bars + dots on
    *  the watcher (tanks show HP dots underneath, boss shows segmented
    *  HP bar above). hp defaults to 1 for old clients that don't ship it. */
@@ -171,7 +171,7 @@ export interface StreamFrame {
    *  Source asteroid type carried alongside dust so the viewer can paint
    *  the right glow + shape. Capped at 32/frame — most runs sit well
    *  under this even mid-vein. */
-  coins?: ReadonlyArray<readonly [number, number, number, 's' | 'd', 's' | 'i' | 'c' | 'p' | 'b' | 'm' | 'a' | '']>;
+  coins?: ReadonlyArray<readonly [number, number, number, 's' | 'd', 's' | 'i' | 'c' | 'p' | 'b' | 'm' | 'a' | 'k' | 'v' | 'l' | 't' | 'o' | '']>;
   /** Powerups dropped from UFO/vein kills. Type letter maps directly to
    *  POWERUP_CONFIG (r=rapid, b=satboost, n=nova, t=trident, m=magnet). */
   powerups?: ReadonlyArray<readonly [number, number, number, 'r' | 'b' | 'n' | 't' | 'm']>;

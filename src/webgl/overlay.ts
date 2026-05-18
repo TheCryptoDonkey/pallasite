@@ -105,6 +105,12 @@ const ASTEROID_TYPE_COLOR: Record<string, number> = {
   carbonaceous: 0x4a4858,  // very dark, primitive
   mesosiderite: 0xc8a880,  // bronze stony-iron
   achondrite:   0xc06848,  // basaltic red
+  // Behavioural types — flat-coloured 3D rocks tinting a reused rock webp.
+  kinetic:      0x3ad6c8,  // electric teal
+  volatile:     0xff8a2a,  // hot orange
+  ballast:      0x6c8cb8,  // dull steel blue
+  tektite:      0x5fe0a0,  // glassy green
+  lodestone:    0xd060e0,  // magnetic magenta
 };
 
 /** Per-type Phong tuning — specular highlight + shininess. Real rocks
@@ -129,6 +135,12 @@ const ASTEROID_TYPE_MAT: Record<string, AsteroidTypeMaterial> = {
   mesosiderite: { shininess: 70,  specular: 0x806040 },
   // Volcanic basalt — matte with a hint of glaze from fusion crust.
   achondrite:   { shininess: 22,  specular: 0x4a2818 },
+  // Behavioural types.
+  kinetic:      { shininess: 60,  specular: 0x308078 },
+  volatile:     { shininess: 40,  specular: 0x804020 },
+  ballast:      { shininess: 30,  specular: 0x303840 },
+  tektite:      { shininess: 95,  specular: 0x70b090 },
+  lodestone:    { shininess: 70,  specular: 0x603068 },
 };
 
 /** Per-UFO-type palette + form factor. */
@@ -261,6 +273,21 @@ function hashStr(s: string): number {
     h = (h * 16777619) >>> 0;
   }
   return h;
+}
+
+/** Maps an asteroid type to the webp diffuse it loads. The five
+ *  behavioural types have no bespoke texture, so they reuse the nearest
+ *  stock rock surface; their identity comes from the base colour tint and
+ *  their behaviour, not the diffuse. Avoids a 404 per new-type mesh. */
+function diffuseTypeFor(type: string): string {
+  switch (type) {
+    case 'kinetic':   return 'chondrite';
+    case 'volatile':  return 'iron';
+    case 'ballast':   return 'stony';
+    case 'tektite':   return 'chondrite';
+    case 'lodestone': return 'pallasite';
+    default:          return type;
+  }
 }
 
 /** Build (or fetch from cache) the diffuse texture for an asteroid type.
@@ -1667,13 +1694,14 @@ export function renderOverlay(opts: {
           shininess: matCfg.shininess,
           specular: matCfg.specular,
         });
-        const cachedTypeMap = getDiffuseTexture(handle, a.type);
+        const diffuseKey = diffuseTypeFor(a.type);
+        const cachedTypeMap = getDiffuseTexture(handle, diffuseKey);
         if (cachedTypeMap) {
           material.map = cachedTypeMap;
           material.bumpMap = cachedTypeMap;
           material.bumpScale = 0.35;
         } else {
-          kickDiffuseLoad(handle, a.type, material, false);
+          kickDiffuseLoad(handle, diffuseKey, material, false);
         }
         const mesh = new THREE.Mesh(geometry, material);
         mesh.frustumCulled = false;
