@@ -8782,12 +8782,12 @@ export function renderGameOver(state: GameState): void {
   // identity churn. `initialsEnteredThisRun` is repurposed as "high
   // score for this run has been written" so REPLAY KILL re-renders
   // don't double-count.
-  const isNewHigh = isHighScore(state.score) && state.score > 0;
+  const isNewHigh = isHighScore(state.players[0].score) && state.players[0].score > 0;
   if (isNewHigh && !state.initialsEnteredThisRun) {
     addLocalHighScore({
       name: scoreboardNameFor(state),
-      score: state.score,
-      sats: state.sats,
+      score: state.players[0].score,
+      sats: state.players[0].sats,
       wave: state.wave,
       at: new Date().toISOString(),
       pubkey: state.session?.pubkey,
@@ -9023,7 +9023,7 @@ async function maybePublishScore(
   // smaller payouts); below the threshold only the balance path
   // appears, with a one-liner explaining why.
   const sessionPubkey = state.session.pubkey;
-  const sats = state.sats;
+  const sats = state.players[0].sats;
   const canDirectPayout = sats >= WITHDRAW_THRESHOLD_SATS;
 
   const heading = el('p', { parent: compactView });
@@ -9161,7 +9161,7 @@ async function maybePublishScore(
 
     const seed = getActiveSeed();
     const runAchievements = getRunAchievements();
-    const stats = state.runStats;
+    const stats = state.players[0].runStats;
     const durationSec = Math.max(1, duration / 1000);
     const totalKills =
       stats.asteroidsBroken +
@@ -9184,21 +9184,21 @@ async function maybePublishScore(
       lives_lost: stats.livesLost,
       kills_per_sec: Math.round((totalKills / durationSec) * 100) / 100,
       score_per_kill: totalKills > 0
-        ? Math.round((state.score / totalKills) * 10) / 10
+        ? Math.round((state.players[0].score / totalKills) * 10) / 10
         : 0,
-      score_per_sec: Math.round((state.score / durationSec) * 10) / 10,
+      score_per_sec: Math.round((state.players[0].score / durationSec) * 10) / 10,
       ...(runAchievements.length > 0
         ? { achievements_unlocked: runAchievements }
         : {}),
     };
     return {
       payload: {
-        score: state.score,
+        score: state.players[0].score,
         wave: state.wave,
         duration_ms: duration,
         started_at: startedAt,
         finished_at: finishedAt,
-        sats_claimed: state.sats,
+        sats_claimed: state.players[0].sats,
         cheated: state.cheatedThisRun,
         mode: currentMode(),
         ...(seed ? { daily_seed: seed } : {}),
@@ -9219,7 +9219,7 @@ async function maybePublishScore(
   const runClaim = async (): Promise<{ ok: true; amount: number } | { ok: false }> => {
     if (claimRun) return { ok: true, amount: claimedAmount };
     const { payload } = buildPayload();
-    if (state.sats > 0 && !state.cheatedThisRun) {
+    if (state.players[0].sats > 0 && !state.cheatedThisRun) {
       savePendingClaim(session.pubkey, payload);
     }
     const result = await submitClaim(session, payload);
@@ -9615,7 +9615,7 @@ function renderSanctumGameOver(
   // signal; sats stay on the main pallasite.app campaign.)
   const stats = el('div', { parent: overlay });
   stats.style.cssText = 'display:flex;gap:32px;font:bold 22px ui-monospace,monospace;letter-spacing:0.18em;margin:8px 0 6px;';
-  stats.innerHTML = `<span style="color:#ffd84a;text-shadow:0 0 12px rgba(255,138,58,0.55);">${state.score.toLocaleString()} PTS</span>`;
+  stats.innerHTML = `<span style="color:#ffd84a;text-shadow:0 0 12px rgba(255,138,58,0.55);">${state.players[0].score.toLocaleString()} PTS</span>`;
 
   // FUCHS2 party card — the whole point of the conference funnel.
   renderFuchs2Card(overlay);
@@ -9753,7 +9753,7 @@ function renderRunCredits(
   if (seed && state.ghostPoseSamples.length >= 2 && !state.cheatedThisRun) {
     savePersonalGhost({
       seed,
-      score: state.score,
+      score: state.players[0].score,
       wave: state.wave,
       durationMs: Math.max(0, Math.floor(state.runTimeMs)),
       poseSamples: state.ghostPoseSamples.slice(),
@@ -9791,12 +9791,12 @@ function renderRunCredits(
   };
 
   if (state.session) {
-    console.log(`[replay] game-over · session=${state.session.pubkey.slice(0, 8)}… cheated=${state.cheatedThisRun} score=${state.score} wave=${state.wave}`);
+    console.log(`[replay] game-over · session=${state.session.pubkey.slice(0, 8)}… cheated=${state.cheatedThisRun} score=${state.players[0].score} wave=${state.wave}`);
     void publishGhost({
       session: state.session,
       samples: state.ghostSamples,
       poseSamples: state.ghostPoseSamples,
-      finalScore: state.score,
+      finalScore: state.players[0].score,
       finalWave: state.wave,
       durationMs: Math.max(0, Math.floor(state.runTimeMs)),
       seed: getActiveSeed(),
@@ -9823,7 +9823,7 @@ function renderRunCredits(
         setReplayBadge('fail', `✗ REPLAY EMPTY · only ${remainingBuffer.length} frame(s) buffered`);
       } else {
         const session = state.session;
-        const score = state.score;
+        const score = state.players[0].score;
         const finalWave = state.wave;
         const durationMs = Math.max(0, Math.floor(state.runTimeMs));
         // Cache the gzipped frames across retries. First click gzips
@@ -9996,9 +9996,9 @@ function renderRunCredits(
               return;
             }
             const result = await shareClip(captured, {
-              filenameStem: `pallasite-w${state.wave}-s${state.score}`,
+              filenameStem: `pallasite-w${state.wave}-s${state.players[0].score}`,
               title: 'Pallasite',
-              text: `W${state.wave} · ${state.score} score · pallasite.app`,
+              text: `W${state.wave} · ${state.players[0].score} score · pallasite.app`,
             });
             clip.disabled = false;
             clip.textContent = result === 'shared' ? 'SHARED ✓' : result === 'downloaded' ? 'DOWNLOADED ✓' : 'CLIP FAILED';
@@ -10036,11 +10036,11 @@ function renderRunCredits(
     onTap(statsBtn, () => {
       const text = buildDailyShareText({
         seed: dailySeed,
-        score: state.score,
+        score: state.players[0].score,
         wave: state.wave,
         bossDefeated: state.bossDefeated,
-        largestCombo: state.runStats.largestCombo,
-        veinsBroken: state.runStats.veinsBroken,
+        largestCombo: state.players[0].runStats.largestCombo,
+        veinsBroken: state.players[0].runStats.veinsBroken,
         cleared: opts.isCompletion === true,
       });
       statsBtn.disabled = true;
@@ -10063,12 +10063,12 @@ export function renderCompletion(state: GameState): void {
   // save under the session display name, advance to celebration. The
   // 4-char arcade picker pre-stage is gone now that every run has a
   // signed-in identity attached at the front door.
-  const isNewHigh = isHighScore(state.score) && state.score > 0;
+  const isNewHigh = isHighScore(state.players[0].score) && state.players[0].score > 0;
   if (isNewHigh && !state.initialsEnteredThisRun) {
     addLocalHighScore({
       name: scoreboardNameFor(state),
-      score: state.score,
-      sats: state.sats,
+      score: state.players[0].score,
+      sats: state.players[0].sats,
       wave: 25,
       at: new Date().toISOString(),
       pubkey: state.session?.pubkey,
@@ -10100,8 +10100,8 @@ function renderHonours(parent: HTMLElement, state: GameState, applyStage: (e: HT
   // Lives lost during the run = livesStart - lives remaining + extra-life pickups
   // is hard to know without telemetry, so a "PERFECT" badge is gated on still
   // holding all 3 (or whatever default difficulty grants). Easy / Hard differ.
-  if (state.lives >= 3) honours.push({ label: 'PERFECT RUN', cls: 'honour-perfect' });
-  if (!state.lurkEverDetected) honours.push({ label: 'NO LURKING', cls: 'honour-no-lurk' });
+  if (state.players[0].lives >= 3) honours.push({ label: 'PERFECT RUN', cls: 'honour-perfect' });
+  if (!state.players[0].lurkEverDetected) honours.push({ label: 'NO LURKING', cls: 'honour-no-lurk' });
   honours.push({ label: 'COMPLETIONIST · 24/24', cls: 'honour-completionist' });
 
   if (honours.length === 0) return;
@@ -10182,7 +10182,7 @@ function renderSocialActions(parent: HTMLElement, state: GameState): void {
     try {
       const runTimeSec = Math.floor(state.runTimeMs / 1000);
       const res = await shareCompletion(session, {
-        score: state.score, sats: state.sats, wave: state.wave, runTimeSec,
+        score: state.players[0].score, sats: state.players[0].sats, wave: state.wave, runTimeSec,
       });
       setStatus(`✓ Posted on ${res.publishedTo.length}/${res.publishedTo.length + res.failed.length} relays.`, '#58ff58');
     } catch (err) {

@@ -76,25 +76,26 @@ export function startSanctumRun(s: GameState, now: number): void {
   s.sanctum = createSanctumState(now);
 
   // Run-level counters.
-  s.score = 0;
-  s.sats = 0;
-  s.displaySats = 0;
-  s.lives = 1;     // single-life sanctum — death ends the run early
+  const p0 = s.players[0];
+  p0.score = 0;
+  p0.sats = 0;
+  p0.displaySats = 0;
+  p0.lives = 1;     // single-life sanctum — death ends the run early
   s.wave = 0;
   s.missedShotsThisWave = 0;
 
   // Ship centre-low, pointing up, with 3s intro grace.
-  s.ship.pos.x = WORLD_W / 2;
-  s.ship.pos.y = WORLD_H * 0.72;
-  s.ship.vel.x = 0;
-  s.ship.vel.y = 0;
-  s.ship.rot = -Math.PI / 2;
-  s.ship.rotVel = 0;
-  s.ship.alive = true;
-  s.ship.invulnerableUntil = now + 3_000;
-  s.ship.thrusting = false;
-  s.ship.hyperspaceCloakMs = 0;
-  s.ship.shieldUp = false;
+  p0.ship.pos.x = WORLD_W / 2;
+  p0.ship.pos.y = WORLD_H * 0.72;
+  p0.ship.vel.x = 0;
+  p0.ship.vel.y = 0;
+  p0.ship.rot = -Math.PI / 2;
+  p0.ship.rotVel = 0;
+  p0.ship.alive = true;
+  p0.ship.invulnerableUntil = now + 3_000;
+  p0.ship.thrusting = false;
+  p0.ship.hyperspaceCloakMs = 0;
+  p0.ship.shieldUp = false;
 
   lastFireAt = 0;
 
@@ -122,61 +123,62 @@ function hitTest(x1: number, y1: number, r1: number, x2: number, y2: number, r2:
  *  entity tick, all collisions, end-of-run detection. */
 export function updateSanctumLoop(s: GameState, dt: number, now: number): void {
   if (!s.sanctum) return;
+  const p0 = s.players[0];
   s.elapsed += dt * 1000;
   s.runTimeMs += dt * 1000;
 
   // ── Ship input ──
-  const turnLeft = s.keys['ArrowLeft'] || s.keys['KeyA'];
-  const turnRight = s.keys['ArrowRight'] || s.keys['KeyD'];
-  const thrust = (s.keys['ArrowUp'] || s.keys['KeyW']) || s.thrustOverride;
-  const fire = s.keys['Space'];
+  const turnLeft = p0.keys['ArrowLeft'] || p0.keys['KeyA'];
+  const turnRight = p0.keys['ArrowRight'] || p0.keys['KeyD'];
+  const thrust = (p0.keys['ArrowUp'] || p0.keys['KeyW']) || p0.thrustOverride;
+  const fire = p0.keys['Space'];
 
-  if (s.ship.alive) {
-    if (s.targetHeading !== null) {
+  if (p0.ship.alive) {
+    if (p0.targetHeading !== null) {
       // Joystick heading-mode (touch).
       const HEADING_LERP_RATE = 8;
-      let diff = s.targetHeading - s.ship.rot;
+      let diff = p0.targetHeading - p0.ship.rot;
       while (diff > Math.PI) diff -= 2 * Math.PI;
       while (diff < -Math.PI) diff += 2 * Math.PI;
       const step = HEADING_LERP_RATE * dt;
       if (Math.abs(diff) <= step) {
-        s.ship.rot = s.targetHeading;
-        s.ship.rotVel = 0;
+        p0.ship.rot = p0.targetHeading;
+        p0.ship.rotVel = 0;
       } else {
-        s.ship.rot += Math.sign(diff) * step;
-        s.ship.rotVel = Math.sign(diff) * HEADING_LERP_RATE;
+        p0.ship.rot += Math.sign(diff) * step;
+        p0.ship.rotVel = Math.sign(diff) * HEADING_LERP_RATE;
       }
     } else {
-      if (turnLeft) s.ship.rotVel -= SHIP_ROT_ACCEL * dt;
-      if (turnRight) s.ship.rotVel += SHIP_ROT_ACCEL * dt;
+      if (turnLeft) p0.ship.rotVel -= SHIP_ROT_ACCEL * dt;
+      if (turnRight) p0.ship.rotVel += SHIP_ROT_ACCEL * dt;
       if (!turnLeft && !turnRight) {
-        const sign = Math.sign(s.ship.rotVel);
-        const newVel = s.ship.rotVel - sign * SHIP_ROT_DAMPING * dt;
-        s.ship.rotVel = Math.sign(newVel) === sign ? newVel : 0;
+        const sign = Math.sign(p0.ship.rotVel);
+        const newVel = p0.ship.rotVel - sign * SHIP_ROT_DAMPING * dt;
+        p0.ship.rotVel = Math.sign(newVel) === sign ? newVel : 0;
       }
-      s.ship.rotVel = Math.max(-SHIP_MAX_ROT, Math.min(SHIP_MAX_ROT, s.ship.rotVel));
-      s.ship.rot += s.ship.rotVel * dt;
+      p0.ship.rotVel = Math.max(-SHIP_MAX_ROT, Math.min(SHIP_MAX_ROT, p0.ship.rotVel));
+      p0.ship.rot += p0.ship.rotVel * dt;
     }
 
-    s.ship.thrusting = thrust;
+    p0.ship.thrusting = thrust;
     if (thrust) {
-      s.ship.thrustFrame += dt * 30;
-      s.ship.vel.x += Math.cos(s.ship.rot) * SHIP_THRUST * dt;
-      s.ship.vel.y += Math.sin(s.ship.rot) * SHIP_THRUST * dt;
+      p0.ship.thrustFrame += dt * 30;
+      p0.ship.vel.x += Math.cos(p0.ship.rot) * SHIP_THRUST * dt;
+      p0.ship.vel.y += Math.sin(p0.ship.rot) * SHIP_THRUST * dt;
       audio.thrustOn();
     } else {
       audio.thrustOff();
     }
 
     const dragK = Math.exp(-SHIP_DRAG * dt);
-    s.ship.vel.x *= dragK;
-    s.ship.vel.y *= dragK;
-    s.ship.pos.x += s.ship.vel.x * dt;
-    s.ship.pos.y += s.ship.vel.y * dt;
-    wrap(s.ship.pos);
+    p0.ship.vel.x *= dragK;
+    p0.ship.vel.y *= dragK;
+    p0.ship.pos.x += p0.ship.vel.x * dt;
+    p0.ship.pos.y += p0.ship.vel.y * dt;
+    wrap(p0.ship.pos);
 
-    if (s.ship.recoilOffset > 0) {
-      s.ship.recoilOffset = Math.max(0, s.ship.recoilOffset - dt * 24);
+    if (p0.ship.recoilOffset > 0) {
+      p0.ship.recoilOffset = Math.max(0, p0.ship.recoilOffset - dt * 24);
     }
 
     if (fire && now >= lastFireAt + FIRE_COOLDOWN_MS) {
@@ -216,8 +218,8 @@ export function updateSanctumLoop(s: GameState, dt: number, now: number): void {
       b.hasLanded = true;
       if (drop > 0) {
         s.sanctum.satsEarned += drop;
-        s.sats += drop;
-        s.score += SCORE_BULLBEAR;
+        p0.sats += drop;
+        p0.score += SCORE_BULLBEAR;
         audio.explosion(0.6);
       } else {
         audio.hit();
@@ -233,8 +235,8 @@ export function updateSanctumLoop(s: GameState, dt: number, now: number): void {
       b.hasLanded = true;
       if (drop > 0) {
         s.sanctum.satsEarned += drop;
-        s.sats += drop;
-        s.score += SCORE_RACOO;
+        p0.sats += drop;
+        p0.score += SCORE_RACOO;
         audio.coinPickup();
       }
       continue;
@@ -251,8 +253,8 @@ export function updateSanctumLoop(s: GameState, dt: number, now: number): void {
         hitCouncil = true;
         if (drop > 0) {
           s.sanctum.satsEarned += drop;
-          s.sats += drop;
-          s.score += SCORE_MEMBER;
+          p0.sats += drop;
+          p0.score += SCORE_MEMBER;
           audio.explosion(0.6);
         } else {
           audio.hit();
@@ -270,8 +272,8 @@ export function updateSanctumLoop(s: GameState, dt: number, now: number): void {
       b.hasLanded = true;
       if (drop > 0) {
         s.sanctum.satsEarned += drop;
-        s.sats += drop;
-        s.score += SCORE_STONE_SHATTER;
+        p0.sats += drop;
+        p0.score += SCORE_STONE_SHATTER;
         audio.explosion(1.4);
       } else {
         audio.hit();
@@ -286,7 +288,7 @@ export function updateSanctumLoop(s: GameState, dt: number, now: number): void {
         applyMeteorHit(m);
         b.alive = false;
         b.hasLanded = true;
-        s.score += SCORE_METEOR;
+        p0.score += SCORE_METEOR;
         audio.hit();
         break;
       }
@@ -295,10 +297,10 @@ export function updateSanctumLoop(s: GameState, dt: number, now: number): void {
   s.bullets = s.bullets.filter((b) => b.alive);
 
   // ── Ship × sanctum entity (body collisions = death) ──
-  if (s.ship.alive && now >= s.ship.invulnerableUntil) {
-    const sx = s.ship.pos.x;
-    const sy = s.ship.pos.y;
-    const sr = s.ship.radius;
+  if (p0.ship.alive && now >= p0.ship.invulnerableUntil) {
+    const sx = p0.ship.pos.x;
+    const sy = p0.ship.pos.y;
+    const sr = p0.ship.radius;
     let lethal = false;
     for (const m of s.sanctum.council) {
       if (m.dead) continue;
@@ -319,7 +321,7 @@ export function updateSanctumLoop(s: GameState, dt: number, now: number): void {
       }
     }
     if (lethal) {
-      s.ship.alive = false;
+      p0.ship.alive = false;
       audio.explosion(2.0);
       // End the run; the game-over hand-off uses the same gateway as
       // the main game so the claim picker fires normally.

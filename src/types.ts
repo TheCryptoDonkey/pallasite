@@ -443,16 +443,61 @@ export interface SimTransition {
   arg: number;
 }
 
+/** Per-player gameplay state. `GameState.players` holds one of these per
+ *  ship. Length 1 is every solo mode and stays byte-identical to the
+ *  pre-split single-ship game; length 2 is shared-arena multiplayer. */
+export interface PlayerState {
+  ship: Ship;
+  /** Heading-mode joystick target angle (radians); null = keyboard L/R. */
+  targetHeading: number | null;
+  /** Heading-mode joystick analog-thrust override. */
+  thrustOverride: boolean;
+  /** Resolved input key state for this player. */
+  keys: Record<string, boolean>;
+
+  score: number;
+  /** In-game sats counter (mirrors backend credit). Multiplayer never pays out. */
+  sats: number;
+  /** HUD counter easing toward `sats`. */
+  displaySats: number;
+  lives: number;
+  /** Bonus lives earned via score thresholds (1 per 10,000), tracked apart
+   *  from `lives` so lost lives don't regenerate. */
+  bonusLivesGranted: number;
+
+  /** Active kill-chain length (0 when not chained). Caps at COMBO_MAX. */
+  combo: number;
+  /** Sim-clock ms the combo window closes. */
+  comboExpiresAt: number;
+
+  /** Sim-clock ms each buff expires (0 = inactive). */
+  rapidExpiresAt: number;
+  satboostExpiresAt: number;
+  tridentExpiresAt: number;
+  magnetExpiresAt: number;
+  /** Sim-clock ms the gun is next free to fire. */
+  fireCooldownUntil: number;
+
+  /** True while parked in the centre dead-zone — the 1979 lurk exploit;
+   *  coins credit no sats while set. */
+  lurking: boolean;
+  /** Sim-clock ms the current lurk streak began; 0 when not lurking. */
+  lurkingSince: number;
+  /** Total sats withheld this run while lurking. */
+  lurkSatsBlocked: number;
+  /** Whether the lurk easter-egg toast has fired this run. */
+  lurkEverDetected: boolean;
+
+  /** Per-run telemetry for the gameover / completion stat grid. */
+  runStats: RunStats;
+}
+
 export interface GameState {
   phase: GamePhase;
-  ship: Ship;
-  /** Heading-mode joystick: when non-null, ship lerps toward this angle
-   *  (radians) at HEADING_LERP_RATE rad/s instead of using L/R rotation keys.
-   *  Cleared on pointer-up so keyboard control resumes. */
-  targetHeading: number | null;
-  /** Heading-mode joystick: analog thrust override. When true, ship thrusts
-   *  regardless of ArrowUp — driven by joystick deflection past a threshold. */
-  thrustOverride: boolean;
+  /** One PlayerState per ship. Length 1 is every solo mode (byte-identical
+   *  to the pre-split single-ship game); length 2 is shared-arena
+   *  multiplayer. */
+  players: PlayerState[];
   asteroids: Asteroid[];
   bullets: Bullet[];
   enemyBullets: Bullet[];
@@ -463,16 +508,7 @@ export interface GameState {
   particles: Particle[];
   debris: Debris[];
 
-  score: number;
-  /** in-game sats counter (mirrors what backend would credit) */
-  sats: number;
-  /** HUD-side animated counter that catches up to `sats` over a few hundred ms.
-   *  Render uses Math.floor(displaySats) so the number visibly ticks up rather
-   *  than snapping when a coin is absorbed. Float so easing has sub-int steps.
-   */
-  displaySats: number;
   wave: number;
-  lives: number;
 
   /** ms timestamp this phase started */
   phaseStart: number;
@@ -521,10 +557,6 @@ export interface GameState {
   /** Wave 25 boss state */
   bossDefeated: boolean;
 
-  /** Active kill chain length (0 when not chained, 1+ during a chain). Caps at COMBO_MAX. */
-  combo: number;
-  /** ms timestamp the combo window closes. */
-  comboExpiresAt: number;
   /** Number of fixed sim steps still to skip for a hit-stop freeze (0 when
    *  not frozen). Set on milestone moments to give a punch a frame of
    *  weight; the loop skips updateGame while this is positive. */
@@ -535,57 +567,20 @@ export interface GameState {
    *  Drained each step in updateGame. */
   pendingTransitions: SimTransition[];
 
-  /** ms timestamp rapid-fire buff expires (0 when inactive). */
-  rapidExpiresAt: number;
-  /** ms timestamp ×2 sat boost buff expires (0 when inactive). */
-  satboostExpiresAt: number;
-  /** ms timestamp trident (3-way fan fire) expires. */
-  tridentExpiresAt: number;
-  /** ms timestamp magnet (coin/dust pull) expires. */
-  magnetExpiresAt: number;
-  /** ms timestamp the ship's gun is next free to fire. Was a game.ts
-   *  module-level var; moved onto state so a run is self-contained and
-   *  re-simulable (B3 determinism). */
-  fireCooldownUntil: number;
-
   /** auth state */
   session: SignetSession | null;
   /** Resolved kind-0 profile for the active session (or null if not yet fetched) */
   profile: import('./profile.js').NostrProfile | null;
 
-  /** input state */
-  keys: Record<string, boolean>;
-
   /** transient toast text */
   toast: string | null;
   toastUntil: number;
-
-  /** True while the ship has been parked in the centre dead-zone (and slow)
-   *  for LURK_DURATION_MS. Easter egg honouring the 1979 saucer-aim exploit:
-   *  the strategy still works as a play option, but coins do not credit sats
-   *  while the flag is on. Score still ticks. Cleared the moment the ship
-   *  leaves the zone or accelerates above LURK_VEL_THRESHOLD. */
-  lurking: boolean;
-  /** performance.now() when the player first entered lurk conditions in the
-   *  current uninterrupted streak; 0 when not currently in the zone. */
-  lurkingSince: number;
-  /** Total sats withheld this run while lurking — for telemetry and a future
-   *  game-over breakdown line. */
-  lurkSatsBlocked: number;
-  /** Has the lurking easter-egg toast already fired this run? */
-  lurkEverDetected: boolean;
 
   /** Set true the first time a cheat is used in a run. Permanent for the run.
    *  Side effects: sats are voided to 0, the HUD chip flags it openly, and
    *  any kind 30762 score publish carries a `["cheated", "true"]` tag so the
    *  leaderboard can show or filter accordingly. Honest runs are unaffected. */
   cheatedThisRun: boolean;
-
-  /** Number of bonus lives the player has earned this run via score thresholds
-   *  (1 per 10,000 score). Tracked separately from `lives` so that lost lives
-   *  DON'T regenerate when an asteroid happens to be killed at a sub-threshold
-   *  score — the maybeExtraLife sweep only grants when this value rises. */
-  bonusLivesGranted: number;
 
   /** Ring buffer of recent gameplay snapshots. Capped at REPLAY_BUFFER_FRAMES. */
   replayBuffer: ReplaySnapshot[];
@@ -596,11 +591,6 @@ export interface GameState {
    *  entry. Guards against re-prompting the initials widget after a REPLAY
    *  KILL click flips phase back through 'gameover'. Cleared on startGame. */
   initialsEnteredThisRun: boolean;
-
-  /** Per-run breakdown for the gameover / completion stat grid. Reset in
-   *  startGame, incremented at the relevant kill / pickup / fire sites in
-   *  game.ts. Surfaced on the name-entry stage; not persisted anywhere. */
-  runStats: RunStats;
 
   /** 1Hz score-pacing samples for the kind 30763 v1 ghost replay. Pushed
    *  by the game loop while phase==='playing'; finalised on game-over /

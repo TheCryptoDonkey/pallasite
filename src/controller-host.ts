@@ -175,9 +175,9 @@ export function startControllerHost(state: GameState, opts: { ws?: string } = {}
     if (ws) try { ws.close(); } catch { /* ignore */ }
     window.clearInterval(phaseWatchTimer);
     clearDpadRepeats();
-    state.keys[FIRE_CODE] = false;
-    state.targetHeading = null;
-    state.thrustOverride = false;
+    state.players[0].keys[FIRE_CODE] = false;
+    state.players[0].targetHeading = null;
+    state.players[0].thrustOverride = false;
     // Any in-flight signEvent calls die with the host. Reject them so
     // callers (claim, replay, heartbeat) surface a clean error instead
     // of hanging on a closed WS.
@@ -233,9 +233,9 @@ export function startControllerHost(state: GameState, opts: { ws?: string } = {}
         } else if (obj.type === 'peer-down') {
           if (paired) {
             paired = false;
-            state.keys[FIRE_CODE] = false;
-            state.targetHeading = null;
-            state.thrustOverride = false;
+            state.players[0].keys[FIRE_CODE] = false;
+            state.players[0].targetHeading = null;
+            state.players[0].thrustOverride = false;
             fireStatus({ kind: 'waiting' });
             // Pair lost — drop the remote identity. The phone will
             // re-announce on reconnect if it still has a session.
@@ -300,9 +300,9 @@ export function startControllerHost(state: GameState, opts: { ws?: string } = {}
     ws.onerror = () => { /* close handler will reconnect */ };
     ws.onclose = () => {
       if (paired) {
-        state.keys[FIRE_CODE] = false;
-        state.targetHeading = null;
-        state.thrustOverride = false;
+        state.players[0].keys[FIRE_CODE] = false;
+        state.players[0].targetHeading = null;
+        state.players[0].thrustOverride = false;
       }
       scheduleReconnect();
     };
@@ -427,6 +427,7 @@ function dispatchKey(code: string): void {
 function applySlotInput(state: GameState, slot: string, value: string): void {
   const on = value === '1';
   const inMenu = MENU_PHASES.has(state.phase);
+  const p0 = state.players[0];
   switch (slot) {
     // ── Joystick ────────────────────────────────────────────────────
     case 'joyL': {
@@ -446,23 +447,23 @@ function applySlotInput(state: GameState, slot: string, value: string): void {
         }
         return;
       }
-      state.targetHeading = angle;
+      p0.targetHeading = angle;
       return;
     }
     case 'joyL-thrust':
       if (inMenu) return;
-      state.thrustOverride = on;
+      p0.thrustOverride = on;
       return;
     case 'joyL-end':
-      state.targetHeading = null;
-      state.thrustOverride = false;
+      p0.targetHeading = null;
+      p0.thrustOverride = false;
       lastMenuCardinal = null;
       return;
     case 'joyL-tap':
       if (!on) return;
       if (inMenu) { dispatchKey('Enter'); return; }
-      state.keys[FIRE_CODE] = true;
-      window.setTimeout(() => { state.keys[FIRE_CODE] = false; }, 60);
+      p0.keys[FIRE_CODE] = true;
+      window.setTimeout(() => { p0.keys[FIRE_CODE] = false; }, 60);
       return;
     // ── Face buttons ────────────────────────────────────────────────
     case 'A':
@@ -470,7 +471,7 @@ function applySlotInput(state: GameState, slot: string, value: string): void {
         if (on) dispatchKey('Enter');
         return;
       }
-      state.keys[FIRE_CODE] = on;
+      p0.keys[FIRE_CODE] = on;
       return;
     case 'B':
       if (!on) return;

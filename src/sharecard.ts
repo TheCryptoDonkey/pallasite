@@ -29,9 +29,10 @@ export function renderShareCard(state: GameState): HTMLCanvasElement {
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, CARD_W, CARD_H);
 
+  const p0 = state.players[0];
   // Stars — deterministic seed by run identifier so the same run always
   // produces the same card (handy if the user re-shares).
-  let seed = (state.score ^ (state.wave << 16) ^ state.runStartedAt) >>> 0;
+  let seed = (p0.score ^ (state.wave << 16) ^ state.runStartedAt) >>> 0;
   const rand = (): number => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 0xffffffff; };
   ctx.fillStyle = '#ffffff';
   for (let i = 0; i < 90; i++) {
@@ -68,7 +69,7 @@ export function renderShareCard(state: GameState): HTMLCanvasElement {
 
   // ── Headline numbers ───────────────────────────────────────────────────
   const isComplete = state.wave >= 25 && state.bossDefeated;
-  const headline = isComplete ? 'EVENT HORIZON CLEARED' : `WAVE ${state.wave} · ${state.score.toLocaleString()}`;
+  const headline = isComplete ? 'EVENT HORIZON CLEARED' : `WAVE ${state.wave} · ${p0.score.toLocaleString()}`;
   ctx.fillStyle = '#ffffff';
   ctx.shadowColor = 'rgba(255, 255, 255, 0.4)';
   ctx.shadowBlur = 14;
@@ -79,14 +80,14 @@ export function renderShareCard(state: GameState): HTMLCanvasElement {
   ctx.fillStyle = 'rgba(220, 210, 255, 0.9)';
   ctx.font = '32px ui-monospace, "Courier New", monospace';
   const subParts: string[] = [];
-  if (state.session) subParts.push(`${state.sats.toLocaleString()} sats`);
+  if (state.session) subParts.push(`${p0.sats.toLocaleString()} sats`);
   subParts.push(formatRunTime(state.runTimeMs));
-  if (state.runStats.largestCombo >= 2) subParts.push(`×${state.runStats.largestCombo} combo`);
+  if (p0.runStats.largestCombo >= 2) subParts.push(`×${p0.runStats.largestCombo} combo`);
   ctx.fillText(subParts.join('  ·  '), 64, 322);
 
   // ── Stat strip (small mineral-type / ufo summary) ──────────────────────
-  const stats = state.runStats;
-  const ufoTotal = Object.values(stats.ufoKills).reduce((a, b) => a + b, 0);
+  const stats = p0.runStats;
+  const ufoTotal = Object.values(stats.ufoKills).reduce((a: number, b: number) => a + b, 0);
   const strip: string[] = [];
   if (ufoTotal > 0) strip.push(`${ufoTotal} UFOS`);
   if (stats.minesDestroyed > 0) strip.push(`${stats.minesDestroyed} MINES`);
@@ -125,7 +126,7 @@ function buildShareText(state: GameState): string {
   if (isComplete) {
     return `Pallasite — completed all 24 specimens + Event Horizon in ${t}. Shoot rocks. Stack sats.`;
   }
-  return `Pallasite — wave ${state.wave}, score ${state.score.toLocaleString()}, ${t}. Shoot rocks. Stack sats.`;
+  return `Pallasite — wave ${state.wave}, score ${state.players[0].score.toLocaleString()}, ${t}. Shoot rocks. Stack sats.`;
 }
 
 /**
@@ -140,7 +141,7 @@ export async function shareRunCard(state: GameState): Promise<void> {
     canvas.toBlob((b) => resolve(b), 'image/png');
   });
   if (!blob) return;
-  const filename = `pallasite-${state.wave >= 25 ? 'complete' : `wave-${state.wave}`}-${state.score}.png`;
+  const filename = `pallasite-${state.wave >= 25 ? 'complete' : `wave-${state.wave}`}-${state.players[0].score}.png`;
   const file = new File([blob], filename, { type: 'image/png' });
   const text = buildShareText(state);
   const url = 'https://pallasite.app';

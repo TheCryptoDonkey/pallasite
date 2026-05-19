@@ -272,11 +272,11 @@ export function stemsTickForState(state: GameState, nowMs: number): void {
     setIntensityTargetGain(intensityTargetFromState(state));
   }
 
-  if (state.combo >= 2) {
+  if (state.players[0].combo >= 2) {
     if (nextComboPulseAt === 0) nextComboPulseAt = nowMs;
     if (nowMs >= nextComboPulseAt) {
-      fireComboPulse(state.combo);
-      nextComboPulseAt = nowMs + comboPulseInterval(state.combo);
+      fireComboPulse(state.players[0].combo);
+      nextComboPulseAt = nowMs + comboPulseInterval(state.players[0].combo);
     }
   } else {
     nextComboPulseAt = 0;

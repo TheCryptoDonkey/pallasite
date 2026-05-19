@@ -331,7 +331,7 @@ window.addEventListener('keydown', e => {
     return;
   }
 
-  state.keys[e.code] = true;
+  state.players[0].keys[e.code] = true;
   // Prevent arrows from scrolling
   if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space'].includes(e.code)) {
     e.preventDefault();
@@ -427,10 +427,10 @@ window.addEventListener('keydown', e => {
 });
 
 window.addEventListener('keyup', e => {
-  state.keys[e.code] = false;
+  state.players[0].keys[e.code] = false;
   if (e.code === 'Space') {
     // Allow rapid re-fire on tap by clearing the held state
-    state.keys.Space = false;
+    state.players[0].keys.Space = false;
   }
 });
 
@@ -508,7 +508,7 @@ window.addEventListener('keyup', firstUnlock, true);
 
 // Lose focus → release keys & pause
 window.addEventListener('blur', () => {
-  state.keys = {};
+  state.players[0].keys = {};
   audio.thrustOff();
   if (state.phase === 'playing') {
     pauseGame(state);
@@ -943,7 +943,7 @@ async function boot(): Promise<void> {
     // a 0/0 publish in the first instant of wavestart before wave bumps
     // to 1. As soon as the player has any score or has entered wave 1+,
     // we start broadcasting.
-    if (state.wave < 1 && state.score <= 0) return;
+    if (state.wave < 1 && state.players[0].score <= 0) return;
     const runId = String(state.runStartedAt);
     const now = Date.now();
     const sameRun = runId === lastHeartbeatRunId;
@@ -951,7 +951,7 @@ async function boot(): Promise<void> {
     lastHeartbeatRunId = runId;
     lastHeartbeatAt = now;
     void postHeartbeat(state.session, {
-      score: state.score,
+      score: state.players[0].score,
       wave: state.wave,
       started_at: Math.floor(state.runStartedAt / 1000),
       run_id: runId,
@@ -1056,7 +1056,7 @@ async function boot(): Promise<void> {
     // buffer fills even if NIP-53 signEvent failed (some signers
     // reject kind 30311). WS publish only fires when activeStream is
     // actually set up.
-    if (inRun && state.session && (state.wave >= 1 || state.score > 0)) {
+    if (inRun && state.session && (state.wave >= 1 || state.players[0].score > 0)) {
       const now = Date.now();
       // Lighter cadence during pause AND wave transitions — nothing
       // gameplay-relevant changes between frames during paused / warp /
@@ -1150,21 +1150,22 @@ async function boot(): Promise<void> {
         .slice(0, 4)
         .map((p) => [p.id ?? 0, p.pos.x, p.pos.y, POWERUP_TYPE_CODE[p.type] ?? 'r'] as [number, number, number, 'r' | 'b' | 'n' | 't' | 'm']);
 
+      const p0 = state.players[0];
       const frame = {
         t: now,
-        x: state.ship?.pos?.x ?? 0,
-        y: state.ship?.pos?.y ?? 0,
-        r: state.ship?.rot ?? 0,
-        score: state.score,
+        x: p0.ship?.pos?.x ?? 0,
+        y: p0.ship?.pos?.y ?? 0,
+        r: p0.ship?.rot ?? 0,
+        score: p0.score,
         wave: state.wave,
         // Lives + sats so the watch HUD reflects the same numbers the
-        // player sees. state.lives drops with each ship-destroyed; sats
+        // player sees. lives drops with each ship-destroyed; sats
         // climbs with each ₿ pickup.
-        lives: state.lives ?? 0,
-        sats: state.sats ?? 0,
-        thrust: state.ship?.thrusting === true,
-        alive: state.ship?.alive !== false,
-        shielded: state.ship?.shieldUp === true,
+        lives: p0.lives ?? 0,
+        sats: p0.sats ?? 0,
+        thrust: p0.ship?.thrusting === true,
+        alive: p0.ship?.alive !== false,
+        shielded: p0.ship?.shieldUp === true,
         paused: state.phase === 'paused',
         phase: state.phase,
         nextWave: state.phase === 'warp' ? (state.warpTargetWave ?? undefined) : undefined,

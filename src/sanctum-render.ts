@@ -118,5 +118,5 @@ export function renderSanctumScene(
 
   renderSanctum(ctx, state.sanctum, ctx.canvas.width, ctx.canvas.height);
   drawBullets(ctx, state);
-  if (state.ship.alive) drawShipTriangle(ctx, state.ship, now);
+  if (state.players[0].ship.alive) drawShipTriangle(ctx, state.players[0].ship, now);
 }

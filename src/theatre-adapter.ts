@@ -119,7 +119,7 @@ export function populateTheatreState(gs: GameState, args: TheatreFrameArgs): voi
 
   // Ship pose — interpolated; all game-logic timers zeroed so render()
   // draws a clean, solid ship (no invuln flicker, no warp cloak).
-  const ship = gs.ship;
+  const ship = gs.players[0].ship;
   ship.pos.x = interpAxis(prev.x, next.x, t, WORLD_W);
   ship.pos.y = interpAxis(prev.y, next.y, t, WORLD_H);
   ship.vel.x = 0;
@@ -282,14 +282,14 @@ export function populateTheatreState(gs: GameState, args: TheatreFrameArgs): voi
   // HUD numbers — drive render()'s on-canvas SCORE / WAVE / LIVES and the
   // per-wave background. `prev` is the frame at the playhead (in live mode
   // the playhead is pinned to the newest frame, so prev is the latest).
-  gs.score = prev.score;
-  gs.sats = prev.sats;
-  gs.displaySats = prev.sats;
+  gs.players[0].score = prev.score;
+  gs.players[0].sats = prev.sats;
+  gs.players[0].displaySats = prev.sats;
   gs.wave = Math.max(1, prev.wave);
-  gs.lives = prev.lives;
+  gs.players[0].lives = prev.lives;
 
   // No simulation state on a spectated run — keep render() free of shake,
   // combo tint and stale powerup chips.
   gs.cameraTrauma = 0;
-  gs.combo = 0;
+  gs.players[0].combo = 0;
 }

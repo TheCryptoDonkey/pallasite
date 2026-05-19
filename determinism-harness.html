@@ -63,12 +63,12 @@ function fnv1a(str) {
 function serialize(s) {
   const ent = (e) => [e.pos.x, e.pos.y, e.vel ? e.vel.x : 0, e.vel ? e.vel.y : 0];
   return JSON.stringify({
-    f: s.frame, ph: s.phase, sc: s.score, w: s.wave, lv: s.lives,
-    st: s.sats, cb: s.combo, el: s.elapsed, hs: s.hitStopSteps,
+    f: s.frame, ph: s.phase, sc: s.players[0].score, w: s.wave, lv: s.players[0].lives,
+    st: s.players[0].sats, cb: s.players[0].combo, el: s.elapsed, hs: s.hitStopSteps,
     rng: getRngState(),
-    sh: [s.ship.pos.x, s.ship.pos.y, s.ship.vel.x, s.ship.vel.y, s.ship.rot,
-         s.ship.alive, s.ship.shieldUp, s.ship.shieldExpiresAt,
-         s.ship.invulnerableUntil, s.ship.hyperspaceReadyAt, s.ship.hyperspaceCloakMs],
+    sh: [s.players[0].ship.pos.x, s.players[0].ship.pos.y, s.players[0].ship.vel.x, s.players[0].ship.vel.y, s.players[0].ship.rot,
+         s.players[0].ship.alive, s.players[0].ship.shieldUp, s.players[0].ship.shieldExpiresAt,
+         s.players[0].ship.invulnerableUntil, s.players[0].ship.hyperspaceReadyAt, s.players[0].ship.hyperspaceCloakMs],
     ast: s.asteroids.map((a) => [a.pos.x, a.pos.y, a.vel.x, a.vel.y, a.radius, a.id, a.hp]),
     ufo: s.ufos.map((u) => [u.pos.x, u.pos.y, u.vel.x, u.vel.y, u.hp ?? 0]),
     bul: s.bullets.map(ent),
@@ -81,7 +81,7 @@ function serialize(s) {
 
 // Deterministic input script — identical for every run.
 function applyInput(s, step) {
-  const k = s.keys;
+  const k = s.players[0].keys;
   k['ArrowUp'] = (step % 3) !== 0;
   k['ArrowLeft'] = (step % 7) < 2;
   k['ArrowRight'] = (step % 11) < 3;
