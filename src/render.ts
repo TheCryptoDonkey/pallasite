@@ -377,7 +377,7 @@ function drawArenaWalls(
   // Danger arc — when the ship nears the wall a hot segment of the ring,
   // centred on the nearest point, flushes red. norm is 0 at the cage
   // centre and 1 at the wall.
-  const ship = state.ship;
+  const ship = state.players[0].ship;
   if (ship.alive) {
     const ex = (ship.pos.x - cage.cx) / cage.rx;
     const ey = (ship.pos.y - cage.cy) / cage.ry;
@@ -2436,6 +2436,7 @@ function pad(n: number, len: number): string {
 }
 
 function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
+  const p0 = s.players[0];
   ctx.save();
   // Render HUD in screen-pixel space so SCORE / SATS / WAVE / LIVES are
   // always visible regardless of how the world is cropped or zoomed. Using
@@ -2461,7 +2462,7 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
   ctx.fillText('SCORE', leftX, topY);
-  ctx.fillText(pad(s.score, 6), leftX, topY + 26);
+  ctx.fillText(pad(p0.score, 6), leftX, topY + 26);
 
   // Sats column stacks under SCORE on the left rail. Was previously at
   // x=w*0.32 alongside SCORE, which pushed WAVE off-centre and crowded the
@@ -2471,7 +2472,7 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   if (showSats) {
     ctx.fillStyle = '#ffd84a';
     ctx.fillText('SATS', leftX, topY + 60);
-    ctx.fillText('₿ ' + pad(Math.floor(s.displaySats), 6), leftX, topY + 86);
+    ctx.fillText('₿ ' + pad(Math.floor(p0.displaySats), 6), leftX, topY + 86);
   }
 
   // WAVE — top-centre, the focal point. Specimen name underneath pulls the
@@ -2512,7 +2513,7 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   ctx.shadowBlur = 0;
   ctx.textAlign = 'right';
   ctx.fillText('LIVES', rightX, topY);
-  for (let i = 0; i < s.lives; i++) {
+  for (let i = 0; i < p0.lives; i++) {
     const x = rightX - i * 22;
     const y = topY + 40;
     ctx.save();
@@ -2555,22 +2556,22 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
     chipY += 32;
   }
 
-  if (s.combo >= 2) {
-    const remaining = Math.max(0, s.comboExpiresAt - s.elapsed);
-    const colour = s.combo >= 5 ? '#ffd84a' : s.combo >= 4 ? '#ff8a3a' : '#5b9dff';
-    drawChip(`×${s.combo}  CHAIN`, remaining, 3000, colour);
+  if (p0.combo >= 2) {
+    const remaining = Math.max(0, p0.comboExpiresAt - s.elapsed);
+    const colour = p0.combo >= 5 ? '#ffd84a' : p0.combo >= 4 ? '#ff8a3a' : '#5b9dff';
+    drawChip(`×${p0.combo}  CHAIN`, remaining, 3000, colour);
   }
-  if (s.elapsed < s.rapidExpiresAt) {
-    drawChip('⚡ RAPID', s.rapidExpiresAt - s.elapsed, 8000, '#ff8a3a');
+  if (s.elapsed < p0.rapidExpiresAt) {
+    drawChip('⚡ RAPID', p0.rapidExpiresAt - s.elapsed, 8000, '#ff8a3a');
   }
-  if (s.elapsed < s.satboostExpiresAt) {
-    drawChip('₿ ×2 SATS', s.satboostExpiresAt - s.elapsed, 12000, '#ffd84a');
+  if (s.elapsed < p0.satboostExpiresAt) {
+    drawChip('₿ ×2 SATS', p0.satboostExpiresAt - s.elapsed, 12000, '#ffd84a');
   }
-  if (s.elapsed < s.tridentExpiresAt) {
-    drawChip('⋔ TRIDENT', s.tridentExpiresAt - s.elapsed, 6000, '#ffd84a');
+  if (s.elapsed < p0.tridentExpiresAt) {
+    drawChip('⋔ TRIDENT', p0.tridentExpiresAt - s.elapsed, 6000, '#ffd84a');
   }
-  if (s.elapsed < s.magnetExpiresAt) {
-    drawChip('◎ MAGNET', s.magnetExpiresAt - s.elapsed, 8000, '#5b9dff');
+  if (s.elapsed < p0.magnetExpiresAt) {
+    drawChip('◎ MAGNET', p0.magnetExpiresAt - s.elapsed, 8000, '#5b9dff');
   }
   // Lurking + cheated indicators removed — both states already fire
   // toasts when they're entered (toastNow in updateLurkState and
@@ -2600,7 +2601,7 @@ function drawGhostChip(ctx: CanvasRenderingContext2D, s: GameState): void {
   if (t > ghost.durationMs + 2000) return;
   const leaderScore = ghostScoreAt(ghost, t);
   if (leaderScore <= 0) return;
-  const gap = s.score - leaderScore;
+  const gap = s.players[0].score - leaderScore;
   // drawGhostChip is invoked inside drawHud, which has already reset the
   // transform to screen-pixel space in modern mode. Use viewport width
   // instead of world width so the chip stays glued to the actual top-right.
@@ -3554,7 +3555,7 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
   for (const p of s.powerups) blip(p.pos.x, p.pos.y, 3.4, '#5be8ff');
   for (const m of s.mines) blip(m.pos.x, m.pos.y, 3, '#ff5a4a');
   for (const u of s.ufos) blip(u.pos.x, u.pos.y, 3.6, '#ff4af0');
-  if (s.ship.alive) blip(s.ship.pos.x, s.ship.pos.y, 4.5, '#58ff58');
+  if (s.players[0].ship.alive) blip(s.players[0].ship.pos.x, s.players[0].ship.pos.y, 4.5, '#58ff58');
 
   // Visible-strip box — the slice the follow camera currently shows. Drawn as
   // one or two rects so it wraps cleanly around the radar's edges.
@@ -3603,6 +3604,7 @@ export function drawAsciiHud(canvas: HTMLCanvasElement, state: GameState): void 
 
 export function render(canvas: HTMLCanvasElement, state: GameState, now: number): void {
   const ctx = canvas.getContext('2d')!;
+  const p0 = state.players[0];
   // Clear in identity space — the ctx still holds the previous frame's world
   // transform, and clearRect under it would miss the device-pixel edges.
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -3626,12 +3628,12 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   if (followActive) {
     scale = renderMode.vh / WORLD_H;        // full world height fills the viewport
     camStrip = renderMode.vw / scale;       // visible world width
-    const sx = state.ship.pos.x;
+    const sx = p0.ship.pos.x;
     if (!camInit) {
       // Fresh run, post-death respawn, or a rotation into portrait: snap on.
       camX = wrapInto(sx);
       camInit = true;
-    } else if (state.ship.alive) {
+    } else if (p0.ship.alive) {
       // Dead-zone follow: the camera holds until the ship leaves a central
       // band, then eases toward the band edge. Held entirely while the ship is
       // dead so a death is not yanked off-centre.
@@ -3725,7 +3727,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     for (const b of state.enemyBullets) scan(b.pos.x, b.pos.y);
     for (const c of state.coins) scan(c.pos.x, c.pos.y);
     for (const p of state.powerups) scan(p.pos.x, p.pos.y);
-    scan(state.ship.pos.x, state.ship.pos.y);
+    scan(p0.ship.pos.x, p0.ship.pos.y);
     // The follow camera derives its X copies from the visible strip
     // (followXs); only the contain modes need the proximity scan for X.
     if (!followActive) {
@@ -3795,9 +3797,9 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       for (const p of state.powerups) drawPowerUp(ctx, p, now);
       drawGhostShip(ctx, state);
       drawGhostAttract(ctx, state, now);
-      drawShield(ctx, state.ship, now, state.elapsed);
+      drawShield(ctx, p0.ship, now, state.elapsed);
       const idleSway = state.phase === 'title' || state.phase === 'wavestart';
-      drawShip(ctx, state.ship, now, state.elapsed, idleSway);
+      drawShip(ctx, p0.ship, now, state.elapsed, idleSway);
       if (isGhost) ctx.restore();
     }
   }
@@ -3821,7 +3823,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // Hyperspace-malfunction chromatic split — red+cyan vignettes nudged
   // opposite directions sell the "something's wrong" frame. Cheap (two
   // gradient draws), and visually distinct from any other in-world effect.
-  if (state.ship.hyperspaceCloakMs > 0 && state.ship.hyperspaceMalfunction && !shouldReduceMotion()) {
+  if (p0.ship.hyperspaceCloakMs > 0 && p0.ship.hyperspaceMalfunction && !shouldReduceMotion()) {
     drawChromaticSplit(ctx, now);
   }
 
@@ -3830,7 +3832,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // that the bass-pulse stem alone carries the intensity. Skipped under
   // ASCII, where the postfx brightness-normalises each cell and would
   // amplify this faint wash into a screen-wide red flood.
-  if (state.combo >= COMBO_MAX && getTheme() !== 'ascii') {
+  if (p0.combo >= COMBO_MAX && getTheme() !== 'ascii') {
     const alpha = shouldReduceMotion() ? 0.04 : 0.08;
     ctx.save();
     ctx.fillStyle = `rgba(255,80,40,${alpha})`;
@@ -3874,7 +3876,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       asteroids: !holding && asteroidTier === 'mesh' ? state.asteroids : [],
       ufos: !holding && ufosMesh ? state.ufos : [],
       powerups: !holding && particleTier === 'mesh' ? state.powerups : [],
-      ship: !holding && shipTier === 'mesh' ? state.ship : null,
+      ship: !holding && shipTier === 'mesh' ? p0.ship : null,
       elapsed: state.elapsed,
       dpr: renderMode.dpr,
       // Camera-adjusted transform so mesh-tier entities track the follow

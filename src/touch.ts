@@ -131,12 +131,12 @@ function attachButton(parent: HTMLElement, spec: ButtonSpec, state: GameState): 
   const press = (): void => {
     btn.classList.add('held');
     void audio.unlockAudio();
-    for (const k of spec.keys) state.keys[k] = true;
+    for (const k of spec.keys) state.players[0].keys[k] = true;
     if (spec.oneShot) spec.oneShot(state, state.elapsed);
   };
   const release = (): void => {
     btn.classList.remove('held');
-    for (const k of spec.keys) state.keys[k] = false;
+    for (const k of spec.keys) state.players[0].keys[k] = false;
   };
 
   btn.addEventListener('pointerdown',  e => { e.preventDefault(); press(); });
@@ -166,6 +166,7 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState): 
   const TAP_TIME_MS      = 220;   // press shorter than this with no drag = fire
   const TAP_MOVE_PX      = 8;     // total movement allowed before tap is "drag"
   const SNAP_BACK_MS     = 140;   // CSS transition 120ms + small margin to safely remove class
+  const p0 = state.players[0];
 
   let activeId: number | null = null;
   let originX = 0, originY = 0;
@@ -175,8 +176,8 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState): 
   let didEngage = false;  // true once we cross the heading deadzone — disables tap-fire
 
   function clearMotion(): void {
-    state.targetHeading = null;
-    state.thrustOverride = false;
+    p0.targetHeading = null;
+    p0.thrustOverride = false;
   }
 
   pad.addEventListener('pointerdown', e => {
@@ -218,12 +219,12 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState): 
       didEngage = true;
       // Canvas y-down means Math.atan2(dy, dx) returns angle in canvas frame —
       // matches ship.rot which is also in canvas-frame radians.
-      state.targetHeading = Math.atan2(dy, dx);
-      state.thrustOverride = magnitude > THRUST_THRESHOLD;
+      p0.targetHeading = Math.atan2(dy, dx);
+      p0.thrustOverride = magnitude > THRUST_THRESHOLD;
     } else {
       // Inside deadzone — release motion so ship coasts straight
-      state.targetHeading = null;
-      state.thrustOverride = false;
+      p0.targetHeading = null;
+      p0.thrustOverride = false;
     }
   });
 
@@ -242,8 +243,8 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState): 
       // Game reads keys[Space] in its update loop; clearing in a microtask lets
       // exactly one frame see it as held (which is enough for the fire cooldown
       // path to issue one bullet).
-      state.keys.Space = true;
-      requestAnimationFrame(() => { state.keys.Space = false; });
+      p0.keys.Space = true;
+      requestAnimationFrame(() => { p0.keys.Space = false; });
     }
   }
   pad.addEventListener('pointerup',     release);
