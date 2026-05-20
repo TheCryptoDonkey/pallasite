@@ -35,7 +35,7 @@ import { getDisplayMode, applyDisplayMode } from './display.js';
 import { warmWebGLIfPreviouslyEnabled, getTheme, getAsciiCols, getBitDepth, getBitColour } from './visual-style.js';
 import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
-import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges } from './netcode.js';
+import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges, EMPTY_INPUT } from './netcode.js';
 import type { GameState } from './types.js';
 import { DOWN_DOUBLE_TAP_WINDOW_MS, WORLD_W, WORLD_H } from './types.js';
 
@@ -51,10 +51,17 @@ const state: GameState = makeInitialState();
 /** True when ?couch=1 is present — enables two-player local co-op. */
 const couchMode = new URLSearchParams(window.location.search).has('couch');
 
-// Lockstep input log. Re-created on `startGame` (or whenever the player count
-// changes) so each run starts with a clean ring. Sample-only in this commit:
-// the log observes the local input every step but does not drive the sim yet.
+// Lockstep input log. Re-created whenever the player count changes so each
+// run starts with a clean ring. Sample writes to the current frame; decode
+// reads from `frame - inputDelay`, which is the wedge that lets a future
+// commit run delay-based lockstep against a remote peer feeding inputs into
+// the same log.
 let inputLog: InputLog | null = null;
+// Input-delay in sim frames. 0 in solo (decode reads the exact frame just
+// sampled, byte-identical). Set positive in multiplayer to absorb the relay
+// round-trip; both clients use the same value so the lockstep stays fair.
+let inputDelay = 0;
+void inputDelay;  // exporters / wiring in M2 step 7
 // Per-player rising-edge flags live in netcode.localEdges so every input
 // source (keyboard here, touch via callback, controller PWA via direct
 // import) can raise without a dependency back to main.ts.
@@ -699,9 +706,14 @@ function loop(now: number): void {
         inputLog.record(state.frame, i, encodePlayerInput(input));
       }
       for (let i = 0; i < state.players.length; i++) {
-        const encoded = inputLog.get(state.frame, i);
-        if (encoded < 0) continue;
-        const input = decodePlayerInput(encoded);
+        // Read from `state.frame - inputDelay`. At delay 0 this is the slot
+        // just recorded above, byte-identical to the live input. At delay > 0
+        // the slot may not yet exist in the first few frames of a run; fall
+        // back to EMPTY_INPUT so the sim coasts neutrally until the buffer
+        // primes.
+        const readFrame = state.frame - inputDelay;
+        const encoded = readFrame >= 0 ? inputLog.get(readFrame, i) : -1;
+        const input = encoded >= 0 ? decodePlayerInput(encoded) : EMPTY_INPUT;
         applyPlayerInput(state.players[i], input);
         if (state.phase === 'playing') {
           if (input.hyperspaceEdge) tryHyperspace(state, state.elapsed, state.players[i]);

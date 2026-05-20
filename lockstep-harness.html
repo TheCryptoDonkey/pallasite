@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>lockstep harness</title>
+<style>html,body{margin:0;background:#06080f;color:#8cffb4;font:14px/1.6 ui-monospace,monospace;padding:24px}</style>
+</head>
+<body>
+<pre id="out">running lockstep check...</pre>
+<script type="module">
+// M2 regression harness. Two assertions, the lockstep contract:
+//
+//   1) Log path at delay 0 is byte-identical to the direct path. The same
+//      seed + scripted input that the determinism harness pushes through
+//      direct key mutation + direct tryHyperspace / tryActivateShield calls
+//      must produce the identical hash sequence when routed through the
+//      input log (sample -> encode -> decode -> apply, edges dispatched from
+//      the decoded edge bits). Final hash must match 528212306.
+//
+//   2) Log path at delay 10 is deterministic across runs. Three runs at
+//      delay 10 with the same seed and scripted input log must produce
+//      identical hash sequences. (They do not match the delay 0 hashes --
+//      delay 10 starts the sim with 10 EMPTY_INPUT frames of pre-roll,
+//      which is a different trajectory. Determinism within the delay-10
+//      configuration is what proves the input-delay buffer is bug-free.)
+//
+// Together this gates the M2 lockstep contract: the input log faithfully
+// drives the sim, the input-delay buffer is deterministic, and the path is
+// ready for M3 transport.
+import { makeInitialState, startGame, updateGame, tryActivateShield, tryHyperspace } from '/src/game.ts';
+import { getRngState } from '/src/seed.ts';
+import { setRenderMode } from '/src/render.ts';
+import { InputLog, encodePlayerInput, decodePlayerInput, applyPlayerInput, EMPTY_INPUT } from '/src/netcode.ts';
+
+const STEPS = 6000;            // ~100s of sim at 60Hz, same as determinism harness
+const SEED = 0x1234abcd;
+const BASELINE_HASH = 528212306;  // determinism harness's final hash for this seed + script
+const DELAY = 10;
+
+const RETRO_MODE = {
+  kind: 'retro', vw: 1280, vh: 720, dpr: 1, scale: 1, tx: 0, ty: 0,
+  insets: { top: 0, right: 0, bottom: 0, left: 0 },
+};
+
+function fnv1a(str) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+// Identical to the determinism harness's serialize: gameplay-relevant slice
+// only, cosmetic pools excluded.
+function serialize(s) {
+  const ent = (e) => [e.pos.x, e.pos.y, e.vel ? e.vel.x : 0, e.vel ? e.vel.y : 0];
+  return JSON.stringify({
+    f: s.frame, ph: s.phase, sc: s.players[0].score, w: s.wave, lv: s.players[0].lives,
+    st: s.players[0].sats, cb: s.players[0].combo, el: s.elapsed, hs: s.hitStopSteps,
+    rng: getRngState(),
+    sh: [s.players[0].ship.pos.x, s.players[0].ship.pos.y, s.players[0].ship.vel.x, s.players[0].ship.vel.y, s.players[0].ship.rot,
+         s.players[0].ship.alive, s.players[0].ship.shieldUp, s.players[0].ship.shieldExpiresAt,
+         s.players[0].ship.invulnerableUntil, s.players[0].ship.hyperspaceReadyAt, s.players[0].ship.hyperspaceCloakMs],
+    ast: s.asteroids.map((a) => [a.pos.x, a.pos.y, a.vel.x, a.vel.y, a.radius, a.id, a.hp]),
+    ufo: s.ufos.map((u) => [u.pos.x, u.pos.y, u.vel.x, u.vel.y, u.hp ?? 0]),
+    bul: s.bullets.map(ent),
+    ebul: s.enemyBullets.map(ent),
+    mine: s.mines.map((m) => [m.pos.x, m.pos.y]),
+    coin: s.coins.map((c) => [c.pos.x, c.pos.y, c.vel ? c.vel.x : 0, c.vel ? c.vel.y : 0]),
+    pow: s.powerups.map((p) => [p.pos.x, p.pos.y]),
+  });
+}
+
+// PlayerInput-shaped scripted input. The held bits match the determinism
+// harness's `applyInput`; the edge bits replicate the harness's explicit
+// `tryActivateShield` (every 240 steps at +120) and `tryHyperspace` (every
+// 600 steps at +360) calls, ferried as rising edges in the log.
+function scriptedInput(step) {
+  return {
+    turnLeft:       (step % 7) < 2,
+    turnRight:      (step % 11) < 3,
+    thrustHeld:     (step % 3) !== 0,
+    thrustOverride: false,
+    fire:           (step % 5) === 0,
+    hyperspaceEdge: step % 600 === 360,
+    shieldEdge:     step % 240 === 120,
+    heading:        null,
+  };
+}
+
+// Run the sim through the input log path. `delay` chooses the lockstep
+// delay in sim frames: at 0 the decode reads the slot just written, at >0
+// the decode reads `delay` frames back and falls through to EMPTY_INPUT for
+// the early frames before the buffer primes.
+function runLockstep(seed, steps, delay) {
+  setRenderMode(RETRO_MODE);
+  const s = makeInitialState();
+  startGame(s, seed);
+  const log = new InputLog(1, 256);
+  const hashes = new Array(steps);
+  for (let step = 0; step < steps; step++) {
+    if (s.hitStopSteps === 0) {
+      log.record(s.frame, 0, encodePlayerInput(scriptedInput(step)));
+      const readFrame = s.frame - delay;
+      const encoded = readFrame >= 0 ? log.get(readFrame, 0) : -1;
+      const input = encoded >= 0 ? decodePlayerInput(encoded) : EMPTY_INPUT;
+      applyPlayerInput(s.players[0], input);
+      if (s.phase === 'playing') {
+        if (input.hyperspaceEdge) tryHyperspace(s, s.elapsed, s.players[0]);
+        if (input.shieldEdge) tryActivateShield(s, s.elapsed, s.players[0]);
+      }
+    }
+    updateGame(s);
+    hashes[step] = fnv1a(serialize(s));
+  }
+  return hashes;
+}
+
+const out = document.getElementById('out');
+let verdict;
+try {
+  const t0 = performance.now();
+  // Assertion 1: delay 0 matches the direct-path baseline.
+  const a0 = runLockstep(SEED, STEPS, 0);
+  // Assertion 2: delay 10 is deterministic across three runs.
+  const b1 = runLockstep(SEED, STEPS, DELAY);
+  const b2 = runLockstep(SEED, STEPS, DELAY);
+  const b3 = runLockstep(SEED, STEPS, DELAY);
+  const ms = Math.round(performance.now() - t0);
+  const diff = (x, y) => {
+    for (let i = 0; i < STEPS; i++) if (x[i] !== y[i]) return i;
+    return -1;
+  };
+  const baselineOk = a0[STEPS - 1] === BASELINE_HASH;
+  const d12 = diff(b1, b2);
+  const d13 = diff(b1, b3);
+  if (baselineOk && d12 === -1 && d13 === -1) {
+    verdict = 'LOCKSTEP-PASS';
+    out.textContent = 'LOCKSTEP-PASS\n\n' +
+      'log path at delay 0 matches direct-path baseline.\n' +
+      'log path at delay ' + DELAY + ' deterministic across three runs.\n\n' +
+      STEPS + ' steps each, ' + ms + 'ms total.\n' +
+      'seed       = 0x' + SEED.toString(16) + '\n' +
+      'baseline   = ' + BASELINE_HASH + '\n' +
+      'delay 0    = ' + a0[STEPS - 1] + '\n' +
+      'delay ' + DELAY + '   = ' + b1[STEPS - 1];
+  } else if (!baselineOk) {
+    verdict = 'LOCKSTEP-FAIL';
+    out.textContent = 'LOCKSTEP-FAIL (delay 0 not byte-identical)\n\n' +
+      'log path at delay 0 should match the direct-path baseline, but does not.\n' +
+      'baseline    = ' + BASELINE_HASH + '\n' +
+      'log delay 0 = ' + a0[STEPS - 1] + '\n\n' +
+      'The encode / decode / apply round-trip is not byte-identical for the\n' +
+      'scripted keyboard input. Check applyPlayerInput vs the sim\'s key reads.';
+  } else {
+    verdict = 'LOCKSTEP-FAIL';
+    const dab = d12 !== -1 ? d12 : d13;
+    out.textContent = 'LOCKSTEP-FAIL (delay ' + DELAY + ' not deterministic)\n\n' +
+      'first divergence at step ' + dab + '\n' +
+      'run B1 hash = ' + b1[dab] + '\nrun B2 hash = ' + b2[dab] + '\nrun B3 hash = ' + b3[dab] +
+      '\n(steps 0.. ' + (dab - 1) + ' matched)';
+  }
+} catch (e) {
+  verdict = 'LOCKSTEP-ERROR';
+  out.textContent = 'LOCKSTEP-ERROR\n\n' + ((e && e.stack) || e);
+}
+document.title = verdict;
+</script>
+</body>
+</html>
