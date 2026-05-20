@@ -182,7 +182,7 @@ export function updateSanctumLoop(s: GameState, dt: number, now: number): void {
     }
 
     if (fire && now >= lastFireAt + FIRE_COOLDOWN_MS) {
-      fireBullet(s);
+      fireBullet(s, s.players[0]);
       lastFireAt = now;
     }
   }

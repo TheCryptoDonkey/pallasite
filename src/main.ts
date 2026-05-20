@@ -338,17 +338,17 @@ window.addEventListener('keydown', e => {
   }
   // Hyperspace via Shift / H — instant
   if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyH') && state.phase === 'playing') {
-    tryHyperspace(state, state.elapsed);
+    tryHyperspace(state, state.elapsed, state.players[0]);
   }
   // Down-arrow: shield on first press, hyperspace on double-tap
   if (e.code === 'ArrowDown' && state.phase === 'playing' && !e.repeat) {
     const now = performance.now();
     const sinceLast = now - lastDownArrowAt;
     if (lastDownArrowAt > 0 && sinceLast < DOWN_DOUBLE_TAP_WINDOW_MS) {
-      tryHyperspace(state, state.elapsed);
+      tryHyperspace(state, state.elapsed, state.players[0]);
       lastDownArrowAt = 0;  // consume — prevent triple-tap chain
     } else {
-      tryActivateShield(state, state.elapsed);
+      tryActivateShield(state, state.elapsed, state.players[0]);
       lastDownArrowAt = now;
     }
   }
@@ -904,7 +904,11 @@ async function boot(): Promise<void> {
   }
 
   // Touch controls — buttons reveal themselves on first real touch
-  setupTouchControls(state, tryHyperspace, tryActivateShield);
+  setupTouchControls(
+    state,
+    (s, now) => tryHyperspace(s, now, s.players[0]),
+    (s, now) => tryActivateShield(s, now, s.players[0]),
+  );
 
   // Long-press the WAVE label on the HUD = open cheat input (mobile equivalent
   // of the `+` keyboard shortcut). Daily-run guard inside the handler.

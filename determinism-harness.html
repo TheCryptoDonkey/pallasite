@@ -96,8 +96,8 @@ function runOnce(seed, steps, mode) {
   for (let step = 0; step < steps; step++) {
     applyInput(s, step);
     // Exercise the converted shield / hyperspace deadlines too.
-    if (step % 240 === 120) tryActivateShield(s, s.elapsed);
-    if (step % 600 === 360) tryHyperspace(s, s.elapsed);
+    if (step % 240 === 120) tryActivateShield(s, s.elapsed, s.players[0]);
+    if (step % 600 === 360) tryHyperspace(s, s.elapsed, s.players[0]);
     // Mirror the loop: a hit-stop step skips the sim tick.
     if (s.hitStopSteps > 0) s.hitStopSteps--;
     else updateGame(s);

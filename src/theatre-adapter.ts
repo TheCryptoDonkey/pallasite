@@ -233,6 +233,7 @@ export function populateTheatreState(gs: GameState, args: TheatreFrameArgs): voi
       caromHit: false,
       wrapped: false,
       hasLanded: false,
+      owner: b.enemy ? -1 : 0,
     };
     (b.enemy ? enemyBullets : playerBullets).push(bullet);
   }
