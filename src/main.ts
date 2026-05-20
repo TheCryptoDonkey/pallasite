@@ -677,23 +677,20 @@ function loop(now: number): void {
   stepAccumulator += Math.min(MAX_CATCHUP_STEPS * FIXED_STEP_S, (now - lastFrame) / 1000);
   lastFrame = now;
   while (stepAccumulator >= FIXED_STEP_S) {
-    if (state.hitStopSteps > 0) {
-      // Hit-stop freeze: the step's time passes but the sim does not tick.
-      state.hitStopSteps--;
-    } else {
-      // Lockstep input pipeline. Each tick:
-      //   1) snapshot the live per-player input into the log, keyed by the
-      //      frame about to be entered (`state.frame` increments inside
-      //      updateGame);
-      //   2) decode the log entry for the same frame back into `players[i]`
-      //      so the sim reads from the log path rather than the live state
-      //      directly.
-      // With no input-delay configured the round-trip is byte-identical for
-      // keyboard input -- the encode / decode pair preserves the four held
-      // bits, edges are observation-only here (their dispatch is still on
-      // keydown), and KeyA/D/W alias slots collapse into the arrow slots
-      // through the sim's `||`. Joystick mode's heading rides as a 10-bit
-      // bucket, which is the cost of being lockstep-friendly.
+    // Lockstep input pipeline. On every advancing frame:
+    //   1) snapshot the live per-player input into the log, keyed by the
+    //      frame about to be entered (`state.frame` increments inside
+    //      updateGame);
+    //   2) decode the log entry for the same frame back into `players[i]`
+    //      so the sim reads from the log path rather than the live state
+    //      directly, and dispatch the edge-triggered actions (hyperspace,
+    //      shield) from the decoded edge bits.
+    // Hit-stop skipping lives inside updateGame (B3 sim contract), so the
+    // loop unconditionally calls it -- both clients agree on the skip
+    // off the same `s.hitStopSteps`. The sample / apply pipeline is gated
+    // on the same value so a frozen frame does not re-sample over the
+    // same log slot and stomp the canonical input for that frame.
+    if (state.hitStopSteps === 0) {
       if (!inputLog || inputLog.players !== state.players.length) {
         inputLog = new InputLog(state.players.length);
       }
@@ -706,16 +703,13 @@ function loop(now: number): void {
         if (encoded < 0) continue;
         const input = decodePlayerInput(encoded);
         applyPlayerInput(state.players[i], input);
-        // Edge dispatch from the log: the canonical place where hyperspace
-        // and shield fire. Both clients run this branch off the same input,
-        // so under lockstep both fire on the same step.
         if (state.phase === 'playing') {
           if (input.hyperspaceEdge) tryHyperspace(state, state.elapsed, state.players[i]);
           if (input.shieldEdge) tryActivateShield(state, state.elapsed, state.players[i]);
         }
       }
-      updateGame(state);
     }
+    updateGame(state);
     stepAccumulator -= FIXED_STEP_S;
   }
 
