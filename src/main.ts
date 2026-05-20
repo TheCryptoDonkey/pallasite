@@ -35,6 +35,7 @@ import { getDisplayMode, applyDisplayMode } from './display.js';
 import { warmWebGLIfPreviouslyEnabled, getTheme, getAsciiCols, getBitDepth, getBitColour } from './visual-style.js';
 import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
+import { InputLog, samplePlayerInput, encodePlayerInput, type EdgeFlags } from './netcode.js';
 import type { GameState } from './types.js';
 import { DOWN_DOUBLE_TAP_WINDOW_MS, WORLD_W, WORLD_H } from './types.js';
 
@@ -49,6 +50,18 @@ const state: GameState = makeInitialState();
 
 /** True when ?couch=1 is present — enables two-player local co-op. */
 const couchMode = new URLSearchParams(window.location.search).has('couch');
+
+// Lockstep input log. Re-created on `startGame` (or whenever the player count
+// changes) so each run starts with a clean ring. Sample-only in this commit:
+// the log observes the local input every step but does not drive the sim yet.
+let inputLog: InputLog | null = null;
+// Per-player rising-edge flags for hyperspace and shield. Keydown / touch
+// handlers raise these alongside the existing `tryHyperspace` / `tryActivateShield`
+// calls; the next sample drains them into the log entry.
+const edgeFlags: EdgeFlags[] = [
+  { hyperspace: false, shield: false },
+  { hyperspace: false, shield: false },
+];
 
 /** Timestamp of the most recent ArrowDown keydown — used for double-tap detection. */
 let lastDownArrowAt = 0;
@@ -349,9 +362,11 @@ window.addEventListener('keydown', e => {
       // P2 hyperspace: KeyU
     } else if (e.code === 'KeyU' && state.phase === 'playing') {
       tryHyperspace(state, state.elapsed, state.players[1]);
+      edgeFlags[1].hyperspace = true;
     } else if (e.code === 'KeyI' && state.phase === 'playing' && !e.repeat) {
       // P2 shield: KeyI
       tryActivateShield(state, state.elapsed, state.players[1]);
+      edgeFlags[1].shield = true;
     }
   }
   // P1 input — in couch mode only arrow/space go to players[0]; in solo mode all keys do (game.ts
@@ -367,6 +382,7 @@ window.addEventListener('keydown', e => {
   if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyH') && state.phase === 'playing') {
     if (!couchMode || e.code !== 'ShiftLeft') {
       tryHyperspace(state, state.elapsed, state.players[0]);
+      edgeFlags[0].hyperspace = true;
     }
   }
   // Down-arrow: shield on first press, hyperspace on double-tap (P1)
@@ -375,9 +391,11 @@ window.addEventListener('keydown', e => {
     const sinceLast = now - lastDownArrowAt;
     if (lastDownArrowAt > 0 && sinceLast < DOWN_DOUBLE_TAP_WINDOW_MS) {
       tryHyperspace(state, state.elapsed, state.players[0]);
+      edgeFlags[0].hyperspace = true;
       lastDownArrowAt = 0;  // consume — prevent triple-tap chain
     } else {
       tryActivateShield(state, state.elapsed, state.players[0]);
+      edgeFlags[0].shield = true;
       lastDownArrowAt = now;
     }
   }
@@ -670,6 +688,18 @@ function loop(now: number): void {
       // Hit-stop freeze: the step's time passes but the sim does not tick.
       state.hitStopSteps--;
     } else {
+      // Lockstep input sample: snapshot the per-player input this tick will
+      // consume into the log, keyed by the frame about to be entered
+      // (`state.frame` increments inside updateGame). Sample-only in this
+      // commit -- the log observes the local input, it does not yet drive
+      // the sim, so solo behaviour stays byte-identical.
+      if (!inputLog || inputLog.players !== state.players.length) {
+        inputLog = new InputLog(state.players.length);
+      }
+      for (let i = 0; i < state.players.length; i++) {
+        const input = samplePlayerInput(state.players[i], edgeFlags[i]);
+        inputLog.record(state.frame, i, encodePlayerInput(input));
+      }
       updateGame(state);
     }
     stepAccumulator -= FIXED_STEP_S;
@@ -956,8 +986,8 @@ async function boot(): Promise<void> {
   // Touch controls — buttons reveal themselves on first real touch
   setupTouchControls(
     state,
-    (s, now) => tryHyperspace(s, now, s.players[0]),
-    (s, now) => tryActivateShield(s, now, s.players[0]),
+    (s, now) => { tryHyperspace(s, now, s.players[0]); edgeFlags[0].hyperspace = true; },
+    (s, now) => { tryActivateShield(s, now, s.players[0]); edgeFlags[0].shield = true; },
   );
 
   // Long-press the WAVE label on the HUD = open cheat input (mobile equivalent
