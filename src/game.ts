@@ -2671,79 +2671,81 @@ export function updateGame(s: GameState): void {
   }
 
   // ── Ship input ──
-  const turnLeft = s.players[0].keys['ArrowLeft'] || s.players[0].keys['KeyA'];
-  const turnRight = s.players[0].keys['ArrowRight'] || s.players[0].keys['KeyD'];
-  const thrust = (s.players[0].keys['ArrowUp'] || s.players[0].keys['KeyW']) || s.players[0].thrustOverride;
-  const fire = s.players[0].keys['Space'];
+  for (const p of s.players) {
+    const turnLeft = p.keys['ArrowLeft'] || p.keys['KeyA'];
+    const turnRight = p.keys['ArrowRight'] || p.keys['KeyD'];
+    const thrust = (p.keys['ArrowUp'] || p.keys['KeyW']) || p.thrustOverride;
+    const fire = p.keys['Space'];
 
-  // Hyperspace cloak countdown
-  if (s.players[0].ship.hyperspaceCloakMs > 0) {
-    s.players[0].ship.hyperspaceCloakMs -= dt * 1000;
-  }
-  // Shield hit-flash decay — exponential so the spike reads as a pulse
-  // (sharp peak, quick fade) rather than a flat ramp. Half-life ~120ms.
-  if (s.players[0].ship.shieldHitFlash > 0) {
-    s.players[0].ship.shieldHitFlash = Math.max(0, s.players[0].ship.shieldHitFlash * Math.exp(-dt * 5.5));
-    if (s.players[0].ship.shieldHitFlash < 0.005) s.players[0].ship.shieldHitFlash = 0;
-  }
+    // Hyperspace cloak countdown
+    if (p.ship.hyperspaceCloakMs > 0) {
+      p.ship.hyperspaceCloakMs -= dt * 1000;
+    }
+    // Shield hit-flash decay — exponential so the spike reads as a pulse
+    // (sharp peak, quick fade) rather than a flat ramp. Half-life ~120ms.
+    if (p.ship.shieldHitFlash > 0) {
+      p.ship.shieldHitFlash = Math.max(0, p.ship.shieldHitFlash * Math.exp(-dt * 5.5));
+      if (p.ship.shieldHitFlash < 0.005) p.ship.shieldHitFlash = 0;
+    }
 
-  if (s.players[0].ship.alive && s.players[0].ship.hyperspaceCloakMs <= 0) {
-    if (s.players[0].targetHeading !== null) {
-      // Heading-mode (joystick): rotate ship smoothly toward the stick angle
-      // at a fixed angular rate. Snaps when within one frame's worth of rate.
-      const HEADING_LERP_RATE = 8;  // rad/s — feels responsive without jitter
-      let diff = s.players[0].targetHeading - s.players[0].ship.rot;
-      while (diff >  Math.PI) diff -= 2 * Math.PI;
-      while (diff < -Math.PI) diff += 2 * Math.PI;
-      const step = HEADING_LERP_RATE * dt;
-      if (Math.abs(diff) <= step) {
-        s.players[0].ship.rot = s.players[0].targetHeading;
-        s.players[0].ship.rotVel = 0;
+    if (p.ship.alive && p.ship.hyperspaceCloakMs <= 0) {
+      if (p.targetHeading !== null) {
+        // Heading-mode (joystick): rotate ship smoothly toward the stick angle
+        // at a fixed angular rate. Snaps when within one frame's worth of rate.
+        const HEADING_LERP_RATE = 8;  // rad/s — feels responsive without jitter
+        let diff = p.targetHeading - p.ship.rot;
+        while (diff >  Math.PI) diff -= 2 * Math.PI;
+        while (diff < -Math.PI) diff += 2 * Math.PI;
+        const step = HEADING_LERP_RATE * dt;
+        if (Math.abs(diff) <= step) {
+          p.ship.rot = p.targetHeading;
+          p.ship.rotVel = 0;
+        } else {
+          p.ship.rot += Math.sign(diff) * step;
+          p.ship.rotVel = Math.sign(diff) * HEADING_LERP_RATE;  // for thrust-flame visuals etc
+        }
       } else {
-        s.players[0].ship.rot += Math.sign(diff) * step;
-        s.players[0].ship.rotVel = Math.sign(diff) * HEADING_LERP_RATE;  // for thrust-flame visuals etc
+        if (turnLeft) p.ship.rotVel -= SHIP_ROT_ACCEL * dt;
+        if (turnRight) p.ship.rotVel += SHIP_ROT_ACCEL * dt;
+        if (!turnLeft && !turnRight) {
+          const sign = Math.sign(p.ship.rotVel);
+          const newVel = p.ship.rotVel - sign * SHIP_ROT_DAMPING * dt;
+          p.ship.rotVel = Math.sign(newVel) === sign ? newVel : 0;
+        }
+        p.ship.rotVel = Math.max(-SHIP_MAX_ROT, Math.min(SHIP_MAX_ROT, p.ship.rotVel));
+        p.ship.rot += p.ship.rotVel * dt;
       }
-    } else {
-      if (turnLeft) s.players[0].ship.rotVel -= SHIP_ROT_ACCEL * dt;
-      if (turnRight) s.players[0].ship.rotVel += SHIP_ROT_ACCEL * dt;
-      if (!turnLeft && !turnRight) {
-        const sign = Math.sign(s.players[0].ship.rotVel);
-        const newVel = s.players[0].ship.rotVel - sign * SHIP_ROT_DAMPING * dt;
-        s.players[0].ship.rotVel = Math.sign(newVel) === sign ? newVel : 0;
+
+      p.ship.thrusting = thrust;
+      if (thrust) {
+        p.ship.thrustFrame += dt * 30;
+        p.ship.vel.x += Math.cos(p.ship.rot) * SHIP_THRUST * dt;
+        p.ship.vel.y += Math.sin(p.ship.rot) * SHIP_THRUST * dt;
+        audio.thrustOn();
+      } else {
+        audio.thrustOff();
       }
-      s.players[0].ship.rotVel = Math.max(-SHIP_MAX_ROT, Math.min(SHIP_MAX_ROT, s.players[0].ship.rotVel));
-      s.players[0].ship.rot += s.players[0].ship.rotVel * dt;
-    }
 
-    s.players[0].ship.thrusting = thrust;
-    if (thrust) {
-      s.players[0].ship.thrustFrame += dt * 30;
-      s.players[0].ship.vel.x += Math.cos(s.players[0].ship.rot) * SHIP_THRUST * dt;
-      s.players[0].ship.vel.y += Math.sin(s.players[0].ship.rot) * SHIP_THRUST * dt;
-      audio.thrustOn();
-    } else {
-      audio.thrustOff();
-    }
+      // Drag
+      const dragK = Math.exp(-SHIP_DRAG * dt);
+      p.ship.vel.x *= dragK;
+      p.ship.vel.y *= dragK;
 
-    // Drag
-    const dragK = Math.exp(-SHIP_DRAG * dt);
-    s.players[0].ship.vel.x *= dragK;
-    s.players[0].ship.vel.y *= dragK;
+      p.ship.pos.x += p.ship.vel.x * dt;
+      p.ship.pos.y += p.ship.vel.y * dt;
+      if (arena) confineToArena(p.ship.pos, p.ship.vel, p.ship.radius, cage, 0.4);
+      else wrap(p.ship.pos);
 
-    s.players[0].ship.pos.x += s.players[0].ship.vel.x * dt;
-    s.players[0].ship.pos.y += s.players[0].ship.vel.y * dt;
-    if (arena) confineToArena(s.players[0].ship.pos, s.players[0].ship.vel, s.players[0].ship.radius, cage, 0.4);
-    else wrap(s.players[0].ship.pos);
+      // Recoil decays linearly — a 1.8px kick fades in ~75ms at 24 px/s.
+      if (p.ship.recoilOffset > 0) {
+        p.ship.recoilOffset = Math.max(0, p.ship.recoilOffset - dt * 24);
+      }
 
-    // Recoil decays linearly — a 1.8px kick fades in ~75ms at 24 px/s.
-    if (s.players[0].ship.recoilOffset > 0) {
-      s.players[0].ship.recoilOffset = Math.max(0, s.players[0].ship.recoilOffset - dt * 24);
-    }
-
-    if (fire && now >= s.players[0].fireCooldownUntil) {
-      fireBullet(s, s.players[0]);
-      const rapid = now < s.players[0].rapidExpiresAt;
-      s.players[0].fireCooldownUntil = now + (rapid ? FIRE_COOLDOWN_MS * RAPID_COOLDOWN_MUL : FIRE_COOLDOWN_MS);
+      if (fire && now >= p.fireCooldownUntil) {
+        fireBullet(s, p);
+        const rapid = now < p.rapidExpiresAt;
+        p.fireCooldownUntil = now + (rapid ? FIRE_COOLDOWN_MS * RAPID_COOLDOWN_MUL : FIRE_COOLDOWN_MS);
+      }
     }
   }
 
@@ -2875,16 +2877,19 @@ export function updateGame(s: GameState): void {
     a.rot += a.rotVel * dt;
     // Lodestone rocks tug the ship toward them — a mobile gravity well,
     // gameplay-plane only, skipped while the ship is cloaked.
-    if (a.type === 'lodestone' && a.alive && (a.depth ?? 3) === 3
-        && s.players[0].ship.alive && s.players[0].ship.hyperspaceCloakMs <= 0) {
-      const dx = a.pos.x - s.players[0].ship.pos.x;
-      const dy = a.pos.y - s.players[0].ship.pos.y;
-      const distSq = dx * dx + dy * dy;
-      if (distSq < LODESTONE_RANGE * LODESTONE_RANGE && distSq > 16) {
-        const dist = Math.sqrt(distSq);
-        const pull = LODESTONE_PULL * (1 - dist / LODESTONE_RANGE);
-        s.players[0].ship.vel.x += (dx / dist) * pull * dt;
-        s.players[0].ship.vel.y += (dy / dist) * pull * dt;
+    if (a.type === 'lodestone' && a.alive && (a.depth ?? 3) === 3) {
+      for (const p of s.players) {
+        if (p.ship.alive && p.ship.hyperspaceCloakMs <= 0) {
+          const dx = a.pos.x - p.ship.pos.x;
+          const dy = a.pos.y - p.ship.pos.y;
+          const distSq = dx * dx + dy * dy;
+          if (distSq < LODESTONE_RANGE * LODESTONE_RANGE && distSq > 16) {
+            const dist = Math.sqrt(distSq);
+            const pull = LODESTONE_PULL * (1 - dist / LODESTONE_RANGE);
+            p.ship.vel.x += (dx / dist) * pull * dt;
+            p.ship.vel.y += (dy / dist) * pull * dt;
+          }
+        }
       }
     }
     // 600bn council shedding — periodic tiny gold particles spit off
@@ -2950,8 +2955,10 @@ export function updateGame(s: GameState): void {
   if (asteroidBounceEnabled()) runAsteroidCollisions(s);
 
   // ── Shield expiry ──
-  if (s.players[0].ship.shieldUp && now >= s.players[0].ship.shieldExpiresAt) {
-    dropShield(s, now);
+  for (const p of s.players) {
+    if (p.ship.shieldUp && now >= p.ship.shieldExpiresAt) {
+      dropShield(s, now);
+    }
   }
 
   // ── Particles ──
@@ -2979,7 +2986,6 @@ export function updateGame(s: GameState): void {
   s.debris = s.debris.filter(d => d.ttl > 0);
 
   // ── Coins ──
-  const magnetActive = now < s.players[0].magnetExpiresAt;
   for (const c of s.coins) {
     c.pos.x += c.vel.x * dt;
     c.pos.y += c.vel.y * dt;
@@ -2992,23 +2998,26 @@ export function updateGame(s: GameState): void {
 
     // Pull toward ship — short-range natural magnetism always, plus a strong
     // whole-screen pull while the MAGNET powerup is active.
-    if (s.players[0].ship.alive) {
-      const dx = s.players[0].ship.pos.x - c.pos.x;
-      const dy = s.players[0].ship.pos.y - c.pos.y;
-      const distSq = dx * dx + dy * dy;
-      const pullRange = 80;
-      if (distSq < pullRange * pullRange) {
-        const dist = Math.sqrt(distSq);
-        const pull = 380 * (1 - dist / pullRange);
-        c.vel.x += (dx / dist) * pull * dt;
-        c.vel.y += (dy / dist) * pull * dt;
-      }
-      if (magnetActive && distSq > pullRange * pullRange && distSq < MAGNET_RANGE * MAGNET_RANGE) {
-        // Constant accel toward ship — coins always reach the ship within a
-        // couple of seconds regardless of distance, even across wrap edges.
-        const dist = Math.sqrt(distSq);
-        c.vel.x += (dx / dist) * MAGNET_MAX_ACCEL * dt;
-        c.vel.y += (dy / dist) * MAGNET_MAX_ACCEL * dt;
+    for (const p of s.players) {
+      if (p.ship.alive) {
+        const magnetActive = now < p.magnetExpiresAt;
+        const dx = p.ship.pos.x - c.pos.x;
+        const dy = p.ship.pos.y - c.pos.y;
+        const distSq = dx * dx + dy * dy;
+        const pullRange = 80;
+        if (distSq < pullRange * pullRange) {
+          const dist = Math.sqrt(distSq);
+          const pull = 380 * (1 - dist / pullRange);
+          c.vel.x += (dx / dist) * pull * dt;
+          c.vel.y += (dy / dist) * pull * dt;
+        }
+        if (magnetActive && distSq > pullRange * pullRange && distSq < MAGNET_RANGE * MAGNET_RANGE) {
+          // Constant accel toward ship — coins always reach the ship within a
+          // couple of seconds regardless of distance, even across wrap edges.
+          const dist = Math.sqrt(distSq);
+          c.vel.x += (dx / dist) * MAGNET_MAX_ACCEL * dt;
+          c.vel.y += (dy / dist) * MAGNET_MAX_ACCEL * dt;
+        }
       }
     }
   }
@@ -3076,135 +3085,141 @@ export function updateGame(s: GameState): void {
   // matches how shield handles asteroids (pure deflect, no damage). Mines
   // are cleared by bullets only. Visual sparks + audio still fire so the
   // contact reads on screen.
-  if (s.players[0].ship.alive && s.players[0].ship.shieldUp) {
-    for (const m of s.mines) {
-      if (!m.alive) continue;
-      if (circlesHit(s.players[0].ship, m)) {
-        spawnParticles(s, m.pos.x, m.pos.y, 8, '#5b9dff', 180, 320);
-        audio.shieldHit();
-        s.players[0].ship.shieldHitFlash = 1;
-      }
-    }
-  }
-
-  // ── Shield deflection (runs before damage check) ──
-  if (s.players[0].ship.alive && s.players[0].ship.shieldUp) {
-    for (const a of s.asteroids) {
-      // Backgrounds (depth 1, 2) read as distant + faded, so they
-      // pass through. Gameplay plane (3) and foregrounds (4, 5) are
-      // fully opaque and visually "in your face" — they hit / deflect.
-      if (!a.alive || (a.depth ?? 3) < 3) continue;
-      if (circlesHit(s.players[0].ship, a)) {
-        // Use wrap-aware delta so reflections at the edges push the asteroid
-        // along the actual contact normal, not a normal flipped by the wrap.
-        // Arena has no wrap, so a plain delta is already the real normal.
-        let dx: number, dy: number;
-        if (arena) {
-          dx = a.pos.x - s.players[0].ship.pos.x;
-          dy = a.pos.y - s.players[0].ship.pos.y;
-        } else {
-          dx = (((a.pos.x - s.players[0].ship.pos.x) % WORLD_W) + WORLD_W) % WORLD_W;
-          if (dx > WORLD_W / 2) dx -= WORLD_W;
-          dy = (((a.pos.y - s.players[0].ship.pos.y) % WORLD_H) + WORLD_H) % WORLD_H;
-          if (dy > WORLD_H / 2) dy -= WORLD_H;
-        }
-        const distSq = dx * dx + dy * dy;
-        const dist = Math.sqrt(distSq) || 1;
-        const nx = dx / dist;
-        const ny = dy / dist;
-        const vDot = a.vel.x * nx + a.vel.y * ny;
-        if (vDot < 0) {
-          // Reflect velocity along the normal, give a small extra kick
-          a.vel.x -= 2 * vDot * nx * 1.05;
-          a.vel.y -= 2 * vDot * ny * 1.05;
-          // Push apart so we don't get stuck inside the shield
-          const overlap = s.players[0].ship.radius + a.radius + 4 - dist;
-          if (overlap > 0) {
-            a.pos.x += nx * overlap;
-            a.pos.y += ny * overlap;
-          }
-          spawnParticles(s, (s.players[0].ship.pos.x + a.pos.x) / 2, (s.players[0].ship.pos.y + a.pos.y) / 2, 10, '#5b9dff', 220, 380);
+  for (const p of s.players) {
+    if (p.ship.alive && p.ship.shieldUp) {
+      for (const m of s.mines) {
+        if (!m.alive) continue;
+        if (circlesHit(p.ship, m)) {
+          spawnParticles(s, m.pos.x, m.pos.y, 8, '#5b9dff', 180, 320);
           audio.shieldHit();
-          s.players[0].ship.shieldHitFlash = 1;
+          p.ship.shieldHitFlash = 1;
         }
       }
     }
-    for (const b of s.enemyBullets) {
-      if (!b.alive) continue;
-      if (circlesHit(s.players[0].ship, b)) {
-        b.alive = false;
-        spawnParticles(s, b.pos.x, b.pos.y, 8, '#5b9dff', 180, 320);
-        audio.shieldHit();
-        s.players[0].ship.shieldHitFlash = 1;
+
+    // ── Shield deflection (runs before damage check) ──
+    if (p.ship.alive && p.ship.shieldUp) {
+      for (const a of s.asteroids) {
+        // Backgrounds (depth 1, 2) read as distant + faded, so they
+        // pass through. Gameplay plane (3) and foregrounds (4, 5) are
+        // fully opaque and visually "in your face" — they hit / deflect.
+        if (!a.alive || (a.depth ?? 3) < 3) continue;
+        if (circlesHit(p.ship, a)) {
+          // Use wrap-aware delta so reflections at the edges push the asteroid
+          // along the actual contact normal, not a normal flipped by the wrap.
+          // Arena has no wrap, so a plain delta is already the real normal.
+          let dx: number, dy: number;
+          if (arena) {
+            dx = a.pos.x - p.ship.pos.x;
+            dy = a.pos.y - p.ship.pos.y;
+          } else {
+            dx = (((a.pos.x - p.ship.pos.x) % WORLD_W) + WORLD_W) % WORLD_W;
+            if (dx > WORLD_W / 2) dx -= WORLD_W;
+            dy = (((a.pos.y - p.ship.pos.y) % WORLD_H) + WORLD_H) % WORLD_H;
+            if (dy > WORLD_H / 2) dy -= WORLD_H;
+          }
+          const distSq = dx * dx + dy * dy;
+          const dist = Math.sqrt(distSq) || 1;
+          const nx = dx / dist;
+          const ny = dy / dist;
+          const vDot = a.vel.x * nx + a.vel.y * ny;
+          if (vDot < 0) {
+            // Reflect velocity along the normal, give a small extra kick
+            a.vel.x -= 2 * vDot * nx * 1.05;
+            a.vel.y -= 2 * vDot * ny * 1.05;
+            // Push apart so we don't get stuck inside the shield
+            const overlap = p.ship.radius + a.radius + 4 - dist;
+            if (overlap > 0) {
+              a.pos.x += nx * overlap;
+              a.pos.y += ny * overlap;
+            }
+            spawnParticles(s, (p.ship.pos.x + a.pos.x) / 2, (p.ship.pos.y + a.pos.y) / 2, 10, '#5b9dff', 220, 380);
+            audio.shieldHit();
+            p.ship.shieldHitFlash = 1;
+          }
+        }
+      }
+      for (const b of s.enemyBullets) {
+        if (!b.alive) continue;
+        if (circlesHit(p.ship, b)) {
+          b.alive = false;
+          spawnParticles(s, b.pos.x, b.pos.y, 8, '#5b9dff', 180, 320);
+          audio.shieldHit();
+          p.ship.shieldHitFlash = 1;
+        }
       }
     }
   }
 
   // ── Collisions: ship × asteroids / UFOs / enemy bullets ──
-  if (s.players[0].ship.alive && !s.players[0].ship.shieldUp && s.players[0].ship.hyperspaceCloakMs <= 0 && now > s.players[0].ship.invulnerableUntil) {
-    for (const a of s.asteroids) {
-      // Backgrounds (depth 1, 2) are faded + distant-reading and pass
-      // through the ship. Gameplay plane (3) AND foregrounds (4, 5) are
-      // fully opaque, large, and visually "in your face" — letting one
-      // sail through reads as a bug ("asteroid passed right through
-      // me"), so foregrounds are hazards too.
-      if (a.alive && (a.depth ?? 3) >= 3 && circlesHit(s.players[0].ship, a)) {
-        killShip(s, s.players[0]);
-        break;
-      }
-    }
-    for (const u of s.ufos) {
-      if (s.players[0].ship.alive && u.alive && circlesHit(s.players[0].ship, u)) {
-        destroyUfo(s, u, s.players[0]);  // ramming kills the UFO too
-        killShip(s, s.players[0]);
-        break;
-      }
-    }
-    for (const b of s.enemyBullets) {
-      if (s.players[0].ship.alive && b.alive && circlesHit(s.players[0].ship, b)) {
-        if (s.players[0].lurking) {
-          // Lurk-mode UFO immunity: the 1979 saucer-aim bug had a centre blind
-          // spot. Bullet passes through with a small puff so the player sees
-          // the bullet "missed" rather than the collision being silently
-          // swallowed. Bullet still consumed so it doesn't hit twice.
-          b.alive = false;
-          spawnParticles(s, b.pos.x, b.pos.y, 4, '#5b9dff', 80, 200);
-          continue;
+  for (const p of s.players) {
+    if (p.ship.alive && !p.ship.shieldUp && p.ship.hyperspaceCloakMs <= 0 && now > p.ship.invulnerableUntil) {
+      for (const a of s.asteroids) {
+        // Backgrounds (depth 1, 2) are faded + distant-reading and pass
+        // through the ship. Gameplay plane (3) AND foregrounds (4, 5) are
+        // fully opaque, large, and visually "in your face" — letting one
+        // sail through reads as a bug ("asteroid passed right through
+        // me"), so foregrounds are hazards too.
+        if (a.alive && (a.depth ?? 3) >= 3 && circlesHit(p.ship, a)) {
+          killShip(s, p);
+          break;
         }
-        b.alive = false;
-        killShip(s, s.players[0]);
-        break;
       }
-    }
-    for (const m of s.mines) {
-      if (s.players[0].ship.alive && m.alive && circlesHit(s.players[0].ship, m)) {
-        destroyMine(s, m, s.players[0]);
-        killShip(s, s.players[0]);
-        break;
+      for (const u of s.ufos) {
+        if (p.ship.alive && u.alive && circlesHit(p.ship, u)) {
+          destroyUfo(s, u, p);  // ramming kills the UFO too
+          killShip(s, p);
+          break;
+        }
+      }
+      for (const b of s.enemyBullets) {
+        if (p.ship.alive && b.alive && circlesHit(p.ship, b)) {
+          if (p.lurking) {
+            // Lurk-mode UFO immunity: the 1979 saucer-aim bug had a centre blind
+            // spot. Bullet passes through with a small puff so the player sees
+            // the bullet "missed" rather than the collision being silently
+            // swallowed. Bullet still consumed so it doesn't hit twice.
+            b.alive = false;
+            spawnParticles(s, b.pos.x, b.pos.y, 4, '#5b9dff', 80, 200);
+            continue;
+          }
+          b.alive = false;
+          killShip(s, p);
+          break;
+        }
+      }
+      for (const m of s.mines) {
+        if (p.ship.alive && m.alive && circlesHit(p.ship, m)) {
+          destroyMine(s, m, p);
+          killShip(s, p);
+          break;
+        }
       }
     }
   }
 
   // ── Collisions: ship × coins (sat coins or dust shards) ──
-  if (s.players[0].ship.alive) {
-    const satMul = now < s.players[0].satboostExpiresAt ? SATBOOST_MUL : 1;
-    for (const c of s.coins) {
-      if (!c.alive || c.collected) continue;
-      if (circlesHit(s.players[0].ship, c)) {
-        c.collected = true;
-        if (c.kind === 'sat') {
-          const credit = Math.max(1, Math.round(c.value * satMul));
-          // Lurking and cheating both forfeit sat credit. Score still ticks
-          // via dust, but sats won't accumulate once the run is tainted.
-          if (s.players[0].lurking || s.cheatedThisRun) s.players[0].lurkSatsBlocked += credit;
-          else s.players[0].sats += credit;
-          audio.coinPickup();
-          spawnParticles(s, c.pos.x, c.pos.y, 6, '#ffd84a', 80, 350);
-        } else {
-          // Dust shard — pure score, never blocked by lurking (it's not sats).
-          s.players[0].score += Math.max(1, Math.round(c.value));
-          audio.dustPickup();
-          spawnParticles(s, c.pos.x, c.pos.y, 5, '#7fffb0', 70, 300);
+  for (const p of s.players) {
+    if (p.ship.alive) {
+      const satMul = now < p.satboostExpiresAt ? SATBOOST_MUL : 1;
+      for (const c of s.coins) {
+        if (!c.alive || c.collected) continue;
+        if (circlesHit(p.ship, c)) {
+          c.collected = true;
+          if (c.kind === 'sat') {
+            const credit = Math.max(1, Math.round(c.value * satMul));
+            // Lurking and cheating both forfeit sat credit. Score still ticks
+            // via dust, but sats won't accumulate once the run is tainted.
+            if (p.lurking || s.cheatedThisRun) p.lurkSatsBlocked += credit;
+            else p.sats += credit;
+            audio.coinPickup();
+            spawnParticles(s, c.pos.x, c.pos.y, 6, '#ffd84a', 80, 350);
+          } else {
+            // Dust shard — pure score, never blocked by lurking (it's not sats).
+            p.score += Math.max(1, Math.round(c.value));
+            audio.dustPickup();
+            spawnParticles(s, c.pos.x, c.pos.y, 5, '#7fffb0', 70, 300);
+          }
         }
       }
     }
@@ -3222,11 +3237,13 @@ export function updateGame(s: GameState): void {
       if (p.ttl <= 0) p.alive = false;
       if (arena) confineToArena(p.pos, p.vel, p.radius, cage, 0.55);
       else wrap(p.pos);
-      if (s.players[0].ship.alive && circlesHit(s.players[0].ship, p)) {
-        p.collected = true;
-        s.players[0].runStats.powerupsCollected += 1;
-        applyPowerUp(s, p, now, s.players[0]);
-        spawnParticles(s, p.pos.x, p.pos.y, 14, '#ffffff', 200, 600);
+      for (const pl of s.players) {
+        if (pl.ship.alive && circlesHit(pl.ship, p)) {
+          p.collected = true;
+          pl.runStats.powerupsCollected += 1;
+          applyPowerUp(s, p, now, pl);
+          spawnParticles(s, p.pos.x, p.pos.y, 14, '#ffffff', 200, 600);
+        }
       }
     }
     s.powerups = s.powerups.filter(p => p.alive && !p.collected);
@@ -3283,9 +3300,11 @@ export function updateGame(s: GameState): void {
           || s.powerups.some(p => p.alive && !p.collected);
         if (hasGoodies && !s.cheatedThisRun) {
           s.waveClearAt = now;
-          s.players[0].ship.invulnerableUntil = Math.max(
-            s.players[0].ship.invulnerableUntil, now + WAVE_CLEAR_GRACE_MS + 200,
-          );
+          for (const p of s.players) {
+            p.ship.invulnerableUntil = Math.max(
+              p.ship.invulnerableUntil, now + WAVE_CLEAR_GRACE_MS + 200,
+            );
+          }
         } else {
           s.waveClearAt = now - WAVE_CLEAR_GRACE_MS;
         }
@@ -3318,8 +3337,10 @@ export function updateGame(s: GameState): void {
   }
 
   // Combo decay
-  if (s.players[0].combo > 0 && now > s.players[0].comboExpiresAt) {
-    s.players[0].combo = 0;
+  for (const p of s.players) {
+    if (p.combo > 0 && now > p.comboExpiresAt) {
+      p.combo = 0;
+    }
   }
 
   // Toast expiry
