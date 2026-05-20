@@ -2553,9 +2553,15 @@ export function updateGame(s: GameState): void {
   // One fixed sim step. `dt` is the constant timestep; `now` is the sim
   // clock (s.elapsed), not wall time, so every deadline runs on a clock
   // that advances by exactly STEP each tick — the basis for a run
-  // reproducing bit-identically from its seed and inputs (B3). Hit-stop
-  // is handled by the loop (it skips this call), so there is no
-  // early-return here.
+  // reproducing bit-identically from its seed and inputs (B3).
+  // Hit-stop lives in the sim contract: when set the step decrements the
+  // counter and returns, so both lockstep clients skip the same step
+  // off the same `s.hitStopSteps` value rather than each side's loop
+  // making the call independently.
+  if (s.hitStopSteps > 0) {
+    s.hitStopSteps--;
+    return;
+  }
   const dt = FIXED_STEP_S;
   const now = s.elapsed;
   s.frame++;
