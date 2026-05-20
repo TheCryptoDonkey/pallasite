@@ -35,7 +35,7 @@ import { getDisplayMode, applyDisplayMode } from './display.js';
 import { warmWebGLIfPreviouslyEnabled, getTheme, getAsciiCols, getBitDepth, getBitColour } from './visual-style.js';
 import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
-import { InputLog, samplePlayerInput, encodePlayerInput, type EdgeFlags } from './netcode.js';
+import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, type EdgeFlags } from './netcode.js';
 import type { GameState } from './types.js';
 import { DOWN_DOUBLE_TAP_WINDOW_MS, WORLD_W, WORLD_H } from './types.js';
 
@@ -688,17 +688,29 @@ function loop(now: number): void {
       // Hit-stop freeze: the step's time passes but the sim does not tick.
       state.hitStopSteps--;
     } else {
-      // Lockstep input sample: snapshot the per-player input this tick will
-      // consume into the log, keyed by the frame about to be entered
-      // (`state.frame` increments inside updateGame). Sample-only in this
-      // commit -- the log observes the local input, it does not yet drive
-      // the sim, so solo behaviour stays byte-identical.
+      // Lockstep input pipeline. Each tick:
+      //   1) snapshot the live per-player input into the log, keyed by the
+      //      frame about to be entered (`state.frame` increments inside
+      //      updateGame);
+      //   2) decode the log entry for the same frame back into `players[i]`
+      //      so the sim reads from the log path rather than the live state
+      //      directly.
+      // With no input-delay configured the round-trip is byte-identical for
+      // keyboard input -- the encode / decode pair preserves the four held
+      // bits, edges are observation-only here (their dispatch is still on
+      // keydown), and KeyA/D/W alias slots collapse into the arrow slots
+      // through the sim's `||`. Joystick mode's heading rides as a 10-bit
+      // bucket, which is the cost of being lockstep-friendly.
       if (!inputLog || inputLog.players !== state.players.length) {
         inputLog = new InputLog(state.players.length);
       }
       for (let i = 0; i < state.players.length; i++) {
         const input = samplePlayerInput(state.players[i], edgeFlags[i]);
         inputLog.record(state.frame, i, encodePlayerInput(input));
+      }
+      for (let i = 0; i < state.players.length; i++) {
+        const encoded = inputLog.get(state.frame, i);
+        if (encoded >= 0) applyPlayerInput(state.players[i], decodePlayerInput(encoded));
       }
       updateGame(state);
     }
