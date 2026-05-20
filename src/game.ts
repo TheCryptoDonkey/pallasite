@@ -248,7 +248,7 @@ function makePlayerState(): PlayerState {
   };
 }
 
-export function startGame(s: GameState, forcedSeed?: number): void {
+export function startGame(s: GameState, forcedSeed?: number, opts?: { players?: 1 | 2 }): void {
   // 600bn flavour now runs through the standard Pallasite startGame +
   // beginWave path. beginWave(s, 1) detects flavour=600bn and spawns
   // council-member-textured asteroids instead of the wave-1 default.
@@ -271,13 +271,17 @@ export function startGame(s: GameState, forcedSeed?: number): void {
   // that bypass title need this to honour the picked mode.
   lockInMode(getStoredMode());
   const mods = currentMods();
-  s.players = [makePlayerState()];
-  const p0 = s.players[0];
+  const playerCount = opts?.players ?? 1;
+  s.players = [];
+  for (let i = 0; i < playerCount; i++) s.players.push(makePlayerState());
   s.wave = 0;
   // Lives: admin override (starting_lives > 0) wins over the
   // difficulty default. 0 = inherit (the common case).
   const livesOverride = getGameConfig().starting_lives;
-  p0.lives = livesOverride > 0 ? livesOverride : mods.livesStart;
+  const startingLives = livesOverride > 0 ? livesOverride : mods.livesStart;
+  for (const pl of s.players) {
+    pl.lives = startingLives;
+  }
   s.asteroids = [];
   s.bullets = [];
   s.enemyBullets = [];
@@ -287,7 +291,7 @@ export function startGame(s: GameState, forcedSeed?: number): void {
   s.powerups = [];
   s.particles = [];
   s.pendingTransitions = [];
-  p0.ship.invulnerableUntil = s.elapsed + SHIP_INVULN_MS;
+  for (const pl of s.players) pl.ship.invulnerableUntil = s.elapsed + SHIP_INVULN_MS;
   s.nextUfoSpawn = getGameConfig().ufo_first_spawn_ms;
   s.nextMineSpawn = 0;
   s.runTimeMs = 0;

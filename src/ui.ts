@@ -9957,7 +9957,8 @@ function renderRunCredits(
     const again = el('button', { className: 'menu-btn', parent: row, text: 'SPAWN AGAIN' });
     onTap(again, () => {
       cleanup();
-      startGame(state);
+      const couchMode = new URLSearchParams(window.location.search).has('couch');
+      startGame(state, undefined, { players: couchMode ? 2 : 1 });
       onStartCb?.();
     });
     if (state.deathReplay) {
@@ -10011,7 +10012,8 @@ function renderRunCredits(
     const again = el('button', { className: 'menu-btn', parent: row, text: 'IGNITE AGAIN' });
     onTap(again, () => {
       cleanup();
-      startGame(state);
+      const couchMode = new URLSearchParams(window.location.search).has('couch');
+      startGame(state, undefined, { players: couchMode ? 2 : 1 });
       onStartCb?.();
     });
   }

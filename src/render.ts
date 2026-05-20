@@ -2435,6 +2435,9 @@ function pad(n: number, len: number): string {
   return n.toString().padStart(len, '0');
 }
 
+// TODO(#49): Per-player HUD rails — currently reads players[0] only. Add a second
+//  set of readouts (score, lives, sats) anchored to the opposite corner for P2 in
+//  couch mode. Deferred as a polish follow-up to the initial two-player ship path.
 function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   const p0 = s.players[0];
   ctx.save();
@@ -3555,7 +3558,9 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
   for (const p of s.powerups) blip(p.pos.x, p.pos.y, 3.4, '#5be8ff');
   for (const m of s.mines) blip(m.pos.x, m.pos.y, 3, '#ff5a4a');
   for (const u of s.ufos) blip(u.pos.x, u.pos.y, 3.6, '#ff4af0');
-  if (s.players[0].ship.alive) blip(s.players[0].ship.pos.x, s.players[0].ship.pos.y, 4.5, '#58ff58');
+  for (const pl of s.players) {
+    if (pl.ship.alive) blip(pl.ship.pos.x, pl.ship.pos.y, 4.5, '#58ff58');
+  }
 
   // Visible-strip box — the slice the follow camera currently shows. Drawn as
   // one or two rects so it wraps cleanly around the radar's edges.
@@ -3727,7 +3732,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     for (const b of state.enemyBullets) scan(b.pos.x, b.pos.y);
     for (const c of state.coins) scan(c.pos.x, c.pos.y);
     for (const p of state.powerups) scan(p.pos.x, p.pos.y);
-    scan(p0.ship.pos.x, p0.ship.pos.y);
+    for (const pl of state.players) scan(pl.ship.pos.x, pl.ship.pos.y);
     // The follow camera derives its X copies from the visible strip
     // (followXs); only the contain modes need the proximity scan for X.
     if (!followActive) {
@@ -3797,9 +3802,13 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       for (const p of state.powerups) drawPowerUp(ctx, p, now);
       drawGhostShip(ctx, state);
       drawGhostAttract(ctx, state, now);
-      drawShield(ctx, p0.ship, now, state.elapsed);
       const idleSway = state.phase === 'title' || state.phase === 'wavestart';
-      drawShip(ctx, p0.ship, now, state.elapsed, idleSway);
+      for (const pl of state.players) {
+        if (pl.ship.alive || pl.ship.hyperspaceCloakMs > 0) {
+          drawShield(ctx, pl.ship, now, state.elapsed);
+          drawShip(ctx, pl.ship, now, state.elapsed, idleSway);
+        }
+      }
       if (isGhost) ctx.restore();
     }
   }

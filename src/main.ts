@@ -47,6 +47,9 @@ const canvas = document.getElementById('game') as HTMLCanvasElement;
 const overlay3d = document.getElementById('game3d') as HTMLCanvasElement | null;
 const state: GameState = makeInitialState();
 
+/** True when ?couch=1 is present — enables two-player local co-op. */
+const couchMode = new URLSearchParams(window.location.search).has('couch');
+
 /** Timestamp of the most recent ArrowDown keydown — used for double-tap detection. */
 let lastDownArrowAt = 0;
 
@@ -248,11 +251,13 @@ bindActions({
     // a prior daily run would persist through a subsequent free-mode start
     // (the IGNITE button bypasses the keyboard Enter path that did the reset).
     setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-    startGame(state);
+    startGame(state, undefined, { players: couchMode ? 2 : 1 });
     // Only force wavestart for the standard campaign — startGame on the
     // 600bn flavour sets phase='sanctum' and doesn't want the warp/wave
     // pipeline kicking in over the top.
     if (getFlavour() !== '600bn') state.phase = 'wavestart';
+    // Couch mode forces retro in fit(); re-run fit now that players[] is updated.
+    if (couchMode) (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
     clearOverlay();
     audio.setMusicDuck(1);
     musicSetTrackForState(state);
@@ -331,16 +336,40 @@ window.addEventListener('keydown', e => {
     return;
   }
 
-  state.players[0].keys[e.code] = true;
+  // In couch mode, route P2's physical keys to players[1].keys under logical key names.
+  // P2 mapping: KeyA→ArrowLeft, KeyD→ArrowRight, KeyW→ArrowUp, KeyS→ArrowDown, ShiftLeft→Space.
+  // Those same keys in solo mode continue to write to players[0] via e.code (game.ts aliases them).
+  if (couchMode && state.players.length >= 2) {
+    const p2LogicalKey: Record<string, string> = {
+      KeyA: 'ArrowLeft', KeyD: 'ArrowRight', KeyW: 'ArrowUp', KeyS: 'ArrowDown', ShiftLeft: 'Space',
+    };
+    const logical = p2LogicalKey[e.code];
+    if (logical !== undefined) {
+      state.players[1].keys[logical] = true;
+      // P2 hyperspace: KeyU
+    } else if (e.code === 'KeyU' && state.phase === 'playing') {
+      tryHyperspace(state, state.elapsed, state.players[1]);
+    } else if (e.code === 'KeyI' && state.phase === 'playing' && !e.repeat) {
+      // P2 shield: KeyI
+      tryActivateShield(state, state.elapsed, state.players[1]);
+    }
+  }
+  // P1 input — in couch mode only arrow/space go to players[0]; in solo mode all keys do (game.ts
+  // aliases KeyA/D/W/S to ArrowLeft/Right/Up/Down for P1 via the keys record directly).
+  if (!couchMode || !['KeyA', 'KeyD', 'KeyW', 'KeyS', 'ShiftLeft', 'KeyU', 'KeyI'].includes(e.code)) {
+    state.players[0].keys[e.code] = true;
+  }
   // Prevent arrows from scrolling
   if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space'].includes(e.code)) {
     e.preventDefault();
   }
-  // Hyperspace via Shift / H — instant
+  // Hyperspace via Shift / H — instant (P1)
   if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyH') && state.phase === 'playing') {
-    tryHyperspace(state, state.elapsed, state.players[0]);
+    if (!couchMode || e.code !== 'ShiftLeft') {
+      tryHyperspace(state, state.elapsed, state.players[0]);
+    }
   }
-  // Down-arrow: shield on first press, hyperspace on double-tap
+  // Down-arrow: shield on first press, hyperspace on double-tap (P1)
   if (e.code === 'ArrowDown' && state.phase === 'playing' && !e.repeat) {
     const now = performance.now();
     const sinceLast = now - lastDownArrowAt;
@@ -407,8 +436,9 @@ window.addEventListener('keydown', e => {
     lockInDifficulty(getStoredDifficulty());
     gateBehindOnboarding(() => {
       setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-      startGame(state);
+      startGame(state, undefined, { players: couchMode ? 2 : 1 });
       if (getFlavour() !== '600bn') state.phase = 'wavestart';
+      if (couchMode) (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
       clearOverlay();
     });
   }
@@ -420,14 +450,28 @@ window.addEventListener('keydown', e => {
     void audio.unlockAudio();
     lockInDifficulty(getStoredDifficulty());
     setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-    startGame(state);
+    startGame(state, undefined, { players: couchMode ? 2 : 1 });
     if (getFlavour() !== '600bn') state.phase = 'wavestart';
+    if (couchMode) (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
     clearOverlay();
   }
 });
 
 window.addEventListener('keyup', e => {
-  state.players[0].keys[e.code] = false;
+  // Mirror the couch-mode routing from keydown: P2 physical keys release P2 logical keys.
+  if (couchMode && state.players.length >= 2) {
+    const p2LogicalKey: Record<string, string> = {
+      KeyA: 'ArrowLeft', KeyD: 'ArrowRight', KeyW: 'ArrowUp', KeyS: 'ArrowDown', ShiftLeft: 'Space',
+    };
+    const logical = p2LogicalKey[e.code];
+    if (logical !== undefined) {
+      state.players[1].keys[logical] = false;
+      if (logical === 'Space') state.players[1].keys.Space = false;
+    }
+  }
+  if (!couchMode || !['KeyA', 'KeyD', 'KeyW', 'KeyS', 'ShiftLeft'].includes(e.code)) {
+    state.players[0].keys[e.code] = false;
+  }
   if (e.code === 'Space') {
     // Allow rapid re-fire on tap by clearing the held state
     state.players[0].keys.Space = false;
@@ -508,7 +552,7 @@ window.addEventListener('keyup', firstUnlock, true);
 
 // Lose focus → release keys & pause
 window.addEventListener('blur', () => {
-  state.players[0].keys = {};
+  for (const pl of state.players) pl.keys = {};
   audio.thrustOff();
   if (state.phase === 'playing') {
     pauseGame(state);
@@ -777,8 +821,14 @@ async function boot(): Promise<void> {
         overlay3d.style.width = vw + 'px';
         overlay3d.style.height = vh + 'px';
       }
-      setRenderMode({ kind: 'modern', vw, vh, dpr, scale, tx, ty, insets, follow });
-      return;
+      // Couch mode forces retro so the full world is visible and both ships
+      // stay on screen — the portrait follow camera tracks only one ship.
+      if (state.players.length >= 2) {
+        // Fall through to retro branch below.
+      } else {
+        setRenderMode({ kind: 'modern', vw, vh, dpr, scale, tx, ty, insets, follow });
+        return;
+      }
     }
 
     // Retro: the 16:9 world inscribed in the viewport, capped at WORLD_W
