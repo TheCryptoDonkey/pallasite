@@ -73,6 +73,16 @@ export interface EdgeFlags {
   shield: boolean;
 }
 
+/** Process-global edge buffer raised by the local input sources (keyboard,
+ *  touch, controller PWA) and drained by the per-step sample. Two slots, one
+ *  per local player; couch 2-player uses both, solo uses index 0 only. Lives
+ *  in this module so every input source (main.ts, controller-host.ts, touch
+ *  callbacks) raises a flag without taking a dependency on main.ts. */
+export const localEdges: EdgeFlags[] = [
+  { hyperspace: false, shield: false },
+  { hyperspace: false, shield: false },
+];
+
 /** A canonical empty input -- every flag clear, no heading. Use as a fill
  *  value in the input log and as the starting `prev` for a fresh run. */
 export const EMPTY_INPUT: PlayerInput = Object.freeze({
