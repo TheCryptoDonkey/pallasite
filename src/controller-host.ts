@@ -20,7 +20,7 @@ import {
   type SignRequestFrame,
 } from './controller-types.js';
 import type { GameState } from './types.js';
-import { tryHyperspace, tryActivateShield } from './game.js';
+import { localEdges } from './netcode.js';
 
 /** Identity the host has been told the controller is carrying. Mirror
  *  of AnnouncedSigner from controller-mobile, re-declared here so the
@@ -475,11 +475,11 @@ function applySlotInput(state: GameState, slot: string, value: string): void {
       return;
     case 'B':
       if (!on) return;
-      if (state.phase === 'playing') tryActivateShield(state, state.elapsed, state.players[0]);
+      if (state.phase === 'playing') localEdges[0].shield = true;
       return;
     case 'X':
       if (!on) return;
-      if (state.phase === 'playing') tryHyperspace(state, state.elapsed, state.players[0]);
+      if (state.phase === 'playing') localEdges[0].hyperspace = true;
       return;
     case 'Y':
       if (!on) return;
