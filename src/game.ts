@@ -2198,33 +2198,40 @@ export function tryHyperspace(s: GameState, now: number, p: PlayerState): void {
   }
   audio.thrustOff();
   // Re-emerge from the cloak window, on the sim clock.
-  scheduleSimTransition(s, 'hyperspace-emerge', now + HYPERSPACE_CLOAK_MS);
+  scheduleSimTransition(s, 'hyperspace-emerge', now + HYPERSPACE_CLOAK_MS, 0, 0, s.players.indexOf(p));
 }
 
-function emergeHyperspace(s: GameState): void {
-  if (!s.players[0].ship.alive) return;
-  if (s.players[0].ship.hyperspaceMalfunction) {
-    s.players[0].ship.hyperspaceMalfunction = false;
+function emergeHyperspace(s: GameState, p: PlayerState): void {
+  if (!p.ship.alive) return;
+  if (p.ship.hyperspaceMalfunction) {
+    p.ship.hyperspaceMalfunction = false;
     audio.explosion(1.2);
     // Implosion at the original departure point — a tighter, redder burst than a
     // generic explosion, so the player reads "the warp ate me" not "I exploded"
-    spawnParticles(s, s.players[0].ship.pos.x, s.players[0].ship.pos.y, 36, '#ff5050', 320, 900);
-    spawnParticles(s, s.players[0].ship.pos.x, s.players[0].ship.pos.y, 18, '#ffffff', 80, 400);
-    s.players[0].ship.hyperspaceCloakMs = 0;
-    s.players[0].lives -= 1;
-    s.players[0].runStats.livesLost += 1;
+    spawnParticles(s, p.ship.pos.x, p.ship.pos.y, 36, '#ff5050', 320, 900);
+    spawnParticles(s, p.ship.pos.x, p.ship.pos.y, 18, '#ffffff', 80, 400);
+    p.ship.hyperspaceCloakMs = 0;
+    p.lives -= 1;
+    p.runStats.livesLost += 1;
     toastNow(s, 'HYPERSPACE BREACH');
-    if (s.players[0].lives <= 0) {
-      s.phase = 'gameover';
-      s.phaseStart = s.elapsed;
-      // Hull-breached music carries the moment now — no synth gameOver chime.
-      audio.stopHeartbeat();
-      audio.ufoSirenStop();
-      audio.stopAmbient();
+    if (p.lives <= 0) {
+      // Game-over only when every player is out. With one player this is
+      // exactly the original condition; with two it lets the survivor play on.
+      if (s.players.every((pl) => pl.lives <= 0)) {
+        s.phase = 'gameover';
+        s.phaseStart = s.elapsed;
+        // Hull-breached music carries the moment now — no synth gameOver chime.
+        audio.stopHeartbeat();
+        audio.ufoSirenStop();
+        audio.stopAmbient();
+      } else {
+        // p is out, but others are alive — stop simulating this ship.
+        p.ship.alive = false;
+      }
     } else {
       // Respawn after the malfunction, scheduled on the sim clock.
-      scheduleSimTransition(s, 'respawn', s.elapsed + 1200, 0, s.elapsed + 1200 + RESPAWN_MAX_WAIT_MS);
-      s.players[0].ship.alive = false;
+      scheduleSimTransition(s, 'respawn', s.elapsed + 1200, 0, s.elapsed + 1200 + RESPAWN_MAX_WAIT_MS, s.players.indexOf(p));
+      p.ship.alive = false;
     }
     return;
   }
@@ -2244,9 +2251,9 @@ function emergeHyperspace(s: GameState): void {
     }
     if (safe) { pos = candidate; break; }
   }
-  s.players[0].ship.pos = pos;
-  s.players[0].ship.hyperspaceCloakMs = 0;
-  s.players[0].ship.invulnerableUntil = s.elapsed + 800;
+  p.ship.pos = pos;
+  p.ship.hyperspaceCloakMs = 0;
+  p.ship.invulnerableUntil = s.elapsed + 800;
   // Emerge cinematic — expanding ring + arrival starburst at the new
   // position. Spawned after the position lands so the ring centres on
   // the visible ship rather than where it WAS during cloak.
@@ -2464,10 +2471,11 @@ function scheduleSimTransition(
   due: number,
   epoch = 0,
   arg = 0,
+  playerIdx = -1,
 ): void {
   const existing = s.pendingTransitions.findIndex((t) => t.kind === kind);
   if (existing >= 0) s.pendingTransitions.splice(existing, 1);
-  s.pendingTransitions.push({ kind, due, epoch, arg });
+  s.pendingTransitions.push({ kind, due, epoch, arg, playerIdx });
 }
 
 /** Fire one due transition. Returns true when consumed (drop it), false
@@ -2505,10 +2513,10 @@ function runSimTransition(s: GameState, t: SimTransition): boolean {
       return true;
     }
     case 'hyperspace-emerge':
-      emergeHyperspace(s);
+      emergeHyperspace(s, s.players[t.playerIdx]);
       return true;
     case 'respawn':
-      return respawnShip(s, t.arg);
+      return respawnShip(s, s.players[t.playerIdx], t.arg);
     case 'deathreplay-end': {
       if (s.phase === 'deathreplay') {
         audio.setMusicDuck(1);
@@ -3956,39 +3964,45 @@ function killShip(s: GameState, p: PlayerState): void {
   p.lives -= 1;
   p.runStats.livesLost += 1;
   if (p.lives <= 0) {
-    // Final death — capture the buffer for the replay, then route through
-    // 'deathreplay' (provided we have something worth showing). The post-replay
-    // transition stops the ambient bed; hull-breached music carries the moment.
-    if (s.replayBuffer.length >= 8) {
-      s.deathReplay = {
-        snapshots: s.replayBuffer.slice(),
-        startedAt: performance.now(),
-        spanMs: s.replayBuffer[s.replayBuffer.length - 1].t - s.replayBuffer[0].t,
-        explosionAt: deathPos,
-        explosionShip: {
-          pos: { x: p.ship.pos.x, y: p.ship.pos.y },
-          vel: { x: p.ship.vel.x, y: p.ship.vel.y },
-          rot: p.ship.rot,
-        },
-        explosionSpawned: false,
-      };
-      // Clear the live particle/debris pools so the killShip burst doesn't
-      // visibly haunt the replay's prelude — the replay re-spawns identical
-      // particles+debris when it reaches the impact frame.
-      s.particles = [];
-      s.debris = [];
-      // Drop any WebGL ship-explosion chunks left over from the live death
-      // too — the replay re-fires the mesh explosion at its impact frame.
-      callWebGLClearShipChunks();
-      startDeathReplay(s);
-    } else {
-      s.phase = 'gameover';
-      s.phaseStart = s.elapsed;
-      // Hull-breached music carries it; no synth chime.
-      stopGameplayAudio();
+    // p is out for good (ship.alive was already flipped to false above).
+    // Fire the gameover sequence only when EVERY player is out — otherwise
+    // the run continues with the survivors. Length-1: this is the original
+    // single-player gameover.
+    if (s.players.every((pl) => pl.lives <= 0)) {
+      // Final death — capture the buffer for the replay, then route through
+      // 'deathreplay' (provided we have something worth showing). The post-replay
+      // transition stops the ambient bed; hull-breached music carries the moment.
+      if (s.replayBuffer.length >= 8) {
+        s.deathReplay = {
+          snapshots: s.replayBuffer.slice(),
+          startedAt: performance.now(),
+          spanMs: s.replayBuffer[s.replayBuffer.length - 1].t - s.replayBuffer[0].t,
+          explosionAt: deathPos,
+          explosionShip: {
+            pos: { x: p.ship.pos.x, y: p.ship.pos.y },
+            vel: { x: p.ship.vel.x, y: p.ship.vel.y },
+            rot: p.ship.rot,
+          },
+          explosionSpawned: false,
+        };
+        // Clear the live particle/debris pools so the killShip burst doesn't
+        // visibly haunt the replay's prelude — the replay re-spawns identical
+        // particles+debris when it reaches the impact frame.
+        s.particles = [];
+        s.debris = [];
+        // Drop any WebGL ship-explosion chunks left over from the live death
+        // too — the replay re-fires the mesh explosion at its impact frame.
+        callWebGLClearShipChunks();
+        startDeathReplay(s);
+      } else {
+        s.phase = 'gameover';
+        s.phaseStart = s.elapsed;
+        // Hull-breached music carries it; no synth chime.
+        stopGameplayAudio();
+      }
     }
   } else {
-    scheduleSimTransition(s, 'respawn', s.elapsed + 1500, 0, s.elapsed + 1500 + RESPAWN_MAX_WAIT_MS);
+    scheduleSimTransition(s, 'respawn', s.elapsed + 1500, 0, s.elapsed + 1500 + RESPAWN_MAX_WAIT_MS, s.players.indexOf(p));
   }
 }
 
@@ -4019,7 +4033,7 @@ function spawnPointClear(s: GameState, x: number, y: number): boolean {
  *  the spawn point is still blocked, so the attempt retries next step.
  *  `deadline` is the sim-clock time past which the respawn goes ahead
  *  regardless, so a hazard parked on the point cannot soft-lock it. */
-function respawnShip(s: GameState, deadline: number): boolean {
+function respawnShip(s: GameState, p: PlayerState, deadline: number): boolean {
   if (s.phase === 'gameover' || s.phase === 'title') return true;
   // Set-piece waves with a custom player spawn (e.g. heist drops you at
   // the bottom edge) need the same coords on respawn.
@@ -4031,13 +4045,13 @@ function respawnShip(s: GameState, deadline: number): boolean {
   if (s.elapsed < deadline && !spawnPointClear(s, px, py)) {
     return false;
   }
-  s.players[0].ship = makeShip();
+  p.ship = makeShip();
   if (spawn) {
-    s.players[0].ship.pos.x = spawn.x;
-    s.players[0].ship.pos.y = spawn.y;
-    s.players[0].ship.rot = spawn.rot ?? -Math.PI / 2;
+    p.ship.pos.x = spawn.x;
+    p.ship.pos.y = spawn.y;
+    p.ship.rot = spawn.rot ?? -Math.PI / 2;
   }
-  s.players[0].ship.invulnerableUntil = s.elapsed + RESPAWN_INVULN_MS;
+  p.ship.invulnerableUntil = s.elapsed + RESPAWN_INVULN_MS;
   toastNow(s, '');
   return true;
 }

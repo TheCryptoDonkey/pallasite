@@ -444,6 +444,10 @@ export interface SimTransition {
   /** Kind-specific payload: wave number, warp target wave, or the respawn
    *  max-wait deadline. 0 when unused. */
   arg: number;
+  /** Index into GameState.players of the player this transition affects, for
+   *  per-player kinds (respawn, hyperspace-emerge). -1 for transitions that
+   *  are not player-bound. */
+  playerIdx: number;
 }
 
 /** Per-player gameplay state. `GameState.players` holds one of these per
