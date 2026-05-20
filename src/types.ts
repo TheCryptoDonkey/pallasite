@@ -188,6 +188,9 @@ export interface Bullet extends Entity {
    *  Used by the wave-end NO MISS bonus to count shots that TTL'd without
    *  ever landing a hit. */
   hasLanded: boolean;
+  /** Index into GameState.players of the player who fired this bullet;
+   *  -1 for UFO / enemy bullets which are never credited to a player. */
+  owner: number;
 }
 
 export type UfoType = 'cruiser' | 'elite' | 'tank' | 'sniper' | 'boss';

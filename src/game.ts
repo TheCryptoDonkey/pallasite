@@ -1285,18 +1285,17 @@ function maybeDropPowerUp(s: GameState, x: number, y: number, force?: PowerUpTyp
   spawnParticles(s, x, y, 18, cfg.colour, 220, 700);
 }
 
-function applyPowerUp(s: GameState, p: PowerUp, now: number): void {
-  const cfg = POWERUP_CONFIG[p.type];
-  const p0 = s.players[0];
-  if (p.type === 'rapid') {
-    p0.rapidExpiresAt = Math.max(p0.rapidExpiresAt, now) + cfg.durationMs;
-  } else if (p.type === 'satboost') {
-    p0.satboostExpiresAt = Math.max(p0.satboostExpiresAt, now) + cfg.durationMs;
-  } else if (p.type === 'trident') {
-    p0.tridentExpiresAt = Math.max(p0.tridentExpiresAt, now) + cfg.durationMs;
-  } else if (p.type === 'magnet') {
-    p0.magnetExpiresAt = Math.max(p0.magnetExpiresAt, now) + cfg.durationMs;
-  } else if (p.type === 'nova') {
+function applyPowerUp(s: GameState, pu: PowerUp, now: number, p: PlayerState): void {
+  const cfg = POWERUP_CONFIG[pu.type];
+  if (pu.type === 'rapid') {
+    p.rapidExpiresAt = Math.max(p.rapidExpiresAt, now) + cfg.durationMs;
+  } else if (pu.type === 'satboost') {
+    p.satboostExpiresAt = Math.max(p.satboostExpiresAt, now) + cfg.durationMs;
+  } else if (pu.type === 'trident') {
+    p.tridentExpiresAt = Math.max(p.tridentExpiresAt, now) + cfg.durationMs;
+  } else if (pu.type === 'magnet') {
+    p.magnetExpiresAt = Math.max(p.magnetExpiresAt, now) + cfg.durationMs;
+  } else if (pu.type === 'nova') {
     detonateNova(s);
   }
   toastNow(s, cfg.pickupLabel);
@@ -1321,21 +1320,21 @@ function detonateNova(s: GameState): void {
       a.hitFlash = 1;
       spawnParticles(s, a.pos.x, a.pos.y, 14, '#ffd84a', 220, 540);
     } else {
-      breakAsteroid(s, a, { suppressCoins: true });
+      breakAsteroid(s, a, { suppressCoins: true, p: s.players[0] });
     }
   }
   for (const u of [...s.ufos]) {
     if (!u.alive) continue;
     if (u.type === 'boss') {
-      damageUfo(s, u);
-      damageUfo(s, u);
-      damageUfo(s, u);
+      damageUfo(s, u, s.players[0]);
+      damageUfo(s, u, s.players[0]);
+      damageUfo(s, u, s.players[0]);
     } else {
-      destroyUfo(s, u);
+      destroyUfo(s, u, s.players[0]);
     }
   }
   for (const m of [...s.mines]) {
-    if (m.alive) destroyMine(s, m);
+    if (m.alive) destroyMine(s, m, s.players[0]);
   }
   s.enemyBullets = [];
   audio.explosion(1.8);
@@ -1578,6 +1577,7 @@ function ufoShootAt(s: GameState, u: Ufo, target: Vec2): void {
     caromHit: false,
     wrapped: false,
     hasLanded: false,
+    owner: -1,
   });
   audio.ufoShoot();
 }
@@ -1601,6 +1601,7 @@ function ufoFanShoot(s: GameState, u: Ufo, target: Vec2): void {
       caromHit: false,
       wrapped: false,
       hasLanded: false,
+      owner: -1,
     });
   }
   audio.ufoShoot();
@@ -1628,6 +1629,7 @@ function ufoRadialShoot(s: GameState, u: Ufo): void {
       caromHit: false,
       wrapped: false,
       hasLanded: false,
+      owner: -1,
     });
   }
   audio.ufoShoot();
@@ -1651,11 +1653,11 @@ function makeMine(pos: Vec2, hp: number = MINE_HP_BASE): Mine {
 
 /** One bullet's worth of damage. Flashes on a non-fatal hit; destroys
  *  on the killing blow with the existing payout/effects path. */
-function damageMine(s: GameState, m: Mine): void {
+function damageMine(s: GameState, m: Mine, p: PlayerState): void {
   m.hp -= 1;
   m.hitFlash = 1;
   if (m.hp <= 0) {
-    destroyMine(s, m);
+    destroyMine(s, m, p);
   } else {
     audio.hit();
     spawnParticles(s, m.pos.x, m.pos.y, 5, '#ff5050', 110, 280);
@@ -1720,13 +1722,13 @@ function updateMines(s: GameState, dt: number, _now: number): void {
   s.mines = s.mines.filter(m => m.alive);
 }
 
-function destroyMine(s: GameState, m: Mine): void {
+function destroyMine(s: GameState, m: Mine, p: PlayerState): void {
   if (!m.alive) return;
   m.alive = false;
-  s.players[0].runStats.minesDestroyed += 1;
+  p.runStats.minesDestroyed += 1;
   markAchievement(s, 'first-mine');
-  const mul = recordCombo(s, s.elapsed);
-  s.players[0].score += MINE_POINTS * mul;
+  const mul = recordCombo(s, s.elapsed, p);
+  p.score += MINE_POINTS * mul;
   audio.explosion(0.7);
   recordStreamEvent('md', m.pos.x, m.pos.y);
   spawnParticles(s, m.pos.x, m.pos.y, 14, '#ff5050', 200, 600);
@@ -1756,7 +1758,7 @@ function triggerCompletion(s: GameState): void {
   s.enemyBullets = [];
 }
 
-function damageUfo(s: GameState, u: Ufo): void {
+function damageUfo(s: GameState, u: Ufo, p: PlayerState): void {
   u.hp -= 1;
   u.hitFlash = 1;
   spawnParticles(s, u.pos.x, u.pos.y, 4, '#ffffff', 80, 250);
@@ -1814,7 +1816,7 @@ function damageUfo(s: GameState, u: Ufo): void {
       maybeDropPowerUp(s, u.pos.x + 80, u.pos.y + 20, aid);
       // Easy: free life on every phase entry.
       if (currentDifficulty() === 'easy') {
-        s.players[0].lives += 1;
+        p.lives += 1;
         toastNow(s, next === 3 ? 'CRITICAL · +1 LIFE' : 'ENRAGED · +1 LIFE');
       } else {
         toastNow(s, next === 3 ? 'EVENT HORIZON · CRITICAL' : 'EVENT HORIZON · ENRAGED');
@@ -1823,17 +1825,17 @@ function damageUfo(s: GameState, u: Ufo): void {
   }
 
   if (u.hp <= 0) {
-    destroyUfo(s, u);
+    destroyUfo(s, u, p);
   } else {
     audio.hit();
   }
 }
 
-function destroyUfo(s: GameState, u: Ufo): void {
+function destroyUfo(s: GameState, u: Ufo, p: PlayerState): void {
   u.alive = false;
   s.ufoKilledThisWave = true;
   if (u.type !== 'boss') s.ufoKillsThisWave += 1;
-  s.players[0].runStats.ufoKills[u.type] += 1;
+  p.runStats.ufoKills[u.type] += 1;
   // Per-type kill achievements — first-ufo fires on any kill, plus a
   // species-specific badge for the harder targets. Boss gets its own.
   markAchievement(s, 'first-ufo');
@@ -1841,11 +1843,11 @@ function destroyUfo(s: GameState, u: Ufo): void {
   if (u.type === 'elite')  markAchievement(s, 'first-elite');
   if (u.type === 'sniper') markAchievement(s, 'first-sniper');
   if (u.type === 'boss')   markAchievement(s, 'first-boss');
-  const mul = recordCombo(s, s.elapsed);
+  const mul = recordCombo(s, s.elapsed, p);
   // Risk-proximity also pays out on UFO kills — sniping from safety is fine,
   // but landing the kill while threading the field earns a fatter score.
   const risk = computeRiskBonus(s);
-  s.players[0].score += Math.round(UFO_POINTS[u.type] * mul * risk.mul);
+  p.score += Math.round(UFO_POINTS[u.type] * mul * risk.mul);
   const explodeScale = u.type === 'tank' ? 1.3 : u.type === 'elite' ? 0.9 : 1.0;
   audio.explosion(explodeScale);
   recordStreamEvent('uk', u.pos.x, u.pos.y);
@@ -1886,33 +1888,34 @@ function destroyUfo(s: GameState, u: Ufo): void {
     // Random power-up drop on regular UFO kills
     maybeDropPowerUp(s, u.pos.x, u.pos.y);
   }
-  maybeExtraLife(s);
+  maybeExtraLife(s, p);
 }
 
 // ── Bullets ───────────────────────────────────────────────────────────────────
 
-export function fireBullet(s: GameState): void {
-  if (!s.players[0].ship.alive) return;
+export function fireBullet(s: GameState, p: PlayerState): void {
+  if (!p.ship.alive) return;
   const mods = currentMods();
-  const cos = Math.cos(s.players[0].ship.rot);
-  const sin = Math.sin(s.players[0].ship.rot);
-  const muzzleX = s.players[0].ship.pos.x + cos * (SHIP_RADIUS + 4);
-  const muzzleY = s.players[0].ship.pos.y + sin * (SHIP_RADIUS + 4);
+  const cos = Math.cos(p.ship.rot);
+  const sin = Math.sin(p.ship.rot);
+  const muzzleX = p.ship.pos.x + cos * (SHIP_RADIUS + 4);
+  const muzzleY = p.ship.pos.y + sin * (SHIP_RADIUS + 4);
   const speed = BULLET_SPEED * mods.bulletSpeedMul;
   // Trident active: fan three bullets at ±TRIDENT_SPREAD around the centre
   // heading. Same speed and cooldown as a normal shot — the value is the
   // wider arc, not faster fire.
-  const tridentActive = s.elapsed < s.players[0].tridentExpiresAt;
+  const tridentActive = s.elapsed < p.tridentExpiresAt;
   const angles = tridentActive
     ? [-TRIDENT_SPREAD, 0, TRIDENT_SPREAD]
     : [0];
+  const ownerIdx = s.players.indexOf(p);
   for (const dAng of angles) {
-    const a = s.players[0].ship.rot + dAng;
+    const a = p.ship.rot + dAng;
     const dx = Math.cos(a);
     const dy = Math.sin(a);
     s.bullets.push({
       pos: { x: muzzleX, y: muzzleY },
-      vel: { x: dx * speed + s.players[0].ship.vel.x * 0.4, y: dy * speed + s.players[0].ship.vel.y * 0.4 },
+      vel: { x: dx * speed + p.ship.vel.x * 0.4, y: dy * speed + p.ship.vel.y * 0.4 },
       radius: BULLET_RADIUS,
       alive: true,
       id: nextStreamEntityId(),
@@ -1921,13 +1924,14 @@ export function fireBullet(s: GameState): void {
       caromHit: false,
       wrapped: false,
       hasLanded: false,
+      owner: ownerIdx,
     });
     s.bulletsFiredThisWave += 1;
-    s.players[0].runStats.bulletsFired += 1;
+    p.runStats.bulletsFired += 1;
   }
   // Visual kick — every shot nudges the ship back a couple of px along its
   // own facing. Decays in a few frames; affects render only.
-  s.players[0].ship.recoilOffset = Math.max(s.players[0].ship.recoilOffset, 1.8);
+  p.ship.recoilOffset = Math.max(p.ship.recoilOffset, 1.8);
   audio.fire();
 }
 
@@ -2081,16 +2085,16 @@ function circlesHit(a: { pos: Vec2; radius: number }, b: { pos: Vec2; radius: nu
   return dx * dx + dy * dy <= r * r;
 }
 
-export function tryActivateShield(s: GameState, now: number): boolean {
-  if (!s.players[0].ship.alive) return false;
-  if (s.players[0].ship.shieldUp) return false;
-  if (now < s.players[0].ship.shieldReadyAt) return false;
+export function tryActivateShield(s: GameState, now: number, p: PlayerState): boolean {
+  if (!p.ship.alive) return false;
+  if (p.ship.shieldUp) return false;
+  if (now < p.ship.shieldReadyAt) return false;
   const mods = currentMods();
-  s.players[0].ship.shieldUp = true;
-  s.players[0].ship.shieldExpiresAt = now + SHIELD_DURATION_MS;
-  s.players[0].ship.shieldReadyAt = now + SHIELD_DURATION_MS + SHIELD_COOLDOWN_MS * mods.shieldCooldownMul;
+  p.ship.shieldUp = true;
+  p.ship.shieldExpiresAt = now + SHIELD_DURATION_MS;
+  p.ship.shieldReadyAt = now + SHIELD_DURATION_MS + SHIELD_COOLDOWN_MS * mods.shieldCooldownMul;
   audio.shieldUp();
-  recordStreamEvent('sb', s.players[0].ship.pos.x, s.players[0].ship.pos.y);
+  recordStreamEvent('sb', p.ship.pos.x, p.ship.pos.y);
   // Small punch on activation — the shield ignite reads as a meaningful
   // event, not a button click.
   bumpTrauma(s, 0.18);
@@ -2122,32 +2126,32 @@ export function cancelShield(s: GameState): void {
   s.players[0].ship.shieldUp = false;
 }
 
-export function tryHyperspace(s: GameState, now: number): void {
-  if (!s.players[0].ship.alive) return;
-  if (s.players[0].ship.hyperspaceCloakMs > 0) return;
-  if (now < s.players[0].ship.hyperspaceReadyAt) return;
+export function tryHyperspace(s: GameState, now: number, p: PlayerState): void {
+  if (!p.ship.alive) return;
+  if (p.ship.hyperspaceCloakMs > 0) return;
+  if (now < p.ship.hyperspaceReadyAt) return;
   const mods = currentMods();
   cancelShield(s);
-  s.players[0].ship.hyperspaceReadyAt = now + HYPERSPACE_COOLDOWN_MS * mods.hyperspaceCooldownMul;
-  s.players[0].ship.hyperspaceCloakMs = HYPERSPACE_CLOAK_MS;
+  p.ship.hyperspaceReadyAt = now + HYPERSPACE_COOLDOWN_MS * mods.hyperspaceCooldownMul;
+  p.ship.hyperspaceCloakMs = HYPERSPACE_CLOAK_MS;
   // Capture the departure point before zeroing velocity — through-mine
   // detonation needs the ship's current position, which is still valid
   // because hyperspaceCloakMs is the only thing gating render/collision.
-  const departureX = s.players[0].ship.pos.x;
-  const departureY = s.players[0].ship.pos.y;
-  s.players[0].ship.vel.x = 0;
-  s.players[0].ship.vel.y = 0;
-  s.players[0].ship.rotVel = 0;
+  const departureX = p.ship.pos.x;
+  const departureY = p.ship.pos.y;
+  p.ship.vel.x = 0;
+  p.ship.vel.y = 0;
+  p.ship.rotVel = 0;
   // Malfunction roll: standalone warps are safe. Only warps within
   // HYPERSPACE_CONSECUTIVE_WINDOW_MS of the last successful jump risk a
   // glitch. Reframes warp from "panic button with a tax" to "movement
   // primitive that punishes spam".
-  const sinceLast = now - s.players[0].ship.lastHyperspaceAt;
-  const isConsecutive = s.players[0].ship.lastHyperspaceAt > 0 && sinceLast < HYPERSPACE_CONSECUTIVE_WINDOW_MS;
+  const sinceLast = now - p.ship.lastHyperspaceAt;
+  const isConsecutive = p.ship.lastHyperspaceAt > 0 && sinceLast < HYPERSPACE_CONSECUTIVE_WINDOW_MS;
   const malfunctionChance = isConsecutive ? HYPERSPACE_MALFUNCTION_CHANCE : 0;
-  s.players[0].ship.hyperspaceMalfunction = gameRng() < malfunctionChance;
-  s.players[0].ship.lastHyperspaceAt = now;
-  s.players[0].runStats.hyperspacesUsed += 1;
+  p.ship.hyperspaceMalfunction = gameRng() < malfunctionChance;
+  p.ship.lastHyperspaceAt = now;
+  p.runStats.hyperspacesUsed += 1;
   markAchievement(s, 'first-warp');
   // Collapse cinematic — fires at the departure point regardless of
   // malfunction (the visual sells the warp ignition either way; the
@@ -2157,9 +2161,9 @@ export function tryHyperspace(s: GameState, now: number): void {
     y: departureY,
     startMs: now,
     kind: 'collapse',
-    malfunction: s.players[0].ship.hyperspaceMalfunction,
+    malfunction: p.ship.hyperspaceMalfunction,
   });
-  if (s.players[0].ship.hyperspaceMalfunction) {
+  if (p.ship.hyperspaceMalfunction) {
     audio.warpJumpGlitch();
     // Sprinkle warning particles at the departure point so the cloak is visibly off
     spawnParticles(s, departureX, departureY, 18, '#ff5050', 140, 500);
@@ -2181,7 +2185,7 @@ export function tryHyperspace(s: GameState, now: number): void {
       const dx = m.pos.x - departureX;
       const dy = m.pos.y - departureY;
       if (dx * dx + dy * dy <= HYPERSPACE_DETONATE_RANGE * HYPERSPACE_DETONATE_RANGE) {
-        destroyMine(s, m);
+        destroyMine(s, m, p);
         detonated += 1;
       }
     }
@@ -2412,35 +2416,35 @@ export function clearEntitiesForTitle(s: GameState): void {
  * coins stop crediting sats. Score still accumulates. Cleared instantly when
  * the ship leaves the zone or accelerates.
  */
-function updateLurkState(s: GameState, now: number): void {
-  if (s.phase !== 'playing' || !s.players[0].ship.alive) {
-    if (s.players[0].lurking) s.players[0].lurking = false;
-    s.players[0].lurkingSince = 0;
+function updateLurkState(s: GameState, now: number, p: PlayerState): void {
+  if (s.phase !== 'playing' || !p.ship.alive) {
+    if (p.lurking) p.lurking = false;
+    p.lurkingSince = 0;
     return;
   }
-  const dx = s.players[0].ship.pos.x - WORLD_W / 2;
-  const dy = s.players[0].ship.pos.y - WORLD_H / 2;
+  const dx = p.ship.pos.x - WORLD_W / 2;
+  const dy = p.ship.pos.y - WORLD_H / 2;
   const distSq = dx * dx + dy * dy;
-  const speedSq = s.players[0].ship.vel.x * s.players[0].ship.vel.x + s.players[0].ship.vel.y * s.players[0].ship.vel.y;
+  const speedSq = p.ship.vel.x * p.ship.vel.x + p.ship.vel.y * p.ship.vel.y;
   const inZone = distSq < LURK_CENTRE_RADIUS_PX * LURK_CENTRE_RADIUS_PX
     && speedSq < LURK_VEL_THRESHOLD * LURK_VEL_THRESHOLD;
   if (inZone) {
-    if (s.players[0].lurkingSince === 0) s.players[0].lurkingSince = now;
-    const held = now - s.players[0].lurkingSince;
-    if (!s.players[0].lurking && held >= LURK_DURATION_MS) {
-      s.players[0].lurking = true;
+    if (p.lurkingSince === 0) p.lurkingSince = now;
+    const held = now - p.lurkingSince;
+    if (!p.lurking && held >= LURK_DURATION_MS) {
+      p.lurking = true;
       markAchievement(s, 'lurker');
     }
     // Easter-egg toast fires only after a longer commitment so it lands as
     // discovery, not a hair-trigger explainer. Suppressed if previously
     // shown this run.
-    if (!s.players[0].lurkEverDetected && held >= LURK_TOAST_MS) {
-      s.players[0].lurkEverDetected = true;
+    if (!p.lurkEverDetected && held >= LURK_TOAST_MS) {
+      p.lurkEverDetected = true;
       toastNow(s, 'LURKING · 1979 RESPECT · NO SATS');
     }
   } else {
-    s.players[0].lurking = false;
-    s.players[0].lurkingSince = 0;
+    p.lurking = false;
+    p.lurkingSince = 0;
   }
 }
 
@@ -2586,7 +2590,7 @@ export function updateGame(s: GameState): void {
   arenaTickSpawn(s, dt * 1000);
 
   // Detect the 1979 lurking exploit so coin credit can be withheld for it.
-  updateLurkState(s, now);
+  updateLurkState(s, now, s.players[0]);
 
   // Particles + debris always update so they fade out across phase changes
   // (and so the death-replay's impact-frame explosion animates).
@@ -2737,7 +2741,7 @@ export function updateGame(s: GameState): void {
     }
 
     if (fire && now >= s.players[0].fireCooldownUntil) {
-      fireBullet(s);
+      fireBullet(s, s.players[0]);
       const rapid = now < s.players[0].rapidExpiresAt;
       s.players[0].fireCooldownUntil = now + (rapid ? FIRE_COOLDOWN_MS * RAPID_COOLDOWN_MUL : FIRE_COOLDOWN_MS);
     }
@@ -3023,7 +3027,7 @@ export function updateGame(s: GameState): void {
         const isCarom = b.caromHit;
         const isWrap = b.wrapped;
         b.hasLanded = true;
-        damageAsteroid(s, a, { isCarom, isWrap, bulletVel: b.vel, bulletPos: b.pos });
+        damageAsteroid(s, a, { isCarom, isWrap, bulletVel: b.vel, bulletPos: b.pos, p: s.players[b.owner] });
         // Pierce: if the asteroid actually broke and the bullet has pierce
         // left, the bullet survives to seek a second target. Iron-large takes
         // two hits to break, so a pierce shot only travels through fully
@@ -3047,7 +3051,7 @@ export function updateGame(s: GameState): void {
       if (circlesHit(b, u)) {
         b.alive = false;
         b.hasLanded = true;
-        damageUfo(s, u);
+        damageUfo(s, u, s.players[b.owner]);
         break;
       }
     }
@@ -3061,7 +3065,7 @@ export function updateGame(s: GameState): void {
       if (circlesHit(b, m)) {
         b.alive = false;
         b.hasLanded = true;
-        damageMine(s, m);
+        damageMine(s, m, s.players[b.owner]);
         break;
       }
     }
@@ -3145,14 +3149,14 @@ export function updateGame(s: GameState): void {
       // sail through reads as a bug ("asteroid passed right through
       // me"), so foregrounds are hazards too.
       if (a.alive && (a.depth ?? 3) >= 3 && circlesHit(s.players[0].ship, a)) {
-        killShip(s);
+        killShip(s, s.players[0]);
         break;
       }
     }
     for (const u of s.ufos) {
       if (s.players[0].ship.alive && u.alive && circlesHit(s.players[0].ship, u)) {
-        destroyUfo(s, u);  // ramming kills the UFO too
-        killShip(s);
+        destroyUfo(s, u, s.players[0]);  // ramming kills the UFO too
+        killShip(s, s.players[0]);
         break;
       }
     }
@@ -3168,14 +3172,14 @@ export function updateGame(s: GameState): void {
           continue;
         }
         b.alive = false;
-        killShip(s);
+        killShip(s, s.players[0]);
         break;
       }
     }
     for (const m of s.mines) {
       if (s.players[0].ship.alive && m.alive && circlesHit(s.players[0].ship, m)) {
-        destroyMine(s, m);
-        killShip(s);
+        destroyMine(s, m, s.players[0]);
+        killShip(s, s.players[0]);
         break;
       }
     }
@@ -3221,7 +3225,7 @@ export function updateGame(s: GameState): void {
       if (s.players[0].ship.alive && circlesHit(s.players[0].ship, p)) {
         p.collected = true;
         s.players[0].runStats.powerupsCollected += 1;
-        applyPowerUp(s, p, now);
+        applyPowerUp(s, p, now, s.players[0]);
         spawnParticles(s, p.pos.x, p.pos.y, 14, '#ffffff', 200, 600);
       }
     }
@@ -3329,30 +3333,30 @@ export function updateGame(s: GameState): void {
  * First kill of a fresh chain returns 1; subsequent kills within COMBO_WINDOW_MS
  * return 2, 3, 4, 5 (capped). Plays a rising tick at each step.
  */
-function recordCombo(s: GameState, now: number): number {
-  const prev = s.players[0].combo;
-  if (now < s.players[0].comboExpiresAt && s.players[0].combo > 0) {
-    s.players[0].combo = Math.min(COMBO_MAX, s.players[0].combo + 1);
+function recordCombo(s: GameState, now: number, p: PlayerState): number {
+  const prev = p.combo;
+  if (now < p.comboExpiresAt && p.combo > 0) {
+    p.combo = Math.min(COMBO_MAX, p.combo + 1);
   } else {
-    s.players[0].combo = 1;
+    p.combo = 1;
   }
-  s.players[0].comboExpiresAt = now + COMBO_WINDOW_MS;
-  if (s.players[0].combo > s.players[0].runStats.largestCombo) s.players[0].runStats.largestCombo = s.players[0].combo;
-  if (s.players[0].combo >= 2) audio.comboTick(s.players[0].combo);
+  p.comboExpiresAt = now + COMBO_WINDOW_MS;
+  if (p.combo > p.runStats.largestCombo) p.runStats.largestCombo = p.combo;
+  if (p.combo >= 2) audio.comboTick(p.combo);
   // Crescendo on first reaching the cap in this chain: short hit-stop and
   // a trauma bump so the moment lands. Only fires once per chain because
   // subsequent kills find prev already at COMBO_MAX.
-  if (s.players[0].combo === COMBO_MAX && prev < COMBO_MAX) {
+  if (p.combo === COMBO_MAX && prev < COMBO_MAX) {
     hitStop(s, 80);
     bumpTrauma(s, 0.18);
     markAchievement(s, 'first-max-combo');
   }
-  return s.players[0].combo;
+  return p.combo;
 }
 
-function resetCombo(s: GameState): void {
-  s.players[0].combo = 0;
-  s.players[0].comboExpiresAt = 0;
+function resetCombo(_s: GameState, p: PlayerState): void {
+  p.combo = 0;
+  p.comboExpiresAt = 0;
 }
 
 /**
@@ -3500,7 +3504,8 @@ function runAsteroidCollisions(s: GameState): void {
  * Apply one bullet's worth of damage to an asteroid. Iron at large size has hp=2
  * — first hit flashes and dents, second hit fragments. All other cases are 1hp.
  */
-function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; isWrap?: boolean; bulletVel?: Vec2; bulletPos?: Vec2 }): void {
+function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; isWrap?: boolean; bulletVel?: Vec2; bulletPos?: Vec2; p?: PlayerState }): void {
+  const p = opts?.p ?? s.players[0];
   a.hp -= 1;
   a.hitFlash = 1;
   // Tiny momentum transfer on the non-fatal hit — even iron-large surviving
@@ -3522,10 +3527,10 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
   // room" when you're cornered; does nothing when you're mid-field.
   if (a.councilMember && opts?.bulletPos && opts?.bulletVel) {
     const EDGE_PX = 90;
-    const shipAtEdge = s.players[0].ship.pos.x < EDGE_PX
-                    || s.players[0].ship.pos.x > WORLD_W - EDGE_PX
-                    || s.players[0].ship.pos.y < EDGE_PX
-                    || s.players[0].ship.pos.y > WORLD_H - EDGE_PX;
+    const shipAtEdge = p.ship.pos.x < EDGE_PX
+                    || p.ship.pos.x > WORLD_W - EDGE_PX
+                    || p.ship.pos.y < EDGE_PX
+                    || p.ship.pos.y > WORLD_H - EDGE_PX;
     if (shipAtEdge) {
       // Lever arm: asteroid centre → impact point. Sign of (r × F)_z picks
       // which side of the rock got hit, so spin direction matches physics.
@@ -3541,8 +3546,8 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
       a.rotVel += (cross / Math.max(1, a.radius)) * 3.0;
       // Gentle push away from the ship in straight-line distance. 35 px/s
       // is enough to read but not so much that the council escapes pursuit.
-      const dx = a.pos.x - s.players[0].ship.pos.x;
-      const dy = a.pos.y - s.players[0].ship.pos.y;
+      const dx = a.pos.x - p.ship.pos.x;
+      const dy = a.pos.y - p.ship.pos.y;
       const ddist = Math.hypot(dx, dy) || 1;
       const PUSH = 35;
       a.vel.x += (dx / ddist) * PUSH;
@@ -3560,9 +3565,9 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
   // near the vein so the player has tools to sustain the long fight.
   if (a.isVein) {
     if (s.session) {
-      s.players[0].sats += VEIN_SATS_PER_HIT;
+      p.sats += VEIN_SATS_PER_HIT;
     } else {
-      s.players[0].score += VEIN_SCORE_PER_HIT;
+      p.score += VEIN_SCORE_PER_HIT;
     }
     audio.coinPickup();
     spawnParticles(s, a.pos.x, a.pos.y, 10, '#ffd84a', 200, 480);
@@ -3619,7 +3624,8 @@ function volatileBlast(s: GameState, x: number, y: number, size: AsteroidSize): 
   audio.explosion(size === 'large' ? 1.1 : 0.8);
 }
 
-function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boolean; isCarom?: boolean; isWrap?: boolean; bulletVel?: Vec2 }): void {
+function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boolean; isCarom?: boolean; isWrap?: boolean; bulletVel?: Vec2; p?: PlayerState }): void {
+  const p = opts?.p ?? s.players[0];
   // Two shrink-rather-than-fragment cases:
   //   - Council members on the gameplay plane (chip a sculpture down).
   //   - Decoratives on non-gameplay depth bands (the player's bullet
@@ -3675,10 +3681,10 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
   a.alive = false;
   // Vein collapse: jackpot, big bloom, no fragments. Vapourises clean.
   if (a.isVein) {
-    s.players[0].runStats.veinsBroken += 1;
+    p.runStats.veinsBroken += 1;
     markAchievement(s, 'first-vein');
-    if (s.session) s.players[0].sats += VEIN_JACKPOT_SATS;
-    s.players[0].score += VEIN_JACKPOT_SCORE;
+    if (s.session) p.sats += VEIN_JACKPOT_SATS;
+    p.score += VEIN_JACKPOT_SCORE;
     bumpTrauma(s, 0.55);
     hitStop(s, 220);
     audio.pulseDuck(0.45, 240);
@@ -3692,11 +3698,11 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
     recordStreamEvent('vc', a.pos.x, a.pos.y);
     if (s.session) toastNow(s, `VEIN COLLAPSED · +${VEIN_JACKPOT_SATS} sats`);
     else           toastNow(s, `VEIN COLLAPSED · +${VEIN_JACKPOT_SCORE}`);
-    maybeExtraLife(s);
+    maybeExtraLife(s, p);
     return;
   }
   const cfg = ASTEROID_TYPE_CONFIG[a.type];
-  const mul = recordCombo(s, s.elapsed);
+  const mul = recordCombo(s, s.elapsed, p);
   // Trick-shot bonuses stack multiplicatively on top of combo: a wrapped carom
   // is a 4× kill on top of any active combo. Risk-proximity adds another tier
   // on top: ≤55px = ×1.5, ≤110px = ×1.25. Each fires independently and is
@@ -3710,8 +3716,8 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
   if (opts?.isWrap)  { bonusMul *= 2; trickLabels.push('WRAP');  markAchievement(s, 'first-wrap'); }
   // First-kill badge — fires the first time any asteroid breaks on this device.
   markAchievement(s, 'first-kill');
-  s.players[0].runStats.asteroidsBroken += 1;
-  s.players[0].score += Math.round(POINTS_PER_SIZE[a.size] * cfg.scoreMul * mul * bonusMul);
+  p.runStats.asteroidsBroken += 1;
+  p.score += Math.round(POINTS_PER_SIZE[a.size] * cfg.scoreMul * mul * bonusMul);
   const satsValue = SATS_PER_SIZE[a.size] * cfg.satMul * bonusMul;
 
   // Trauma scales with mass — a large rock's break should feel weightier than
@@ -3805,7 +3811,7 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
     // each get a small punch and a comboTick chime so the moment reads
     // independently of the combo bar.
     bumpTrauma(s, 0.12);
-    audio.comboTick(Math.min(COMBO_MAX, s.players[0].combo + 1));
+    audio.comboTick(Math.min(COMBO_MAX, p.combo + 1));
     toastNow(s, `+${trickLabels.join(' + ')}`);
   }
 
@@ -3820,7 +3826,7 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
     }
   }
 
-  maybeExtraLife(s);
+  maybeExtraLife(s, p);
 }
 
 /**
@@ -3830,18 +3836,18 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
  * current lives against a hardcoded `3 + earnedLives` target, which silently
  * resurrected players on Normal and bumped Hard runs from 2 lives up to 3).
  */
-function maybeExtraLife(s: GameState): void {
-  const earnedLives = Math.floor(s.players[0].score / 10000);
-  if (earnedLives <= s.players[0].bonusLivesGranted) return;
-  if (s.players[0].lives >= 5) {
+function maybeExtraLife(s: GameState, p: PlayerState): void {
+  const earnedLives = Math.floor(p.score / 10000);
+  if (earnedLives <= p.bonusLivesGranted) return;
+  if (p.lives >= 5) {
     // Cap reached but the threshold still counts — record it so we don't
     // grant a backlog if the player drops below cap later.
-    s.players[0].bonusLivesGranted = earnedLives;
+    p.bonusLivesGranted = earnedLives;
     return;
   }
-  const grant = Math.min(earnedLives - s.players[0].bonusLivesGranted, 5 - s.players[0].lives);
-  s.players[0].lives += grant;
-  s.players[0].bonusLivesGranted = earnedLives;
+  const grant = Math.min(earnedLives - p.bonusLivesGranted, 5 - p.lives);
+  p.lives += grant;
+  p.bonusLivesGranted = earnedLives;
   audio.extraLife();
   toastNow(s, grant > 1 ? `+ ${grant} EXTRA LIVES` : '+ EXTRA LIFE');
 }
@@ -3894,7 +3900,7 @@ function spawnShipDebris(s: GameState, ship: Ship): void {
   }
 }
 
-function killShip(s: GameState): void {
+function killShip(s: GameState, p: PlayerState): void {
   // Capture the impact-frame snapshot BEFORE flipping ship.alive — the
   // standard recordReplaySnapshot at frame start was taken at the ship's
   // pre-collision position, so without this the replay would end one frame
@@ -3902,9 +3908,9 @@ function killShip(s: GameState): void {
   // frame on the impact moment.
   pushReplayImpactFrame(s);
 
-  const deathPos: Vec2 = { x: s.players[0].ship.pos.x, y: s.players[0].ship.pos.y };
-  s.players[0].ship.alive = false;
-  resetCombo(s);
+  const deathPos: Vec2 = { x: p.ship.pos.x, y: p.ship.pos.y };
+  p.ship.alive = false;
+  resetCombo(s, p);
   audio.explosion(1.4);
   recordStreamEvent('sh', deathPos.x, deathPos.y);
   audio.thrustOff();
@@ -3922,13 +3928,13 @@ function killShip(s: GameState): void {
   spawnParticles(s, deathPos.x, deathPos.y, 22, '#ffd84a', 200,  700);
   spawnParticles(s, deathPos.x, deathPos.y, 18, '#ffffff', 380,  450);
   if (getVisualStyle('ship') === 'mesh' && isWebGLOverlayReady()) {
-    callWebGLShipExplosion(deathPos, s.players[0].ship.vel, s.players[0].ship.rot);
+    callWebGLShipExplosion(deathPos, p.ship.vel, p.ship.rot);
   } else {
-    spawnShipDebris(s, s.players[0].ship);
+    spawnShipDebris(s, p.ship);
   }
-  s.players[0].lives -= 1;
-  s.players[0].runStats.livesLost += 1;
-  if (s.players[0].lives <= 0) {
+  p.lives -= 1;
+  p.runStats.livesLost += 1;
+  if (p.lives <= 0) {
     // Final death — capture the buffer for the replay, then route through
     // 'deathreplay' (provided we have something worth showing). The post-replay
     // transition stops the ambient bed; hull-breached music carries the moment.
@@ -3939,9 +3945,9 @@ function killShip(s: GameState): void {
         spanMs: s.replayBuffer[s.replayBuffer.length - 1].t - s.replayBuffer[0].t,
         explosionAt: deathPos,
         explosionShip: {
-          pos: { x: s.players[0].ship.pos.x, y: s.players[0].ship.pos.y },
-          vel: { x: s.players[0].ship.vel.x, y: s.players[0].ship.vel.y },
-          rot: s.players[0].ship.rot,
+          pos: { x: p.ship.pos.x, y: p.ship.pos.y },
+          vel: { x: p.ship.vel.x, y: p.ship.vel.y },
+          rot: p.ship.rot,
         },
         explosionSpawned: false,
       };

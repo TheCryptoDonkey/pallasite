@@ -475,11 +475,11 @@ function applySlotInput(state: GameState, slot: string, value: string): void {
       return;
     case 'B':
       if (!on) return;
-      if (state.phase === 'playing') tryActivateShield(state, state.elapsed);
+      if (state.phase === 'playing') tryActivateShield(state, state.elapsed, state.players[0]);
       return;
     case 'X':
       if (!on) return;
-      if (state.phase === 'playing') tryHyperspace(state, state.elapsed);
+      if (state.phase === 'playing') tryHyperspace(state, state.elapsed, state.players[0]);
       return;
     case 'Y':
       if (!on) return;
