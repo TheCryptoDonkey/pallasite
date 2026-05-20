@@ -2435,9 +2435,6 @@ function pad(n: number, len: number): string {
   return n.toString().padStart(len, '0');
 }
 
-// TODO(#49): Per-player HUD rails — currently reads players[0] only. Add a second
-//  set of readouts (score, lives, sats) anchored to the opposite corner for P2 in
-//  couch mode. Deferred as a polish follow-up to the initial two-player ship path.
 function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   const p0 = s.players[0];
   ctx.save();
@@ -2580,6 +2577,45 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   // toasts when they're entered (toastNow in updateLurkState and
   // cheatJumpToWave), so the persistent red chips were duplicate noise.
   drawGhostChip(ctx, s);
+
+  // Couch 2-player: P2 readouts (SCORE + LIVES) below the P1 LIVES corner on
+  // the right rail. A blue "P2" tag so the stacked rail reads clearly.
+  // Per-player SATS and buff chips for P2 are a polish follow-up.
+  if (s.players.length >= 2) {
+    const p2 = s.players[1];
+    ctx.font = 'bold 16px ui-monospace, monospace';
+    ctx.fillStyle = '#7fbfff';
+    ctx.shadowColor = '#7fbfff';
+    ctx.shadowBlur = 6;
+    ctx.textAlign = 'right';
+    ctx.fillText('P2', rightX, topY + 80);
+    ctx.font = '20px ui-monospace, monospace';
+    ctx.fillStyle = '#58ff58';
+    ctx.shadowColor = '#58ff58';
+    ctx.shadowBlur = 0;
+    ctx.fillText('SCORE', rightX, topY + 104);
+    ctx.fillText(pad(p2.score, 6), rightX, topY + 128);
+    ctx.fillText('LIVES', rightX, topY + 162);
+    for (let i = 0; i < p2.lives; i++) {
+      const x = rightX - i * 22;
+      const y = topY + 200;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(-Math.PI / 2);
+      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = '#58ff58';
+      ctx.shadowColor = '#58ff58';
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      ctx.moveTo(8, 0);
+      ctx.lineTo(-6, 5);
+      ctx.lineTo(-3, 0);
+      ctx.lineTo(-6, -5);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
 
   ctx.restore();
 }
