@@ -107,3 +107,43 @@ gameplay before any netcode.
 - `asteroid-sats` — the game; the bulk of the work.
 - `joystick` — the controller-ws broker `peer` role (M3).
 - `pallasite-faucet` or plain Nostr — matchmaking (M4).
+
+## 7. M1 progress (as of 2026-05-19)
+
+Done and committed to `main`:
+
+- **#44** deterministic sim-transition scheduler — the wall-clock `setTimeout`
+  deferrals replaced with sim-clock-scheduled transitions (`178d119`).
+- **#45 / #46** the `players[]` pivot — `GameState.ship` and the 20 other
+  per-player fields moved into a new `PlayerState`; `GameState` now holds
+  `players: PlayerState[]`; ~539 sites across 13 files routed through
+  `players[0]`, behaviour byte-identical, determinism harness green
+  (`ed309b5`).
+
+Remaining M1 is **#47-#50, done as one interdependent two-ship push** — they
+are only jointly testable, since with one player every `owner` index is 0.
+Build order:
+
+1. Thread the per-player sim helpers and credit functions to take a
+   `PlayerState` / owner index: `tryHyperspace`, `tryActivateShield`,
+   `fireBullet`, `killShip`, `applyPowerUp`, `recordCombo`, `resetCombo`,
+   `updateLurkState`, `maybeExtraLife`, `damageUfo`, `destroyUfo`,
+   `damageAsteroid`, `breakAsteroid`, `damageMine`, `destroyMine`. Length-1
+   behaviour-identical (typecheck + determinism harness gate).
+2. **#47** bullet ownership — add `Bullet.owner` (firing player's index, `-1`
+   for enemy bullets); `fireBullet` stamps it; kill credit routes via
+   `players[owner]`.
+3. `updateGame` per-player loops — wrap the per-player segments (input +
+   physics + fire, shield expiry, ship collisions, coin pickup, combo decay)
+   in `for (const p of s.players)`. Length-1 byte-identical.
+4. **#48** `killShip(s, p)` kills one player; `phase='gameover'` only when
+   every player is out; per-player respawn spawn points.
+5. **#50** a two-player start path (startGame builds two `PlayerState`s) plus
+   a second local keyboard scheme for P2.
+6. **#49** render every `players[]` ship, camera framing both, per-player HUD
+   rails.
+7. Verify: determinism harness still green for a solo (length-1) run;
+   play-test local couch 2-player.
+
+Steps 1-4 are behaviour-identical for solo and verifiable as they land; step 5
+introduces the second player; 6-7 make it playable and tested.
