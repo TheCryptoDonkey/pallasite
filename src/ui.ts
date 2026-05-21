@@ -124,6 +124,34 @@ export function simulateStart(): void {
   onStartCb?.();
 }
 
+/** Show a "Connecting to duel" placeholder while peer.connect() is in
+ *  flight. The overlay is cleared by simulateStart()'s subsequent
+ *  clearOverlay() call (via onStartCb → clearOverlay), so there's no
+ *  flicker between this and the game's first render. */
+export function renderDuelConnecting(slot: 0 | 1): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+
+  const card = el('div', { parent: overlay });
+  card.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:14px;padding:24px 28px;border-radius:10px;border:1px solid rgba(184,144,255,0.35);background:rgba(15,8,32,0.55);max-width:420px;text-align:center;';
+
+  el('h2', { parent: card, text: 'CONNECTING' }).style.cssText = 'margin:0;font-size:1.45rem;letter-spacing:0.2em;color:var(--hud-yellow);';
+  el('p', { parent: card, text: 'Waiting for opponent to join the arena.' })
+    .style.cssText = 'margin:0;font-size:0.9rem;color:rgba(220,210,255,0.8);line-height:1.5;';
+
+  const slotChip = el('p', { parent: card, text: `You are P${slot + 1}.` });
+  slotChip.style.cssText = 'margin:0;font-family:monospace;font-size:0.78rem;color:rgba(180,140,255,0.65);letter-spacing:0.12em;';
+
+  // Animated dots so the screen never looks frozen. Pure CSS-free fallback
+  // (the gameover overlay already uses inline-styled animations elsewhere).
+  const dots = el('div', { parent: card, text: '·  ·  ·' });
+  dots.style.cssText = 'margin:0;font-size:1.6rem;letter-spacing:0.5em;color:rgba(184,144,255,0.7);animation:peer-stall-fade 1.2s ease-in-out infinite alternate;';
+
+  const cancel = el('button', { className: 'menu-btn secondary', parent: card, text: 'CANCEL · BACK TO LOBBY' });
+  cancel.addEventListener('click', () => { window.location.assign('/duel'); });
+}
+
 export function clearOverlay(): void {
   root.innerHTML = '';
 }
@@ -9594,6 +9622,45 @@ function renderSanctumGameOver(
   partyLink.style.cssText = 'font:11px ui-monospace,monospace;color:rgba(255,216,74,0.7);letter-spacing:0.2em;margin-top:18px;text-decoration:none;';
 }
 
+/** Side-by-side score panel for couch / duel runs. WINNER gets a yellow
+ *  highlight; equal-score runs render DRAW. Inserts right after the
+ *  gameover header so it's the first thing the player reads, then the
+ *  standard recap (publish / claim / honours / replay etc.) follows. */
+function renderVersusBanner(parent: HTMLElement, state: GameState): void {
+  const banner = el('div', { parent });
+  banner.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:10px;margin:8px auto 18px;max-width:560px;';
+
+  const s0 = state.players[0].score;
+  const s1 = state.players[1].score;
+  const tie = s0 === s1;
+  const winner = tie ? -1 : (s0 > s1 ? 0 : 1);
+  const verdict = el('p', { parent: banner, text: tie ? 'DRAW' : `WINNER · P${winner + 1}` });
+  verdict.style.cssText = 'margin:0;font-size:1.45rem;letter-spacing:0.25em;color:' +
+    (tie ? 'rgba(220,210,255,0.85)' : 'var(--hud-yellow)') +
+    ';text-shadow:0 0 10px rgba(255,216,74,0.45);';
+
+  const row = el('div', { parent: banner });
+  row.style.cssText = 'display:flex;gap:24px;justify-content:center;align-items:stretch;flex-wrap:wrap;';
+
+  const card = (idx: number): HTMLElement => {
+    const isWinner = winner === idx;
+    const wrap = el('div', { parent: row });
+    wrap.style.cssText = 'min-width:160px;padding:10px 18px;border-radius:8px;text-align:center;border:1px solid ' +
+      (isWinner ? 'rgba(255,216,74,0.55)' : 'rgba(184,144,255,0.30)') +
+      ';background:' + (isWinner ? 'rgba(255,216,74,0.08)' : 'rgba(120,90,200,0.06)') + ';';
+    const label = el('div', { parent: wrap, text: `P${idx + 1}` });
+    label.style.cssText = 'font-family:monospace;font-size:0.8rem;letter-spacing:0.2em;color:rgba(180,140,255,0.7);';
+    const score = el('div', { parent: wrap, text: state.players[idx].score.toLocaleString() });
+    score.style.cssText = 'font-size:1.7rem;letter-spacing:0.05em;color:' +
+      (isWinner ? 'var(--hud-yellow)' : '#dccfff') + ';margin:2px 0;';
+    const meta = el('div', { parent: wrap, text: `${state.players[idx].sats} sats · wave ${state.wave}` });
+    meta.style.cssText = 'font-size:0.78rem;color:rgba(220,210,255,0.65);font-family:monospace;';
+    return wrap;
+  };
+  card(0);
+  card(1);
+}
+
 function renderRunCredits(
   state: GameState,
   opts: { headerText: string; subText?: string; isCompletion?: boolean; idleSeconds?: number },
@@ -9625,6 +9692,14 @@ function renderRunCredits(
   if (opts.subText) {
     const sub = el('p', { parent: overlay, text: opts.subText });
     sub.style.cssText = 'font-size:1.1rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:-10px 0 4px;';
+  }
+
+  // Versus banner: when this was a 2-player run (couch or duel), show both
+  // players' scores side-by-side with a WINNER call-out. The rest of the
+  // recap stays as-is (player[0]-coupled ghost / claim flows; duel runs
+  // are friendly only so no stakes attach to the credit anyway).
+  if (state.players.length === 2) {
+    renderVersusBanner(overlay, state);
   }
 
   // Arc-aware fall line — frames the loss as a story beat rather than a bare
