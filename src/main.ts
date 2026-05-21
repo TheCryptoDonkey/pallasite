@@ -36,6 +36,7 @@ import { warmWebGLIfPreviouslyEnabled, getTheme, getAsciiCols, getBitDepth, getB
 import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
 import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges, EMPTY_INPUT, isPeerActive, setPeerActive } from './netcode.js';
+import { hashState, PEER_HASH_PERIOD } from './peer-canary.js';
 import { WebSocketPeer, type Peer, type PeerSlot } from './peer.js';
 import type { GameState } from './types.js';
 import { DOWN_DOUBLE_TAP_WINDOW_MS, WORLD_W, WORLD_H } from './types.js';
@@ -82,6 +83,14 @@ let peerStallFrames = 0;
  *  and stop trying. Prevents the disconnect path firing every rAF after
  *  game-over. */
 let peerDisconnectDeclared = false;
+/** Recent locally-computed canary hashes keyed by sim frame. The partner's
+ *  hash for the same frame may arrive a few frames later (across the
+ *  delay buffer), so we hold a small ring. */
+const localCanaryHashes = new Map<number, number>();
+/** Sticky frame at which a desync was first observed. Surfaces via
+ *  body[data-peer-desync] for any in-HUD indicator the renderer wants
+ *  to show; v1 does NOT resync. -1 = never. */
+let peerDesyncFrame = -1;
 /** Per-slot keyboard mirror that is NOT touched by the lockstep apply pass.
  *  In peer mode the apply pass overwrites `players[i].keys` with the log
  *  entry from N frames ago, which would clobber the live keyboard state and
@@ -807,6 +816,25 @@ function loop(now: number): void {
       }
     }
     updateGame(state);
+    // ── Desync canary ────────────────────────────────────────────────
+    // Every PEER_HASH_PERIOD sim steps, hash the gameplay-relevant slice
+    // of GameState and send to the partner. We retain our own hash so a
+    // later-arriving partner hash can be compared. Solo / couch skip
+    // this entirely (no peer, no exchange).
+    if (peerActive && peer && state.frame > 0 && (state.frame % PEER_HASH_PERIOD) === 0) {
+      const h = hashState(state);
+      localCanaryHashes.set(state.frame, h);
+      peer.sendHash(state.frame, h);
+      // Prune old entries so the map can't grow unbounded across long
+      // runs. Five canary periods (~5s) is generous for any plausible
+      // delay between the partner sending and us receiving.
+      const cutoff = state.frame - PEER_HASH_PERIOD * 5;
+      if (cutoff > 0) {
+        for (const f of localCanaryHashes.keys()) {
+          if (f < cutoff) localCanaryHashes.delete(f);
+        }
+      }
+    }
     stepAccumulator -= FIXED_STEP_S;
   }
 
@@ -854,6 +882,26 @@ function loop(now: number): void {
     // Peer is gone (or was never wired); make sure the overlay isn't
     // stuck on the screen.
     delete document.body.dataset.peerStall;
+  }
+
+  // ── Desync canary: drain + compare ───────────────────────────────────────
+  // Solo / couch never have a peer so this is cheap. Once a desync is
+  // observed we set a sticky flag — v1 doesn't try to resync, it just
+  // surfaces an indicator the renderer / debug HUD can pick up.
+  if (isPeerActive() && peer && peerDesyncFrame < 0) {
+    for (const { frame, hash } of peer.drainHashes()) {
+      const local = localCanaryHashes.get(frame);
+      if (local !== undefined && local !== hash) {
+        peerDesyncFrame = frame;
+        // eslint-disable-next-line no-console
+        console.warn(`[peer] desync at frame ${frame}: local=${local.toString(16)} remote=${hash.toString(16)}`);
+        document.body.dataset.peerDesync = String(frame);
+        break;
+      }
+    }
+  } else if (!isPeerActive() && document.body.dataset.peerDesync) {
+    // Peer gone — clear the indicator so the next session starts clean.
+    delete document.body.dataset.peerDesync;
   }
 
   render(canvas, state, now);
