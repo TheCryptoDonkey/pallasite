@@ -10,7 +10,7 @@ import { getFlavour } from './flavour.js';
 import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadBackground, setRenderMode, getRenderModeKind, drawAsciiHud } from './render.js';
-import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage } from './ui.js';
+import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderDuelLobby, simulateStart } from './ui.js';
 import { postHeartbeat } from './faucet.js';
 import { currentMode } from './mode.js';
 import {
@@ -64,6 +64,17 @@ const mpSession = mpParams.get('session');
 const mpSlotRaw = mpParams.get('slot');
 const mpSlot: PeerSlot = (mpSlotRaw === '1') ? 1 : 0;
 const mpMode = !!(mpUrl && mpSession && (mpSlotRaw === '0' || mpSlotRaw === '1'));
+/** Derived shared seed for duel mode. fnv1a32 of the session string so
+ *  both clients build the SAME arena from the SAME RNG without needing
+ *  an explicit seed-exchange handshake. */
+const mpSeed = mpMode && mpSession ? (() => {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < mpSession.length; i++) {
+    h ^= mpSession.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+})() : undefined;
 /** The remote peer for duel mode. Null in solo and couch. */
 let peer: Peer | null = null;
 /** Input-delay in sim frames when a peer is wired. Sized to comfortably
@@ -318,7 +329,7 @@ bindActions({
     // a prior daily run would persist through a subsequent free-mode start
     // (the IGNITE button bypasses the keyboard Enter path that did the reset).
     setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-    startGame(state, undefined, { players: (couchMode || peer) ? 2 : 1 });
+    startGame(state, peer ? mpSeed : undefined, { players: (couchMode || peer) ? 2 : 1 });
     // Only force wavestart for the standard campaign — startGame on the
     // 600bn flavour sets phase='sanctum' and doesn't want the warp/wave
     // pipeline kicking in over the top.
@@ -511,7 +522,7 @@ window.addEventListener('keydown', e => {
     lockInDifficulty(getStoredDifficulty());
     gateBehindOnboarding(() => {
       setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-      startGame(state, undefined, { players: (couchMode || peer) ? 2 : 1 });
+      startGame(state, peer ? mpSeed : undefined, { players: (couchMode || peer) ? 2 : 1 });
       if (getFlavour() !== '600bn') state.phase = 'wavestart';
       if (couchMode) (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
       clearOverlay();
@@ -525,7 +536,7 @@ window.addEventListener('keydown', e => {
     void audio.unlockAudio();
     lockInDifficulty(getStoredDifficulty());
     setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-    startGame(state, undefined, { players: (couchMode || peer) ? 2 : 1 });
+    startGame(state, peer ? mpSeed : undefined, { players: (couchMode || peer) ? 2 : 1 });
     if (getFlavour() !== '600bn') state.phase = 'wavestart';
     if (couchMode) (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
     clearOverlay();
@@ -1168,6 +1179,11 @@ async function boot(): Promise<void> {
       });
       // eslint-disable-next-line no-console
       console.log('[duel] connected to', mpUrl, 'session', mpSession, 'as slot', mpSlot);
+      // Auto-IGNITE on both clients the moment peer-joined fires. Both
+      // sims kick off from the SAME session-derived seed (mpSeed) so the
+      // shared arena matches frame-for-frame. The microtask defers past
+      // the title render so the overlay can be cleared cleanly.
+      queueMicrotask(() => { simulateStart(); });
     } catch (e) {
       // eslint-disable-next-line no-console
       console.warn('[duel] peer connect failed; falling back to solo:', e);
@@ -1243,7 +1259,12 @@ async function boot(): Promise<void> {
   //     iteration for returning players)
   // Other route dispatches below (admin, watch, controller, mobile) bypass
   // this — they have their own entry surfaces.
-  renderAttract(state);
+  //
+  // Duel mode also bypasses: peer.connect() has already resolved by here,
+  // so the queued simulateStart() microtask is about to fire and clear
+  // the overlay anyway. Skipping renderAttract avoids a one-frame flash
+  // of the attract screen between peer-joined and game start.
+  if (!peer) renderAttract(state);
 
   // Live-presence heartbeat — fires while a run is in progress so the
   // watch.pallasite.app surface renders LIVE cards. Ticks every 4s and
@@ -1573,6 +1594,15 @@ async function boot(): Promise<void> {
       // a "not authorised" message and a back link.
       document.body.dataset.surface = 'admin';
       renderAdminV2Panel(state);
+    } else if (path === '/duel') {
+      // Duel lobby: HOST flow (generate session + invite URL + QR) and
+      // JOIN flow (paste an invite URL). Once a partner navigates to the
+      // resulting `?peer=…&session=…&slot=…` URL on the apex domain, the
+      // game's peer-joined handler auto-IGNITEs both sides. The lobby
+      // never opens a peer itself, so this route is isolated from the
+      // game's solo path.
+      document.body.dataset.surface = 'duel';
+      renderDuelLobby();
     } else if (path === '/sanctum-preview' || path === '/sanctum') {
       // Legacy standalone Sanctum surfaces — the parallel game-loop
       // approach didn't feel like Pallasite, so the 600bn experience

@@ -100,6 +100,7 @@ import {
 } from './previews.js';
 import QRCode from 'qrcode';
 import { getFlavour } from './flavour.js';
+import { CONTROLLER_WS_ENDPOINT_DEFAULT } from './controller-types.js';
 
 const root = document.getElementById('ui-root')!;
 
@@ -112,6 +113,15 @@ export function bindActions(opts: {
 }): void {
   onStartCb = opts.onStart;
   onResumeCb = opts.onResume;
+}
+
+/** Programmatically trigger the bound start callback (the same code path
+ *  the IGNITE button takes). Used by duel mode to auto-start both clients
+ *  the moment peer-joined fires, so the two sims advance in lockstep
+ *  without either player having to hit IGNITE first. No-op if no callback
+ *  is bound yet. */
+export function simulateStart(): void {
+  onStartCb?.();
 }
 
 export function clearOverlay(): void {
@@ -874,6 +884,14 @@ export function renderTitle(state: GameState): void {
   musicBtn.addEventListener('click', () => {
     void audio.unlockAudio();
     renderMusicPlayer(state, () => renderTitle(state));
+  });
+  // Duel: navigates to the /duel lobby. Self-contained route — solo flow
+  // is untouched. Tap from title → HOST or JOIN → both clients converge
+  // on /?peer=…&session=…&slot=… and the game auto-IGNITEs on peer-joined.
+  const duelBtn = el('button', { className: 'menu-btn secondary', parent: row, text: '⚔ DUEL' });
+  duelBtn.addEventListener('click', () => {
+    void audio.unlockAudio();
+    window.location.assign('/duel');
   });
 
   // Show local high scores under the start button if any exist. Local entries
@@ -11385,4 +11403,160 @@ export function renderAdminV2Panel(state: GameState): void {
   void refresh();
   // Suppress unused warning if cached is touched elsewhere later.
   void cached;
+}
+
+// ── Duel lobby (M4) ─────────────────────────────────────────────────────────
+// HOST + JOIN matchmaking on the `/duel` route. Self-contained: the lobby
+// never opens a peer connection of its own, it just assembles the duel URL
+// that the apex domain consumes. The game's peer-joined handler then
+// auto-IGNITEs both clients off the same session-derived seed so the
+// shared arena lands frame-for-frame.
+
+/** Build the broker URL for a given session. The broker's `peer` role
+ *  takes `?s=<session>&r=peer` and waits for hello-peer to bind a slot. */
+function buildBrokerPeerUrl(session: string): string {
+  const base = CONTROLLER_WS_ENDPOINT_DEFAULT.replace(/\/$/, '');
+  return `${base}/?s=${encodeURIComponent(session)}&r=peer`;
+}
+
+/** Build the page URL the partner opens to join an existing session. Slot
+ *  is the partner's slot (the OTHER slot from the inviter's). */
+function buildDuelInviteUrl(session: string, partnerSlot: 0 | 1): string {
+  const peer = buildBrokerPeerUrl(session);
+  const origin = window.location.origin;
+  return `${origin}/?peer=${encodeURIComponent(peer)}&session=${encodeURIComponent(session)}&slot=${partnerSlot}`;
+}
+
+/** 8-char crockford-base32-ish session id. Short enough to type, long
+ *  enough that a casual collision in the broker's open-session set is
+ *  vanishingly unlikely. */
+function generateSessionId(): string {
+  const alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  let out = '';
+  for (let i = 0; i < bytes.length; i++) out += alphabet[bytes[i] % alphabet.length];
+  return out;
+}
+
+export function renderDuelLobby(): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+
+  const header = el('div', { parent: overlay });
+  header.style.cssText = 'display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;justify-content:center;margin-bottom:8px;';
+  el('h2', { parent: header, text: 'PALLASITE · DUEL' });
+  const tag = el('span', { parent: header, text: 'TWO SHIPS · ONE ARENA' });
+  tag.style.cssText = 'font-size:0.72rem;color:rgba(180,140,255,0.7);letter-spacing:0.18em;font-family:monospace;';
+
+  const rules = el('p', { parent: overlay });
+  rules.style.cssText = 'margin:4px auto 18px;font-size:0.85rem;color:rgba(220,210,255,0.78);max-width:560px;line-height:1.5;text-align:center;';
+  rules.innerHTML =
+    'Shared seeded arena. Both ships in the same field. Friendly fire is off. ' +
+    'The run ends when both ships are out — higher score wins. No sats, no stakes; ' +
+    'this is friendlies only.';
+
+  const tabRow = el('div', { className: 'menu-row', parent: overlay });
+  const hostTab = el('button', { className: 'menu-btn', parent: tabRow, text: 'HOST' });
+  const joinTab = el('button', { className: 'menu-btn secondary', parent: tabRow, text: 'JOIN' });
+
+  const panel = el('div', { parent: overlay });
+  panel.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:14px;margin:14px auto 4px;max-width:560px;width:100%;';
+
+  let activeTab: 'host' | 'join' = 'host';
+  const setTab = (next: 'host' | 'join'): void => {
+    activeTab = next;
+    hostTab.className = `menu-btn${next === 'host' ? '' : ' secondary'}`;
+    joinTab.className = `menu-btn${next === 'join' ? '' : ' secondary'}`;
+    panel.innerHTML = '';
+    if (next === 'host') renderHostPanel(panel);
+    else renderJoinPanel(panel);
+  };
+  hostTab.addEventListener('click', () => setTab('host'));
+  joinTab.addEventListener('click', () => setTab('join'));
+
+  const footer = el('div', { className: 'menu-row', parent: overlay });
+  const backBtn = el('button', { className: 'menu-btn secondary', parent: footer, text: 'BACK TO TITLE' });
+  backBtn.addEventListener('click', () => { window.location.assign('/'); });
+  void activeTab;
+
+  setTab('host');
+}
+
+function renderHostPanel(parent: HTMLElement): void {
+  const session = generateSessionId();
+  // Inviter is slot 0; the partner who scans/pastes lands on slot 1.
+  const partnerUrl = buildDuelInviteUrl(session, 1);
+  const inviterUrl = buildDuelInviteUrl(session, 0);
+
+  const info = el('p', { parent });
+  info.style.cssText = 'margin:0;font-size:0.88rem;color:rgba(220,210,255,0.8);line-height:1.5;text-align:center;';
+  info.innerHTML = 'Send the invite to your opponent. Once they open it, tap <strong>READY</strong> below to enter the arena.';
+
+  // QR for the partner URL. qrcode lib renders into a <canvas>.
+  const qrCanvas = el('canvas', { parent });
+  qrCanvas.style.cssText = 'background:#fff;padding:10px;border-radius:8px;max-width:240px;width:100%;height:auto;';
+  void QRCode.toCanvas(qrCanvas, partnerUrl, { width: 240, margin: 1 })
+    .catch((err: unknown) => { console.warn('[duel] QR render failed:', err); });
+
+  const sessionRow = el('div', { parent });
+  sessionRow.style.cssText = 'display:flex;align-items:center;gap:8px;font-family:monospace;font-size:0.88rem;color:rgba(220,210,255,0.85);';
+  el('span', { parent: sessionRow, text: 'SESSION:' }).style.cssText = 'color:rgba(180,140,255,0.7);letter-spacing:0.1em;';
+  el('span', { parent: sessionRow, text: session.toUpperCase() });
+
+  const copyRow = el('div', { className: 'menu-row', parent });
+  const copyBtn = el('button', { className: 'menu-btn secondary', parent: copyRow, text: 'COPY INVITE LINK' });
+  copyBtn.addEventListener('click', () => {
+    void navigator.clipboard.writeText(partnerUrl)
+      .then(() => { copyBtn.textContent = 'COPIED ✓'; setTimeout(() => { copyBtn.textContent = 'COPY INVITE LINK'; }, 1500); })
+      .catch(() => { copyBtn.textContent = 'COPY FAILED'; setTimeout(() => { copyBtn.textContent = 'COPY INVITE LINK'; }, 1500); });
+  });
+
+  const readyBtn = el('button', { className: 'menu-btn', parent: copyRow, text: 'READY ⚔' });
+  readyBtn.addEventListener('click', () => { window.location.assign(inviterUrl); });
+
+  const hint = el('p', { parent });
+  hint.style.cssText = 'margin:0;font-size:0.78rem;color:rgba(180,140,255,0.6);text-align:center;line-height:1.5;max-width:420px;';
+  hint.textContent = 'You enter as slot 0. The first to press READY waits in the arena until the partner connects; the lockstep buffers your input until then.';
+}
+
+function renderJoinPanel(parent: HTMLElement): void {
+  const info = el('p', { parent });
+  info.style.cssText = 'margin:0;font-size:0.88rem;color:rgba(220,210,255,0.8);line-height:1.5;text-align:center;max-width:480px;';
+  info.innerHTML = 'Paste the invite link your opponent sent you, then tap <strong>JOIN</strong>.';
+
+  const input = el('input', { parent }) as HTMLInputElement;
+  input.type = 'url';
+  input.placeholder = 'https://pallasite.app/?peer=…&session=…&slot=1';
+  input.style.cssText = 'width:100%;max-width:480px;padding:10px 12px;font:0.85rem/1.4 ui-monospace,monospace;background:rgba(15,8,32,0.65);color:#dccfff;border:1px solid rgba(184,144,255,0.35);border-radius:6px;outline:none;';
+
+  const err = el('p', { parent });
+  err.style.cssText = 'margin:0;min-height:1.2em;font-size:0.78rem;color:#ff8aa8;text-align:center;';
+
+  const row = el('div', { className: 'menu-row', parent });
+  const joinBtn = el('button', { className: 'menu-btn', parent: row, text: 'JOIN ⚔' });
+
+  const tryJoin = (): void => {
+    err.textContent = '';
+    const raw = input.value.trim();
+    if (!raw) { err.textContent = 'Paste the invite URL first.'; return; }
+    let parsed: URL;
+    try { parsed = new URL(raw); } catch { err.textContent = 'That does not look like a URL.'; return; }
+    const peer = parsed.searchParams.get('peer');
+    const session = parsed.searchParams.get('session');
+    const slot = parsed.searchParams.get('slot');
+    if (!peer || !session || (slot !== '0' && slot !== '1')) {
+      err.textContent = 'URL is missing the peer / session / slot params.';
+      return;
+    }
+    // Honour the slot in the URL; the inviter built it with slot=1 for us.
+    window.location.assign(raw);
+  };
+  joinBtn.addEventListener('click', tryJoin);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryJoin(); });
+
+  const hint = el('p', { parent });
+  hint.style.cssText = 'margin:0;font-size:0.78rem;color:rgba(180,140,255,0.6);text-align:center;line-height:1.5;max-width:420px;';
+  hint.textContent = 'A camera QR scanner is on the roadmap; for now, ask your opponent to send the link over Nostr / Signal / SMS.';
 }
