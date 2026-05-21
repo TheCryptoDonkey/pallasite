@@ -166,7 +166,12 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState): 
   const TAP_TIME_MS      = 220;   // press shorter than this with no drag = fire
   const TAP_MOVE_PX      = 8;     // total movement allowed before tap is "drag"
   const SNAP_BACK_MS     = 140;   // CSS transition 120ms + small margin to safely remove class
-  const p0 = state.players[0];
+  // Resolve players[0] on EVERY event, never cache. startGame() rebuilds
+  // s.players from scratch (`s.players = []` then push), so a closure-
+  // captured PlayerState reference from boot points at a dead object after
+  // the first IGNITE and joystick writes silently no-op. Touch buttons
+  // already use the dynamic-read pattern in attachButton().
+  const p0 = (): typeof state.players[number] => state.players[0];
 
   let activeId: number | null = null;
   let originX = 0, originY = 0;
@@ -176,8 +181,9 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState): 
   let didEngage = false;  // true once we cross the heading deadzone — disables tap-fire
 
   function clearMotion(): void {
-    p0.targetHeading = null;
-    p0.thrustOverride = false;
+    const p = p0();
+    p.targetHeading = null;
+    p.thrustOverride = false;
   }
 
   pad.addEventListener('pointerdown', e => {
@@ -215,16 +221,17 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState): 
     const knobY = (originY - padCy) + clipDy;
     knob.style.transform = `translate(${knobX.toFixed(1)}px, ${knobY.toFixed(1)}px)`;
     const magnitude = clipped / MAX_RADIUS;  // 0..1
+    const p = p0();
     if (magnitude > HEADING_DEADZONE) {
       didEngage = true;
       // Canvas y-down means Math.atan2(dy, dx) returns angle in canvas frame —
       // matches ship.rot which is also in canvas-frame radians.
-      p0.targetHeading = Math.atan2(dy, dx);
-      p0.thrustOverride = magnitude > THRUST_THRESHOLD;
+      p.targetHeading = Math.atan2(dy, dx);
+      p.thrustOverride = magnitude > THRUST_THRESHOLD;
     } else {
       // Inside deadzone — release motion so ship coasts straight
-      p0.targetHeading = null;
-      p0.thrustOverride = false;
+      p.targetHeading = null;
+      p.thrustOverride = false;
     }
   });
 
@@ -243,8 +250,9 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState): 
       // Game reads keys[Space] in its update loop; clearing in a microtask lets
       // exactly one frame see it as held (which is enough for the fire cooldown
       // path to issue one bullet).
-      p0.keys.Space = true;
-      requestAnimationFrame(() => { p0.keys.Space = false; });
+      const p = p0();
+      p.keys.Space = true;
+      requestAnimationFrame(() => { p0().keys.Space = false; });
     }
   }
   pad.addEventListener('pointerup',     release);
