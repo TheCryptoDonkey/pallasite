@@ -36,6 +36,7 @@ import { warmWebGLIfPreviouslyEnabled, getTheme, getAsciiCols, getBitDepth, getB
 import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
 import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges, EMPTY_INPUT } from './netcode.js';
+import { WebSocketPeer, type Peer, type PeerSlot } from './peer.js';
 import type { GameState } from './types.js';
 import { DOWN_DOUBLE_TAP_WINDOW_MS, WORLD_W, WORLD_H } from './types.js';
 
@@ -50,6 +51,32 @@ const state: GameState = makeInitialState();
 
 /** True when ?couch=1 is present — enables two-player local co-op. */
 const couchMode = new URLSearchParams(window.location.search).has('couch');
+
+// Remote-peer duel mode: `?peer=ws://broker.host/path&session=abc&slot=0|1`.
+// Both clients open the same session URL with mirrored slot numbers; the
+// broker's peer role mirrors frame / hash messages between them. When set,
+// the game forces 2-player mode and the lockstep loop drives slot 1 from
+// the peer's input log rather than the local keyboard.
+const mpParams = new URLSearchParams(window.location.search);
+const mpUrl = mpParams.get('peer');
+const mpSession = mpParams.get('session');
+const mpSlotRaw = mpParams.get('slot');
+const mpSlot: PeerSlot = (mpSlotRaw === '1') ? 1 : 0;
+const mpMode = !!(mpUrl && mpSession && (mpSlotRaw === '0' || mpSlotRaw === '1'));
+/** The remote peer for duel mode. Null in solo and couch. */
+let peer: Peer | null = null;
+/** Input-delay in sim frames when a peer is wired. Sized to comfortably
+ *  cover the broker round trip on a typical near-relay path. */
+const PEER_INPUT_DELAY = 5;
+/** Per-slot keyboard mirror that is NOT touched by the lockstep apply pass.
+ *  In peer mode the apply pass overwrites `players[i].keys` with the log
+ *  entry from N frames ago, which would clobber the live keyboard state and
+ *  drop held keys between rare auto-repeat events. The keyboard handler
+ *  writes to both `players[mpSlot].keys` (existing contract) and to
+ *  `localKeys[mpSlot]`; the lockstep sample reads from `localKeys` so the
+ *  user's current input survives every sim tick. Solo and couch pass
+ *  `undefined` to samplePlayerInput and read directly off `p.keys`. */
+const localKeys: Record<string, boolean>[] = [{}, {}];
 
 // Lockstep input log. Re-created whenever the player count changes so each
 // run starts with a clean ring. Sample writes to the current frame; decode
@@ -268,7 +295,7 @@ bindActions({
     // a prior daily run would persist through a subsequent free-mode start
     // (the IGNITE button bypasses the keyboard Enter path that did the reset).
     setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-    startGame(state, undefined, { players: couchMode ? 2 : 1 });
+    startGame(state, undefined, { players: (couchMode || peer) ? 2 : 1 });
     // Only force wavestart for the standard campaign — startGame on the
     // 600bn flavour sets phase='sanctum' and doesn't want the warp/wave
     // pipeline kicking in over the top.
@@ -374,7 +401,8 @@ window.addEventListener('keydown', e => {
   // P1 input — in couch mode only arrow/space go to players[0]; in solo mode all keys do (game.ts
   // aliases KeyA/D/W/S to ArrowLeft/Right/Up/Down for P1 via the keys record directly).
   if (!couchMode || !['KeyA', 'KeyD', 'KeyW', 'KeyS', 'ShiftLeft', 'KeyU', 'KeyI'].includes(e.code)) {
-    state.players[0].keys[e.code] = true;
+    state.players[mpSlot].keys[e.code] = true;
+    localKeys[mpSlot][e.code] = true;
   }
   // Prevent arrows from scrolling
   if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space'].includes(e.code)) {
@@ -384,7 +412,7 @@ window.addEventListener('keydown', e => {
   // dispatches tryHyperspace from the input log.
   if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyH') && state.phase === 'playing') {
     if (!couchMode || e.code !== 'ShiftLeft') {
-      edgeFlags[0].hyperspace = true;
+      edgeFlags[mpSlot].hyperspace = true;
     }
   }
   // Down-arrow: shield on first press, hyperspace on double-tap (P1)
@@ -392,10 +420,10 @@ window.addEventListener('keydown', e => {
     const now = performance.now();
     const sinceLast = now - lastDownArrowAt;
     if (lastDownArrowAt > 0 && sinceLast < DOWN_DOUBLE_TAP_WINDOW_MS) {
-      edgeFlags[0].hyperspace = true;
+      edgeFlags[mpSlot].hyperspace = true;
       lastDownArrowAt = 0;  // consume — prevent triple-tap chain
     } else {
-      edgeFlags[0].shield = true;
+      edgeFlags[mpSlot].shield = true;
       lastDownArrowAt = now;
     }
   }
@@ -454,7 +482,7 @@ window.addEventListener('keydown', e => {
     lockInDifficulty(getStoredDifficulty());
     gateBehindOnboarding(() => {
       setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-      startGame(state, undefined, { players: couchMode ? 2 : 1 });
+      startGame(state, undefined, { players: (couchMode || peer) ? 2 : 1 });
       if (getFlavour() !== '600bn') state.phase = 'wavestart';
       if (couchMode) (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
       clearOverlay();
@@ -468,7 +496,7 @@ window.addEventListener('keydown', e => {
     void audio.unlockAudio();
     lockInDifficulty(getStoredDifficulty());
     setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-    startGame(state, undefined, { players: couchMode ? 2 : 1 });
+    startGame(state, undefined, { players: (couchMode || peer) ? 2 : 1 });
     if (getFlavour() !== '600bn') state.phase = 'wavestart';
     if (couchMode) (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
     clearOverlay();
@@ -488,11 +516,13 @@ window.addEventListener('keyup', e => {
     }
   }
   if (!couchMode || !['KeyA', 'KeyD', 'KeyW', 'KeyS', 'ShiftLeft'].includes(e.code)) {
-    state.players[0].keys[e.code] = false;
+    state.players[mpSlot].keys[e.code] = false;
+    localKeys[mpSlot][e.code] = false;
   }
   if (e.code === 'Space') {
     // Allow rapid re-fire on tap by clearing the held state
-    state.players[0].keys.Space = false;
+    state.players[mpSlot].keys.Space = false;
+    localKeys[mpSlot]['Space'] = false;
   }
 });
 
@@ -685,33 +715,58 @@ function loop(now: number): void {
   lastFrame = now;
   while (stepAccumulator >= FIXED_STEP_S) {
     // Lockstep input pipeline. On every advancing frame:
-    //   1) snapshot the live per-player input into the log, keyed by the
-    //      frame about to be entered (`state.frame` increments inside
-    //      updateGame);
-    //   2) decode the log entry for the same frame back into `players[i]`
-    //      so the sim reads from the log path rather than the live state
-    //      directly, and dispatch the edge-triggered actions (hyperspace,
-    //      shield) from the decoded edge bits.
+    //   1) snapshot the LOCAL slots' input into the log (and send via peer
+    //      in duel mode); in couch mode both slots are local, in duel mode
+    //      only mpSlot is local;
+    //   2) drain peer.drainFrames() into the log under the REMOTE slot;
+    //   3) read frame (s.frame - delay) for every slot; if any slot is
+    //      missing in duel mode, STALL (break) -- the sim cannot advance
+    //      until both halves of the input are available;
+    //   4) decode + apply + edge dispatch + updateGame.
     // Hit-stop skipping lives inside updateGame (B3 sim contract), so the
-    // loop unconditionally calls it -- both clients agree on the skip
-    // off the same `s.hitStopSteps`. The sample / apply pipeline is gated
-    // on the same value so a frozen frame does not re-sample over the
-    // same log slot and stomp the canonical input for that frame.
+    // loop unconditionally calls updateGame -- both clients agree on the
+    // skip off the same `s.hitStopSteps`. Sample / apply is gated on the
+    // same value so a frozen frame does not re-sample over the same log
+    // slot and stomp the canonical input for that frame.
+    const peerActive = !!(peer && peer.isConnected());
+    const activeDelay = peerActive ? PEER_INPUT_DELAY : inputDelay;
     if (state.hitStopSteps === 0) {
       if (!inputLog || inputLog.players !== state.players.length) {
         inputLog = new InputLog(state.players.length);
       }
-      for (let i = 0; i < state.players.length; i++) {
-        const input = samplePlayerInput(state.players[i], edgeFlags[i]);
-        inputLog.record(state.frame, i, encodePlayerInput(input));
+      // 1) Sample LOCAL slot(s) and (if peer) send.
+      const localSampleSlots = peerActive
+        ? [mpSlot]
+        : (state.players.length >= 2 ? [0, 1] : [0]);
+      for (const i of localSampleSlots) {
+        // Peer mode reads from the localKeys mirror so apply's delayed
+        // overwrite of `players[i].keys` cannot drop held keys. Solo and
+        // couch pass undefined and read directly off `p.keys`.
+        const keysOverride = peerActive ? localKeys[i] : undefined;
+        const input = samplePlayerInput(state.players[i], edgeFlags[i], keysOverride);
+        const encoded = encodePlayerInput(input);
+        inputLog.record(state.frame, i, encoded);
+        if (peerActive) peer!.sendFrame(state.frame, encoded);
       }
+      // 2) Drain remote frames into the log under the remote slot.
+      if (peerActive) {
+        const remoteSlot = (1 - mpSlot) as 0 | 1;
+        for (const d of peer!.drainFrames()) inputLog.record(d.frame, remoteSlot, d.input);
+      }
+      // 3) Stall check in duel mode: every slot's input for the read
+      //    frame must be present. The read frame can be negative in the
+      //    first `activeDelay` frames (pre-roll); EMPTY_INPUT is used and
+      //    the sim coasts.
+      const readFrame = state.frame - activeDelay;
+      let stalled = false;
+      if (peerActive && readFrame >= 0) {
+        for (let i = 0; i < state.players.length; i++) {
+          if (inputLog.get(readFrame, i) < 0) { stalled = true; break; }
+        }
+      }
+      if (stalled) break;  // hold the accumulator; next rAF retries
+      // 4) Apply + edge dispatch.
       for (let i = 0; i < state.players.length; i++) {
-        // Read from `state.frame - inputDelay`. At delay 0 this is the slot
-        // just recorded above, byte-identical to the live input. At delay > 0
-        // the slot may not yet exist in the first few frames of a run; fall
-        // back to EMPTY_INPUT so the sim coasts neutrally until the buffer
-        // primes.
-        const readFrame = state.frame - inputDelay;
         const encoded = readFrame >= 0 ? inputLog.get(readFrame, i) : -1;
         const input = encoded >= 0 ? decodePlayerInput(encoded) : EMPTY_INPUT;
         applyPlayerInput(state.players[i], input);
@@ -960,6 +1015,22 @@ async function boot(): Promise<void> {
   // upgrade transparently.
   watchForSignerUpgrade();
 
+  // Duel mode: open a peer connection if the URL has the `?peer=` triplet.
+  // Failure logs to the console and falls back to solo; v1 has no in-UI
+  // reconnect prompt -- the player retries by reloading the URL.
+  if (mpMode && mpUrl && mpSession) {
+    peer = new WebSocketPeer();
+    try {
+      await peer.connect({ url: mpUrl, session: mpSession, localSlot: mpSlot });
+      // eslint-disable-next-line no-console
+      console.log('[duel] connected to', mpUrl, 'session', mpSession, 'as slot', mpSlot);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[duel] peer connect failed; falling back to solo:', e);
+      peer = null;
+    }
+  }
+
   // Preload first two wave backgrounds so the start of the game is seamless
   preloadBackground(1);
   preloadBackground(2);
@@ -1008,8 +1079,8 @@ async function boot(): Promise<void> {
   // tryHyperspace / tryActivateShield from the input log.
   setupTouchControls(
     state,
-    () => { edgeFlags[0].hyperspace = true; },
-    () => { edgeFlags[0].shield = true; },
+    () => { edgeFlags[mpSlot].hyperspace = true; },
+    () => { edgeFlags[mpSlot].shield = true; },
   );
 
   // Long-press the WAVE label on the HUD = open cheat input (mobile equivalent

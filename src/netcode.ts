@@ -101,14 +101,22 @@ export const EMPTY_INPUT: PlayerInput = Object.freeze({
 /** Read the live PlayerState into a fresh PlayerInput, draining the edge
  *  flags as a side-effect. After this returns, `edges.hyperspace` and
  *  `edges.shield` are both false -- the rising edges have been captured into
- *  the snapshot and must not fire again until the next keydown. */
-export function samplePlayerInput(p: PlayerState, edges: EdgeFlags): PlayerInput {
+ *  the snapshot and must not fire again until the next keydown.
+ *
+ *  `keysOverride` lets the caller supply a separate held-keys buffer that is
+ *  NOT clobbered by `applyPlayerInput`'s log-driven writes. Solo and couch
+ *  pass `undefined` and read directly off `p.keys` (apply is a no-op
+ *  round-trip there). Peer mode passes a `localKeys[mpSlot]` map that the
+ *  keyboard writes to in parallel with `p.keys`; the sample reads the
+ *  un-clobbered local buffer, while apply continues to drive `p.keys`. */
+export function samplePlayerInput(p: PlayerState, edges: EdgeFlags, keysOverride?: Record<string, boolean>): PlayerInput {
+  const k = keysOverride ?? p.keys;
   const input: PlayerInput = {
-    turnLeft:       !!(p.keys['ArrowLeft']  || p.keys['KeyA']),
-    turnRight:      !!(p.keys['ArrowRight'] || p.keys['KeyD']),
-    thrustHeld:     !!(p.keys['ArrowUp']    || p.keys['KeyW']),
+    turnLeft:       !!(k['ArrowLeft']  || k['KeyA']),
+    turnRight:      !!(k['ArrowRight'] || k['KeyD']),
+    thrustHeld:     !!(k['ArrowUp']    || k['KeyW']),
     thrustOverride: !!p.thrustOverride,
-    fire:           !!p.keys['Space'],
+    fire:           !!k['Space'],
     hyperspaceEdge: edges.hyperspace,
     shieldEdge:     edges.shield,
     heading:        p.targetHeading,
