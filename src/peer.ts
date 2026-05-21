@@ -83,6 +83,11 @@ export interface Peer {
   /** Highest remote frame number seen so far, -1 if none yet. Used by the
    *  stall detector to decide between "wait a beat" and "show stall UI". */
   lastReceivedFrame(): number;
+  /** Optional reconnect hook. Fires once peer-joined arrives AFTER an
+   *  unexpected drop (initial connect resolutions are NOT routed here).
+   *  Set to null to clear. LoopbackPeer never reconnects, so this is a
+   *  no-op on the loopback implementation. */
+  setOnReconnected?(cb: (() => void) | null): void;
 }
 
 // ── LoopbackPeer ─────────────────────────────────────────────────────────────
@@ -210,12 +215,23 @@ export function loopbackPair(oneWayDelayFrames = 3): [LoopbackPeer, LoopbackPeer
  *    insertion order. Backpressure is the broker's job (drop oldest on
  *    overflow).
  *
- *  v1 has no auto-reconnect: a dropped socket terminates the run. M3
- *  polish layers brief-drop tolerance on top. */
+ *  Brief-drop tolerance: if the socket closes unexpectedly while we were
+ *  happily connected, we auto-reconnect with a short backoff. Each
+ *  reconnect re-sends hello-peer; the broker's peer-joined fires when
+ *  both peers are bound again. Callers can register `setOnReconnected`
+ *  to replay recently-sent input frames so the input log fills the
+ *  hole left by the drop. After RECONNECT_MAX_ATTEMPTS the peer gives
+ *  up and stays disconnected so the lockstep loop's existing
+ *  120-frame disconnect timer can end the run.
+ */
+const RECONNECT_BACKOFF_MS = [250, 500, 1000];
+const RECONNECT_MAX_ATTEMPTS = RECONNECT_BACKOFF_MS.length;
+
 export class WebSocketPeer implements Peer {
   private ws: WebSocket | null = null;
   private localSlot: PeerSlot = 0;
   private session = '';
+  private url = '';
   private connected = false;
   private partnerConnected = false;
   private frameInbox: FrameDelivery[] = [];
@@ -223,11 +239,25 @@ export class WebSocketPeer implements Peer {
   private highestRemoteFrame = -1;
   private resolveConnect: (() => void) | null = null;
   private rejectConnect: ((e: Error) => void) | null = null;
+  /** Set true by disconnect() so the close handler doesn't reschedule. */
+  private deliberateClose = false;
+  /** Reconnect attempts since the last successful peer-joined. Reset to
+   *  0 once we observe peer-joined again. */
+  private reconnectAttempt = 0;
+  /** Pending reconnect timer so disconnect() can cancel it. */
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Optional caller hook fired AFTER a reconnect's peer-joined arrives.
+   *  Used by the lockstep loop to replay recently-sent input frames
+   *  so the partner's input log can refill the gap left by the drop. */
+  private onReconnected: (() => void) | null = null;
 
   connect(opts: PeerConnectOpts): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       this.localSlot = opts.localSlot;
       this.session = opts.session;
+      this.url = opts.url;
+      this.deliberateClose = false;
+      this.reconnectAttempt = 0;
       this.resolveConnect = resolve;
       this.rejectConnect = reject;
       try {
@@ -243,7 +273,15 @@ export class WebSocketPeer implements Peer {
     });
   }
 
+  /** Register a callback to fire after a successful reconnect. The
+   *  callback receives no args; consult `isConnected()` for state. */
+  setOnReconnected(cb: (() => void) | null): void {
+    this.onReconnected = cb;
+  }
+
   disconnect(): void {
+    this.deliberateClose = true;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     if (this.ws && this.connected) {
       const bye: PeerMsgOut = { type: 'bye', slot: this.localSlot };
       try { this.ws.send(JSON.stringify(bye)); } catch { /* socket may already be closed */ }
@@ -302,10 +340,18 @@ export class WebSocketPeer implements Peer {
       case 'hash':
         this.hashInbox.push({ frame: msg.frame, hash: msg.hash });
         return;
-      case 'peer-joined':
+      case 'peer-joined': {
+        const wasReconnecting = this.reconnectAttempt > 0 && !this.partnerConnected;
         this.partnerConnected = true;
         if (this.resolveConnect) { this.resolveConnect(); this.resolveConnect = null; this.rejectConnect = null; }
+        if (wasReconnecting) {
+          this.reconnectAttempt = 0;
+          // Caller (main.ts) replays the local input ring so the partner
+          // can fill their input log over the gap we left.
+          if (this.onReconnected) try { this.onReconnected(); } catch { /* don't let a buggy hook poison the wire */ }
+        }
         return;
+      }
       case 'peer-left':
         this.partnerConnected = false;
         return;
@@ -318,12 +364,20 @@ export class WebSocketPeer implements Peer {
 
   private onClose(): void {
     const wasConnecting = this.rejectConnect !== null;
+    const wasFullyConnected = this.connected && this.partnerConnected;
     this.connected = false;
     this.partnerConnected = false;
     if (wasConnecting && this.rejectConnect) {
       this.rejectConnect(new Error('socket closed before partner joined'));
       this.resolveConnect = null;
       this.rejectConnect = null;
+      return;
+    }
+    // Auto-reconnect only on an unexpected drop after we'd reached
+    // peer-joined. Initial connect failures and deliberate disconnects
+    // never reach here.
+    if (!this.deliberateClose && wasFullyConnected) {
+      this.scheduleReconnect();
     }
   }
 
@@ -333,5 +387,30 @@ export class WebSocketPeer implements Peer {
       this.resolveConnect = null;
       this.rejectConnect = null;
     }
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectAttempt >= RECONNECT_MAX_ATTEMPTS) return;
+    const delay = RECONNECT_BACKOFF_MS[this.reconnectAttempt];
+    this.reconnectAttempt++;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.deliberateClose) return;
+      this.openSocket();
+    }, delay);
+  }
+
+  private openSocket(): void {
+    try {
+      this.ws = new WebSocket(this.url);
+    } catch {
+      // Construction itself failed (rare). Schedule another attempt.
+      this.scheduleReconnect();
+      return;
+    }
+    this.ws.addEventListener('open', () => this.onOpen());
+    this.ws.addEventListener('message', (ev: MessageEvent) => this.onMessage(ev));
+    this.ws.addEventListener('close', () => this.onClose());
+    this.ws.addEventListener('error', () => this.onError());
   }
 }
