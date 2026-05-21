@@ -263,7 +263,7 @@ Outstanding M3 work:
 - [ ] two real browsers, two locations, one shared arena smoke test on
       the live relay (requires broker deployment + an invite UI from M4).
 
-### M4 — matchmaking + polish — first cut shipped
+### M4 — matchmaking + polish — done
 
 - [x] **`3eb9449`** `/duel` route with HOST + JOIN tabs. HOST generates an
       8-char session ID, renders the invite URL as a QR + copy button +
@@ -283,28 +283,45 @@ Outstanding M3 work:
       doesn't flash between connect and game start.
 - [x] Title-screen `⚔ DUEL` button added to the existing menu row,
       navigates to `/duel`. Solo path otherwise untouched.
+- [x] **`ffa0bd3`** versus banner on gameover: when `players.length === 2`
+      (couch or duel), renderRunCredits prepends a side-by-side score
+      card with a WINNER call-out (yellow highlight) or DRAW heading.
+      Single-player recap (publish / claim / honours) unchanged below.
+- [x] **`ffa0bd3`** `renderDuelConnecting()` overlay shown between
+      `new WebSocketPeer()` and the resolve of `peer.connect()`. CANCEL
+      bounces back to /duel. Cleared by simulateStart's clearOverlay()
+      on success, or by renderAttract on connect failure.
+- [x] **`d72753a`** camera QR scanner on the JOIN tab. Live video via
+      getUserMedia + jsQR (downscaled to 640px, attemptBoth inversion)
+      with FROM PHOTO fallback for file-picker single-pass decode. Both
+      validate that the QR is a Pallasite duel invite URL before
+      navigating; random QRs are silently rejected and scanning
+      continues.
 
-Outstanding M4 polish (a future session):
+### M5 — spectate duels via watch.* — not started
 
-- [ ] camera QR scanner on the JOIN tab (jsQR is already in deps; lobby
-      currently asks the partner to paste the URL)
-- [ ] connection-status UI between READY-tap and peer-joined (today
-      the existing stall overlay surfaces ~100ms after the lockstep
-      loop starts, which works but is a bit indirect)
-- [ ] duel result screen: render both players' final scores side-by-side
-      with a "WINNER" call-out (existing renderGameOver may already do
-      this for `players.length === 2` — needs an audit)
-- [ ] spectate via `watch.*`: the `data-surface=watch` flag exists; the
-      watch surface already subscribes to stream sessions, just needs
-      a duel-session entry in its picker
+The `watch.pallasite.app` surface already streams kind 30764 replay
+frames from solo runs via the broker's `subscribe` role. Spectating a
+LIVE duel needs:
+
+- [ ] broker: a `r=peerwatch` subscribe-only role that mirrors frame /
+      hash messages from both peer slots to any number of watchers
+      without ever forwarding to peers (read-only tap of a peer
+      session)
+- [ ] watch UI: a duel-session picker / direct deep-link, so a
+      spectator can open `watch.pallasite.app/?duel=<session>` and
+      drop into the lockstep sim with both ships rendered
+- [ ] spectator renderer: re-uses the lockstep loop but in
+      read-only mode (no local input sampling, only drains both
+      slots' frame inputs from the broker tap)
 
 ### Cross-repo status
 
 | Repo | State |
 |---|---|
-| `asteroid-sats` | M1 + M2 done; M3 done modulo live smoke; M4 first cut shipped |
+| `asteroid-sats` | M1 + M2 + M3 + M4 done; live two-browser smoke pending broker deploy |
 | `joystick` | broker `peer` role landed (`d467867`); **needs deploy** to controller.pallasite.app |
-| `pallasite-faucet` | clean; no M4 dependency in v1 (Nostr invite is just "send the URL over any channel") |
+| `pallasite-faucet` | clean; no M4 dependency (Nostr invite is just "send the URL over any channel") |
 
 ### Next concrete step
 
@@ -312,11 +329,16 @@ Deploy the updated `controller-ws` (joystick `main`, commit `d467867`)
 to controller.pallasite.app. Once live, two browsers can:
 
 1. Player A: open `pallasite.app/duel`, HOST tab, tap READY (lands on
-   `/?peer=…&session=…&slot=0`).
-2. Player B: open the COPY-INVITE-LINK URL (or paste it on `/duel`,
-   JOIN tab), lands on `/?peer=…&session=…&slot=1`.
-3. Both clients' WebSocketPeer connects to the broker. peer-joined
-   fires on both. Auto-IGNITE triggers. Shared arena runs in lockstep.
+   `/?peer=…&session=…&slot=0`). Sees "Connecting · Waiting for
+   opponent to join the arena."
+2. Player B: scans Player A's QR with the JOIN-tab camera, pastes the
+   COPY-INVITE-LINK URL, or opens the URL directly. Lands on
+   `/?peer=…&session=…&slot=1`.
+3. Both WebSocketPeers send `hello-peer`. Broker binds the slots and
+   fires `peer-joined` to both. Auto-IGNITE triggers. Shared arena
+   runs in lockstep from the session-derived seed.
+4. On run end: versus banner shows WINNER · P1/P2 (or DRAW) with both
+   scores. Toast "Opponent left" + gameover on partner disconnect.
 
-If that smoke test passes, M3 closes out for real and the M4 polish
-items above become "nice to have" rather than blockers.
+If that smoke test passes, M3 + M4 close out for real and the only
+work remaining on the original plan is M5 (watch spectate).
