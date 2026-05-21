@@ -8827,23 +8827,10 @@ function renderGameOverRecap(state: GameState): void {
 const LN_ADDRESS_KEY = 'pallasite:lightning_address';
 const LN_ADDRESS_RE = /^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+(?::[0-9]+)?$/;
 
-const AGE_ATTEST_KEY_PREFIX = 'pallasite:age_attested_18:';
-
-function hasAgeAttestation(pubkey: string): boolean {
-  try {
-    return localStorage.getItem(AGE_ATTEST_KEY_PREFIX + pubkey.toLowerCase()) === '1';
-  } catch {
-    return false;
-  }
-}
-
-function setAgeAttestation(pubkey: string): void {
-  try {
-    localStorage.setItem(AGE_ATTEST_KEY_PREFIX + pubkey.toLowerCase(), '1');
-  } catch {
-    // localStorage unavailable
-  }
-}
+// Age-attestation helpers and the `pallasite:age_attested_18:<pubkey>` key
+// were removed when the 18+ checkbox was folded into the terms (the terms
+// already carry the eligibility clause, and the public release wanted a
+// friction-free claim path). Old localStorage entries can sit harmlessly.
 
 // Used by the withdraw flow on title — players type their LN address once
 // and we remember it for future withdraws on this device.
@@ -8939,79 +8926,11 @@ async function maybePublishScore(
   const compactView = el('div', { parent: wrapper });
   compactView.style.cssText = 'display:flex;flex-direction:column;gap:4px;align-items:stretch';
 
-  // 18+ gate. The game is open to all ages, but the sats claim flow is
-  // adults-only (free prize competition, Schedule 11 norms). Two paths:
-  //   - Self-attestation checkbox: localStorage flag per pubkey, fast.
-  //   - Signet verifyAge('18+'): cryptographic proof from a confirmed
-  //     professional verifier (GMC/SRA/TRA via signet-verification-bot).
-  // Either path satisfies the gate. We re-prompt on every sign-in for a
-  // different pubkey rather than treating the device as attested — the
-  // attestation is the *player's*, not the browser's.
-  const ageWrap = el('div', { parent: compactView });
-  ageWrap.style.cssText =
-    'display:flex;flex-direction:column;gap:6px;margin:4px 0 6px 0;text-align:left';
-
-  // Tap target: native checkboxes render at 16-18px on mobile, well below
-  // the 44pt minimum the iOS HIG recommends. We bump the box itself + tie
-  // the label via id/for so tapping anywhere along the label row toggles
-  // the checkbox. Without the linkage the original code only registered
-  // hits on the bare checkbox pixels, which mobile users miss every time.
-  const ageRow = el('div', { parent: ageWrap });
-  ageRow.style.cssText =
-    'display:flex;gap:10px;align-items:flex-start;font-size:0.78rem;' +
-    'color:#cccccc;line-height:1.4;padding:8px 4px;' +
-    '-webkit-tap-highlight-color:rgba(91,157,255,0.18)';
-  const ageCheckbox = document.createElement('input');
-  ageCheckbox.type = 'checkbox';
-  ageCheckbox.id = 'signet-age-checkbox';
-  ageCheckbox.style.cssText = 'width:22px;height:22px;margin-top:1px;cursor:pointer;flex-shrink:0;accent-color:#5b9dff';
-  const ageLabel = document.createElement('label');
-  ageLabel.htmlFor = 'signet-age-checkbox';
-  ageLabel.style.cssText = 'cursor:pointer;flex:1;user-select:none;-webkit-user-select:none';
-  ageLabel.appendChild(
-    document.createTextNode('I confirm I am 18 or older and have read the '),
-  );
-  const ageTermsLink = document.createElement('a');
-  ageTermsLink.href = '#';
-  ageTermsLink.textContent = 'terms';
-  ageTermsLink.style.cssText = 'color:#5b9dff;text-decoration:underline;padding:2px 0';
-  // Stop the terms tap from bubbling — without this, opening terms also
-  // toggles the checkbox via the label-for binding.
-  ageTermsLink.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    openTermsModal();
-  });
-  ageLabel.appendChild(ageTermsLink);
-  ageLabel.appendChild(document.createTextNode('.'));
-  ageRow.appendChild(ageCheckbox);
-  ageRow.appendChild(ageLabel);
-
-  // Signet verify button + status line. Only render the button if the SDK
-  // actually exposes verifyAge — older bundles or environments without the
-  // script tag won't, and we'd rather hide the option than show a broken
-  // button.
-  const ageStatus = el('p', { parent: ageWrap, text: '' });
-  ageStatus.style.cssText =
-    'font-size:0.72rem;margin:0;min-height:1em;color:#888;letter-spacing:0.04em';
-  const setAgeStatus = (msg: string, color: string): void => {
-    ageStatus.textContent = msg;
-    ageStatus.style.color = color;
-  };
-
-  let verifyBtn: HTMLButtonElement | null = null;
-  if (typeof window.Signet?.verifyAge === 'function') {
-    const verifyRow = el('div', { parent: ageWrap });
-    verifyRow.style.cssText =
-      'display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#888';
-    verifyRow.appendChild(document.createTextNode('or'));
-    verifyBtn = el('button', {
-      className: 'menu-btn secondary',
-      parent: verifyRow,
-      text: 'VERIFY WITH SIGNET',
-    }) as HTMLButtonElement;
-    verifyBtn.style.cssText = 'padding:4px 10px;font-size:0.72rem;cursor:pointer';
-  }
+  // The 18+ self-attestation is now folded into the terms: by clicking
+  // CLAIM the player is taken to have read and accepted the terms,
+  // including the "must be 18 or older" eligibility clause. A subtle
+  // "By claiming you accept the terms" footer below the picker keeps
+  // the link discoverable without a friction-y checkbox in the path.
 
   // ── Destination picker — replaces the single CLAIM button ──────────
   // BTC Prague flow: a walk-up guest scores well and wants the sats now.
@@ -9022,7 +8941,6 @@ async function maybePublishScore(
   // Direct payouts are gated at ≥100 sats (invoice fees would eat
   // smaller payouts); below the threshold only the balance path
   // appears, with a one-liner explaining why.
-  const sessionPubkey = state.session.pubkey;
   const sats = state.players[0].sats;
   const canDirectPayout = sats >= WITHDRAW_THRESHOLD_SATS;
 
@@ -9081,7 +8999,7 @@ async function maybePublishScore(
   // default there. Deferred via setTimeout to let the recap layout
   // settle before grabbing focus.
   const primaryBtn = addressBtn ?? qrBtn ?? balanceBtn;
-  if (primaryBtn && hasAgeAttestation(sessionPubkey)) {
+  if (primaryBtn) {
     setTimeout(() => tryFocusVisible(primaryBtn), 0);
   }
 
@@ -9098,47 +9016,19 @@ async function maybePublishScore(
     }
   };
 
-  const onAttested = (): void => {
-    setAgeAttestation(sessionPubkey);
-    setEnabled(true);
-    ageWrap.remove();
-    // Now that the picker is live, drop focus on the primary so the
-    // player can press A immediately after ticking the 18+ box.
-    if (primaryBtn) setTimeout(() => tryFocusVisible(primaryBtn), 0);
-  };
-  if (hasAgeAttestation(sessionPubkey)) {
-    ageWrap.remove();
-  } else {
-    setEnabled(false);
-    ageCheckbox.addEventListener('change', () => {
-      if (ageCheckbox.checked) onAttested();
-    });
-    if (verifyBtn) {
-      onTap(verifyBtn, () => {
-        void (async () => {
-          if (!window.Signet?.verifyAge) return;
-          verifyBtn!.disabled = true;
-          setAgeStatus('Opening Signet…', '#5b9dff');
-          try {
-            const result = await window.Signet.verifyAge('18+', { theme: 'dark' });
-            if (result.verified) {
-              setAgeStatus('✓ Verified by Signet', '#58ff58');
-              onAttested();
-            } else if (result.error === 'cancelled') {
-              setAgeStatus('Verification cancelled.', '#888');
-              verifyBtn!.disabled = false;
-            } else {
-              setAgeStatus(`Verification failed (${result.error ?? 'unknown'}).`, '#ff8050');
-              verifyBtn!.disabled = false;
-            }
-          } catch {
-            setAgeStatus('Signet unavailable. Use the checkbox.', '#ff8050');
-            verifyBtn!.disabled = false;
-          }
-        })();
-      });
-    }
-  }
+  // Subtle terms-acceptance footer below the picker. Clicking a claim
+  // button is the action that accepts the terms (which include the 18+
+  // eligibility clause); the link keeps the terms one tap away.
+  const tcRow = el('p', { parent: compactView });
+  tcRow.style.cssText = 'margin:6px 0 0 0;font-size:0.7rem;color:#888;text-align:center;letter-spacing:0.02em';
+  tcRow.appendChild(document.createTextNode('By claiming you accept the '));
+  const tcLink = document.createElement('a');
+  tcLink.href = '#';
+  tcLink.textContent = 'terms';
+  tcLink.style.cssText = 'color:#5b9dff;text-decoration:underline';
+  tcLink.addEventListener('click', (e) => { e.preventDefault(); openTermsModal(); });
+  tcRow.appendChild(tcLink);
+  tcRow.appendChild(document.createTextNode('.'));
 
   const status = el('p', { parent: wrapper, text: '' });
   status.style.cssText = 'font-size:0.85rem;margin:4px 0 0 0;min-height:1.2em';
