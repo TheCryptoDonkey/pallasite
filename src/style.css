@@ -696,20 +696,14 @@ body[data-display="modern"] #game3d {
   display: none;
 }
 
-@media (orientation: portrait) and (pointer: coarse) {
-  #rotate-hint {
-    display: flex;
-    position: fixed;
-    inset: 0;
-    z-index: 400;
-    align-items: center;
-    justify-content: center;
-    background: radial-gradient(ellipse at center, #160a2e 0%, #06030f 78%);
-    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
-  }
-  body.rotate-hint-dismissed #rotate-hint {
-    display: none;
-  }
+/* Rotate hint is no longer shown. The portrait follow camera (see
+ * commit f85e6d2) plus the portrait-forces-modern display override
+ * make portrait a fully playable orientation, so the full-screen
+ * "rotate to play" overlay is just misleading chrome that sits on
+ * top of a working playfield. Kept the markup + classes around in
+ * case a future tutorial reuses them. */
+#rotate-hint {
+  display: none !important;
 }
 
 .rotate-hint-inner {
