@@ -229,7 +229,7 @@ still green for length-1 runs.
 
 Lockstep proven deterministic offline.
 
-### M3 — transport — in progress
+### M3 — transport — done modulo live smoke test
 
 asteroid-sats side (client):
 
@@ -239,24 +239,29 @@ asteroid-sats side (client):
 - **`39880c9`** `WebSocketPeer` wired into the main lockstep loop.
 - **`232b71d`** M2/M3 lockstep pipeline gated behind an active peer
   (solo path stays untouched).
+- **`e05bd46`** stall overlay (`body[data-peer-stall="waiting"]`) at
+  ~100ms and disconnect end-of-run at ~2s; `toastNow('Opponent left')`
+  + transition to gameover phase.
+- **`68ee16a`** desync canary every 60 frames (`src/peer-canary.ts`);
+  mismatch surfaces via `body[data-peer-desync]` + console warn. v1
+  observes, does not resync.
+- **`69a50d3`** auto-reconnect (3 backoff attempts: 250 / 500 / 1000 ms)
+  with input-frame replay on `setOnReconnected()` so the partner can
+  refill the input log over the drop.
+
+joystick side (broker, this session):
+
+- **`d467867`** `peer` role added: `slot.peers = [ws0, ws1]` populated
+  from `hello-peer`; `frame` / `hash` forwarded only to the OTHER slot;
+  `peer-joined` / `peer-left` notifications; `session-error: full` on
+  third joiner; backpressure drops at 64KB buffered. Orphan-sweep +
+  empty-session checks now account for peer slots. 17 new smoke
+  assertions.
 
 Outstanding M3 work:
 
-- [ ] **joystick broker `peer` role** (~20 lines, `packages/broker/server.js`).
-      Today the broker only has `host` / `phone` / `subscribe` / `publish`
-      roles; the `WebSocketPeer` already sends `hello-peer` but the server
-      doesn't understand it. **This blocks the live two-browser test.**
-      Per §6.1: `sessions: Map<sessionId, [ws0, ws1]>`; on `hello-peer`
-      populate the slot; on `frame` / `hash`, forward to the OTHER slot
-      only; backpressure-drop oldest frame on full send buffer; `peer-left`
-      on close; `session-error: full` on a third joiner.
-- [ ] stall overlay ("waiting for OPPONENT") after ~6 frames
-- [ ] declare-disconnect end-of-run at ~120 frames
-- [ ] desync canary — hash `GameState` every 60 frames, compare and flag
-      (do not resync in v1; just observe)
 - [ ] two real browsers, two locations, one shared arena smoke test on
-      the live relay
-- [ ] reconnect on a brief drop
+      the live relay (requires broker deployment + an invite UI from M4).
 
 ### M4 — matchmaking + polish — not started
 
@@ -272,12 +277,14 @@ Outstanding M3 work:
 
 | Repo | State |
 |---|---|
-| `asteroid-sats` | M1 + M2 done; M3 client done; M3 broker integration blocked on `joystick`; M3 polish + M4 pending |
-| `joystick` | broker `peer` role not yet — current `main` is `64e9e08`, no `hello-peer` handling |
+| `asteroid-sats` | M1 + M2 done; M3 done modulo live smoke; M4 pending |
+| `joystick` | broker `peer` role landed (`d467867`); needs deploy to controller.pallasite.app |
 | `pallasite-faucet` | clean; M4 matchmaking surface not started |
 
 ### Next concrete step
 
-Land the **joystick broker `peer` role**. Until that ships,
-`WebSocketPeer.connect()` will never see a `peer-joined` and live
-two-browser play cannot happen. Everything else in M3 is downstream of it.
+Deploy the updated `controller-ws` (joystick `main`, commit `d467867`)
+to controller.pallasite.app, then start M4 — minimum useful slice is
+HOST flow (generate session, show QR + paste URL, wait for opponent)
+plus JOIN flow (paste URL or scan QR) on a new `/duel` route so the
+title page and solo path stay untouched.
