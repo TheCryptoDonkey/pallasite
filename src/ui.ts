@@ -1689,11 +1689,16 @@ function renderBalanceChip(parent: HTMLElement, state: GameState): void {
     'border-radius:8px', 'background:rgba(91,157,255,0.05)',
     'border:1px solid rgba(91,157,255,0.30)',
     'text-align:center',
+    // Hidden until the actual balance lands -- the previous
+    // "BALANCE · loading…" placeholder sat directly above IGNITE
+    // and made first-time players wait, thinking the game itself
+    // was still loading. Better to surface nothing than an idle hint.
+    'display:none',
   ].join(';');
 
   const head = el('p', { parent: wrap });
   head.style.cssText = 'margin:0;font-size:0.78rem;color:rgba(180,180,180,0.85);letter-spacing:0.08em';
-  head.textContent = 'BALANCE · loading…';
+  head.textContent = '';
 
   const sub = el('p', { parent: wrap });
   sub.style.cssText = 'margin:0;font-size:0.72rem;color:#888;line-height:1.4';
@@ -1708,6 +1713,9 @@ function renderBalanceChip(parent: HTMLElement, state: GameState): void {
   const session = state.session;
 
   const renderBalance = (balance: number): void => {
+    // First successful resolve reveals the chip; subsequent calls (a
+    // check-in stipend updating the value) just rewrite the head text.
+    wrap.style.display = 'flex';
     head.innerHTML = `BALANCE <span style="color:#5b9dff;font-weight:bold;">${balance}</span>`;
     if (balance >= WITHDRAW_THRESHOLD_SATS) {
       withdrawBtn.style.display = 'inline-block';
@@ -1739,8 +1747,9 @@ function renderBalanceChip(parent: HTMLElement, state: GameState): void {
     void fetchPlayer(session.pubkey).then((p) => {
       if (!wrap.isConnected) return;
       if (!p) {
-        head.textContent = 'BALANCE · unavailable';
-        sub.textContent = '';
+        // Faucet unreachable -- leave the chip hidden rather than
+        // surfacing an "unavailable" label. The player can still
+        // ignite and play; the balance just isn't displayed.
         return;
       }
       renderBalance(p.balance_sats);
