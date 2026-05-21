@@ -42,6 +42,17 @@ export function getDisplayMode(): DisplayMode {
   if (getFlavour() === '600bn') {
     return 'modern';
   }
+  // Portrait orientation forces modern. The retro mode caps the canvas
+  // at the native 1280×720 source and pixel-upscales to fit; on a
+  // portrait phone (tall, narrow) the 16:9 world collapses into a thin
+  // horizontal band with huge empty letterbox above and below. The
+  // portrait follow camera (modern-only) exists to fix exactly that
+  // case, so an explicit retro-preference player rotating to portrait
+  // should still get the playable camera rather than the unplayable
+  // strip. They are returned to retro when they rotate back.
+  if (typeof window !== 'undefined' && window.innerHeight > window.innerWidth) {
+    return 'modern';
+  }
   try {
     const v = localStorage.getItem(KEY);
     if (v === 'modern' || v === 'retro') return v;
