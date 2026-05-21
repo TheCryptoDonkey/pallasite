@@ -263,28 +263,60 @@ Outstanding M3 work:
 - [ ] two real browsers, two locations, one shared arena smoke test on
       the live relay (requires broker deployment + an invite UI from M4).
 
-### M4 — matchmaking + polish — not started
+### M4 — matchmaking + polish — first cut shipped
 
-- [ ] invite / find opponent over Nostr (npub or QR) — `pallasite-faucet`
-      or plain Nostr per §6
-- [ ] duel lobby UI, d-pad navigable
-- [ ] connection-status UI
-- [ ] versus rules screen
-- [ ] spectate via the existing `watch.*` tech (the `data-surface=watch`
-      flag landed in `a5e414b` is the hook)
+- [x] **`3eb9449`** `/duel` route with HOST + JOIN tabs. HOST generates an
+      8-char session ID, renders the invite URL as a QR + copy button +
+      READY navigation. JOIN takes a pasted invite URL, validates the
+      `peer`/`session`/`slot` triplet, then navigates. d-pad-navigable
+      via `setupOverlayArrowNav`.
+- [x] Versus-rules text on the lobby ("Shared seeded arena. Both ships
+      in the same field. Friendly fire is off. Run ends when both ships
+      are out — higher score wins.").
+- [x] Session-derived seed: `mpSeed = fnv1a32(mpSession)` so both
+      clients build the same arena from frame 0.
+- [x] Auto-IGNITE on peer-joined: `simulateStart()` (new exported helper
+      in `ui.ts`) runs the same code path as the IGNITE button. Both
+      sims start at near-identical wall-times, well inside the 5-frame
+      input-delay buffer.
+- [x] `renderAttract` skipped when peer is wired so the attract screen
+      doesn't flash between connect and game start.
+- [x] Title-screen `⚔ DUEL` button added to the existing menu row,
+      navigates to `/duel`. Solo path otherwise untouched.
+
+Outstanding M4 polish (a future session):
+
+- [ ] camera QR scanner on the JOIN tab (jsQR is already in deps; lobby
+      currently asks the partner to paste the URL)
+- [ ] connection-status UI between READY-tap and peer-joined (today
+      the existing stall overlay surfaces ~100ms after the lockstep
+      loop starts, which works but is a bit indirect)
+- [ ] duel result screen: render both players' final scores side-by-side
+      with a "WINNER" call-out (existing renderGameOver may already do
+      this for `players.length === 2` — needs an audit)
+- [ ] spectate via `watch.*`: the `data-surface=watch` flag exists; the
+      watch surface already subscribes to stream sessions, just needs
+      a duel-session entry in its picker
 
 ### Cross-repo status
 
 | Repo | State |
 |---|---|
-| `asteroid-sats` | M1 + M2 done; M3 done modulo live smoke; M4 pending |
-| `joystick` | broker `peer` role landed (`d467867`); needs deploy to controller.pallasite.app |
-| `pallasite-faucet` | clean; M4 matchmaking surface not started |
+| `asteroid-sats` | M1 + M2 done; M3 done modulo live smoke; M4 first cut shipped |
+| `joystick` | broker `peer` role landed (`d467867`); **needs deploy** to controller.pallasite.app |
+| `pallasite-faucet` | clean; no M4 dependency in v1 (Nostr invite is just "send the URL over any channel") |
 
 ### Next concrete step
 
 Deploy the updated `controller-ws` (joystick `main`, commit `d467867`)
-to controller.pallasite.app, then start M4 — minimum useful slice is
-HOST flow (generate session, show QR + paste URL, wait for opponent)
-plus JOIN flow (paste URL or scan QR) on a new `/duel` route so the
-title page and solo path stay untouched.
+to controller.pallasite.app. Once live, two browsers can:
+
+1. Player A: open `pallasite.app/duel`, HOST tab, tap READY (lands on
+   `/?peer=…&session=…&slot=0`).
+2. Player B: open the COPY-INVITE-LINK URL (or paste it on `/duel`,
+   JOIN tab), lands on `/?peer=…&session=…&slot=1`.
+3. Both clients' WebSocketPeer connects to the broker. peer-joined
+   fires on both. Auto-IGNITE triggers. Shared arena runs in lockstep.
+
+If that smoke test passes, M3 closes out for real and the M4 polish
+items above become "nice to have" rather than blockers.
