@@ -136,6 +136,12 @@ function load(track: Track): Loaded {
   el.loop = track.loop !== false;
   el.preload = 'auto';
   el.src = trackUrlFor(track);
+  // iOS PWA quirk: setting `src` and relying on `preload='auto'` alone is
+  // not enough to kick off the fetch — the underlying load can sit at
+  // readyState=0 indefinitely, especially after a MediaElementAudioSourceNode
+  // is attached. Calling load() here forces the element into the loading
+  // pipeline so the data has a chance to arrive before play() is asked.
+  try { el.load(); } catch { /* ignore */ }
   // Don't set crossOrigin — the music files are same-origin so it's
   // redundant, AND on iOS Safari setting it without matching CORS
   // response headers from the server taints the MediaElementSource and
@@ -475,8 +481,18 @@ export function musicSetTrackForState(state: GameState): void {
         try { void ctx.resume().catch(() => undefined); } catch { /* ignore */ }
       }
       const entry = loaded.get(currentId);
-      if (entry && !entry.failed && entry.el.paused) {
-        try { void entry.el.play().catch(() => undefined); } catch { /* ignore */ }
+      if (entry && !entry.failed) {
+        if (entry.el.paused) {
+          try { void entry.el.play().catch(() => undefined); } catch { /* ignore */ }
+        } else if (entry.el.readyState === 0) {
+          // iOS PWA "play() resolved, no data ever loaded" race. The element
+          // thinks it's playing (paused=false) but readyState=0 means no
+          // network buffer arrived — the original verify pass only retried
+          // on paused=true so this silent failure mode slipped through.
+          // Force an explicit load() then a fresh play() to break the stall.
+          try { entry.el.load(); } catch { /* ignore */ }
+          try { void entry.el.play().catch(() => undefined); } catch { /* ignore */ }
+        }
       }
     }
   }
