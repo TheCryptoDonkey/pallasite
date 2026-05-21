@@ -1,6 +1,6 @@
 # Pallasite: Shared-Arena Multiplayer
 
-**Status:** plan v1 (2026-05-18)
+**Status:** plan v1.1 (progress log updated 2026-05-21)
 **Purpose:** scope real-time 2-player shared-arena multiplayer. Supersedes the
 Layer 3 sketch in `async-pvp.md`, whose `pallasite-duel` "dispatch capability"
 assumption was wrong: dispatch is encrypted-DM agent negotiation, not a public
@@ -186,42 +186,98 @@ message kinds. The broker change is ~20 lines because the broker is already
 WebSocket-based. The bulk of M3 is the polish: stall UI, the desync
 canary, reconnect on a brief drop. The transport itself is shallow.
 
-## 7. M1 progress (as of 2026-05-19)
+## 7. Progress log (as of 2026-05-21)
+
+### M1 — two-ship sim — done
 
 Done and committed to `main`:
 
-- **#44** deterministic sim-transition scheduler — the wall-clock `setTimeout`
+- **#44** deterministic sim-transition scheduler — wall-clock `setTimeout`
   deferrals replaced with sim-clock-scheduled transitions (`178d119`).
 - **#45 / #46** the `players[]` pivot — `GameState.ship` and the 20 other
   per-player fields moved into a new `PlayerState`; `GameState` now holds
   `players: PlayerState[]`; ~539 sites across 13 files routed through
   `players[0]`, behaviour byte-identical, determinism harness green
   (`ed309b5`).
+- **#47** bullet ownership — `Bullet.owner` carries the firing player's
+  index (`-1` for enemy bullets); `fireBullet` stamps it; score/combo/sat
+  credit routes via `players[owner]`.
+- **#48** per-player game-over — `killShip(s, p)` kills one player;
+  `phase='gameover'` only flips when every player is out; per-player
+  respawn points.
+- **#49** two-ship render — `for (const p of s.players)` in update and
+  render loops, camera frames both, per-player HUD rails.
+- **#50** two-player start path — `startGame(s, seed?, { players: 1 | 2 })`;
+  P2 keyboard scheme in `main.ts` routes physical keys to
+  `players[1].keys`.
+- Per-player sim helpers threaded: `tryHyperspace`, `tryActivateShield`,
+  `fireBullet`, `killShip`, `applyPowerUp`, `recordCombo`, `resetCombo`,
+  `updateLurkState`, `maybeExtraLife`, `damageUfo`, `destroyUfo`,
+  `damageAsteroid`, `breakAsteroid`, `damageMine`, `destroyMine`.
 
-Remaining M1 is **#47-#50, done as one interdependent two-ship push** — they
-are only jointly testable, since with one player every `owner` index is 0.
-Build order:
+Couch 2-player works on two local keyboards. Solo determinism harness
+still green for length-1 runs.
 
-1. Thread the per-player sim helpers and credit functions to take a
-   `PlayerState` / owner index: `tryHyperspace`, `tryActivateShield`,
-   `fireBullet`, `killShip`, `applyPowerUp`, `recordCombo`, `resetCombo`,
-   `updateLurkState`, `maybeExtraLife`, `damageUfo`, `destroyUfo`,
-   `damageAsteroid`, `breakAsteroid`, `damageMine`, `destroyMine`. Length-1
-   behaviour-identical (typecheck + determinism harness gate).
-2. **#47** bullet ownership — add `Bullet.owner` (firing player's index, `-1`
-   for enemy bullets); `fireBullet` stamps it; kill credit routes via
-   `players[owner]`.
-3. `updateGame` per-player loops — wrap the per-player segments (input +
-   physics + fire, shield expiry, ship collisions, coin pickup, combo decay)
-   in `for (const p of s.players)`. Length-1 byte-identical.
-4. **#48** `killShip(s, p)` kills one player; `phase='gameover'` only when
-   every player is out; per-player respawn spawn points.
-5. **#50** a two-player start path (startGame builds two `PlayerState`s) plus
-   a second local keyboard scheme for P2.
-6. **#49** render every `players[]` ship, camera framing both, per-player HUD
-   rails.
-7. Verify: determinism harness still green for a solo (length-1) run;
-   play-test local couch 2-player.
+### M2 — lockstep core — done
 
-Steps 1-4 are behaviour-identical for solo and verifiable as they land; step 5
-introduces the second player; 6-7 make it playable and tested.
+- **`5351cf9`** `PlayerInput` type + 24-bit encode/decode + `InputLog`
+  ring buffer.
+- **`2451418`** sample local input into the log each sim step.
+- **`b46696d`** drive the sim through the input log.
+- **`b500605`** dispatch hyperspace and shield from the input log.
+- **`c46ea94`** input-delay buffer + simulated-latency loopback harness.
+
+Lockstep proven deterministic offline.
+
+### M3 — transport — in progress
+
+asteroid-sats side (client):
+
+- **`da02ed0`** wire protocol + `Peer` interface + `LoopbackPeer` +
+  `WebSocketPeer` (`src/peer.ts`).
+- **`f1511b4`** paired-loopback convergence harness.
+- **`39880c9`** `WebSocketPeer` wired into the main lockstep loop.
+- **`232b71d`** M2/M3 lockstep pipeline gated behind an active peer
+  (solo path stays untouched).
+
+Outstanding M3 work:
+
+- [ ] **joystick broker `peer` role** (~20 lines, `packages/broker/server.js`).
+      Today the broker only has `host` / `phone` / `subscribe` / `publish`
+      roles; the `WebSocketPeer` already sends `hello-peer` but the server
+      doesn't understand it. **This blocks the live two-browser test.**
+      Per §6.1: `sessions: Map<sessionId, [ws0, ws1]>`; on `hello-peer`
+      populate the slot; on `frame` / `hash`, forward to the OTHER slot
+      only; backpressure-drop oldest frame on full send buffer; `peer-left`
+      on close; `session-error: full` on a third joiner.
+- [ ] stall overlay ("waiting for OPPONENT") after ~6 frames
+- [ ] declare-disconnect end-of-run at ~120 frames
+- [ ] desync canary — hash `GameState` every 60 frames, compare and flag
+      (do not resync in v1; just observe)
+- [ ] two real browsers, two locations, one shared arena smoke test on
+      the live relay
+- [ ] reconnect on a brief drop
+
+### M4 — matchmaking + polish — not started
+
+- [ ] invite / find opponent over Nostr (npub or QR) — `pallasite-faucet`
+      or plain Nostr per §6
+- [ ] duel lobby UI, d-pad navigable
+- [ ] connection-status UI
+- [ ] versus rules screen
+- [ ] spectate via the existing `watch.*` tech (the `data-surface=watch`
+      flag landed in `a5e414b` is the hook)
+
+### Cross-repo status
+
+| Repo | State |
+|---|---|
+| `asteroid-sats` | M1 + M2 done; M3 client done; M3 broker integration blocked on `joystick`; M3 polish + M4 pending |
+| `joystick` | broker `peer` role not yet — current `main` is `64e9e08`, no `hello-peer` handling |
+| `pallasite-faucet` | clean; M4 matchmaking surface not started |
+
+### Next concrete step
+
+Land the **joystick broker `peer` role**. Until that ships,
+`WebSocketPeer.connect()` will never see a `peer-joined` and live
+two-browser play cannot happen. Everything else in M3 is downstream of it.
