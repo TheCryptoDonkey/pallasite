@@ -764,6 +764,49 @@ body[data-display="modern"] #game3d {
   }
 }
 
+/* ── Peer-stall overlay (M3 shared-arena multiplayer) ───────────────────── */
+/* Surfaces when the lockstep loop has been unable to advance for >100ms
+ * because the remote peer's input hasn't arrived. main.ts manages
+ * `body[data-peer-stall]`; absent in solo and couch. A toast + the
+ * standard gameover overlay take over once disconnect is declared, so
+ * the "lost" state has no overlay variant here. */
+#peer-stall-overlay {
+  display: none;
+}
+body[data-peer-stall="waiting"] #peer-stall-overlay {
+  display: flex;
+  position: fixed;
+  inset: 0;
+  z-index: 350;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, rgba(22, 10, 46, 0.55) 0%, rgba(6, 3, 15, 0.78) 78%);
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  animation: peer-stall-fade 200ms ease-out;
+}
+@keyframes peer-stall-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.peer-stall-inner {
+  text-align: center;
+  max-width: 22rem;
+  padding: 1.6rem 1.4rem;
+}
+.peer-stall-title {
+  margin: 0 0 0.45rem;
+  font-size: 1.7rem;
+  letter-spacing: 0.04em;
+  color: var(--hud-yellow);
+}
+.peer-stall-sub {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.4;
+  color: rgba(220, 224, 255, 0.78);
+}
+
 /* ── Touch controls ──────────────────────────────────────────────────────── */
 /* Hidden by default. main.ts adds .touch-active to body on first touch and
    sets data-phase on every phase change; the controls only appear during

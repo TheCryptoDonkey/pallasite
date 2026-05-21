@@ -5,7 +5,7 @@
  * stored Signet session, and routes between title/playing/paused/game-over.
  */
 
-import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHyperspace, tryActivateShield, cheatJumpToWave, cheatJumpToBonus, skipDeathReplay, skipWaveStart, skipWarp, FIXED_STEP_S } from './game.js';
+import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHyperspace, tryActivateShield, cheatJumpToWave, cheatJumpToBonus, skipDeathReplay, skipWaveStart, skipWarp, toastNow, FIXED_STEP_S } from './game.js';
 import { getFlavour } from './flavour.js';
 import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
@@ -68,6 +68,20 @@ let peer: Peer | null = null;
 /** Input-delay in sim frames when a peer is wired. Sized to comfortably
  *  cover the broker round trip on a typical near-relay path. */
 const PEER_INPUT_DELAY = 5;
+/** Consecutive stalled sim frames before the "waiting for OPPONENT" overlay
+ *  surfaces. ~100ms tolerates ordinary network jitter without flicker. */
+const PEER_STALL_OVERLAY_FRAMES = 6;
+/** Consecutive stalled sim frames before we declare the partner gone and
+ *  end the run. ~2s at 60Hz. */
+const PEER_STALL_DISCONNECT_FRAMES = 120;
+/** Count of consecutive frames the lockstep loop has been unable to
+ *  advance (remote input missing). Reset every time a frame ticks. Only
+ *  meaningful while a peer is active. */
+let peerStallFrames = 0;
+/** Sticky flag: once the partner is declared lost we tear the peer down
+ *  and stop trying. Prevents the disconnect path firing every rAF after
+ *  game-over. */
+let peerDisconnectDeclared = false;
 /** Per-slot keyboard mirror that is NOT touched by the lockstep apply pass.
  *  In peer mode the apply pass overwrites `players[i].keys` with the log
  *  entry from N frames ago, which would clobber the live keyboard state and
@@ -719,6 +733,11 @@ function loop(now: number): void {
   // Bank real time, clamped, then spend it one fixed sim step at a time.
   stepAccumulator += Math.min(MAX_CATCHUP_STEPS * FIXED_STEP_S, (now - lastFrame) / 1000);
   lastFrame = now;
+  // Peer stall accounting: capture the sim frame before the inner loop so
+  // we can tell, after it runs, whether ANY frame actually advanced. Only
+  // meaningful when a peer is wired; solo and couch skip the bookkeeping
+  // below entirely.
+  const frameBeforeStep = state.frame;
   while (stepAccumulator >= FIXED_STEP_S) {
     // Lockstep input pipeline. On every advancing frame:
     //   1) snapshot the LOCAL slots' input into the log (and send via peer
@@ -789,6 +808,52 @@ function loop(now: number): void {
     }
     updateGame(state);
     stepAccumulator -= FIXED_STEP_S;
+  }
+
+  // ── Peer stall + disconnect ─────────────────────────────────────────────
+  // Entirely gated on isPeerActive(): solo and couch never enter this block.
+  // The lockstep stall break above holds the sim frame; we measure that
+  // here against the frame seen entering the rAF tick.
+  if (isPeerActive()) {
+    const advanced = state.frame > frameBeforeStep;
+    const partnerLeft = !!peer && !peer.isConnected();
+    if (advanced && !partnerLeft) {
+      peerStallFrames = 0;
+    } else {
+      // Counting in sim frames is approximate when the sim is stalled (we
+      // never advance state.frame), so tick by the number of fixed steps
+      // worth of real time that piled up this rAF. Falls back to +1 so we
+      // still progress on a single starved tick.
+      const elapsedFrames = Math.max(1, Math.round((now - lastFrame + (stepAccumulator * 1000)) / (FIXED_STEP_S * 1000)));
+      peerStallFrames += elapsedFrames;
+    }
+    if (!peerDisconnectDeclared) {
+      const overFrames = peerStallFrames >= PEER_STALL_DISCONNECT_FRAMES;
+      if (partnerLeft || overFrames) {
+        // Tear the peer down so the sim drops back into the solo path
+        // (the game-over overlay is then dismissable as usual).
+        peerDisconnectDeclared = true;
+        setPeerActive(false);
+        try { peer?.disconnect(); } catch { /* socket may already be closed */ }
+        peer = null;
+        // Clear any in-flight "waiting" overlay; we're past that now.
+        delete document.body.dataset.peerStall;
+        toastNow(state, 'Opponent left');
+        // End the current run. The existing phase-transition block below
+        // picks this up and renders the gameover overlay.
+        if (state.phase === 'playing') state.phase = 'gameover';
+      } else if (peerStallFrames >= PEER_STALL_OVERLAY_FRAMES) {
+        if (document.body.dataset.peerStall !== 'waiting') {
+          document.body.dataset.peerStall = 'waiting';
+        }
+      } else if (document.body.dataset.peerStall === 'waiting') {
+        delete document.body.dataset.peerStall;
+      }
+    }
+  } else if (document.body.dataset.peerStall) {
+    // Peer is gone (or was never wired); make sure the overlay isn't
+    // stuck on the screen.
+    delete document.body.dataset.peerStall;
   }
 
   render(canvas, state, now);

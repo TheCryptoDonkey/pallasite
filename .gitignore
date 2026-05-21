@@ -34,5 +34,10 @@ yarn-error.log*
 *.tsbuildinfo
 .cache/
 
-# Local dev harnesses
+# Local dev harnesses. determinism / lockstep / peer harnesses are tracked
+# (they're load-bearing for multiplayer + B3 work); anything else following
+# the *-harness.html naming is local experimentation and stays out.
 *-harness.html
+!determinism-harness.html
+!lockstep-harness.html
+!peer-harness.html
