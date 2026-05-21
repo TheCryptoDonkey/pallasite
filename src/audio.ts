@@ -148,6 +148,24 @@ export async function unlockAudio(): Promise<void> {
   if (c.state !== 'running' && c.state !== 'closed') {
     await c.resume();
   }
+  // Belt-and-braces iOS gesture unlock. On an installed PWA the
+  // AudioContext can boot in 'running' state already, so the resume()
+  // above is a no-op — yet iOS hasn't actually opened the audio
+  // session for THIS launch. SFX (raw oscillator / buffer plays) still
+  // work because each new node triggers iOS to open the session, but
+  // MediaElementAudioSourceNode (music) inherits the never-unlocked
+  // state and outputs silent zeros forever. Playing a one-sample
+  // silent buffer here from inside the gesture forces iOS to open the
+  // session via a normal audio operation, which then routes both SFX
+  // AND music for the rest of the page session. Cheap and idempotent;
+  // safe to run on every gesture.
+  try {
+    const buf = c.createBuffer(1, 1, 22050);
+    const src = c.createBufferSource();
+    src.buffer = buf;
+    src.connect(c.destination);
+    src.start(0);
+  } catch { /* node creation can throw on a closed ctx; nothing to do */ }
 }
 
 /**

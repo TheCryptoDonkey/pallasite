@@ -54,7 +54,7 @@ import {
 import { renderLegalFooter, openTermsModal } from './legal.js';
 import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow, getSanctumStats } from './game.js';
 import * as audio from './audio.js';
-import { listTracks, currentTrackId, musicPreviewPlay, musicForceRefresh, musicStop, musicNotifyClaimSuccess, musicWarmUpAll } from './music.js';
+import { listTracks, currentTrackId, musicPreviewPlay, musicForceRefresh, musicStop, musicNotifyClaimSuccess, musicWarmUpAll, musicResetElements, getMusicDebugSnapshot } from './music.js';
 import { getMusicAnalyser } from './audio.js';
 import { fetchProfile, getCachedProfile, bestName } from './profile.js';
 import { type Difficulty, getStoredDifficulty, setStoredDifficulty, lockInDifficulty } from './difficulty.js';
@@ -7769,6 +7769,47 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
     // re-resolve the current phase and crossfade back to pallasite-idle.
     musicForceRefresh();
     onBack();
+  });
+
+  // ── Audio diagnostic + RESET ──────────────────────────────────────────
+  // iOS PWA-only: SFX work but music goes silent occasionally. The diag
+  // strip surfaces enough of the audio state to triage without
+  // ?dbg=audio, and the RESET button performs the same recovery dance
+  // firstUnlock does (resume ctx → dispose pre-gesture elements → warm
+  // up under THIS gesture → re-play the current phase's track). One-tap
+  // self-serve fix when music is dead.
+  const diagWrap = el('div', { parent: overlay });
+  diagWrap.style.cssText = 'margin:14px auto 0;max-width:480px;width:100%;display:flex;flex-direction:column;gap:8px;align-items:center;';
+  const diagText = el('pre', { parent: diagWrap });
+  diagText.style.cssText = 'margin:0;font:0.72rem/1.4 ui-monospace,monospace;color:rgba(220,210,255,0.65);text-align:center;background:rgba(15,8,32,0.6);padding:8px 10px;border-radius:6px;border:1px solid rgba(184,144,255,0.25);white-space:pre-wrap;';
+  const refreshDiag = (): void => {
+    const snap = getMusicDebugSnapshot();
+    const ctxState = audio.getAudioContextState();
+    diagText.textContent =
+      `ctx:${ctxState} · vol:${(audio.getMusicVolume() * 100).toFixed(0)}% · muted:${audio.isMuted() ? 'Y' : 'N'}\n` +
+      `track:${snap.currentId ?? '-'} · paused:${snap.paused ?? '-'} · ready:${snap.readyState ?? '-'} · loaded:${snap.loadedCount}` +
+      (snap.errorCode != null ? `\nerr ${snap.errorCode}: ${snap.errorMsg ?? ''}` : '');
+  };
+  refreshDiag();
+  const diagTimer = window.setInterval(refreshDiag, 1000);
+  // Stop the poll when the overlay is rebuilt or torn down.
+  const observer = new MutationObserver(() => {
+    if (!document.body.contains(diagText)) {
+      clearInterval(diagTimer);
+      observer.disconnect();
+    }
+  });
+  observer.observe(root, { childList: true, subtree: true });
+  const diagRow = el('div', { parent: diagWrap });
+  diagRow.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;justify-content:center;';
+  const resetBtn = el('button', { className: 'menu-btn secondary', parent: diagRow, text: '🔧 RESET AUDIO' });
+  onTap(resetBtn, () => {
+    void audio.unlockAudio();
+    musicResetElements();
+    musicWarmUpAll(currentTrackId() ?? undefined);
+    musicSetTrackForState(state);
+    musicForceRefresh();
+    refreshDiag();
   });
 }
 
