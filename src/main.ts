@@ -10,7 +10,7 @@ import { getFlavour } from './flavour.js';
 import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadBackground, setRenderMode, getRenderModeKind, drawAsciiHud } from './render.js';
-import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderDuelLobby, simulateStart } from './ui.js';
+import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderDuelLobby, renderDuelConnecting, simulateStart } from './ui.js';
 import { postHeartbeat } from './faucet.js';
 import { currentMode } from './mode.js';
 import {
@@ -1157,6 +1157,10 @@ async function boot(): Promise<void> {
   // refill the gap.
   if (mpMode && mpUrl && mpSession) {
     peer = new WebSocketPeer();
+    // Surface a "Connecting" placeholder so the player isn't staring at a
+    // blank canvas while peer.connect() blocks on the partner's arrival.
+    // simulateStart's clearOverlay() removes this once peer-joined fires.
+    renderDuelConnecting(mpSlot);
     try {
       await peer.connect({ url: mpUrl, session: mpSession, localSlot: mpSlot });
       setPeerActive(true);
