@@ -108,6 +108,84 @@ gameplay before any netcode.
 - `joystick` — the controller-ws broker `peer` role (M3).
 - `pallasite-faucet` or plain Nostr — matchmaking (M4).
 
+## 6.1 M3 — transport detail
+
+### Wire format (v1, JSON over WebSocket)
+
+Two clients, one session, mirrored through the broker. JSON for v1 readability;
+a binary frame replaces it later if bandwidth ever bites.
+
+**Client → broker:**
+
+```
+{ type: "hello-peer", session: string, slot: 0 | 1, version: 1 }
+{ type: "frame", frame: number, slot: 0 | 1, input: number }
+{ type: "hash",  frame: number, slot: 0 | 1, hash:  number }
+{ type: "bye",   slot: 0 | 1 }
+```
+
+**Broker → client (mirrors messages from the other slot):**
+
+```
+{ type: "frame",         frame: number, slot: 0 | 1, input: number }
+{ type: "hash",          frame: number, slot: 0 | 1, hash:  number }
+{ type: "peer-joined",   slot: 0 | 1 }
+{ type: "peer-left",     slot: 0 | 1, reason: string }
+{ type: "session-error", code:  string }
+```
+
+`input` is the 24-bit packed `encodePlayerInput` value. `hash` is the same
+FNV1a-32 the determinism harness uses, sent every 60 frames as a desync canary.
+
+### Broker change (joystick repo, ~20 lines)
+
+`packages/broker/server.js` today is one-publisher-many-subscribers. The
+`peer` role adds a `sessions: Map<sessionId, [ws0, ws1]>`. On `hello-peer`,
+populate the slot; on `frame` / `hash`, forward to the OTHER slot only
+(never echo back); on socket close, send `peer-left` to the partner and
+clear the slot. Backpressure: if a slot's send buffer exceeds N messages,
+drop the oldest frame and bump a counter. Two clients per session; a third
+`hello-peer` gets `session-error: full`.
+
+### Client (`src/peer.ts`)
+
+A `Peer` interface with two implementations:
+
+- `WebSocketPeer` — real transport against the broker. JSON encoded.
+- `LoopbackPeer` — pairs two instances locally; one's `send` lands in the
+  other's `pollFrames` inbox after a configurable delay. Used by the M3
+  test harness to drive both sides of a duel in one process.
+
+Both expose `sendFrame(frame, encoded)`, `sendHash(frame, hash)`,
+`drainFrames()`, `drainHashes()`, `isConnected()`, `lastReceivedFrame()`.
+
+### Lockstep loop integration
+
+The main loop, when a peer is wired:
+
+1. Sample local input; record under `(state.frame, localSlot)` in InputLog;
+   `peer.sendFrame(state.frame, encoded)`.
+2. Drain `peer.drainFrames()` into InputLog under `(frame, remoteSlot)`.
+3. Read both slots at `state.frame - inputDelay`. If either is missing,
+   STALL (do not advance the sim this tick); accumulate stall time.
+4. If both are present, dispatch edges + `updateGame`.
+5. Every 60 frames: hash `GameState`, send via `peer.sendHash`; on receive,
+   compare to local hash for that frame; mismatch -> log + UI flag (do not
+   resync v1, just observe).
+
+### Stall and disconnect policy
+
+- Up to ~6 frames (100ms): silent stall, render the last frame.
+- 6 to ~30 frames: stalled overlay shown ("waiting for OPPONENT").
+- > ~120 frames: declare disconnect; show "OPPONENT LEFT", end the run.
+
+### Why this is small in scope
+
+Lockstep input is one number per player per step. The protocol is five
+message kinds. The broker change is ~20 lines because the broker is already
+WebSocket-based. The bulk of M3 is the polish: stall UI, the desync
+canary, reconnect on a brief drop. The transport itself is shallow.
+
 ## 7. M1 progress (as of 2026-05-19)
 
 Done and committed to `main`:
