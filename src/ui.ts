@@ -11599,7 +11599,7 @@ function renderHostPanel(parent: HTMLElement): void {
 function renderJoinPanel(parent: HTMLElement): void {
   const info = el('p', { parent });
   info.style.cssText = 'margin:0;font-size:0.88rem;color:rgba(220,210,255,0.8);line-height:1.5;text-align:center;max-width:480px;';
-  info.innerHTML = 'Paste the invite link your opponent sent you, then tap <strong>JOIN</strong>.';
+  info.innerHTML = 'Scan the QR on your opponent\'s screen, or paste the invite link they sent you.';
 
   const input = el('input', { parent }) as HTMLInputElement;
   input.type = 'url';
@@ -11608,30 +11608,194 @@ function renderJoinPanel(parent: HTMLElement): void {
 
   const err = el('p', { parent });
   err.style.cssText = 'margin:0;min-height:1.2em;font-size:0.78rem;color:#ff8aa8;text-align:center;';
+  const setError = (msg: string | null): void => { err.textContent = msg ?? ''; };
 
-  const row = el('div', { className: 'menu-row', parent });
-  const joinBtn = el('button', { className: 'menu-btn', parent: row, text: 'JOIN ⚔' });
-
-  const tryJoin = (): void => {
-    err.textContent = '';
-    const raw = input.value.trim();
-    if (!raw) { err.textContent = 'Paste the invite URL first.'; return; }
+  /** Validate that `raw` is a Pallasite duel invite URL with the full
+   *  peer/session/slot triplet. Returns the URL on success, null on
+   *  failure (with the reason written to setError). */
+  const validateInvite = (raw: string): string | null => {
     let parsed: URL;
-    try { parsed = new URL(raw); } catch { err.textContent = 'That does not look like a URL.'; return; }
+    try { parsed = new URL(raw); } catch { setError('That does not look like a URL.'); return null; }
     const peer = parsed.searchParams.get('peer');
     const session = parsed.searchParams.get('session');
     const slot = parsed.searchParams.get('slot');
     if (!peer || !session || (slot !== '0' && slot !== '1')) {
-      err.textContent = 'URL is missing the peer / session / slot params.';
+      setError('URL is missing the peer / session / slot params.');
+      return null;
+    }
+    return raw;
+  };
+
+  const row = el('div', { className: 'menu-row', parent });
+  const joinBtn = el('button', { className: 'menu-btn', parent: row, text: 'JOIN ⚔' });
+  const scanBtn = el('button', { className: 'menu-btn secondary', parent: row, text: '📷 SCAN QR' });
+  const fileBtn = el('button', { className: 'menu-btn secondary', parent: row, text: '🖼 FROM PHOTO' });
+
+  const tryJoinFromInput = (): void => {
+    setError(null);
+    const raw = input.value.trim();
+    if (!raw) { setError('Paste the invite URL or scan a QR first.'); return; }
+    const url = validateInvite(raw);
+    if (url) window.location.assign(url);
+  };
+  joinBtn.addEventListener('click', tryJoinFromInput);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryJoinFromInput(); });
+
+  // ── QR scanner host (hidden until SCAN tapped) ─────────────────────────
+  const scanHost = el('div', { parent });
+  scanHost.style.cssText = 'display:none;flex-direction:column;gap:10px;align-items:stretch;width:100%;max-width:480px;';
+  const video = el('video', { parent: scanHost }) as HTMLVideoElement;
+  video.style.cssText = 'width:100%;max-height:48vh;border-radius:8px;background:#000;object-fit:cover;';
+  video.playsInline = true;
+  video.muted = true;
+  const scanStatus = el('p', { parent: scanHost, text: 'Point at the QR on your opponent\'s screen' });
+  scanStatus.style.cssText = 'margin:0;font-size:0.8rem;color:rgba(220,210,255,0.75);text-align:center;letter-spacing:0.08em;';
+  const stopBtn = el('button', { className: 'menu-btn secondary', parent: scanHost, text: 'CANCEL SCAN' });
+
+  // Hidden file input for FROM PHOTO. Capture attr nudges mobile browsers
+  // toward the camera roll picker rather than full file-system access.
+  const fileInput = el('input', { parent, attrs: { type: 'file', accept: 'image/*' } }) as HTMLInputElement;
+  fileInput.setAttribute('capture', 'environment');
+  fileInput.style.display = 'none';
+
+  let stream: MediaStream | null = null;
+  let scanRaf: number | null = null;
+  let jsQRLib: typeof import('jsqr').default | null = null;
+
+  const loadJsQR = async (): Promise<typeof import('jsqr').default> => {
+    if (jsQRLib) return jsQRLib;
+    const mod = await import('jsqr');
+    jsQRLib = mod.default;
+    return jsQRLib;
+  };
+
+  const stopScan = (): void => {
+    if (scanRaf !== null) { cancelAnimationFrame(scanRaf); scanRaf = null; }
+    if (stream) { for (const t of stream.getTracks()) t.stop(); stream = null; }
+    // iOS Safari occasionally needs srcObject=null + pause() to drop the
+    // MediaStream and turn off the camera indicator.
+    try { video.pause(); } catch { /* ignore */ }
+    try { video.srcObject = null; } catch { /* ignore */ }
+    scanHost.style.display = 'none';
+    row.style.display = 'flex';
+    scanBtn.disabled = false;
+    scanStatus.style.color = 'rgba(220,210,255,0.75)';
+    scanStatus.textContent = 'Point at the QR on your opponent\'s screen';
+  };
+  stopBtn.addEventListener('click', stopScan);
+
+  const onQrFound = (raw: string): boolean => {
+    const url = validateInvite(raw);
+    if (!url) return false;  // Wrong QR — keep scanning.
+    scanStatus.textContent = 'Got it — connecting…';
+    stopScan();
+    window.location.assign(url);
+    return true;
+  };
+
+  const startCameraScan = async (): Promise<void> => {
+    scanBtn.disabled = true;
+    setError(null);
+    let jsQR: typeof import('jsqr').default;
+    try { jsQR = await loadJsQR(); } catch {
+      scanBtn.disabled = false;
+      setError('QR library failed to load — use FROM PHOTO or paste the link.');
       return;
     }
-    // Honour the slot in the URL; the inviter built it with slot=1 for us.
-    window.location.assign(raw);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      scanBtn.disabled = false;
+      setError('This browser has no camera API — use FROM PHOTO or paste the link.');
+      return;
+    }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false,
+      });
+    } catch (err) {
+      scanBtn.disabled = false;
+      setError(err instanceof Error && err.name === 'NotAllowedError'
+        ? 'Camera permission denied — use FROM PHOTO or paste the link.'
+        : 'Could not open the camera — use FROM PHOTO or paste the link.');
+      return;
+    }
+    row.style.display = 'none';
+    scanHost.style.display = 'flex';
+    video.srcObject = stream;
+    try { await video.play(); } catch { /* ignore */ }
+    const SCAN_TARGET_W = 640;
+    const canvas = document.createElement('canvas');
+    const cctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!cctx) return;
+    const scanStart = Date.now();
+    let lastStatusTick = scanStart;
+    const tick = (): void => {
+      if (!stream) return;
+      if (video.readyState >= 2 && video.videoWidth > 0) {
+        const aspect = video.videoHeight / video.videoWidth;
+        const w = Math.min(SCAN_TARGET_W, video.videoWidth);
+        const h = Math.round(w * aspect);
+        if (canvas.width !== w || canvas.height !== h) {
+          canvas.width = w;
+          canvas.height = h;
+        }
+        cctx.drawImage(video, 0, 0, w, h);
+        try {
+          const data = cctx.getImageData(0, 0, w, h);
+          const found = jsQR(data.data, data.width, data.height, { inversionAttempts: 'attemptBoth' });
+          if (found && onQrFound(found.data)) return;
+        } catch { /* keep scanning */ }
+      }
+      const now = Date.now();
+      if (now - scanStart > 8_000 && now - lastStatusTick > 1_000) {
+        scanStatus.textContent = 'Still scanning… if it will not latch, CANCEL and paste the link instead.';
+        scanStatus.style.color = 'rgba(255,216,74,0.85)';
+        lastStatusTick = now;
+      }
+      scanRaf = requestAnimationFrame(tick);
+    };
+    tick();
   };
-  joinBtn.addEventListener('click', tryJoin);
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryJoin(); });
+  scanBtn.addEventListener('click', () => { void startCameraScan(); });
+
+  const handleFile = async (file: File): Promise<void> => {
+    setError(null);
+    let jsQR: typeof import('jsqr').default;
+    try { jsQR = await loadJsQR(); } catch {
+      setError('QR library failed to load.');
+      return;
+    }
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.src = url;
+    try { await img.decode(); } catch {
+      URL.revokeObjectURL(url);
+      setError('Could not read that image.');
+      return;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const cctx = canvas.getContext('2d');
+    if (!cctx) { URL.revokeObjectURL(url); return; }
+    cctx.drawImage(img, 0, 0);
+    URL.revokeObjectURL(url);
+    let data: ImageData;
+    try { data = cctx.getImageData(0, 0, canvas.width, canvas.height); }
+    catch { setError('Could not read image data.'); return; }
+    const found = jsQR(data.data, data.width, data.height);
+    if (!found || !onQrFound(found.data)) {
+      setError('No usable invite QR found in that photo — try again or paste the link.');
+    }
+  };
+  fileBtn.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files?.[0];
+    if (file) void handleFile(file);
+    fileInput.value = '';
+  });
 
   const hint = el('p', { parent });
   hint.style.cssText = 'margin:0;font-size:0.78rem;color:rgba(180,140,255,0.6);text-align:center;line-height:1.5;max-width:420px;';
-  hint.textContent = 'A camera QR scanner is on the roadmap; for now, ask your opponent to send the link over Nostr / Signal / SMS.';
+  hint.textContent = 'Live camera works on iOS Safari, Android Chrome, and desktop browsers with a webcam.';
 }
