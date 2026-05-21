@@ -3547,9 +3547,29 @@ function drawShockwaves(ctx: CanvasRenderingContext2D, rings: Shockwave[], now: 
 
 // ── HUD layer ─────────────────────────────────────────────────────────────────
 
+/** Persistent offscreen canvas the radar renders into at 1:1 each frame.
+ *  Composited back to the main canvas with a per-scanline trapezoidal
+ *  warp so the panel looks like an arcade-cabinet console tilted away
+ *  from the player. Holding it module-level so we are not constructing
+ *  + destroying a canvas every frame. */
+let radarOffscreen: HTMLCanvasElement | null = null;
+function getRadarOffscreen(w: number, h: number): HTMLCanvasElement {
+  if (!radarOffscreen) radarOffscreen = document.createElement('canvas');
+  if (radarOffscreen.width !== w || radarOffscreen.height !== h) {
+    radarOffscreen.width = w;
+    radarOffscreen.height = h;
+  }
+  return radarOffscreen;
+}
+
 /** Defender-style radar. Portrait-follow only: the player sees a vertical
  *  slice of the world, so a compressed whole-world map with blips keeps them
- *  aware of the field that is off-screen. Drawn in device space, like the HUD. */
+ *  aware of the field that is off-screen.
+ *
+ *  Visual depth: rendered to an offscreen canvas at 1:1 then composited
+ *  back with a per-scanline trapezoid warp (top edge ~92% the width of
+ *  the bottom) plus an atmospheric darken-toward-the-top gradient.
+ *  Reads like a sloped cabinet console rather than a flat sticker. */
 function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
   if (!renderMode.follow || !isFollowPhase(s.phase) || !getRadarVisible()) return;
 
@@ -3564,32 +3584,34 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
   const h = 76;
   if (w < 80) { ctx.restore(); return; }  // too cramped to be useful
 
-  // Panel. Near-opaque: a translucent panel let a bright asteroid drifting
-  // behind it bleed through and wash out the blips.
-  ctx.fillStyle = 'rgba(6, 10, 20, 0.94)';
-  ctx.fillRect(x0, y0, w, h);
-  ctx.lineWidth = 1;
-  ctx.strokeStyle = 'rgba(120, 150, 255, 0.32)';
-  ctx.strokeRect(x0 + 0.5, y0 + 0.5, w - 1, h - 1);
-  ctx.beginPath();
-  ctx.rect(x0, y0, w, h);
-  ctx.clip();
+  // ── Phase 1: render the radar contents into the offscreen canvas at 1:1.
+  const off = getRadarOffscreen(w, h);
+  const oc = off.getContext('2d');
+  if (!oc) { ctx.restore(); return; }
+  oc.clearRect(0, 0, w, h);
 
-  // World -> radar mapping: linear on X over the full WORLD_W, compressed on Y
-  // (WORLD_H into ~76px). The Y squash is intentional, as Defender's radar did.
+  // Panel. Near-opaque so blips read against any background colour.
+  oc.fillStyle = 'rgba(6, 10, 20, 0.94)';
+  oc.fillRect(0, 0, w, h);
+  oc.lineWidth = 1;
+  oc.strokeStyle = 'rgba(120, 150, 255, 0.32)';
+  oc.strokeRect(0.5, 0.5, w - 1, h - 1);
+  oc.save();
+  oc.beginPath();
+  oc.rect(0, 0, w, h);
+  oc.clip();
+
+  // World -> offscreen mapping. Same shape as before but anchored at 0,0
+  // inside the offscreen canvas; the warp on the way out positions it.
   const blip = (wx: number, wy: number, r: number, fill: string): void => {
-    ctx.fillStyle = fill;
-    ctx.beginPath();
-    ctx.arc(x0 + (wrapInto(wx) / WORLD_W) * w, y0 + (wy / WORLD_H) * h, r, 0, Math.PI * 2);
-    ctx.fill();
+    oc.fillStyle = fill;
+    oc.beginPath();
+    oc.arc((wrapInto(wx) / WORLD_W) * w, (wy / WORLD_H) * h, r, 0, Math.PI * 2);
+    oc.fill();
   };
-  // Asteroid blips scale with the rock's real radius (14 small .. 48 large, or
-  // bigger for a vein) so the player reads big vs small at a glance.
   for (const a of s.asteroids) {
     blip(a.pos.x, a.pos.y, Math.max(1.4, Math.min(5.5, a.radius * 0.082 + 0.85)), '#9aa6c8');
   }
-  // Enemy fire — incoming shots from off the visible strip are the whole point
-  // of the radar; player bullets are left off to keep it readable.
   for (const b of s.enemyBullets) blip(b.pos.x, b.pos.y, 1.8, '#ff8a1e');
   for (const p of s.powerups) blip(p.pos.x, p.pos.y, 3.4, '#5be8ff');
   for (const m of s.mines) blip(m.pos.x, m.pos.y, 3, '#ff5a4a');
@@ -3598,19 +3620,41 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
     if (pl.ship.alive) blip(pl.ship.pos.x, pl.ship.pos.y, 4.5, '#58ff58');
   }
 
-  // Visible-strip box — the slice the follow camera currently shows. Drawn as
-  // one or two rects so it wraps cleanly around the radar's edges.
+  // Visible-strip box — the slice the follow camera currently shows.
   const strip = renderMode.vw / (renderMode.vh / WORLD_H);
   const boxW = Math.min(strip / WORLD_W, 1) * w;
-  const boxX = x0 + (wrapInto(camX - strip / 2) / WORLD_W) * w;
-  ctx.strokeStyle = 'rgba(255, 240, 180, 0.95)';
-  ctx.lineWidth = 1.5;
-  if (boxX + boxW <= x0 + w) {
-    ctx.strokeRect(boxX, y0 + 1, boxW, h - 2);
+  const boxX = (wrapInto(camX - strip / 2) / WORLD_W) * w;
+  oc.strokeStyle = 'rgba(255, 240, 180, 0.95)';
+  oc.lineWidth = 1.5;
+  if (boxX + boxW <= w) {
+    oc.strokeRect(boxX, 1, boxW, h - 2);
   } else {
-    const first = x0 + w - boxX;
-    ctx.strokeRect(boxX, y0 + 1, first, h - 2);
-    ctx.strokeRect(x0, y0 + 1, boxW - first, h - 2);
+    const first = w - boxX;
+    oc.strokeRect(boxX, 1, first, h - 2);
+    oc.strokeRect(0, 1, boxW - first, h - 2);
+  }
+
+  // Atmospheric depth: top edge slightly darker so the eye reads
+  // "further away" before the geometry even helps.
+  const grad = oc.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, 'rgba(4, 6, 12, 0.35)');
+  grad.addColorStop(0.55, 'rgba(0, 0, 0, 0)');
+  oc.fillStyle = grad;
+  oc.fillRect(0, 0, w, h);
+  oc.restore();
+
+  // ── Phase 2: composite back with a per-scanline trapezoid warp.
+  // Top width = w * TOP_SCALE; bottom width = w. Each scanline is drawn
+  // at the interpolated width, centred horizontally on the radar's axis.
+  // 76 drawImage calls per frame is negligible on any GPU that can run
+  // the rest of the game.
+  const TOP_SCALE = 0.92;
+  const cx = x0 + w / 2;
+  for (let row = 0; row < h; row++) {
+    const t = row / (h - 1);
+    const widthScale = TOP_SCALE + (1 - TOP_SCALE) * t;
+    const sliceW = w * widthScale;
+    ctx.drawImage(off, 0, row, w, 1, cx - sliceW / 2, y0 + row, sliceW, 1);
   }
 
   ctx.restore();
