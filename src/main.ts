@@ -1140,13 +1140,32 @@ async function boot(): Promise<void> {
   watchForSignerUpgrade();
 
   // Duel mode: open a peer connection if the URL has the `?peer=` triplet.
-  // Failure logs to the console and falls back to solo; v1 has no in-UI
-  // reconnect prompt -- the player retries by reloading the URL.
+  // Initial failure logs to the console and falls back to solo; the peer
+  // class auto-reconnects on a subsequent unexpected drop and replays the
+  // recent local input ring on reconnect so the partner's input log can
+  // refill the gap.
   if (mpMode && mpUrl && mpSession) {
     peer = new WebSocketPeer();
     try {
       await peer.connect({ url: mpUrl, session: mpSession, localSlot: mpSlot });
       setPeerActive(true);
+      // Replay hook: after a successful reconnect (NOT the initial connect),
+      // re-send our local slot's most recent input frames so the partner
+      // can backfill the input log over the drop. The remote does the same
+      // for us. Sized to the disconnect threshold so even a near-fatal
+      // drop is recoverable if the socket comes back.
+      peer.setOnReconnected?.(() => {
+        if (!peer || !inputLog) return;
+        const last = inputLog.latest(mpSlot);
+        if (last < 0) return;
+        const from = Math.max(0, last - PEER_STALL_DISCONNECT_FRAMES);
+        for (let f = from; f <= last; f++) {
+          const encoded = inputLog.get(f, mpSlot);
+          if (encoded >= 0) peer.sendFrame(f, encoded);
+        }
+        // eslint-disable-next-line no-console
+        console.log(`[duel] reconnected; replayed local frames ${from}..${last}`);
+      });
       // eslint-disable-next-line no-console
       console.log('[duel] connected to', mpUrl, 'session', mpSession, 'as slot', mpSlot);
     } catch (e) {
