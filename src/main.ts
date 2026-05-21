@@ -1395,6 +1395,7 @@ async function boot(): Promise<void> {
   // own panel owns the screen until the user backs out.
   const isAdmin = new URLSearchParams(window.location.search).has('admin');
   if (isAdmin) {
+    document.body.dataset.surface = 'admin';
     renderAdminPanel();
   } else if (window.location.hostname.startsWith('watch.')) {
     // Auto-open used to fire here when exactly one player was live;
@@ -1403,6 +1404,7 @@ async function boot(): Promise<void> {
     // hero-tile layout the spectator now lands on a page that shows
     // who's live + a one-tap path into the full theatre, so auto-open
     // costs sound for no real ergonomic win.
+    document.body.dataset.surface = 'watch';
     renderWatchPage(state);
   } else if (window.location.hostname.startsWith('mobile.')) {
     // mobile.pallasite.app — bookmarkable controller. Same render as
@@ -1422,18 +1424,22 @@ async function boot(): Promise<void> {
     // screens (Chromium PWA installs honour the manifest icons).
     const atIcon = document.querySelector('link[rel="apple-touch-icon"]');
     if (atIcon) atIcon.setAttribute('href', '/kempston-apple-touch.png');
+    document.body.dataset.surface = 'controller';
     renderControllerPage(state);
   } else {
     const path = window.location.pathname.replace(/\/+$/, '');
     if (path === '/jury') {
+      document.body.dataset.surface = 'jury';
       renderJuryPage(state);
     } else if (path === '/controller') {
+      document.body.dataset.surface = 'controller';
       renderControllerPage(state);
     } else if (path === '/admin') {
       // NIP-98 + pubkey-allowlist admin panel. Server enforces the
       // allowlist on every action; the client just renders whatever
       // the GET /api/admin/v2/state response is. Non-admin lands on
       // a "not authorised" message and a back link.
+      document.body.dataset.surface = 'admin';
       renderAdminV2Panel(state);
     } else if (path === '/sanctum-preview' || path === '/sanctum') {
       // Legacy standalone Sanctum surfaces — the parallel game-loop
@@ -1441,6 +1447,9 @@ async function boot(): Promise<void> {
       // is now layered into wave 1 of the standard campaign instead.
       // Redirect old URLs to root where the 600bn attract picks up.
       window.location.replace('/');
+    } else {
+      // Default surface = the game itself (root path on the apex domain).
+      document.body.dataset.surface = 'game';
     }
   }
 
