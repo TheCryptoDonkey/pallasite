@@ -35,7 +35,7 @@ import { getDisplayMode, applyDisplayMode } from './display.js';
 import { warmWebGLIfPreviouslyEnabled, getTheme, getAsciiCols, getBitDepth, getBitColour } from './visual-style.js';
 import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
-import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges, EMPTY_INPUT } from './netcode.js';
+import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges, EMPTY_INPUT, isPeerActive, setPeerActive } from './netcode.js';
 import { WebSocketPeer, type Peer, type PeerSlot } from './peer.js';
 import type { GameState } from './types.js';
 import { DOWN_DOUBLE_TAP_WINDOW_MS, WORLD_W, WORLD_H } from './types.js';
@@ -393,9 +393,11 @@ window.addEventListener('keydown', e => {
       // P2 hyperspace: KeyU
     } else if (e.code === 'KeyU' && state.phase === 'playing') {
       edgeFlags[1].hyperspace = true;
+      if (!isPeerActive()) tryHyperspace(state, state.elapsed, state.players[1]);
     } else if (e.code === 'KeyI' && state.phase === 'playing' && !e.repeat) {
       // P2 shield: KeyI
       edgeFlags[1].shield = true;
+      if (!isPeerActive()) tryActivateShield(state, state.elapsed, state.players[1]);
     }
   }
   // P1 input — in couch mode only arrow/space go to players[0]; in solo mode all keys do (game.ts
@@ -408,11 +410,13 @@ window.addEventListener('keydown', e => {
   if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space'].includes(e.code)) {
     e.preventDefault();
   }
-  // Hyperspace via Shift / H — raises the P1 edge; the per-step decode
-  // dispatches tryHyperspace from the input log.
+  // Hyperspace via Shift / H — solo dispatches synchronously (pre-M2 feel);
+  // peer mode raises the edge flag and the per-step decode dispatches from
+  // the input log.
   if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyH') && state.phase === 'playing') {
     if (!couchMode || e.code !== 'ShiftLeft') {
       edgeFlags[mpSlot].hyperspace = true;
+      if (!isPeerActive()) tryHyperspace(state, state.elapsed, state.players[mpSlot]);
     }
   }
   // Down-arrow: shield on first press, hyperspace on double-tap (P1)
@@ -421,9 +425,11 @@ window.addEventListener('keydown', e => {
     const sinceLast = now - lastDownArrowAt;
     if (lastDownArrowAt > 0 && sinceLast < DOWN_DOUBLE_TAP_WINDOW_MS) {
       edgeFlags[mpSlot].hyperspace = true;
+      if (!isPeerActive()) tryHyperspace(state, state.elapsed, state.players[mpSlot]);
       lastDownArrowAt = 0;  // consume — prevent triple-tap chain
     } else {
       edgeFlags[mpSlot].shield = true;
+      if (!isPeerActive()) tryActivateShield(state, state.elapsed, state.players[mpSlot]);
       lastDownArrowAt = now;
     }
   }
@@ -728,9 +734,14 @@ function loop(now: number): void {
     // skip off the same `s.hitStopSteps`. Sample / apply is gated on the
     // same value so a frozen frame does not re-sample over the same log
     // slot and stomp the canonical input for that frame.
-    const peerActive = !!(peer && peer.isConnected());
+    const peerActive = isPeerActive();
     const activeDelay = peerActive ? PEER_INPUT_DELAY : inputDelay;
-    if (state.hitStopSteps === 0) {
+    // Solo and couch take the pre-M2 direct path: keydown handlers already
+    // dispatched the edge actions synchronously and players[i].keys still
+    // holds the live input -- updateGame reads it as it always did. The
+    // sample / log / apply pipeline only runs in peer mode where lockstep
+    // requires a canonical input source.
+    if (state.hitStopSteps === 0 && peerActive) {
       if (!inputLog || inputLog.players !== state.players.length) {
         inputLog = new InputLog(state.players.length);
       }
@@ -1022,12 +1033,14 @@ async function boot(): Promise<void> {
     peer = new WebSocketPeer();
     try {
       await peer.connect({ url: mpUrl, session: mpSession, localSlot: mpSlot });
+      setPeerActive(true);
       // eslint-disable-next-line no-console
       console.log('[duel] connected to', mpUrl, 'session', mpSession, 'as slot', mpSlot);
     } catch (e) {
       // eslint-disable-next-line no-console
       console.warn('[duel] peer connect failed; falling back to solo:', e);
       peer = null;
+      setPeerActive(false);
     }
   }
 
@@ -1079,8 +1092,8 @@ async function boot(): Promise<void> {
   // tryHyperspace / tryActivateShield from the input log.
   setupTouchControls(
     state,
-    () => { edgeFlags[mpSlot].hyperspace = true; },
-    () => { edgeFlags[mpSlot].shield = true; },
+    (s, now) => { edgeFlags[mpSlot].hyperspace = true; if (!isPeerActive()) tryHyperspace(s, now, s.players[mpSlot]); },
+    (s, now) => { edgeFlags[mpSlot].shield = true;     if (!isPeerActive()) tryActivateShield(s, now, s.players[mpSlot]); },
   );
 
   // Long-press the WAVE label on the HUD = open cheat input (mobile equivalent

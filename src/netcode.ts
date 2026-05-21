@@ -83,6 +83,17 @@ export const localEdges: EdgeFlags[] = [
   { hyperspace: false, shield: false },
 ];
 
+/** Process-global lockstep-active flag. True only once the duel peer is
+ *  connected; false in solo, in couch, and before the peer hello completes.
+ *  Input sources read this to decide whether to dispatch edge actions
+ *  (tryHyperspace, tryActivateShield) synchronously (solo path) or to leave
+ *  them for the per-step decode in the lockstep loop (peer path). Keeping
+ *  the solo direct-dispatch path is what preserves the pre-M2 input feel
+ *  for the public single-player experience. */
+let _peerActive = false;
+export function setPeerActive(b: boolean): void { _peerActive = b; }
+export function isPeerActive(): boolean { return _peerActive; }
+
 /** A canonical empty input -- every flag clear, no heading. Use as a fill
  *  value in the input log and as the starting `prev` for a fresh run. */
 export const EMPTY_INPUT: PlayerInput = Object.freeze({
