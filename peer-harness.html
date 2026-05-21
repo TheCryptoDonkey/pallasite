@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>peer harness</title>
+<style>html,body{margin:0;background:#06080f;color:#8cffb4;font:14px/1.6 ui-monospace,monospace;padding:24px}</style>
+</head>
+<body>
+<pre id="out">running peer convergence check...</pre>
+<script type="module">
+// M3 regression harness. Two sim instances, both seeded the same, driven
+// in lockstep through a paired LoopbackPeer with a configurable one-way
+// latency. Each sim:
+//
+//   - samples its own scripted local input every step;
+//   - sends that input to its peer;
+//   - drains the peer's inbox into the InputLog under the remote slot;
+//   - reads frame (s.frame - inputDelay) from the log for both slots;
+//   - dispatches edges, advances updateGame.
+//
+// The convergence property: hashesA[step] === hashesB[step] for every step.
+// That is the lockstep contract -- two clients sharing inputs through the
+// same protocol with the same delay buffer produce bit-identical sim state
+// at every sim frame.
+//
+// One-way latency = 3 frames; inputDelay = 5 frames; the first inputDelay
+// frames of both sims are EMPTY-driven (the input-delay pre-roll) and
+// match by virtue of seed determinism. Real inputs take effect from
+// frame inputDelay onward.
+//
+// Together with the lockstep harness (offline determinism of the log
+// path) and the determinism harness (sim-level determinism), this proves
+// M3 transport is ready for the live broker without ever leaving the
+// browser.
+import { makeInitialState, startGame, updateGame, tryActivateShield, tryHyperspace } from '/src/game.ts';
+import { getRngState } from '/src/seed.ts';
+import { setRenderMode } from '/src/render.ts';
+import { InputLog, encodePlayerInput, decodePlayerInput, applyPlayerInput, EMPTY_INPUT } from '/src/netcode.ts';
+import { loopbackPair } from '/src/peer.ts';
+
+const STEPS = 3000;            // ~50s of sim at 60Hz; trim from 6000 since two sims
+const SEED = 0x1234abcd;
+const INPUT_DELAY = 5;         // frames; must be >= one-way latency
+const ONE_WAY = 3;             // frames; LoopbackPeer per-direction delay
+
+const RETRO_MODE = {
+  kind: 'retro', vw: 1280, vh: 720, dpr: 1, scale: 1, tx: 0, ty: 0,
+  insets: { top: 0, right: 0, bottom: 0, left: 0 },
+};
+
+function fnv1a(str) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+// Serialises BOTH players' state -- the harness compares duel sims that
+// have two ships, not the solo path the other harnesses gate.
+function serialize(s) {
+  const ent = (e) => [e.pos.x, e.pos.y, e.vel ? e.vel.x : 0, e.vel ? e.vel.y : 0];
+  const playerSlice = (p) => [
+    p.score, p.lives, p.sats, p.combo, p.fireCooldownUntil,
+    p.ship.pos.x, p.ship.pos.y, p.ship.vel.x, p.ship.vel.y, p.ship.rot,
+    p.ship.alive, p.ship.shieldUp, p.ship.shieldExpiresAt,
+    p.ship.invulnerableUntil, p.ship.hyperspaceReadyAt, p.ship.hyperspaceCloakMs,
+  ];
+  return JSON.stringify({
+    f: s.frame, ph: s.phase, w: s.wave, el: s.elapsed, hs: s.hitStopSteps,
+    rng: getRngState(),
+    p: s.players.map(playerSlice),
+    ast: s.asteroids.map((a) => [a.pos.x, a.pos.y, a.vel.x, a.vel.y, a.radius, a.id, a.hp]),
+    ufo: s.ufos.map((u) => [u.pos.x, u.pos.y, u.vel.x, u.vel.y, u.hp ?? 0]),
+    bul: s.bullets.map((b) => [...ent(b), b.owner ?? 0]),
+    ebul: s.enemyBullets.map(ent),
+    mine: s.mines.map((m) => [m.pos.x, m.pos.y]),
+    coin: s.coins.map((c) => [c.pos.x, c.pos.y, c.vel ? c.vel.x : 0, c.vel ? c.vel.y : 0]),
+    pow: s.powerups.map((p) => [p.pos.x, p.pos.y]),
+  });
+}
+
+// Two distinct scripted input streams, one per slot. Both exercise the
+// full input bitfield (held + edges) so the encode / decode path is
+// fully covered. Edges land on different schedules so the two sims have
+// genuinely different inputs to converge from.
+function scriptedInput(step, slot) {
+  if (slot === 0) {
+    return {
+      turnLeft:       (step % 7)  < 2,
+      turnRight:      (step % 11) < 3,
+      thrustHeld:     (step % 3)  !== 0,
+      thrustOverride: false,
+      fire:           (step % 5)  === 0,
+      hyperspaceEdge: step % 600 === 360,
+      shieldEdge:     step % 240 === 120,
+      heading:        null,
+    };
+  }
+  return {
+    turnLeft:       (step % 13) < 4,
+    turnRight:      (step % 17) < 5,
+    thrustHeld:     (step % 4)  !== 1,
+    thrustOverride: false,
+    fire:           (step % 9)  === 0,
+    hyperspaceEdge: step % 720 === 420,
+    shieldEdge:     step % 360 === 200,
+    heading:        null,
+  };
+}
+
+// Step one sim through one tick of the lockstep loop. Mirrors main.ts:
+//   1) sample local input, record under (s.frame, localSlot), send via peer;
+//   2) drain remote frames into the log under remote slot;
+//   3) read (s.frame - inputDelay) for both slots, fall back to EMPTY_INPUT;
+//   4) dispatch edges + apply;
+//   5) advance updateGame (which self-skips on hit-stop).
+function stepSim(s, log, peer, localSlot, step) {
+  if (s.hitStopSteps === 0) {
+    const localInput = scriptedInput(step, localSlot);
+    const localEncoded = encodePlayerInput(localInput);
+    log.record(s.frame, localSlot, localEncoded);
+    peer.sendFrame(s.frame, localEncoded);
+    const remoteSlot = (1 - localSlot);
+    for (const d of peer.drainFrames()) log.record(d.frame, remoteSlot, d.input);
+    const readFrame = s.frame - INPUT_DELAY;
+    for (let i = 0; i < 2; i++) {
+      const encoded = readFrame >= 0 ? log.get(readFrame, i) : -1;
+      const input = encoded >= 0 ? decodePlayerInput(encoded) : EMPTY_INPUT;
+      applyPlayerInput(s.players[i], input);
+      if (s.phase === 'playing') {
+        if (input.hyperspaceEdge) tryHyperspace(s, s.elapsed, s.players[i]);
+        if (input.shieldEdge) tryActivateShield(s, s.elapsed, s.players[i]);
+      }
+    }
+  }
+  updateGame(s);
+}
+
+// Run two paired sims in lockstep for STEPS, returning both hash sequences.
+// Both sims sample + send + drain + apply + tick + updateGame per step, so
+// they advance in true lockstep -- frame N for both before frame N+1.
+function runDuel(seed, steps) {
+  setRenderMode(RETRO_MODE);
+  const [peerA, peerB] = loopbackPair(ONE_WAY);
+  // Mark both connected so isConnected() reflects loopback readiness; the
+  // promise from connect() is unused here, this is a synchronous test.
+  peerA.connect({ url: '', session: 'duel', localSlot: 0 });
+  peerB.connect({ url: '', session: 'duel', localSlot: 1 });
+  const sA = makeInitialState();
+  const sB = makeInitialState();
+  startGame(sA, seed, { players: 2 });
+  startGame(sB, seed, { players: 2 });
+  const logA = new InputLog(2, 256);
+  const logB = new InputLog(2, 256);
+  const hashesA = new Array(steps);
+  const hashesB = new Array(steps);
+  for (let step = 0; step < steps; step++) {
+    // Both sims do their local sample / drain / apply BEFORE peers tick,
+    // mirroring the wall-clock interleaving of two real clients.
+    stepSim(sA, logA, peerA, 0, step);
+    stepSim(sB, logB, peerB, 1, step);
+    // Advance loopback latency clocks once per real step.
+    peerA.tick();
+    peerB.tick();
+    hashesA[step] = fnv1a(serialize(sA));
+    hashesB[step] = fnv1a(serialize(sB));
+  }
+  return { hashesA, hashesB };
+}
+
+const out = document.getElementById('out');
+let verdict;
+try {
+  const t0 = performance.now();
+  const { hashesA, hashesB } = runDuel(SEED, STEPS);
+  const ms = Math.round(performance.now() - t0);
+  let diverged = -1;
+  for (let i = 0; i < STEPS; i++) {
+    if (hashesA[i] !== hashesB[i]) { diverged = i; break; }
+  }
+  if (diverged === -1) {
+    verdict = 'PEER-PASS';
+    out.textContent = 'PEER-PASS\n\n' +
+      'two sims, paired loopback, ' + STEPS + ' steps each, identical hash sequence.\n' +
+      'one-way latency = ' + ONE_WAY + ' frames; input-delay = ' + INPUT_DELAY + ' frames.\n\n' +
+      'seed       = 0x' + SEED.toString(16) + '\n' +
+      'final hash = ' + hashesA[STEPS - 1] + '\n' +
+      ms + 'ms';
+  } else {
+    verdict = 'PEER-FAIL';
+    out.textContent = 'PEER-FAIL\n\n' +
+      'duel sims diverged at step ' + diverged + '\n' +
+      'sim A hash = ' + hashesA[diverged] + '\n' +
+      'sim B hash = ' + hashesB[diverged] + '\n' +
+      '(steps 0.. ' + (diverged - 1) + ' matched)\n\n' +
+      'A and B are receiving different effective input sequences. Likely\n' +
+      'culprits: loopback delivery timing, applyPlayerInput round-trip,\n' +
+      'edge dispatch order vs scripted input.';
+  }
+} catch (e) {
+  verdict = 'PEER-ERROR';
+  out.textContent = 'PEER-ERROR\n\n' + ((e && e.stack) || e);
+}
+document.title = verdict;
+</script>
+</body>
+</html>
