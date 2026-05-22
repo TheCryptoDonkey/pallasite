@@ -1140,7 +1140,7 @@ export function beginWave(s: GameState, wave: number): void {
   // WAVESTART_SKIP_AFTER_MS.
   const wavestartMs = isActWave
     ? INTERTITLE_MS
-    : (wave === 1 && getFlavour() === '600bn' ? 9_000 : WAVESTART_MS);
+    : (wave === 1 && (getFlavour() === '600bn' || isSanctumMode()) ? 9_000 : WAVESTART_MS);
   // Hand control to the player once the wavestart banner has held.
   scheduleSimTransition(s, 'wave-begin-play', s.elapsed + wavestartMs, epoch);
 }
@@ -1576,7 +1576,7 @@ function updateUfos(s: GameState, dt: number): void {
       // 600bn flavour — every UFO is the $600B badge and it fires 8-way
       // radial spray. Reads as a ritual broadcast pulse rather than a
       // sniper, matching the "signal carrier" theme.
-      if (getFlavour() === '600bn' && s.wave === 1) {
+      if ((getFlavour() === '600bn' || isSanctumMode()) && s.wave === 1) {
         u.shootTimer = 1800;
         ufoRadialShoot(s, u);
       } else if (u.type === 'tank') {
@@ -2920,7 +2920,7 @@ export function updateGame(s: GameState): void {
     // 600bn flavour wants the $600B badge UFOs MUCH more frequent —
     // they're a marquee visual element of the cross-promo wave, not
     // a periodic harasser. ~4s respawn instead of ~17s.
-    s.nextUfoSpawn = (getFlavour() === '600bn' && s.wave === 1)
+    s.nextUfoSpawn = ((getFlavour() === '600bn' || isSanctumMode()) && s.wave === 1)
       ? 4_000
       : baseInterval * mods.ufoIntervalMul;
   }
@@ -3375,7 +3375,7 @@ export function updateGame(s: GameState): void {
 
     // 600bn flavour wave 1 is an infinity wave — a clear just respawns
     // fillers and keeps going; the Sanctum is a continuous engagement.
-    const sanctumInfinity = getFlavour() === '600bn' && s.wave === 1;
+    const sanctumInfinity = (getFlavour() === '600bn' || isSanctumMode()) && s.wave === 1;
 
     // Stage 1 — first frame of clear: award bonuses, then either open the
     // grab-everything grace window or transition straight away.
@@ -3941,7 +3941,7 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
   // panel can show total asteroids destroyed; council members are
   // counted on their smallest-size death (when the asteroid is
   // genuinely gone, not fragmenting).
-  if (getFlavour() === '600bn') {
+  if (getFlavour() === '600bn' || isSanctumMode()) {
     sanctumStats.asteroidsDestroyed += 1;
     if (a.councilMember && a.size === 'small') {
       sanctumCouncilDefeated += 1;
