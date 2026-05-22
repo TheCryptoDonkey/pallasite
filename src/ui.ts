@@ -921,6 +921,14 @@ export function renderTitle(state: GameState): void {
     void audio.unlockAudio();
     window.location.assign('/duel');
   });
+  // 600bn Defender bonus wave. Wide arena, scrolling parallax starfield,
+  // 11-member Council to protect, 90s clock. Self-contained URL path —
+  // taps here just navigate to /?defender=1 and the boot reads the flag.
+  const defenderBtn = el('button', { className: 'menu-btn secondary', parent: row, text: '🛡 DEFEND 600B' });
+  defenderBtn.addEventListener('click', () => {
+    void audio.unlockAudio();
+    window.location.assign('/?defender=1');
+  });
 
   // Show local high scores under the start button if any exist. Local entries
   // sometimes carry an eventId (set when the player published this run via the
