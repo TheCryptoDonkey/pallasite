@@ -277,7 +277,15 @@ export function drawAvatarAsteroid(
  * flavours. The roster itself is already populated synchronously at
  * module load. */
 export function maybePreloadCouncil(): void {
-  if (getFlavour() === '600bn') kickImageLoads();
+  // Hostname 600bn OR Mode-picker Sanctum / Defender both need the
+  // Council portraits warm before wave 1's first frame. Read the
+  // stored mode (not currentMode()) so the warm-up runs at module-
+  // init, before startGame's lockInMode call.
+  if (getFlavour() === '600bn') { kickImageLoads(); return; }
+  try {
+    const m = localStorage.getItem('pallasite:mode');
+    if (m === 'sanctum' || m === 'defender') kickImageLoads();
+  } catch { /* ignore */ }
 }
 
 // Eager image-load kick at module-init on 600bn — game.ts imports
@@ -285,6 +293,8 @@ export function maybePreloadCouncil(): void {
 // well before the player can press IGNITE. Means portrait textures
 // arrive in cache during initial page load (parallel with other
 // asset fetches) instead of starting from the first frame of wave 1.
-if (typeof window !== 'undefined' && getFlavour() === '600bn') {
+if (typeof window !== 'undefined' && (getFlavour() === '600bn' || (() => {
+  try { const m = localStorage.getItem('pallasite:mode'); return m === 'sanctum' || m === 'defender'; } catch { return false; }
+})())) {
   kickImageLoads();
 }

@@ -1579,10 +1579,10 @@ function drawUfo(ctx: CanvasRenderingContext2D, u: Ufo, now: number): void {
   // saucers, which looked inconsistent.
   if ((getVisualStyle('ship') === 'mesh' || getVisualStyle('asteroid') === 'mesh') && isWebGLOverlayReady()) return;
   const r = u.radius;
-  // 600bn flavour swap — UFO renders as the canonical 4-line sacred
-  // number ($600B logo), rotating slowly. The hitbox + behaviour are
-  // unchanged; just the silhouette is replaced.
-  if (getFlavour() === '600bn') {
+  // 600bn flavour / Sanctum-mode swap — UFO renders as the canonical
+  // 4-line sacred number ($600B logo), rotating slowly. The hitbox +
+  // behaviour are unchanged; just the silhouette is replaced.
+  if (getFlavour() === '600bn' || isSanctumMode()) {
     drawSixHundredBnLogoUfo(ctx, u, now);
     return;
   }
@@ -2241,12 +2241,12 @@ function drawCoin(ctx: CanvasRenderingContext2D, c: Coin, now: number): void {
   const fadeOut = c.ttl < 1500 ? c.ttl / 1500 : 1;
   const alpha = fadeIn * fadeOut;
 
-  // 600bn flavour — every drop renders as a bitcoin coin (outlined gold
-  // circle + ₿). 'dust' kind keeps its score-only economy (no sat
-  // credit) but visually reads as a ₿ shard so the council-break
-  // debris feels themed. Sat-coin drops use the same look — already
-  // matches.
-  const isBtcAesthetic = getFlavour() === '600bn';
+  // 600bn flavour / Sanctum-mode — every drop renders as a bitcoin coin
+  // (outlined gold circle + ₿). 'dust' kind keeps its score-only
+  // economy (no sat credit) but visually reads as a ₿ shard so the
+  // council-break debris feels themed. Sat-coin drops use the same
+  // look — already matches.
+  const isBtcAesthetic = getFlavour() === '600bn' || isSanctumMode();
 
   if (c.kind === 'sat' || isBtcAesthetic) {
     const wobble = 1 + 0.08 * Math.sin(now * 0.008 + c.pos.x);
@@ -2882,9 +2882,9 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState): void {
   ctx.stroke();
   ctx.globalAlpha = alpha;
 
-  // Wave number — bigger, more confident. 600bn flavour swaps the
-  // 'WAVE N' label for the canonical sacred-number wordmark.
-  const isBnWave = getFlavour() === '600bn' && s.wave === 1;
+  // Wave number — bigger, more confident. 600bn flavour / Sanctum mode
+  // swaps the 'WAVE N' label for the canonical sacred-number wordmark.
+  const isBnWave = (getFlavour() === '600bn' || isSanctumMode()) && s.wave === 1;
   if (isBnWave) {
     ctx.font = 'bold 64px ui-monospace, monospace';
     ctx.fillStyle = '#ffd84a';
@@ -2944,7 +2944,7 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState): void {
  *  an act boundary (1/10/17/25) and the flavour is the campaign — in which
  *  case the whole wavestart is the story card and the banner is suppressed. */
 function intertitleHoldMs(s: GameState): number {
-  if (getFlavour() === '600bn') return 0;
+  if (getFlavour() === '600bn' || isSanctumMode()) return 0;
   return intertitleForWave(s.wave) ? INTERTITLE_MS : 0;
 }
 
