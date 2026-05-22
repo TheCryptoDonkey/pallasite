@@ -23,6 +23,7 @@ import { getFlavour } from './flavour.js';
 import { getVisualStyle, getTheme, isWebGLOverlayReady, callWebGLOverlay } from './visual-style.js';
 import { DEPTH_CONFIGS } from './parallax.js';
 import { getRadarVisible, getRadarLandscape, getRadarTilt } from './radar.js';
+import { buildSeamlessStarfield, drawParallaxStarfield } from './starfield.js';
 import { arenaActive, arenaCage, type ArenaCage } from './arena.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
@@ -245,6 +246,10 @@ export interface RenderModeInfo {
    *  horizontal camera translate that tracks the ship. Unset (falsy) for
    *  landscape-modern and retro, which keep the static contain transform. */
   follow?: boolean;
+  /** Defender preview mode (`?defender=1`). When true, the bg pipeline
+   *  swaps the wave webp for a multi-layer parallax starfield, and the
+   *  radar is forced on regardless of the user's landscape preference. */
+  defender?: boolean;
 }
 let renderMode: RenderModeInfo = { kind: 'retro', vw: WORLD_W, vh: WORLD_H, dpr: 1, scale: 1, tx: 0, ty: 0, insets: ZERO_INSETS };
 export function setRenderMode(info: RenderModeInfo): void { renderMode = info; }
@@ -401,7 +406,71 @@ function drawArenaWalls(
   ctx.restore();
 }
 
+/** Three lazy-built starfield layers for the Defender preview. Different
+ *  seeds give each layer its own pattern; the layers are then composed
+ *  with different parallax factors so far stars drift slowly and near
+ *  stars whip past, selling the depth. */
+let defenderFar: HTMLCanvasElement | null = null;
+let defenderMid: HTMLCanvasElement | null = null;
+let defenderNear: HTMLCanvasElement | null = null;
+
+function getDefenderLayers(): [HTMLCanvasElement, HTMLCanvasElement, HTMLCanvasElement] {
+  if (!defenderFar) {
+    defenderFar = buildSeamlessStarfield({ width: WORLD_W, height: WORLD_H, seed: 600_000_001, stars: 220 });
+  }
+  if (!defenderMid) {
+    defenderMid = buildSeamlessStarfield({ width: WORLD_W, height: WORLD_H, seed: 600_000_002, stars: 140 });
+  }
+  if (!defenderNear) {
+    defenderNear = buildSeamlessStarfield({ width: WORLD_W, height: WORLD_H, seed: 600_000_003, stars: 60 });
+  }
+  return [defenderFar, defenderMid, defenderNear];
+}
+
+/** Defender preview bg: solid void + three parallax starfield layers,
+ *  each scrolling at a different fraction of the follow camera's
+ *  horizontal offset to create the depth feel. The world-space draw
+ *  honours the active follow-camera transform, so the layers' absolute
+ *  positions read at the same parallax fraction as `camX * factor`. */
+function drawDefenderBackground(ctx: CanvasRenderingContext2D): void {
+  // Solid black base across the WHOLE world (and beyond, for the wrap
+  // seam copies the follow camera might draw). Use a generous overdraw
+  // because the camera viewport in landscape can be wider than WORLD_W
+  // in pixel terms.
+  ctx.fillStyle = '#03060e';
+  ctx.fillRect(-WORLD_W, -WORLD_H, WORLD_W * 3, WORLD_H * 3);
+
+  const [far, mid, near] = getDefenderLayers();
+  // Each layer is drawn at world-coord x = camX * (1 - factor). Larger
+  // (1-factor) means the layer "moves" more with the camera, i.e. less
+  // parallax. Smaller (1-factor) → stronger parallax (the layer feels
+  // far away). Three bands chosen for a Defender-cabinet feel.
+  const camOffset = camX;
+  ctx.save();
+  // Far stars: drift at 30% of camera speed (factor 0.70 of camX).
+  ctx.translate(camOffset * 0.70, 0);
+  drawParallaxStarfield(ctx, far, { viewportW: WORLD_W, parallaxX: 0 });
+  ctx.restore();
+
+  ctx.save();
+  ctx.translate(camOffset * 0.50, 0);
+  drawParallaxStarfield(ctx, mid, { viewportW: WORLD_W, parallaxX: 0 });
+  ctx.restore();
+
+  ctx.save();
+  ctx.translate(camOffset * 0.15, 0);
+  drawParallaxStarfield(ctx, near, { viewportW: WORLD_W, parallaxX: 0 });
+  ctx.restore();
+}
+
 function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: number): void {
+  // Defender preview: replace the wave bg with a multi-layer parallax
+  // starfield that scrolls under the follow camera. Skips the wave webp +
+  // procedural fallback paths entirely.
+  if (renderMode.defender) {
+    drawDefenderBackground(ctx);
+    return;
+  }
   // Arena replaces the wave backdrop with a flat containment void; the grid
   // and cage walls (drawArenaGrid / drawArenaWalls) carry the look instead.
   if (arenaActive() && state.phase !== 'title') {
@@ -3571,10 +3640,12 @@ function getRadarOffscreen(w: number, h: number): HTMLCanvasElement {
  *  the bottom) plus an atmospheric darken-toward-the-top gradient.
  *  Reads like a sloped cabinet console rather than a flat sticker. */
 function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
-  if (!isFollowPhase(s.phase) || !getRadarVisible()) return;
-  // Portrait follow always shows it; landscape only when the player has
-  // opted in (foundation for the future landscape bonus wave).
-  if (!renderMode.follow && !getRadarLandscape()) return;
+  if (!isFollowPhase(s.phase)) return;
+  // Defender mode forces the radar on — the wide-arena scroll only reads
+  // with whole-world awareness. Outside defender, the player's preference
+  // governs (default on for portrait, off for landscape).
+  if (!renderMode.defender && !getRadarVisible()) return;
+  if (!renderMode.follow && !getRadarLandscape() && !renderMode.defender) return;
 
   ctx.save();
   ctx.setTransform(renderMode.dpr, 0, 0, renderMode.dpr, 0, 0);
@@ -3776,14 +3847,18 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   drawBackground(ctx, state, now);
   // Stars ride the world transform; under the follow camera draw them at each
   // visible seam copy so a strip straddling x=0 / WORLD_W stays starred.
-  for (const dx of followXs) {
-    if (dx === 0) {
-      drawStars(ctx, now);
-    } else {
-      ctx.save();
-      ctx.translate(dx, 0);
-      drawStars(ctx, now);
-      ctx.restore();
+  // Skipped in defender mode where the parallax starfield from
+  // drawDefenderBackground is the entire star layer.
+  if (!renderMode.defender) {
+    for (const dx of followXs) {
+      if (dx === 0) {
+        drawStars(ctx, now);
+      } else {
+        ctx.save();
+        ctx.translate(dx, 0);
+        drawStars(ctx, now);
+        ctx.restore();
+      }
     }
   }
 
