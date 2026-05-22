@@ -250,6 +250,11 @@ export interface RenderModeInfo {
    *  swaps the wave webp for a multi-layer parallax starfield, and the
    *  radar is forced on regardless of the user's landscape preference. */
   defender?: boolean;
+  /** Which players[] slot the follow camera should track. Defaults to 0
+   *  (solo / couch / spectate / portrait-follow-as-P1). Set to 1 by the
+   *  slot-1 client in duel mode so the camera frames the LOCAL ship,
+   *  not the partner's. */
+  localSlot?: 0 | 1;
 }
 let renderMode: RenderModeInfo = { kind: 'retro', vw: WORLD_W, vh: WORLD_H, dpr: 1, scale: 1, tx: 0, ty: 0, insets: ZERO_INSETS };
 export function setRenderMode(info: RenderModeInfo): void { renderMode = info; }
@@ -3796,7 +3801,11 @@ export function drawAsciiHud(canvas: HTMLCanvasElement, state: GameState): void 
 
 export function render(canvas: HTMLCanvasElement, state: GameState, now: number): void {
   const ctx = canvas.getContext('2d')!;
-  const p0 = state.players[0];
+  // Follow camera centres on the LOCAL slot — defaults to players[0] for
+  // every solo / couch / spectate / portrait-solo path; only the slot-1
+  // duel client passes localSlot=1 via setRenderMode.
+  const localSlotIdx = renderMode.localSlot ?? 0;
+  const p0 = state.players[localSlotIdx] ?? state.players[0];
   // Clear in identity space — the ctx still holds the previous frame's world
   // transform, and clearRect under it would miss the device-pixel edges.
   ctx.setTransform(1, 0, 0, 1, 0, 0);

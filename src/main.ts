@@ -1096,7 +1096,7 @@ async function boot(): Promise<void> {
       if (state.players.length >= 2) {
         // Fall through to retro branch below.
       } else {
-        setRenderMode({ kind: 'modern', vw, vh, dpr, scale, tx, ty, insets, follow, defender: defenderMode });
+        setRenderMode({ kind: 'modern', vw, vh, dpr, scale, tx, ty, insets, follow, defender: defenderMode, localSlot: mpSlot });
         return;
       }
     }
