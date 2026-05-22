@@ -136,12 +136,13 @@ function load(track: Track): Loaded {
   el.loop = track.loop !== false;
   el.preload = 'auto';
   el.src = trackUrlFor(track);
-  // iOS PWA quirk: setting `src` and relying on `preload='auto'` alone is
-  // not enough to kick off the fetch — the underlying load can sit at
-  // readyState=0 indefinitely, especially after a MediaElementAudioSourceNode
-  // is attached. Calling load() here forces the element into the loading
-  // pipeline so the data has a chance to arrive before play() is asked.
-  try { el.load(); } catch { /* ignore */ }
+  // The eager el.load() that lived here for the iOS-PWA-readyState-0 case
+  // moved into the per-second verify pass (see musicSetTrackForState).
+  // Calling load() inside this constructor path fired during the 25-track
+  // warm-up musicWarmUpAll runs on first user gesture, which appears to
+  // choke iOS PWA enough that the click handler that needs the audio
+  // unlock never finishes propagating. The verify-pass retry catches the
+  // genuinely-stuck case without the warm-up storm.
   // Don't set crossOrigin — the music files are same-origin so it's
   // redundant, AND on iOS Safari setting it without matching CORS
   // response headers from the server taints the MediaElementSource and
