@@ -282,6 +282,21 @@ export function startGame(s: GameState, forcedSeed?: number, opts?: { players?: 
   for (const pl of s.players) {
     pl.lives = startingLives;
   }
+  // 2-player runs (couch + duel + spectate) spread the ships across the
+  // playfield so they're visually distinct from the first frame. Both
+  // ships face inward (toward each other) so the spawn pose reads as a
+  // duel rather than two players blindly facing the same direction.
+  // makeShip() defaults both to (WORLD_W/2, WORLD_H/2) which collapses
+  // the spawn into a single visible ship — exactly the "no duel /
+  // interaction" symptom on first contact.
+  if (playerCount === 2) {
+    s.players[0].ship.pos.x = WORLD_W * 0.30;
+    s.players[0].ship.pos.y = WORLD_H * 0.50;
+    s.players[0].ship.rot = 0;                  // facing right (toward P2)
+    s.players[1].ship.pos.x = WORLD_W * 0.70;
+    s.players[1].ship.pos.y = WORLD_H * 0.50;
+    s.players[1].ship.rot = Math.PI;            // facing left (toward P1)
+  }
   s.asteroids = [];
   s.bullets = [];
   s.enemyBullets = [];
