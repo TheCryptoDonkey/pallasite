@@ -37,7 +37,7 @@ import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
 import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges, EMPTY_INPUT, isPeerActive, setPeerActive } from './netcode.js';
 import { hashState, PEER_HASH_PERIOD } from './peer-canary.js';
-import { WebSocketPeer, type Peer, type PeerSlot } from './peer.js';
+import { WebSocketPeer, SpectatorPeer, type Peer, type PeerSlot } from './peer.js';
 import type { GameState } from './types.js';
 import { DOWN_DOUBLE_TAP_WINDOW_MS, WORLD_W, WORLD_H } from './types.js';
 
@@ -64,19 +64,30 @@ const mpSession = mpParams.get('session');
 const mpSlotRaw = mpParams.get('slot');
 const mpSlot: PeerSlot = (mpSlotRaw === '1') ? 1 : 0;
 const mpMode = !!(mpUrl && mpSession && (mpSlotRaw === '0' || mpSlotRaw === '1'));
-/** Derived shared seed for duel mode. fnv1a32 of the session string so
- *  both clients build the SAME arena from the SAME RNG without needing
- *  an explicit seed-exchange handshake. */
-const mpSeed = mpMode && mpSession ? (() => {
+// Spectator mode (M5). `?spectate=<session>&peer=<broker-url>` opens a
+// peerwatch socket and runs the lockstep loop in read-only mode with no
+// local input sampling. Mutually exclusive with duel mode (mpMode) — if
+// both sets of params somehow land, duel wins because it has a local
+// slot to play with.
+const spectateSession = mpParams.get('spectate');
+const spectateMode = !mpMode && !!(spectateSession && mpUrl);
+/** Derived shared seed for duel + spectate. fnv1a32 of the session string so
+ *  every client (peers and watchers) builds the SAME arena from the SAME RNG
+ *  without an explicit seed-exchange handshake. */
+const sessionSeed = (s: string): number => {
   let h = 2166136261 >>> 0;
-  for (let i = 0; i < mpSession.length; i++) {
-    h ^= mpSession.charCodeAt(i);
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
   return h >>> 0;
-})() : undefined;
-/** The remote peer for duel mode. Null in solo and couch. */
+};
+const mpSeed = mpMode && mpSession ? sessionSeed(mpSession) : undefined;
+const spectateSeed = spectateMode && spectateSession ? sessionSeed(spectateSession) : undefined;
+/** The remote peer for duel mode. Null in solo, couch, and spectate. */
 let peer: Peer | null = null;
+/** The spectator transport for watch-mode. Null in solo / couch / duel. */
+let spectator: SpectatorPeer | null = null;
 /** Input-delay in sim frames when a peer is wired. Sized to comfortably
  *  cover the broker round trip on a typical near-relay path. */
 const PEER_INPUT_DELAY = 5;
@@ -329,7 +340,7 @@ bindActions({
     // a prior daily run would persist through a subsequent free-mode start
     // (the IGNITE button bypasses the keyboard Enter path that did the reset).
     setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-    startGame(state, peer ? mpSeed : undefined, { players: (couchMode || peer) ? 2 : 1 });
+    startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: (couchMode || peer || spectator) ? 2 : 1 });
     // Only force wavestart for the standard campaign — startGame on the
     // 600bn flavour sets phase='sanctum' and doesn't want the warp/wave
     // pipeline kicking in over the top.
@@ -522,7 +533,7 @@ window.addEventListener('keydown', e => {
     lockInDifficulty(getStoredDifficulty());
     gateBehindOnboarding(() => {
       setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-      startGame(state, peer ? mpSeed : undefined, { players: (couchMode || peer) ? 2 : 1 });
+      startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: (couchMode || peer || spectator) ? 2 : 1 });
       if (getFlavour() !== '600bn') state.phase = 'wavestart';
       if (couchMode) (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
       clearOverlay();
@@ -536,7 +547,7 @@ window.addEventListener('keydown', e => {
     void audio.unlockAudio();
     lockInDifficulty(getStoredDifficulty());
     setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-    startGame(state, peer ? mpSeed : undefined, { players: (couchMode || peer) ? 2 : 1 });
+    startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: (couchMode || peer || spectator) ? 2 : 1 });
     if (getFlavour() !== '600bn') state.phase = 'wavestart';
     if (couchMode) (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
     clearOverlay();
@@ -785,28 +796,36 @@ function loop(now: number): void {
         inputLog = new InputLog(state.players.length);
       }
       // 1) Sample LOCAL slot(s) and (if peer) send.
-      const localSampleSlots = peerActive
-        ? [mpSlot]
-        : (state.players.length >= 2 ? [0, 1] : [0]);
+      //    Spectator mode has NO local slots — every input comes from the
+      //    broker tap. Duel mode samples just the local slot; couch (which
+      //    never sets peerActive today) samples both.
+      const localSampleSlots = spectator
+        ? []
+        : peer
+          ? [mpSlot]
+          : (state.players.length >= 2 ? [0, 1] : [0]);
       for (const i of localSampleSlots) {
         // Peer mode reads from the localKeys mirror so apply's delayed
         // overwrite of `players[i].keys` cannot drop held keys. Solo and
         // couch pass undefined and read directly off `p.keys`.
-        const keysOverride = peerActive ? localKeys[i] : undefined;
+        const keysOverride = peer ? localKeys[i] : undefined;
         const input = samplePlayerInput(state.players[i], edgeFlags[i], keysOverride);
         const encoded = encodePlayerInput(input);
         inputLog.record(state.frame, i, encoded);
-        if (peerActive) peer!.sendFrame(state.frame, encoded);
+        if (peer) peer.sendFrame(state.frame, encoded);
       }
-      // 2) Drain remote frames into the log under the remote slot.
-      if (peerActive) {
+      // 2) Drain remote frames into the log. Duel: the OTHER slot only.
+      //    Spectator: whichever slot each delivery is tagged with (both).
+      if (spectator) {
+        for (const d of spectator.drainFrames()) inputLog.record(d.frame, d.slot, d.input);
+      } else if (peer) {
         const remoteSlot = (1 - mpSlot) as 0 | 1;
-        for (const d of peer!.drainFrames()) inputLog.record(d.frame, remoteSlot, d.input);
+        for (const d of peer.drainFrames()) inputLog.record(d.frame, remoteSlot, d.input);
       }
-      // 3) Stall check in duel mode: every slot's input for the read
-      //    frame must be present. The read frame can be negative in the
-      //    first `activeDelay` frames (pre-roll); EMPTY_INPUT is used and
-      //    the sim coasts.
+      // 3) Stall check in any peer-driven mode: every slot's input for
+      //    the read frame must be present. The read frame can be negative
+      //    in the first `activeDelay` frames (pre-roll); EMPTY_INPUT is
+      //    used and the sim coasts.
       const readFrame = state.frame - activeDelay;
       let stalled = false;
       if (peerActive && readFrame >= 0) {
@@ -832,7 +851,7 @@ function loop(now: number): void {
     // of GameState and send to the partner. We retain our own hash so a
     // later-arriving partner hash can be compared. Solo / couch skip
     // this entirely (no peer, no exchange).
-    if (peerActive && peer && state.frame > 0 && (state.frame % PEER_HASH_PERIOD) === 0) {
+    if (peerActive && peer && !spectator && state.frame > 0 && (state.frame % PEER_HASH_PERIOD) === 0) {
       const h = hashState(state);
       localCanaryHashes.set(state.frame, h);
       peer.sendHash(state.frame, h);
@@ -855,7 +874,9 @@ function loop(now: number): void {
   // here against the frame seen entering the rAF tick.
   if (isPeerActive()) {
     const advanced = state.frame > frameBeforeStep;
-    const partnerLeft = !!peer && !peer.isConnected();
+    const peerGone = !!peer && !peer.isConnected();
+    const spectateGone = !!spectator && !spectator.bothPeersBound();
+    const partnerLeft = peerGone || spectateGone;
     if (advanced && !partnerLeft) {
       peerStallFrames = 0;
     } else {
@@ -869,15 +890,17 @@ function loop(now: number): void {
     if (!peerDisconnectDeclared) {
       const overFrames = peerStallFrames >= PEER_STALL_DISCONNECT_FRAMES;
       if (partnerLeft || overFrames) {
-        // Tear the peer down so the sim drops back into the solo path
-        // (the game-over overlay is then dismissable as usual).
+        // Tear the peer / spectator down so the sim drops back into the solo
+        // path (the game-over overlay is then dismissable as usual).
         peerDisconnectDeclared = true;
         setPeerActive(false);
         try { peer?.disconnect(); } catch { /* socket may already be closed */ }
         peer = null;
+        try { spectator?.disconnect(); } catch { /* idem */ }
+        spectator = null;
         // Clear any in-flight "waiting" overlay; we're past that now.
         delete document.body.dataset.peerStall;
-        toastNow(state, 'Opponent left');
+        toastNow(state, spectateMode ? 'Duel ended' : 'Opponent left');
         // End the current run. The existing phase-transition block below
         // picks this up and renders the gameover overlay.
         if (state.phase === 'playing') state.phase = 'gameover';
@@ -1196,6 +1219,31 @@ async function boot(): Promise<void> {
     }
   }
 
+  // Spectate mode (M5): open a peerwatch socket and run the lockstep loop
+  // in read-only mode. No local input sampling; both slots' inputs are
+  // drained from the broker tap. The session-derived seed (spectateSeed)
+  // matches what the peers are using so the spectator's arena lines up
+  // with theirs from frame 0.
+  if (spectateMode && mpUrl && spectateSession) {
+    spectator = new SpectatorPeer();
+    renderDuelConnecting(0);
+    try {
+      await spectator.connect({ url: mpUrl, session: spectateSession });
+      setPeerActive(true);
+      // eslint-disable-next-line no-console
+      console.log('[spectate] watching', spectateSession, 'via', mpUrl);
+      // Auto-IGNITE so the read-only sim starts at the same wall time the
+      // peers are starting. Same microtask trick the duel path uses to
+      // clear the connecting overlay cleanly.
+      queueMicrotask(() => { simulateStart(); });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[spectate] connect failed:', e);
+      spectator = null;
+      setPeerActive(false);
+    }
+  }
+
   // Preload first two wave backgrounds so the start of the game is seamless
   preloadBackground(1);
   preloadBackground(2);
@@ -1268,7 +1316,7 @@ async function boot(): Promise<void> {
   // so the queued simulateStart() microtask is about to fire and clear
   // the overlay anyway. Skipping renderAttract avoids a one-frame flash
   // of the attract screen between peer-joined and game start.
-  if (!peer) renderAttract(state);
+  if (!peer && !spectator) renderAttract(state);
 
   // Live-presence heartbeat — fires while a run is in progress so the
   // watch.pallasite.app surface renders LIVE cards. Ticks every 4s and
