@@ -51,6 +51,7 @@ import {
   POWERUP_CONFIG, POWERUP_TTL_MS, POWERUP_RADIUS,
   RAPID_COOLDOWN_MUL, SATBOOST_MUL,
   TRIDENT_SPREAD, MAGNET_MAX_ACCEL, MAGNET_RANGE,
+  WAVE_SAT_BUDGET,
 } from './types.js';
 import type { PowerUp, PowerUpType } from './types.js';
 import * as audio from './audio.js';
@@ -130,6 +131,7 @@ export function makeInitialState(): GameState {
     ufoSpawnedThisWave: false,
     ufoKilledThisWave: false,
     ufoKillsThisWave: 0,
+    satRollsThisWave: 0,
     bulletCurtainKillTarget: 0,
     veinSwarmDueAt: 0,
   };
@@ -990,6 +992,7 @@ export function beginWave(s: GameState, wave: number): void {
   s.ufoSpawnedThisWave = false;
   s.ufoKilledThisWave = false;
   s.ufoKillsThisWave = 0;
+  s.satRollsThisWave = 0;
   s.bulletCurtainKillTarget = 0;
   // A new wave starts from a clean field. clearStage() empties these on
   // the normal wave-clear path, but beginWave is also entered directly
@@ -2076,10 +2079,37 @@ function rollPickupKind(s: GameState, asteroidType?: AsteroidType, size?: Astero
   // the experience deliberately doesn't deliver — dust shards still spawn
   // for score and visual feedback, but no sat coins ever roll.
   if (getFlavour() === '600bn' || isSanctumMode()) return 'dust';
+  // Large + medium asteroid breaks never roll for sat — gate is "drive to
+  // the smalls". Mines + UFOs pass with size === undefined so they fall
+  // through this guard.
   if (size !== undefined && size !== 'small') return 'dust';
-  if (asteroidType === 'pallasite' && size === 'small') return 'sat';
+  // Per-wave sat budget. Once WAVE_SAT_BUDGET sat-kind rolls have landed
+  // this wave, everything else is dust. Keeps a full 25-wave run in the
+  // ~25 sats ballpark the operator budget targets.
+  if (s.satRollsThisWave >= WAVE_SAT_BUDGET) return 'dust';
+  // First eligible drop of the wave is a guaranteed sat — the player sees
+  // visible sat feedback early in the level instead of waiting on the
+  // denom roll, which on its own would leave most waves silent. Pallasite
+  // smalls are still "always pay" (they were the headline jackpot under
+  // the old model), and they also consume the wave budget so a pallasite
+  // chain followed by other smalls only pays once per wave.
+  if (asteroidType === 'pallasite' && size === 'small') {
+    s.satRollsThisWave += 1;
+    return 'sat';
+  }
+  if (s.satRollsThisWave === 0) {
+    s.satRollsThisWave += 1;
+    return 'sat';
+  }
+  // Belt-and-braces: subsequent rolls still go through the denom in case
+  // WAVE_SAT_BUDGET is raised above 1 later — denom controls whether the
+  // 2nd / 3rd allowable drop in a wave actually lands.
   const denom = Math.max(1, getGameConfig().sat_drop_denom);
-  return gameRng() < (1 / denom) ? 'sat' : 'dust';
+  if (gameRng() < (1 / denom)) {
+    s.satRollsThisWave += 1;
+    return 'sat';
+  }
+  return 'dust';
 }
 
 /** Score awarded per dust shard, scaled to the source so a small asteroid

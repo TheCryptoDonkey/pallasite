@@ -265,6 +265,14 @@ export interface Coin extends Entity {
  *  more generous than the operator budget needed it to be. */
 export const SAT_DROP_CHANCE_DENOM = 14;
 
+/** Max sat-kind drops per wave. The denom roll picks which kill in a
+ *  wave qualifies; the budget keeps total run accrual close to ~25 sats
+ *  for a full 25-wave clear. The first eligible drop of each wave is
+ *  guaranteed to pay (rollPickupKind overrides the denom on the
+ *  zeroth-roll) so the player gets visible sat feedback early in every
+ *  wave — beats waiting on randomness through a whole level. */
+export const WAVE_SAT_BUDGET = 1;
+
 /** Pallasite VEIN tuning. The event is a long engagement — the prize is
  *  fat and the fight is real. Streams sats per hit, lands a jackpot on
  *  collapse, drops helpful power-ups at regular hit milestones, and
@@ -277,7 +285,7 @@ export const VEIN_HP_HARD_MUL = 3.0;
 export const VEIN_RADIUS_MUL = 1.4;
 export const VEIN_SATS_PER_HIT = 0;    // score-only drip; the jackpot is the sat moment
 export const VEIN_SCORE_PER_HIT = 35;
-export const VEIN_JACKPOT_SATS = 25;
+export const VEIN_JACKPOT_SATS = 4;
 export const VEIN_JACKPOT_SCORE = 2500;
 /** Drop a helpful power-up every N landed hits on the vein. Tuned so a
  *  normal-mode 100-HP vein gets four drops across the engagement. */
@@ -654,6 +662,14 @@ export interface GameState {
   /** Per-wave UFO kill counter, used by set-piece waves whose clear
    *  condition is "kill N UFOs" rather than "clear the asteroids". */
   ufoKillsThisWave: number;
+
+  /** Per-wave sat-budget counter — how many sat-kind drops have already
+   *  rolled this wave. rollPickupKind caps subsequent rolls at
+   *  WAVE_SAT_BUDGET so a full 25-wave run lands in the right ballpark
+   *  (the operator budget is the binding ceiling). Reset to 0 in
+   *  beginWave. The vein jackpot bypasses this counter — it credits
+   *  p.sats directly via the jackpot path, not via rollPickupKind. */
+  satRollsThisWave: number;
 
   /** Active target kill count for the bullet-curtain set-piece (wave 12).
    *  0 when not on a curtain wave. */
@@ -1082,9 +1098,11 @@ export const UFO_POINTS: Record<UfoType, number> = {
 };
 /** Sats coins dropped on UFO kill. Only headline kills (elite / sniper /
  *  boss) drop a token — the rank-and-file UFOs are score-only kills to
- *  hold the operator budget within ~100k sats/year of total payout. */
+ *  hold the operator budget within ~100k sats/year of total payout.
+ *  Boss dropped 10 → 5 to fit the ~25 sats per full-run target alongside
+ *  the per-wave sat budget and the lower vein jackpot. */
 export const UFO_SATS: Record<UfoType, number> = {
-  cruiser: 0, elite: 1, tank: 0, sniper: 1, boss: 10,
+  cruiser: 0, elite: 1, tank: 0, sniper: 1, boss: 5,
 };
 export const UFO_FIRST_SPAWN_MS = 12_000;
 export const UFO_RESPAWN_BASE_MS = 18_000;
