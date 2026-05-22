@@ -7,12 +7,12 @@
 
 import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHyperspace, tryActivateShield, cheatJumpToWave, cheatJumpToBonus, skipDeathReplay, skipWaveStart, skipWarp, toastNow, FIXED_STEP_S } from './game.js';
 import { getFlavour } from './flavour.js';
-import { lockInDifficulty, getStoredDifficulty } from './difficulty.js';
+import { lockInDifficulty, getStoredDifficulty, setStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadBackground, setRenderMode, getRenderModeKind, drawAsciiHud } from './render.js';
 import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderDuelLobby, renderDuelConnecting, simulateStart } from './ui.js';
 import { postHeartbeat } from './faucet.js';
-import { currentMode } from './mode.js';
+import { currentMode, setStoredMode } from './mode.js';
 import {
   startStreamSession,
   publishStreamFrame,
@@ -76,6 +76,10 @@ const spectateMode = !mpMode && !!(spectateSession && mpUrl);
  *  600bn Defender bonus wave. No Council protectees or win condition
  *  yet — that's the next phase. */
 const defenderMode = mpParams.get('defender') === '1';
+/** Duel debug overlay (`?duel-debug=1`). Pins a small monospace panel
+ *  with frame counters + drain liveness so on-device diagnosis doesn't
+ *  need a dev-tools console. */
+const duelDebugMode = mpParams.get('duel-debug') === '1';
 /** Derived shared seed for duel + spectate. fnv1a32 of the session string so
  *  every client (peers and watchers) builds the SAME arena from the SAME RNG
  *  without an explicit seed-exchange handshake. */
@@ -344,7 +348,20 @@ bindActions({
     // Apply current daily-mode preference. Without this, the activeSeed from
     // a prior daily run would persist through a subsequent free-mode start
     // (the IGNITE button bypasses the keyboard Enter path that did the reset).
-    setDailySeed(getStoredDailyPref() ? todayUTC() : null);
+    // Duel + spectate force a deterministic run config so both clients
+    // share the same modifiers: NORMAL difficulty, CAMPAIGN mode, no
+    // daily seed. Without this, two clients with different stored
+    // settings (one on HARD, the other NORMAL) produced different spawn
+    // mods → different UFO positions → P1's bullet missed what P2 still
+    // saw alive on screen. The seed alone is not enough; difficulty +
+    // mode also feed into the deterministic spawn pipeline.
+    if (peer || spectator) {
+      setStoredDifficulty('normal');
+      setStoredMode('campaign');
+      setDailySeed(null);
+    } else {
+      setDailySeed(getStoredDailyPref() ? todayUTC() : null);
+    }
     startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: (couchMode || peer || spectator) ? 2 : 1 });
     // Only force wavestart for the standard campaign — startGame on the
     // 600bn flavour sets phase='sanctum' and doesn't want the warp/wave
@@ -822,10 +839,14 @@ function loop(now: number): void {
       // 2) Drain remote frames into the log. Duel: the OTHER slot only.
       //    Spectator: whichever slot each delivery is tagged with (both).
       if (spectator) {
-        for (const d of spectator.drainFrames()) inputLog.record(d.frame, d.slot, d.input);
+        const drained = spectator.drainFrames();
+        for (const d of drained) inputLog.record(d.frame, d.slot, d.input);
+        if (duelDebugMode && drained.length > 0) try { window.dispatchEvent(new CustomEvent('pallasite:peer-frame-drain', { detail: { count: drained.length } })); } catch { /* ignore */ }
       } else if (peer) {
         const remoteSlot = (1 - mpSlot) as 0 | 1;
-        for (const d of peer.drainFrames()) inputLog.record(d.frame, remoteSlot, d.input);
+        const drained = peer.drainFrames();
+        for (const d of drained) inputLog.record(d.frame, remoteSlot, d.input);
+        if (duelDebugMode && drained.length > 0) try { window.dispatchEvent(new CustomEvent('pallasite:peer-frame-drain', { detail: { count: drained.length } })); } catch { /* ignore */ }
       }
       // 3) Stall check in any peer-driven mode: every slot's input for
       //    the read frame must be present. The read frame can be negative
@@ -1283,6 +1304,7 @@ async function boot(): Promise<void> {
   if (!isControllerSurface() && new URLSearchParams(window.location.search).get('dbg') === 'audio') {
     setupAudioDebugOverlay();
   }
+  if (duelDebugMode) setupDuelDebugOverlay();
 
   // 600bn flavour — prime the council manifest + member avatars so
   // wave 1 (council-textured asteroids) has its portraits ready by
@@ -1301,6 +1323,7 @@ async function boot(): Promise<void> {
     state,
     (s, now) => { edgeFlags[mpSlot].hyperspace = true; if (!isPeerActive()) tryHyperspace(s, now, s.players[mpSlot]); },
     (s, now) => { edgeFlags[mpSlot].shield = true;     if (!isPeerActive()) tryActivateShield(s, now, s.players[mpSlot]); },
+    () => mpSlot,
   );
 
   // Long-press the WAVE label on the HUD = open cheat input (mobile equivalent
@@ -1820,6 +1843,49 @@ function watchForSignerUpgrade(): void {
  * surface the update banner; on confirmation, post SKIP_WAITING + listen for
  * controllerchange to trigger a single clean reload.
  */
+/** Pinned duel diagnostic overlay activated via ?duel-debug=1. Surfaces
+ *  the lockstep liveness so on-device "the sims are drifting" complaints
+ *  can be triaged without dev-tools: state.frame, peer/spectator
+ *  receive-frame high-water mark, slot log latest, last canary hash. */
+function setupDuelDebugOverlay(): void {
+  const panel = document.createElement('div');
+  panel.style.cssText = [
+    'position:fixed', 'top:8px', 'right:8px',
+    'z-index:99999', 'pointer-events:none',
+    'background:rgba(0,0,0,0.8)', 'color:#ffd84a',
+    'padding:6px 9px', 'border-radius:4px',
+    'font:11px/1.4 ui-monospace,monospace',
+    'letter-spacing:0.04em', 'max-width:60vw',
+    'border:1px solid rgba(255,216,74,0.45)',
+    'white-space:pre',
+  ].join(';');
+  document.body.appendChild(panel);
+  let lastDrainCount = 0;
+  let totalRecv = 0;
+  window.addEventListener('pallasite:peer-frame-drain', (ev) => {
+    const d = (ev as CustomEvent<{ count: number }>).detail;
+    lastDrainCount = d.count;
+    totalRecv += d.count;
+  });
+  const render = (): void => {
+    const localLatest = inputLog ? inputLog.latest(mpSlot) : -1;
+    const remoteSlotIdx = (1 - mpSlot) as 0 | 1;
+    const remoteLatest = inputLog ? inputLog.latest(remoteSlotIdx) : -1;
+    const peerLast = peer ? peer.lastReceivedFrame() : (spectator ? -2 : -3);
+    const peerConn = peer ? peer.isConnected() : (spectator ? spectator.isConnected() : false);
+    panel.textContent = [
+      `frame:${state.frame}  slot:${mpSlot}  conn:${peerConn ? 'Y' : 'N'}`,
+      `local#:${localLatest} remote#:${remoteLatest}`,
+      `peer.lastRx:${peerLast}  drain/s:${lastDrainCount}  total:${totalRecv}`,
+      `stall:${peerStallFrames}f  desync:${peerDesyncFrame < 0 ? '-' : peerDesyncFrame}`,
+      `phase:${state.phase}  wave:${state.wave}  seed:${state.seed?.toString(16) ?? '-'}`,
+    ].join('\n');
+    lastDrainCount = 0;
+  };
+  render();
+  window.setInterval(render, 500);
+}
+
 /** Pinned audio diagnostic overlay activated via ?dbg=audio. Polls every
  *  500ms to surface AudioContext state, the current track's element
  *  state (paused, readyState, networkState, error code/message) and
