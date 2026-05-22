@@ -96,5 +96,5 @@ export const MODE_LIST: readonly ModeInfo[] = [
   { id: 'bossrush', label: 'BOSS RUSH', hint: 'Boss after boss. Coming soon.',                           ready: false },
   { id: 'arena',    label: 'ARENA',    hint: 'No wrap. Hard walls that close in.',                       ready: true },
   { id: 'sanctum',  label: 'SANCTUM',  hint: '600bn Sanctum — Council roster, the-cult bed, endless.',   ready: true },
-  { id: 'defender', label: 'DEFENDER', hint: 'Protect the Council. 90s. 6 of 11 must survive.',          ready: true },
+  { id: 'defender', label: 'DEFENDER', hint: 'Wide-arena scroll preview. Classic Defender mechanic WIP.', ready: true },
 ];

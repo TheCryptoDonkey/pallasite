@@ -2733,37 +2733,10 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
     }
   }
 
-  // ── Defender bonus HUD ────────────────────────────────────────────────
-  // Council survival count + countdown timer, drawn under the SCORE/SATS
-  // rail on the left so it sits in the same scan-the-left-then-the-arena
-  // reading order as the standard HUD. Only renders during defender runs.
-  if (s.defenderMode) {
-    const total = ((): number => {
-      // Total from sanctum-avatars roster; we read it lazily here via the
-      // module-scoped sanctumStats which beginWave seeded for us.
-      // Fallback to 11 (current roster size) if stats haven't initialised.
-      const ss = (s as unknown as { __sanctumTotal?: number }).__sanctumTotal;
-      return ss && ss > 0 ? ss : 11;
-    })();
-    const alive = Math.max(0, total - s.defenderCouncilLost);
-    const seconds = Math.ceil(s.defenderTimerMs / 1000);
-    const min = Math.floor(seconds / 60);
-    const sec = seconds % 60;
-    const timeStr = `${min}:${sec.toString().padStart(2, '0')}`;
-    ctx.textAlign = 'left';
-    ctx.shadowColor = 'rgba(255,216,74,0.5)';
-    ctx.shadowBlur = 6;
-    ctx.fillStyle = '#ffd84a';
-    ctx.font = '18px ui-monospace, monospace';
-    ctx.fillText('COUNCIL', leftX, topY + 120);
-    ctx.font = '24px ui-monospace, monospace';
-    ctx.fillStyle = alive >= 6 ? '#8cffb4' : alive >= 3 ? '#ffd84a' : '#ff5050';
-    ctx.fillText(`${alive}/${total}`, leftX, topY + 144);
-    ctx.font = '14px ui-monospace, monospace';
-    ctx.fillStyle = 'rgba(220,210,255,0.75)';
-    ctx.shadowBlur = 0;
-    ctx.fillText(`T-${timeStr}`, leftX, topY + 174);
-  }
+  // Defender HUD removed — the Council-protect mechanic + timer it
+  // surfaced has been unbundled while the real classic-Defender mode
+  // is built. Wave / Score / Sats etc. above are enough for the
+  // interim wide-arena visual demo.
 
   ctx.restore();
 }

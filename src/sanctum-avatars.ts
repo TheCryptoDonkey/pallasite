@@ -277,14 +277,14 @@ export function drawAvatarAsteroid(
  * flavours. The roster itself is already populated synchronously at
  * module load. */
 export function maybePreloadCouncil(): void {
-  // Hostname 600bn OR Mode-picker Sanctum / Defender both need the
-  // Council portraits warm before wave 1's first frame. Read the
-  // stored mode (not currentMode()) so the warm-up runs at module-
-  // init, before startGame's lockInMode call.
+  // Hostname 600bn OR Mode-picker SANCTUM need the Council portraits
+  // warm before wave 1's first frame. DEFENDER mode no longer uses
+  // the Council (it's being rebuilt as classic Defender), so it does
+  // NOT preload here.
   if (getFlavour() === '600bn') { kickImageLoads(); return; }
   try {
     const m = localStorage.getItem('pallasite:mode');
-    if (m === 'sanctum' || m === 'defender') kickImageLoads();
+    if (m === 'sanctum') kickImageLoads();
   } catch { /* ignore */ }
 }
 
@@ -294,7 +294,7 @@ export function maybePreloadCouncil(): void {
 // arrive in cache during initial page load (parallel with other
 // asset fetches) instead of starting from the first frame of wave 1.
 if (typeof window !== 'undefined' && (getFlavour() === '600bn' || (() => {
-  try { const m = localStorage.getItem('pallasite:mode'); return m === 'sanctum' || m === 'defender'; } catch { return false; }
+  try { return localStorage.getItem('pallasite:mode') === 'sanctum'; } catch { return false; }
 })())) {
   kickImageLoads();
 }

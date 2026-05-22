@@ -1034,42 +1034,28 @@ export function beginWave(s: GameState, wave: number): void {
   // asteroid is a member-textured large that splits into smaller
   // fragments still wearing the face. No mines, no UFO timer (set
   // below). The 'pallasite' type is used so each break drops sats.
-  if ((getFlavour() === '600bn' || isSanctumMode() || s.defenderMode) && wave === 1) {
+  if ((getFlavour() === '600bn' || isSanctumMode()) && wave === 1) {
     // Sanctum-mode on the main hostname needs a wave-1 bg cache flush:
     // main.ts boot pre-loads wave-1.webp before lockInMode runs, so by
     // the time this branch fires the cache already has the wrong image.
-    // Drop it so drawBackground re-resolves the URL through backgroundUrlForWave
-    // (which now picks sanctum-space.webp for either flavour OR mode). No-op
-    // on 600bn flavour where boot's preload was already correct.
     if (isSanctumMode() && getFlavour() !== '600bn') {
       invalidateBackgroundCache(1);
       preloadBackground(1);
     }
-    // 600bn flow (hostname or Mode selection) OR defender-bonus run: opens as a normal asteroid run
-    // (textured fillers) and cycles council members in one at a time.
-    // Fresh ignite = fresh stats; reset everything. Defender mode
-    // additionally runs the protect-the-council win/lose timer in
-    // updateGame and faster council cadence so all 11 are on-field
-    // sooner.
+    // 600bn / Sanctum flow: opens as a normal asteroid run (textured
+    // fillers) and cycles council members in one at a time.
     sanctumCouncilQueue = [];
     sanctumCouncilSpawned.clear();
     sanctumCouncilDefeated = 0;
-    sanctumNextCouncilSpawn = s.defenderMode ? 1_500 : 5_000;
+    sanctumNextCouncilSpawn = 5_000;
     sanctumNextFillerSpawn = SANCTUM_FILLER_INTERVAL_MS;
     sanctumStats.startedAt = performance.now();
     sanctumStats.councilDefeated = 0;
     sanctumStats.councilSpawned = 0;
     sanctumStats.councilTotal = getCouncil().length;
     sanctumStats.asteroidsDestroyed = 0;
-    // Opening field of textured fillers — "normal game" entry beat.
-    // Defender mode skips this; the wide arena fills naturally with
-    // council members + UFOs and we don't want the player swatting
-    // asteroid garnish while trying to protect.
-    if (!s.defenderMode) spawnSanctumFillers(s, 13);
-    // UFO spawning kept — the 600bn UFO renders as the $600B sacred-
-    // number badge. In defender mode UFOs are the THREAT to the
-    // council so we want them sooner + more often.
-    s.nextUfoSpawn = s.defenderMode ? 3_000 : 8_000;
+    spawnSanctumFillers(s, 13);
+    s.nextUfoSpawn = 8_000;
     s.nextMineSpawn = 10 * 60 * 1000;
   } else if (setPiece) {
     setPiece.setup(s);
@@ -2667,28 +2653,10 @@ export function updateGame(s: GameState): void {
   tickSanctumFillers(s, dt * 1000);
   // Arena infinity spawner — keeps the cage populated continuously.
   arenaTickSpawn(s, dt * 1000);
-  // Defender bonus wave: tick the protect-the-council timer + sync the
-  // council-lost counter from the sanctum stats. Win on timer expiry
-  // with enough council still alive; lose when all 11 are destroyed.
-  if (s.defenderMode && (s.phase === 'playing' || s.phase === 'wavestart')) {
-    s.defenderTimerMs = Math.max(0, s.defenderTimerMs - dt * 1000);
-    s.defenderCouncilLost = sanctumCouncilDefeated;
-    const total = sanctumStats.councilTotal;
-    const lost = s.defenderCouncilLost;
-    const alive = Math.max(0, total - lost);
-    if (lost >= total && total > 0) {
-      // All members down — lose, transition to gameover.
-      s.phase = 'gameover';
-      s.phaseStart = s.elapsed;
-      toastNow(s, 'COUNCIL LOST');
-    } else if (s.defenderTimerMs <= 0) {
-      // Timer expired — win iff threshold of council survived.
-      const won = alive >= DEFENDER_WIN_THRESHOLD;
-      s.phase = won ? 'completed' : 'gameover';
-      s.phaseStart = s.elapsed;
-      toastNow(s, won ? `600 BILLION SAFE  (${alive}/${total})` : `THE COUNCIL FELL  (${alive}/${total})`);
-    }
-  }
+  // Defender bonus wave: the 600bn Council-protect mechanic has been
+  // unbundled — DEFENDER mode is now the wide-arena + parallax bg +
+  // radar visual demo while the real classic-Defender game (humanoids /
+  // landers / mutants / smartbomb) is built. No win/lose timer here.
 
   // Detect the 1979 lurking exploit so coin credit can be withheld for it.
   updateLurkState(s, now, s.players[0]);
