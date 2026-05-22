@@ -71,6 +71,11 @@ const mpMode = !!(mpUrl && mpSession && (mpSlotRaw === '0' || mpSlotRaw === '1')
 // slot to play with.
 const spectateSession = mpParams.get('spectate');
 const spectateMode = !mpMode && !!(spectateSession && mpUrl);
+/** Defender preview mode (`?defender=1`). Enables the landscape follow
+ *  camera + parallax starfield bg + forced radar; first-cut demo of the
+ *  600bn Defender bonus wave. No Council protectees or win condition
+ *  yet — that's the next phase. */
+const defenderMode = mpParams.get('defender') === '1';
 /** Derived shared seed for duel + spectate. fnv1a32 of the session string so
  *  every client (peers and watchers) builds the SAME arena from the SAME RNG
  *  without an explicit seed-exchange handshake. */
@@ -1072,8 +1077,10 @@ async function boot(): Promise<void> {
       canvas.style.imageRendering = 'auto';
       const ctx = canvas.getContext('2d')!;
       // Portrait phones get the follow camera (see render.ts); landscape and
-      // square viewports keep the contain transform.
-      const follow = vh > vw;
+      // square viewports keep the contain transform — except in
+      // defenderMode where the wide Defender feel needs follow on
+      // regardless of orientation.
+      const follow = (vh > vw) || defenderMode;
       const scale = Math.min(vw / WORLD_W, vh / WORLD_H);
       const tx = (vw - WORLD_W * scale) / 2;
       const ty = (vh - WORLD_H * scale) / 2;
@@ -1089,7 +1096,7 @@ async function boot(): Promise<void> {
       if (state.players.length >= 2) {
         // Fall through to retro branch below.
       } else {
-        setRenderMode({ kind: 'modern', vw, vh, dpr, scale, tx, ty, insets, follow });
+        setRenderMode({ kind: 'modern', vw, vh, dpr, scale, tx, ty, insets, follow, defender: defenderMode });
         return;
       }
     }
@@ -1316,7 +1323,14 @@ async function boot(): Promise<void> {
   // so the queued simulateStart() microtask is about to fire and clear
   // the overlay anyway. Skipping renderAttract avoids a one-frame flash
   // of the attract screen between peer-joined and game start.
-  if (!peer && !spectator) renderAttract(state);
+  if (!peer && !spectator && !defenderMode) renderAttract(state);
+  // Defender preview auto-starts straight into wave 1 so the player drops
+  // into the scrolling arena without going through the attract / mission-
+  // select funnel. simulateStart() runs the bound IGNITE callback which
+  // calls clearOverlay() before the first frame.
+  if (defenderMode && !peer && !spectator) {
+    queueMicrotask(() => { simulateStart(); });
+  }
 
   // Live-presence heartbeat — fires while a run is in progress so the
   // watch.pallasite.app surface renders LIVE cards. Ticks every 4s and

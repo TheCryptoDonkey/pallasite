@@ -24,6 +24,12 @@ if (!API_KEY) {
 const MODEL = 'gpt-image-2';
 const SIZE = '2560x1440';   // true 16:9 QHD master; matches the 1280×720 world
 const ASTEROID_SIZE = '1024x1024';  // square for the per-type asteroid surface textures
+// Defender bonus wave: ultra-wide so the camera can wrap horizontally
+// without the player ever seeing the same star pattern repeat across a
+// short window. Generated as a single image; the prompt instructs the
+// model to leave the left and right edges symmetric so the tile seam
+// reads continuously when drawn end-to-end.
+const DEFENDER_SIZE = '3072x1024';
 const QUALITY = 'high';     // gpt-image-1 accepts low|medium|high|auto; gpt-image-2 expected to mirror
 /** Originals directory — full-quality PNG kept out of the deploy bundle. */
 const OUT_DIR = join(process.cwd(), 'originals');
@@ -42,6 +48,10 @@ const onlySanctum = args.includes('--sanctum');
  *  unless --force is set, so re-running after adding new types only
  *  generates the new ones. */
 const onlyAsteroids = args.includes('--asteroids');
+/** --defender generates the tiled wide-aspect backdrop for the 600bn
+ *  Defender bonus wave. One huge image (~3840×1080) whose left and
+ *  right edges blend seamlessly so the wide-arena camera can wrap. */
+const onlyDefender = args.includes('--defender');
 
 interface WavePrompt {
   wave: number;
@@ -181,6 +191,17 @@ const SANCTUM_PROMPT: NamedPrompt = {
 const SANCTUM_SPACE_PROMPT: NamedPrompt = {
   name: 'sanctum-space',
   prompt: `Photorealistic deep-space astrophotography, ultra-high resolution, captured in the style of a Hubble + JWST composite mosaic. A vast cosmic vista with a warm ember nebula filling the upper-third — drifting orange and gold dust clouds with delicate filamentary structure, like a celestial forge breathing slowly. A distant golden Andromeda-like spiral galaxy hanging at upper-right at three-quarter angle, deep amber core with warm sweeping arms. Thousands of pinpoint stars scattered across deep velvet-black space, with subtle cobalt and violet ionised dust streaks in the upper-left for cool-tone balance. Soft crepuscular rays of warm light bleeding through the nebula. The lower-centre and lower-third is a dark quiet void — deep black sky for gameplay legibility on top. Cinematic, mythic, sacred, awe-inspiring, painterly. No text, no graphics, no UI elements, no spaceships, no asteroids, no characters, no figures, no logos, no planets in the foreground. Aspect 2560x1440.`,
+};
+
+/** Tileable wide-aspect backdrop for the 600bn Defender bonus wave.
+ *  The prompt instructs the model to keep the left and right edges
+ *  symmetric so the runtime can draw the image twice end-to-end and
+ *  have the seam read continuously as the camera wraps horizontally.
+ *  Composition leaves the lower band darker for gameplay legibility,
+ *  same trick as the standard wave backdrops. */
+const DEFENDER_PROMPT: NamedPrompt = {
+  name: 'defender-tile',
+  prompt: `Photorealistic deep-space astrophotography, ultra-high resolution, captured in the style of a Hubble + JWST panoramic composite. Ultra-wide cosmic vista intended to TILE seamlessly when placed end-to-end horizontally — the LEFT EDGE and RIGHT EDGE of the frame must read as continuous deep-space starfield, with NO bright objects, NO planets, NO nebula structure, and NO defined features within 12% of either edge. Across the central 76% of the frame: warm ember nebulae drifting low and right, deep amber and gold dust banks in the bottom-third, a cool cobalt-violet ionised dust streak weaving through the upper-third, and a distant golden Andromeda-like spiral galaxy off-centre at three-quarter angle. Thousands of pinpoint stars across deep velvet-black space. The horizon band at roughly two-thirds height runs darker — a long quiet void for gameplay legibility. Painterly, mythic, sacred — the 600bn Sanctum extended into a Defender-cabinet scroll. No text, no graphics, no UI elements, no spaceships, no asteroids, no characters, no figures, no logos, no foreground objects. Aspect 3072×1024.`,
 };
 
 /** Photoreal close-up surface textures used as the per-type filler-
@@ -373,6 +394,16 @@ async function main(): Promise<void> {
     console.log('');
     await generateNamed(SANCTUM_PROMPT);
     await generateNamed(SANCTUM_SPACE_PROMPT);
+    console.log('');
+    console.log('Done. Run `npm run optimise-backgrounds` to refresh the runtime WebPs.');
+    return;
+  }
+
+  if (onlyDefender) {
+    console.log(`Generating defender-tile backdrop via ${MODEL} (${DEFENDER_SIZE}, quality=${QUALITY})…`);
+    console.log(`Output dir: ${OUT_DIR}`);
+    console.log('');
+    await generateNamed(DEFENDER_PROMPT, DEFENDER_SIZE);
     console.log('');
     console.log('Done. Run `npm run optimise-backgrounds` to refresh the runtime WebPs.');
     return;
