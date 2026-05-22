@@ -1436,6 +1436,37 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
       ctx.stroke();
     }
     ctx.restore();
+
+    // HP ring — a gold arc just outside the rock that depletes as the
+    // vein takes hits. Without this the 100/200/300-hit wave-5 vault
+    // felt like a black hole for bullets: no visible progress until
+    // the eventual jackpot. The ring sweeps from 12 o'clock clockwise
+    // around 360°, length proportional to remaining HP. A faint
+    // background track keeps the empty portion legible against the
+    // varied wave backdrops.
+    if (a.hpMax > 1) {
+      const frac = Math.max(0, Math.min(1, a.hp / a.hpMax));
+      const ringR = a.radius * 1.18;
+      const startA = -Math.PI / 2;  // 12 o'clock
+      ctx.save();
+      // Background track — dim, full circle.
+      ctx.lineWidth = 3.4;
+      ctx.strokeStyle = 'rgba(80, 60, 20, 0.65)';
+      ctx.shadowBlur = 0;
+      ctx.beginPath();
+      ctx.arc(0, 0, ringR, 0, Math.PI * 2);
+      ctx.stroke();
+      // Filled portion — bright gold, pulses softly.
+      const pulse = 0.85 + 0.15 * Math.sin(now * 0.006);
+      ctx.lineWidth = 3.4;
+      ctx.strokeStyle = `rgba(255, 216, 74, ${0.95 * pulse})`;
+      ctx.shadowColor = '#ffd84a';
+      ctx.shadowBlur = 10;
+      ctx.beginPath();
+      ctx.arc(0, 0, ringR, startA, startA + Math.PI * 2 * frac);
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   // Pallasite: olivine sparkle dots — animated, signals jackpot.
