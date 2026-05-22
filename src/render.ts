@@ -326,6 +326,41 @@ let hudHidden = false;
 export function setHudHidden(hidden: boolean): void { hudHidden = hidden; }
 export function getRenderModeKind(): 'retro' | 'modern' { return renderMode.kind; }
 
+/** Visible viewport width expressed in WORLD coords after applyOverlayTransform
+ *  has been applied. In portrait/follow modern mode the world is scaled to fit
+ *  the viewport height, so the visible WORLD-X span is narrower than WORLD_W —
+ *  long banner strings need to know this to shrink themselves to fit instead
+ *  of spilling off both edges. Retro is always letterboxed to WORLD_W. */
+function overlayWorldWidth(): number {
+  const t = renderMode;
+  if (t.kind === 'modern') {
+    const s = t.follow ? t.vh / WORLD_H : t.scale;
+    return t.vw / s;
+  }
+  return WORLD_W;
+}
+
+/** Shrink the font size until `text` measures within `maxWorldPx`. Returns
+ *  the chosen px so the caller can use it for layout (line spacing). The
+ *  caller passes a fontTemplate that takes a pixel size and returns a full
+ *  CSS font string, so weight/family stay under its control. */
+function fitFontToWidth(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  fontTemplate: (px: number) => string,
+  initialPx: number,
+  maxWorldPx: number,
+  minPx = 9,
+): number {
+  let px = initialPx;
+  ctx.font = fontTemplate(px);
+  while (px > minPx && ctx.measureText(text).width > maxWorldPx) {
+    px -= 1;
+    ctx.font = fontTemplate(px);
+  }
+  return px;
+}
+
 /** Title-screen background cycling: rotates through wave bgs every 30s,
  *  skipping the wave-25 finale image so the boss reveal stays for in-game. */
 let titleBgStartedAt = 0;
@@ -2567,7 +2602,11 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   const topY = 16 + insets.top;
   const leftX = 24 + insets.left;
   const rightX = w - 24 - insets.right;
-  const showSats = s.session && !s.cheatedThisRun;
+  // 600bn / Sanctum is a ceremonial run with no sat economy and no
+  // wave number to count — hide both the SATS counter and the WAVE
+  // label outright. The SCORE column still shows.
+  const is600bn = getFlavour() === '600bn' || isSanctumMode();
+  const showSats = s.session && !s.cheatedThisRun && !is600bn;
 
   ctx.font = '24px ui-monospace, monospace';
   ctx.shadowBlur = 0;
@@ -2580,33 +2619,26 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   // Sats column stacks under SCORE on the left rail. Was previously at
   // x=w*0.32 alongside SCORE, which pushed WAVE off-centre and crowded the
   // top row on narrow viewports. Stacking lets WAVE claim the centre.
-  // Hidden in guest mode (no sats to track) and once a cheat fires this run
-  // (the SATS VOID chip below signals the run is unranked anyway).
+  // Hidden in guest mode (no sats to track), once a cheat fires this run
+  // (the SATS VOID chip below signals the run is unranked anyway), and in
+  // 600bn / Sanctum mode (no sat economy at all).
   if (showSats) {
     ctx.fillStyle = '#ffd84a';
     ctx.fillText('SATS', leftX, topY + 60);
     ctx.fillText('₿ ' + pad(Math.floor(p0.displaySats), 6), leftX, topY + 86);
   }
 
-  // WAVE — top-centre, the focal point. Specimen name underneath pulls the
-  // pallasite lore into the running HUD instead of leaving it only in the
-  // wavestart cinematic. Boss arena (wave 25) gets its own treatment.
-  // 600bn flavour overrides the HUD wave label so the centre column
-  // reads as the canonical $600B wave rather than a numbered campaign
-  // entry. Keeps the column position + font sizes identical so layout
-  // stays stable.
-  // $600B / WAVE label fires for both the hostname-driven 600bn flavour
-  // AND the explicit Sanctum mode (Mode picker → SANCTUM) so the
-  // Sanctum experience reads identically wherever it's launched from.
-  const is600bn = getFlavour() === '600bn' || isSanctumMode();
+  // WAVE label — top-centre. 600bn / Sanctum has no waves so the label
+  // is suppressed entirely (the SIGNAL strapline takes the centre column
+  // by itself). Arena gets its own ARENA label. Campaign shows WAVE n.
   const isArena = arenaActive();
   ctx.fillStyle = is600bn ? '#ffd84a' : '#5b9dff';
   ctx.shadowColor = is600bn ? '#ff8a3a' : '#5b9dff';
   ctx.shadowBlur = 8;
   ctx.textAlign = 'center';
   if (is600bn) {
-    ctx.fillText('$600B', w / 2, topY);
-    ctx.fillText('WAVE', w / 2, topY + 26);
+    // No WAVE word, no number — just the SIGNAL strapline below claims
+    // the centre column.
   } else if (isArena) {
     // Arena is a continuous infinity run — no wave number or name.
     ctx.fillText('ARENA', w / 2, topY + 14);
@@ -2619,7 +2651,7 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   ctx.fillStyle = '#fff5d8';
   ctx.letterSpacing = '0.18em' as unknown as string;
   if (!isArena) {
-    ctx.fillText(is600bn ? 'THE SIGNAL' : waveName(s.wave).toUpperCase(), w / 2, topY + 56);
+    ctx.fillText(is600bn ? 'THE SIGNAL' : waveName(s.wave).toUpperCase(), w / 2, is600bn ? topY + 14 : topY + 56);
   }
   ctx.letterSpacing = '0em' as unknown as string;
 
@@ -2857,29 +2889,27 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState): void {
 
   // Wave number — bigger, more confident. 600bn flavour / Sanctum mode
   // swaps the 'WAVE N' label for the canonical sacred-number wordmark.
+  // All four lines are auto-shrunk to fit the viewport in portrait so
+  // long strings (especially "THE $600B WAVE" and the lore line) don't
+  // spill off both edges of the screen on phones.
   const isBnWave = (getFlavour() === '600bn' || isSanctumMode()) && s.wave === 1;
-  if (isBnWave) {
-    ctx.font = 'bold 64px ui-monospace, monospace';
-    ctx.fillStyle = '#ffd84a';
-    ctx.shadowColor = '#ff8a3a';
-    ctx.shadowBlur = 26;
-    ctx.fillText('THE $600B WAVE', WORLD_W / 2, WORLD_H / 2 - 30);
-  } else {
-    ctx.font = 'bold 72px ui-monospace, monospace';
-    ctx.fillStyle = '#5b9dff';
-    ctx.shadowColor = '#5b9dff';
-    ctx.shadowBlur = 22;
-    ctx.fillText(`WAVE ${s.wave}`, WORLD_W / 2, WORLD_H / 2 - 30);
-  }
+  const maxW = overlayWorldWidth() - 40;  // 20 world px margin each side
+  const headline = isBnWave ? 'THE $600B WAVE' : `WAVE ${s.wave}`;
+  fitFontToWidth(ctx, headline, px => `bold ${px}px ui-monospace, monospace`, isBnWave ? 64 : 72, maxW);
+  ctx.fillStyle = isBnWave ? '#ffd84a' : '#5b9dff';
+  ctx.shadowColor = isBnWave ? '#ff8a3a' : '#5b9dff';
+  ctx.shadowBlur = isBnWave ? 26 : 22;
+  ctx.fillText(headline, WORLD_W / 2, WORLD_H / 2 - 30);
 
   // Sub-name — pallasite specimen for campaign waves, council label
   // for the 600bn flavour.
-  ctx.font = 'bold 28px ui-monospace, monospace';
+  const subname = isBnWave ? 'COUNCIL OF 600' : waveName(s.wave);
+  fitFontToWidth(ctx, subname, px => `bold ${px}px ui-monospace, monospace`, 28, maxW);
   ctx.fillStyle = '#ffd84a';
   ctx.shadowColor = '#ffd84a';
   ctx.shadowBlur = 14;
   ctx.letterSpacing = '0.18em' as unknown as string;
-  ctx.fillText(isBnWave ? 'COUNCIL OF 600' : waveName(s.wave), WORLD_W / 2, WORLD_H / 2 + 38);
+  ctx.fillText(subname, WORLD_W / 2, WORLD_H / 2 + 38);
 
   // One-line lore — pallasite history for campaign, 600B canon for
   // the Sanctum wave.
@@ -2887,7 +2917,7 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState): void {
     ? 'Madeira to Prague · The signal carries the stone'
     : waveSubtitle(s.wave);
   if (lore) {
-    ctx.font = '16px ui-monospace, monospace';
+    fitFontToWidth(ctx, lore, px => `${px}px ui-monospace, monospace`, 16, maxW);
     ctx.fillStyle = '#fff5d8';
     ctx.shadowColor = 'rgba(0,0,0,0.9)';
     ctx.shadowBlur = 4;
@@ -2902,7 +2932,7 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState): void {
     ? 'We stack. We build. We meme. We repeat.'
     : waveTagline(s.wave);
   if (tagline) {
-    ctx.font = '14px ui-monospace, monospace';
+    fitFontToWidth(ctx, tagline, px => `${px}px ui-monospace, monospace`, 14, maxW);
     ctx.fillStyle = isBnWave ? '#ffb060' : '#7da5d4';
     ctx.shadowColor = isBnWave ? '#ff8a3a' : '#5b9dff';
     ctx.shadowBlur = 6;

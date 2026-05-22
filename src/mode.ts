@@ -24,7 +24,16 @@ const STORAGE_KEY = 'pallasite:mode';
 export function getStoredMode(): RunMode {
   try {
     const v = localStorage.getItem(STORAGE_KEY);
-    if (v === 'campaign' || v === 'drift' || v === 'bossrush' || v === 'arena' || v === 'sanctum' || v === 'defender') return v;
+    // 'defender' used to be exposed in the Mode picker as a visual demo.
+    // It has since been removed from MODE_LIST in favour of splitting
+    // Defender out into its own game, so a stored 'defender' from an
+    // earlier build is normalised back to 'campaign'. The ?defenderMode=1
+    // URL flag in main.ts is unaffected — it doesn't read this storage.
+    if (v === 'campaign' || v === 'drift' || v === 'bossrush' || v === 'arena' || v === 'sanctum') return v;
+    if (v === 'defender') {
+      try { localStorage.setItem(STORAGE_KEY, 'campaign'); } catch { /* ignore */ }
+      return 'campaign';
+    }
   } catch { /* ignore */ }
   return 'campaign';
 }
@@ -96,5 +105,4 @@ export const MODE_LIST: readonly ModeInfo[] = [
   { id: 'bossrush', label: 'BOSS RUSH', hint: 'Boss after boss. Coming soon.',                           ready: false },
   { id: 'arena',    label: 'ARENA',    hint: 'No wrap. Hard walls that close in.',                       ready: true },
   { id: 'sanctum',  label: 'SANCTUM',  hint: '600bn Sanctum — Council roster, the-cult bed, endless.',   ready: true },
-  { id: 'defender', label: 'DEFENDER', hint: 'Wide-arena scroll preview. Classic Defender mechanic WIP.', ready: true },
 ];
