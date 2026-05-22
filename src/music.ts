@@ -578,12 +578,20 @@ export function musicResetElements(): void {
 }
 
 /**
- * Prime every music track under the active user gesture so each
+ * Prime the CRITICAL music tracks under the active user gesture so each
  * underlying HTMLAudioElement gets its mandatory in-gesture .play() and
  * stays unlocked for the rest of the session. Without this, only the
  * track played by the initial musicSetTrackForState (pallasite-idle) is
  * activated — later phase changes load fresh elements outside any
  * gesture, iOS rejects their .play(), and the wave bands fall silent.
+ *
+ * The set is the CRITICAL_TRACKS list + flavour additions, NOT every
+ * track in TRACKS. The original implementation warmed all 25 tracks on
+ * the first user gesture, which kicked 25 simultaneous decoder+fetch
+ * starts and choked iOS PWA hard enough to break the click handler
+ * that initiated the unlock (PLAY / IGNITE became unresponsive). Wave
+ * tracks beyond the first few rely on the verify-pass retry +
+ * crossfadeTo's lazy load to recover if a later activation fails.
  *
  * Each element is muted before play() to keep the priming inaudible,
  * then paused + unmuted via the play promise so it's left in a clean
@@ -592,7 +600,9 @@ export function musicResetElements(): void {
  * gesture-bound startNew against our own pause.
  */
 export function musicWarmUpAll(skipId?: string): void {
-  for (const id of Object.keys(TRACKS)) {
+  const flavourCritical = FLAVOUR_CRITICAL[getFlavour()] ?? [];
+  const warmSet = new Set<string>([...CRITICAL_TRACKS, ...flavourCritical]);
+  for (const id of warmSet) {
     if (id === skipId) continue;
     try {
       const entry = load(TRACKS[id]);
