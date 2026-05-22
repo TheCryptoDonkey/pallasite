@@ -105,6 +105,16 @@ export function preloadBackground(wave: number): void {
   img.src = backgroundUrlForWave(wave);
 }
 
+/** Drop a cached wave-N image so the next preloadBackground / drawBackground
+ *  resolves the URL afresh. Used by startGame when a Sanctum-mode run is
+ *  entered on a host where the boot-time preload cached the standard
+ *  wave-1.webp before lockInMode('sanctum') ran — without this, the cache
+ *  returns wave-1.webp even though backgroundUrlForWave would now hand back
+ *  sanctum-space.webp. */
+export function invalidateBackgroundCache(wave: number): void {
+  overrideImages.delete(wave);
+}
+
 function tryLoadOverride(wave: number): HTMLImageElement | null {
   const cached = overrideImages.get(wave);
   if (cached === 'failed') return null;
