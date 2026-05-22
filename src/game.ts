@@ -2063,6 +2063,11 @@ function spawnParticles(s: GameState, x: number, y: number, count: number, colou
  */
 function rollPickupKind(s: GameState, asteroidType?: AsteroidType, size?: AsteroidSize): PickupKind {
   if (s.session === null) return 'dust';
+  // 600bn Sanctum (hostname-driven flavour or explicit Sanctum Mode) is a
+  // ceremonial / lore run. Collecting sats would imply a monetary outcome
+  // the experience deliberately doesn't deliver — dust shards still spawn
+  // for score and visual feedback, but no sat coins ever roll.
+  if (getFlavour() === '600bn' || isSanctumMode()) return 'dust';
   if (size !== undefined && size !== 'small') return 'dust';
   if (asteroidType === 'pallasite' && size === 'small') return 'sat';
   const denom = Math.max(1, getGameConfig().sat_drop_denom);
