@@ -32,6 +32,11 @@ const BG_H = 1080;
  *  background rework and the previous pipeline dimensions are preserved. */
 const ASTEROID_W = 1280;
 const ASTEROID_H = 960;
+/** Defender wide-tile output. Source from the generator is 3072x1024;
+ *  the runtime composites it via the seamless-tile path so it stays at
+ *  3:1 aspect, no cover-fit crop. */
+const DEFENDER_W = 3072;
+const DEFENDER_H = 1024;
 /** WebP quality — 78 is a sweet spot of detail vs file size for nebulae. */
 const QUALITY = 78;
 
@@ -43,9 +48,9 @@ if (!existsSync(SRC_DIR)) {
 
 mkdirSync(OUT_DIR, { recursive: true });
 
-const files = readdirSync(SRC_DIR).filter(f => /^(wave-\d+|sanctum|sanctum-space|asteroid-(stony|iron|chondrite|pallasite|carbonaceous|mesosiderite|achondrite))\.(png|jpg|jpeg|webp)$/i.test(f));
+const files = readdirSync(SRC_DIR).filter(f => /^(wave-\d+|sanctum|sanctum-space|defender-tile|asteroid-(stony|iron|chondrite|pallasite|carbonaceous|mesosiderite|achondrite))\.(png|jpg|jpeg|webp)$/i.test(f));
 if (files.length === 0) {
-  console.error('No matching originals (wave-N / sanctum / sanctum-space / asteroid-TYPE) found.');
+  console.error('No matching originals (wave-N / sanctum / sanctum-space / defender-tile / asteroid-TYPE) found.');
   process.exit(1);
 }
 
@@ -77,18 +82,19 @@ for (const file of files) {
     });
     continue;
   }
-  const namedMatch = file.match(/^(sanctum(?:-space)?|asteroid-(?:stony|iron|chondrite|pallasite|carbonaceous|mesosiderite|achondrite))\./i);
+  const namedMatch = file.match(/^(sanctum(?:-space)?|defender-tile|asteroid-(?:stony|iron|chondrite|pallasite|carbonaceous|mesosiderite|achondrite))\./i);
   if (namedMatch) {
     if (onlyWave !== null) continue;
     const name = namedMatch[1].toLowerCase();
     const isAsteroid = name.startsWith('asteroid-');
+    const isDefender = name === 'defender-tile';
     jobs.push({
       label: name,
       order: Infinity,
       src: join(SRC_DIR, file),
       dst: join(OUT_DIR, `${name}.webp`),
-      w: isAsteroid ? ASTEROID_W : BG_W,
-      h: isAsteroid ? ASTEROID_H : BG_H,
+      w: isAsteroid ? ASTEROID_W : isDefender ? DEFENDER_W : BG_W,
+      h: isAsteroid ? ASTEROID_H : isDefender ? DEFENDER_H : BG_H,
     });
   }
 }
