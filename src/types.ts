@@ -257,10 +257,13 @@ export interface Coin extends Entity {
 /** 1-in-N chance a small asteroid (or a UFO / mine drop) yields sat coins
  *  rather than dust. Large + medium asteroid breaks no longer roll for sat
  *  at all — that gate is enforced in rollPickupKind — so smalls are the only
- *  asteroid path. Tuned so a full W25 clear accrues a couple of hundred base
+ *  asteroid path. Tuned so a full W25 clear accrues roughly a hundred base
  *  sats, which the server-side tier multiplier then scales down for non-
- *  verified players. The 100k/year operator budget is the binding ceiling. */
-export const SAT_DROP_CHANCE_DENOM = 8;
+ *  verified players. The 100k/year operator budget is the binding ceiling.
+ *  Bumped 8 → 14 alongside the extra-life-as-powerup change: lives are no
+ *  longer free at score thresholds, and the overall sat-accrual floor was
+ *  more generous than the operator budget needed it to be. */
+export const SAT_DROP_CHANCE_DENOM = 14;
 
 /** Pallasite VEIN tuning. The event is a long engagement — the prize is
  *  fat and the fight is real. Streams sats per hit, lands a jackpot on
@@ -289,8 +292,12 @@ export const VEIN_SPAWN_MAX_WAVE = 24;
  *  see the vein and start engaging before the heat shows up. */
 export const VEIN_SWARM_DELAY_MS = 2200;
 
-/** Rare temporary buff or one-shot effect dropped by UFO kills. */
-export type PowerUpType = 'rapid' | 'satboost' | 'nova' | 'trident' | 'magnet';
+/** Rare temporary buff or one-shot effect dropped by UFO kills.
+ *  'extralife' is a one-shot pickup — collecting it grants +1 life
+ *  (capped at the lives ceiling). Spawned not by UFO drops but by the
+ *  score-threshold path in maybeExtraLife, so the bonus life has to
+ *  be *fetched* rather than appearing on the lives counter for free. */
+export type PowerUpType = 'rapid' | 'satboost' | 'nova' | 'trident' | 'magnet' | 'extralife';
 
 export interface PowerUp extends Entity {
   type: PowerUpType;
@@ -311,11 +318,12 @@ export interface PowerUpConfig {
 }
 
 export const POWERUP_CONFIG: Record<PowerUpType, PowerUpConfig> = {
-  rapid:    { durationMs: 8000,  glyph: '⚡', colour: '#ff8a3a', pickupLabel: 'RAPID FIRE' },
-  satboost: { durationMs: 12000, glyph: '₿', colour: '#ffd84a', pickupLabel: '×2 SATS' },
-  nova:     { durationMs: 0,     glyph: '◉', colour: '#ff5050', pickupLabel: 'NOVA' },
-  trident:  { durationMs: 6000,  glyph: '⋔', colour: '#ffd84a', pickupLabel: 'TRIDENT' },
-  magnet:   { durationMs: 8000,  glyph: '◎', colour: '#5b9dff', pickupLabel: 'MAGNET' },
+  rapid:     { durationMs: 8000,  glyph: '⚡', colour: '#ff8a3a', pickupLabel: 'RAPID FIRE' },
+  satboost:  { durationMs: 12000, glyph: '₿', colour: '#ffd84a', pickupLabel: '×2 SATS' },
+  nova:      { durationMs: 0,     glyph: '◉', colour: '#ff5050', pickupLabel: 'NOVA' },
+  trident:   { durationMs: 6000,  glyph: '⋔', colour: '#ffd84a', pickupLabel: 'TRIDENT' },
+  magnet:    { durationMs: 8000,  glyph: '◎', colour: '#5b9dff', pickupLabel: 'MAGNET' },
+  extralife: { durationMs: 0,     glyph: '♥', colour: '#58ff58', pickupLabel: '1UP' },
 };
 
 /** Drop chance per non-boss UFO kill. */
