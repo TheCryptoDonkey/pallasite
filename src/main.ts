@@ -371,7 +371,7 @@ bindActions({
     } else {
       setDailySeed(getStoredDailyPref() ? todayUTC() : null);
     }
-    startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: (couchMode || peer || spectator) ? 2 : 1 });
+    startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: (couchMode || peer || spectator) ? 2 : 1, defender: defenderMode });
     // Only force wavestart for the standard campaign — startGame on the
     // 600bn flavour sets phase='sanctum' and doesn't want the warp/wave
     // pipeline kicking in over the top.
@@ -564,7 +564,7 @@ window.addEventListener('keydown', e => {
     lockInDifficulty(getStoredDifficulty());
     gateBehindOnboarding(() => {
       setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-      startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: (couchMode || peer || spectator) ? 2 : 1 });
+      startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: (couchMode || peer || spectator) ? 2 : 1, defender: defenderMode });
       if (getFlavour() !== '600bn') state.phase = 'wavestart';
       if (couchMode) (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
       clearOverlay();
@@ -578,7 +578,7 @@ window.addEventListener('keydown', e => {
     void audio.unlockAudio();
     lockInDifficulty(getStoredDifficulty());
     setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-    startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: (couchMode || peer || spectator) ? 2 : 1 });
+    startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: (couchMode || peer || spectator) ? 2 : 1, defender: defenderMode });
     if (getFlavour() !== '600bn') state.phase = 'wavestart';
     if (couchMode) (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
     clearOverlay();

@@ -564,6 +564,23 @@ export interface GameState {
   /** Wave 25 boss state */
   bossDefeated: boolean;
 
+  /** 600bn Defender bonus wave (`?defender=1`). When true, council
+   *  asteroids drift through the wide arena as defendees and the
+   *  win condition is "protect N of them for T seconds" rather than
+   *  the standard "clear the wave". Set by startGame's `defender`
+   *  opt. */
+  defenderMode: boolean;
+  /** ms until the defender win-check fires (when defenderMode = true).
+   *  Initialised in startGame; counts DOWN each tick. Win when it
+   *  reaches 0 with at least DEFENDER_WIN_THRESHOLD council alive;
+   *  lose when council count hits 0 before then. */
+  defenderTimerMs: number;
+  /** Defender-mode council kill counter. Goes up every time a council
+   *  asteroid is destroyed by an enemy (UFO bullet, UFO collision,
+   *  mine). Player bullets count as "friendly fire" — they DO kill
+   *  the council, just at a steep score penalty. */
+  defenderCouncilLost: number;
+
   /** Number of fixed sim steps still to skip for a hit-stop freeze (0 when
    *  not frozen). Set on milestone moments to give a punch a frame of
    *  weight; the loop skips updateGame while this is positive. */
