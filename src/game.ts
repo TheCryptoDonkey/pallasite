@@ -56,7 +56,7 @@ import type { PowerUp, PowerUpType } from './types.js';
 import * as audio from './audio.js';
 import { preloadBackground } from './render.js';
 import { currentMods, lockInDifficulty, getStoredDifficulty, currentDifficulty } from './difficulty.js';
-import { lockInMode, getStoredMode, currentMode, isEndlessMode } from './mode.js';
+import { lockInMode, getStoredMode, currentMode, isEndlessMode, isSanctumMode } from './mode.js';
 import { arenaActive, arenaCage, confineToArena, clampToArena, outsideArena } from './arena.js';
 import { markAchievement, resetRunAchievements } from './achievements.js';
 import { gameRng, seedRun } from './seed.js';
@@ -882,7 +882,8 @@ function tickSanctumFillers(s: GameState, dtMs: number): void {
   // spawn — the council + UFOs are the arena, asteroid garnish would
   // just be distraction.
   const inDefender = s.defenderMode;
-  if (!inDefender && (getFlavour() !== '600bn' || s.wave !== 1)) return;
+  const isSanctumLike = getFlavour() === '600bn' || isSanctumMode();
+  if (!inDefender && (!isSanctumLike || s.wave !== 1)) return;
   if (s.phase !== 'playing' && s.phase !== 'wavestart') return;
   // Filler cycle (non-defender only):
   // Filler spawn (textured non-council rocks) — keeps the field
@@ -1030,8 +1031,8 @@ export function beginWave(s: GameState, wave: number): void {
   // asteroid is a member-textured large that splits into smaller
   // fragments still wearing the face. No mines, no UFO timer (set
   // below). The 'pallasite' type is used so each break drops sats.
-  if ((getFlavour() === '600bn' || s.defenderMode) && wave === 1) {
-    // 600bn flow OR defender-bonus run: opens as a normal asteroid run
+  if ((getFlavour() === '600bn' || isSanctumMode() || s.defenderMode) && wave === 1) {
+    // 600bn flow (hostname or Mode selection) OR defender-bonus run: opens as a normal asteroid run
     // (textured fillers) and cycles council members in one at a time.
     // Fresh ignite = fresh stats; reset everything. Defender mode
     // additionally runs the protect-the-council win/lose timer in
