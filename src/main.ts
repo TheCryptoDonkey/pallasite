@@ -12,7 +12,7 @@ import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './see
 import { render, preloadBackground, setRenderMode, getRenderModeKind, drawAsciiHud } from './render.js';
 import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderDuelLobby, renderDuelConnecting, simulateStart } from './ui.js';
 import { postHeartbeat } from './faucet.js';
-import { currentMode, setStoredMode } from './mode.js';
+import { currentMode, setStoredMode, isStoredDefenderMode } from './mode.js';
 import {
   startStreamSession,
   publishStreamFrame,
@@ -1110,10 +1110,13 @@ async function boot(): Promise<void> {
       canvas.style.imageRendering = 'auto';
       const ctx = canvas.getContext('2d')!;
       // Portrait phones get the follow camera (see render.ts); landscape and
-      // square viewports keep the contain transform — except in
-      // defenderMode where the wide Defender feel needs follow on
-      // regardless of orientation.
-      const follow = (vh > vw) || defenderMode;
+      // square viewports keep the contain transform — except when Defender
+      // is active (via URL flag OR Mode picker), where the wide Defender
+      // feel needs follow on regardless of orientation. Reads stored mode
+      // (not currentMode) so the camera engages from the FIRST frame after
+      // the player picks DEFENDER, not only after IGNITE runs lockInMode.
+      const defenderActive = defenderMode || isStoredDefenderMode();
+      const follow = (vh > vw) || defenderActive;
       const scale = Math.min(vw / WORLD_W, vh / WORLD_H);
       const tx = (vw - WORLD_W * scale) / 2;
       const ty = (vh - WORLD_H * scale) / 2;
@@ -1129,7 +1132,7 @@ async function boot(): Promise<void> {
       if (state.players.length >= 2) {
         // Fall through to retro branch below.
       } else {
-        setRenderMode({ kind: 'modern', vw, vh, dpr, scale, tx, ty, insets, follow, defender: defenderMode, localSlot: mpSlot });
+        setRenderMode({ kind: 'modern', vw, vh, dpr, scale, tx, ty, insets, follow, defender: defenderActive, localSlot: mpSlot });
         return;
       }
     }
