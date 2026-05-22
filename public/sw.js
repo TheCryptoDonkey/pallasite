@@ -11,7 +11,7 @@
  * Bump SW_VERSION below to invalidate all caches on the next visit.
  */
 
-const SW_VERSION = 'v182';
+const SW_VERSION = 'v183';
 const CACHE_HTML = `pallasite-html-${SW_VERSION}`;
 const CACHE_ASSET = `pallasite-asset-${SW_VERSION}`;
 

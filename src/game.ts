@@ -3522,8 +3522,18 @@ function computeRiskBonus(s: GameState): { mul: number; tier: 'risk' | 'close' |
 /** Mass for asteroid-asteroid elastic collisions. Size dominates
  *  (volume-ish ~ radius³ would over-weight large rocks, so square-root
  *  it down); type tweaks density slightly (iron + mesosiderite heavier,
- *  carbonaceous lighter). */
+ *  carbonaceous lighter).
+ *
+ *  Veins are set-piece centrepieces — the wave-5 heist vault and the
+ *  random vein event. They should feel megalithic: bullets already
+ *  skip their knockback (damageAsteroid), but without an oversized
+ *  mass an incoming chondrite or iron rock could still shunt them
+ *  around during the long engagement, which makes the prize feel
+ *  cheap. A very large mass keeps the impulse and position-correction
+ *  contributions on the vein effectively zero while the other rock
+ *  bounces off naturally. */
 function asteroidMass(a: Asteroid): number {
+  if (a.isVein) return 1e6;
   const sizeFactor = a.size === 'large' ? 4 : a.size === 'medium' ? 2 : 1;
   const typeFactor =
     a.type === 'ballast' ? 2.6 :
@@ -3665,7 +3675,13 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
       p.score += VEIN_SCORE_PER_HIT;
     }
     audio.coinPickup();
-    spawnParticles(s, a.pos.x, a.pos.y, 10, '#ffd84a', 200, 480);
+    // Per-hit feedback: a brighter, larger burst plus a white sparkle
+    // ring so the bullet visibly bites the megalith rather than
+    // disappearing into it. The HP ring (drawAsteroid) carries the
+    // running progress; this is the per-impact punch.
+    spawnParticles(s, a.pos.x, a.pos.y, 14, '#ffd84a', 240, 540);
+    spawnParticles(s, a.pos.x, a.pos.y, 6, '#fff5d8', 280, 360);
+    bumpTrauma(s, 0.04);
     // Power-up drop on hit milestones — the long engagement deserves
     // tools. hp started at a.hpMax; after this hit a.hp is one less,
     // so hits-landed = hpMax - a.hp. Using the asteroid's own hpMax
