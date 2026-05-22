@@ -18,6 +18,7 @@
  */
 
 import { getFlavour } from './flavour.js';
+import { getStoredMode } from './mode.js';
 import type { Asteroid, PowerUp, Ship, Ufo } from './types.js';
 import { ASCII_COLS, BIT_DEPTH, coerceThemeId, type ThemeId } from './postfx/index.js';
 
@@ -42,9 +43,14 @@ interface State {
 
 function defaults(): State {
   // 600bn opens in full 3D — the Sanctum is the showcase, and the WebGL
-  // overlay is the headline feature. Players on weak devices downshift
-  // themselves via the settings panel (Player agency over defaults).
-  const tier: VisualTier = getFlavour() === '600bn' ? 'mesh' : 'vector';
+  // overlay is the headline feature. Both the hostname-driven flavour
+  // AND the explicit Sanctum mode selection default to mesh; main
+  // flavour with a non-Sanctum stored mode keeps the lighter vector
+  // tier so players on weak devices aren't surprised. defaults() reads
+  // the stored mode (not currentMode()) so the choice is honoured at
+  // first-render time, before startGame's lockInMode runs.
+  const sanctumLike = getFlavour() === '600bn' || getStoredMode() === 'sanctum';
+  const tier: VisualTier = sanctumLike ? 'mesh' : 'vector';
   return { asteroid: tier, ship: tier, bullet: tier, particle: tier, theme: 'none', asciiCols: ASCII_COLS.default, bitDepth: BIT_DEPTH.default, bitColour: false };
 }
 

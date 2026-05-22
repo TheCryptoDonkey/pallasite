@@ -24,6 +24,7 @@ import { getVisualStyle, getTheme, isWebGLOverlayReady, callWebGLOverlay } from 
 import { DEPTH_CONFIGS } from './parallax.js';
 import { getRadarVisible, getRadarLandscape, getRadarTilt } from './radar.js';
 import { buildSeamlessStarfield, drawParallaxStarfield } from './starfield.js';
+import { isSanctumMode } from './mode.js';
 import { arenaActive, arenaCage, type ArenaCage } from './arena.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
@@ -91,7 +92,7 @@ const overrideImages: Map<number, HTMLImageElement | 'failed' | 'pending'> = new
  *  ember nebula + golden spiral galaxy) instead of the campaign's
  *  wave-1 deep-space shot. */
 function backgroundUrlForWave(wave: number): string {
-  if (wave === 1 && getFlavour() === '600bn') return '/backgrounds/sanctum-space.webp';
+  if (wave === 1 && (getFlavour() === '600bn' || isSanctumMode())) return '/backgrounds/sanctum-space.webp';
   return `/backgrounds/wave-${wave}.webp`;
 }
 
@@ -2584,7 +2585,10 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   // reads as the canonical $600B wave rather than a numbered campaign
   // entry. Keeps the column position + font sizes identical so layout
   // stays stable.
-  const is600bn = getFlavour() === '600bn';
+  // $600B / WAVE label fires for both the hostname-driven 600bn flavour
+  // AND the explicit Sanctum mode (Mode picker → SANCTUM) so the
+  // Sanctum experience reads identically wherever it's launched from.
+  const is600bn = getFlavour() === '600bn' || isSanctumMode();
   const isArena = arenaActive();
   ctx.fillStyle = is600bn ? '#ffd84a' : '#5b9dff';
   ctx.shadowColor = is600bn ? '#ff8a3a' : '#5b9dff';

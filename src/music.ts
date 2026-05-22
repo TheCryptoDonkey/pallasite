@@ -13,12 +13,14 @@
 import { getMusicDestination } from './audio.js';
 import type { GameState } from './types.js';
 import { getFlavour } from './flavour.js';
+import { isSanctumMode } from './mode.js';
 
 /** Override hook for flavour-specific wave music. When 600bn flavour
  *  is active, wave 1 swaps to the-cult.opus instead of slow-orbit.
  *  Returns null when no override applies. */
 function flavourTrackOverride(state: GameState): string | null {
-  if (getFlavour() === '600bn' && state.wave === 1) {
+  const sanctumWave = (getFlavour() === '600bn' || isSanctumMode()) && state.wave === 1;
+  if (sanctumWave) {
     if (state.phase === 'wavestart' || state.phase === 'playing' || state.phase === 'paused') {
       return 'the-cult';
     }
