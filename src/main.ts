@@ -1370,6 +1370,12 @@ async function boot(): Promise<void> {
   // calls clearOverlay() before the first frame.
   if (defenderMode && !peer && !spectator) {
     queueMicrotask(() => { simulateStart(); });
+    // Thematic intertitle for the 600bn Defender bonus. Fires once after
+    // the sim has spun up so the toast lands over the scrolling arena
+    // rather than the connecting overlay. Council spawn + win condition
+    // are still ahead of us (task #18 phase 2) — this is just the
+    // "what is this mode for" cue.
+    setTimeout(() => toastNow(state, 'PROTECT THE 600 BILLION'), 800);
   }
 
   // Live-presence heartbeat — fires while a run is in progress so the
