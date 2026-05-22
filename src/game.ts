@@ -54,7 +54,7 @@ import {
 } from './types.js';
 import type { PowerUp, PowerUpType } from './types.js';
 import * as audio from './audio.js';
-import { preloadBackground } from './render.js';
+import { preloadBackground, invalidateBackgroundCache } from './render.js';
 import { currentMods, lockInDifficulty, getStoredDifficulty, currentDifficulty } from './difficulty.js';
 import { lockInMode, getStoredMode, currentMode, isEndlessMode, isSanctumMode } from './mode.js';
 import { arenaActive, arenaCage, confineToArena, clampToArena, outsideArena } from './arena.js';
@@ -1032,6 +1032,16 @@ export function beginWave(s: GameState, wave: number): void {
   // fragments still wearing the face. No mines, no UFO timer (set
   // below). The 'pallasite' type is used so each break drops sats.
   if ((getFlavour() === '600bn' || isSanctumMode() || s.defenderMode) && wave === 1) {
+    // Sanctum-mode on the main hostname needs a wave-1 bg cache flush:
+    // main.ts boot pre-loads wave-1.webp before lockInMode runs, so by
+    // the time this branch fires the cache already has the wrong image.
+    // Drop it so drawBackground re-resolves the URL through backgroundUrlForWave
+    // (which now picks sanctum-space.webp for either flavour OR mode). No-op
+    // on 600bn flavour where boot's preload was already correct.
+    if (isSanctumMode() && getFlavour() !== '600bn') {
+      invalidateBackgroundCache(1);
+      preloadBackground(1);
+    }
     // 600bn flow (hostname or Mode selection) OR defender-bonus run: opens as a normal asteroid run
     // (textured fillers) and cycles council members in one at a time.
     // Fresh ignite = fresh stats; reset everything. Defender mode
