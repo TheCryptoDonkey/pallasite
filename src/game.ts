@@ -1348,6 +1348,14 @@ function applyPowerUp(s: GameState, pu: PowerUp, now: number, p: PlayerState): v
     p.magnetExpiresAt = Math.max(p.magnetExpiresAt, now) + cfg.durationMs;
   } else if (pu.type === 'nova') {
     detonateNova(s);
+  } else if (pu.type === 'extralife') {
+    // Lives cap mirrors the old maybeExtraLife ceiling — picking up a
+    // 1UP while already at the cap forfeits the life but still pays
+    // the pickup sound + toast so the action isn't silent.
+    if (p.lives < 5) p.lives += 1;
+    audio.extraLife();
+    toastNow(s, cfg.pickupLabel);
+    return;
   }
   toastNow(s, cfg.pickupLabel);
   audio.powerupPickup();
@@ -3947,20 +3955,67 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
  * current lives against a hardcoded `3 + earnedLives` target, which silently
  * resurrected players on Normal and bumped Hard runs from 2 lives up to 3).
  */
+/**
+ * Each 10,000 score-point milestone now spawns a 1UP power-up the player
+ * has to fetch instead of incrementing p.lives directly. This converts the
+ * threshold from a quiet stat tick into a tactical objective — go cross
+ * the field, grab the heart, dodge what's between you and it. p.lives is
+ * still capped at 5; thresholds crossed at cap still count via
+ * bonusLivesGranted so dropping back under cap later doesn't backfill.
+ *
+ * Multi-threshold crossings in a single call (e.g. a vein jackpot pushing
+ * +2500 across two milestones at once) spawn one 1UP per threshold, each
+ * at its own random position.
+ */
 function maybeExtraLife(s: GameState, p: PlayerState): void {
   const earnedLives = Math.floor(p.score / 10000);
   if (earnedLives <= p.bonusLivesGranted) return;
   if (p.lives >= 5) {
-    // Cap reached but the threshold still counts — record it so we don't
-    // grant a backlog if the player drops below cap later.
+    // Already at cap — record the threshold so we don't backfill 1UPs
+    // later if the player loses lives.
     p.bonusLivesGranted = earnedLives;
     return;
   }
   const grant = Math.min(earnedLives - p.bonusLivesGranted, 5 - p.lives);
-  p.lives += grant;
-  p.bonusLivesGranted = earnedLives;
-  audio.extraLife();
-  toastNow(s, grant > 1 ? `+ ${grant} EXTRA LIVES` : '+ EXTRA LIFE');
+  p.bonusLivesGranted += grant;
+  for (let i = 0; i < grant; i++) {
+    const pos = pickExtraLifeSpawn(s, p);
+    maybeDropPowerUp(s, pos.x, pos.y, 'extralife');
+  }
+}
+
+/**
+ * Pick a position on the gameplay plane for the 1UP spawn. The player
+ * should have to traverse for it — so the spawn is 280–500 px from the
+ * ship at a random angle, clamped inside the inner playfield (away from
+ * the edges where the camera might cut the powerup off in portrait
+ * follow). Avoids landing inside a live mine's gravity well — if the
+ * first roll lands too close to a mine, retry up to a few times before
+ * giving up and letting the player ride out the gravity.
+ */
+function pickExtraLifeSpawn(s: GameState, p: PlayerState): Vec2 {
+  const ship = p.ship.pos;
+  const MARGIN = 100;
+  const MIN_DIST = 280;
+  const MAX_DIST = 500;
+  const MAX_TRIES = 8;
+  let last: Vec2 = { x: WORLD_W / 2, y: WORLD_H / 2 };
+  for (let t = 0; t < MAX_TRIES; t++) {
+    const angle = gameRng() * Math.PI * 2;
+    const dist = MIN_DIST + gameRng() * (MAX_DIST - MIN_DIST);
+    const x = Math.max(MARGIN, Math.min(WORLD_W - MARGIN, ship.x + Math.cos(angle) * dist));
+    const y = Math.max(MARGIN, Math.min(WORLD_H - MARGIN, ship.y + Math.sin(angle) * dist));
+    last = { x, y };
+    let clearOfMines = true;
+    for (const m of s.mines) {
+      if (!m.alive) continue;
+      const dx = m.pos.x - x;
+      const dy = m.pos.y - y;
+      if (dx * dx + dy * dy < (m.gravityRange * 0.7) ** 2) { clearOfMines = false; break; }
+    }
+    if (clearOfMines) return { x, y };
+  }
+  return last;
 }
 
 /**
