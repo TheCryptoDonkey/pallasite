@@ -57,11 +57,17 @@ interface ButtonSpec {
 }
 
 /** Wire touch controls. Both input modes are rendered side-by-side; CSS
- *  hides the inactive set via the `data-mode` attribute on the root. */
+ *  hides the inactive set via the `data-mode` attribute on the root.
+ *
+ *  `getLocalSlot` returns which players[] slot the local touch input
+ *  should target. Solo / couch passes a fixed-0 accessor; duel mode
+ *  passes a closure over `mpSlot` so the slot-1 client's joystick
+ *  writes to players[1] rather than into the partner's slot. */
 export function setupTouchControls(
   state: GameState,
   hyperspace: (s: GameState, now: number) => void,
   activateShield: (s: GameState, now: number) => void,
+  getLocalSlot: () => 0 | 1 = () => 0,
 ): void {
   const root = document.getElementById(ROOT_ID);
   if (!root) return;
@@ -90,7 +96,7 @@ export function setupTouchControls(
     { parent: buttonsRight, spec: { cls: 'shield', label: '⛨',   keys: [], oneShot: activateShield } },
   ];
   for (const { parent, spec } of [...leftButtons, ...rightButtons]) {
-    attachButton(parent, spec, state);
+    attachButton(parent, spec, state, getLocalSlot);
   }
 
   // ── Joystick mode — left pad + right action cluster ──
@@ -100,7 +106,7 @@ export function setupTouchControls(
   knob.className = 'joystick-knob';
   pad.appendChild(knob);
   root.appendChild(pad);
-  attachJoystick(pad, knob, state);
+  attachJoystick(pad, knob, state, getLocalSlot);
 
   // Right cluster in joystick mode reuses fire/hyper/shield only
   const joyRight = createCluster('right joystick-mode joy-right');
@@ -111,7 +117,7 @@ export function setupTouchControls(
     { parent: joyRight, spec: { cls: 'shield', label: '⛨',   keys: [], oneShot: activateShield } },
   ];
   for (const { parent, spec } of joyRightButtons) {
-    attachButton(parent, spec, state);
+    attachButton(parent, spec, state, getLocalSlot);
   }
 }
 
@@ -121,7 +127,7 @@ function createCluster(modifier: string): HTMLElement {
   return div;
 }
 
-function attachButton(parent: HTMLElement, spec: ButtonSpec, state: GameState): void {
+function attachButton(parent: HTMLElement, spec: ButtonSpec, state: GameState, getLocalSlot: () => 0 | 1): void {
   const btn = document.createElement('button');
   btn.className = `touch-btn ${spec.cls}`;
   btn.textContent = spec.label;
@@ -131,12 +137,14 @@ function attachButton(parent: HTMLElement, spec: ButtonSpec, state: GameState): 
   const press = (): void => {
     btn.classList.add('held');
     void audio.unlockAudio();
-    for (const k of spec.keys) state.players[0].keys[k] = true;
+    const slot = getLocalSlot();
+    for (const k of spec.keys) state.players[slot].keys[k] = true;
     if (spec.oneShot) spec.oneShot(state, state.elapsed);
   };
   const release = (): void => {
     btn.classList.remove('held');
-    for (const k of spec.keys) state.players[0].keys[k] = false;
+    const slot = getLocalSlot();
+    for (const k of spec.keys) state.players[slot].keys[k] = false;
   };
 
   btn.addEventListener('pointerdown',  e => { e.preventDefault(); press(); });
@@ -159,19 +167,25 @@ function attachButton(parent: HTMLElement, spec: ButtonSpec, state: GameState): 
  *     bullet from the left thumb without affecting heading.
  *   - Release: clears both state hooks so keyboard/no-input resumes.
  */
-function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState): void {
+function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, getLocalSlot: () => 0 | 1): void {
   const MAX_RADIUS       = 70;    // px — knob travel; bumped from 60 for finger comfort
   const HEADING_DEADZONE = 0.18;  // ignore micro-drift before steering kicks in
   const THRUST_THRESHOLD = 0.45;  // half-push or more = engage thrust
   const TAP_TIME_MS      = 220;   // press shorter than this with no drag = fire
   const TAP_MOVE_PX      = 8;     // total movement allowed before tap is "drag"
   const SNAP_BACK_MS     = 140;   // CSS transition 120ms + small margin to safely remove class
-  // Resolve players[0] on EVERY event, never cache. startGame() rebuilds
-  // s.players from scratch (`s.players = []` then push), so a closure-
-  // captured PlayerState reference from boot points at a dead object after
-  // the first IGNITE and joystick writes silently no-op. Touch buttons
-  // already use the dynamic-read pattern in attachButton().
-  const p0 = (): typeof state.players[number] => state.players[0];
+  // Resolve the local-slot PlayerState on EVERY event, never cache. Two
+  // reasons:
+  //   1) startGame() rebuilds s.players from scratch (`s.players = []`
+  //      then push), so a closure-captured reference from boot points
+  //      at a dead object after the first IGNITE and joystick writes
+  //      silently no-op.
+  //   2) In duel mode the local slot is mpSlot (0 or 1), not always 0.
+  //      Hardcoding `state.players[0]` made the slot-1 client's joystick
+  //      drive the partner's slot — which got overwritten by the
+  //      partner's lockstep input every frame, so the joystick appeared
+  //      dead to the slot-1 player.
+  const p0 = (): typeof state.players[number] => state.players[getLocalSlot()];
 
   let activeId: number | null = null;
   let originX = 0, originY = 0;
