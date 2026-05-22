@@ -22,7 +22,7 @@ import { getMemberImage } from './sanctum-avatars.js';
 import { getFlavour } from './flavour.js';
 import { getVisualStyle, getTheme, isWebGLOverlayReady, callWebGLOverlay } from './visual-style.js';
 import { DEPTH_CONFIGS } from './parallax.js';
-import { getRadarVisible } from './radar.js';
+import { getRadarVisible, getRadarLandscape, getRadarTilt } from './radar.js';
 import { arenaActive, arenaCage, type ArenaCage } from './arena.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
@@ -3571,7 +3571,10 @@ function getRadarOffscreen(w: number, h: number): HTMLCanvasElement {
  *  the bottom) plus an atmospheric darken-toward-the-top gradient.
  *  Reads like a sloped cabinet console rather than a flat sticker. */
 function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
-  if (!renderMode.follow || !isFollowPhase(s.phase) || !getRadarVisible()) return;
+  if (!isFollowPhase(s.phase) || !getRadarVisible()) return;
+  // Portrait follow always shows it; landscape only when the player has
+  // opted in (foundation for the future landscape bonus wave).
+  if (!renderMode.follow && !getRadarLandscape()) return;
 
   ctx.save();
   ctx.setTransform(renderMode.dpr, 0, 0, renderMode.dpr, 0, 0);
@@ -3644,17 +3647,22 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
   oc.restore();
 
   // ── Phase 2: composite back with a per-scanline trapezoid warp.
-  // Top width = w * TOP_SCALE; bottom width = w. Each scanline is drawn
-  // at the interpolated width, centred horizontally on the radar's axis.
+  // Tilt intensity is player-controlled; 'off' draws flat (single
+  // drawImage), 'subtle' uses a 96% top-edge, 'cabinet' the original 92%.
   // 76 drawImage calls per frame is negligible on any GPU that can run
   // the rest of the game.
-  const TOP_SCALE = 0.92;
-  const cx = x0 + w / 2;
-  for (let row = 0; row < h; row++) {
-    const t = row / (h - 1);
-    const widthScale = TOP_SCALE + (1 - TOP_SCALE) * t;
-    const sliceW = w * widthScale;
-    ctx.drawImage(off, 0, row, w, 1, cx - sliceW / 2, y0 + row, sliceW, 1);
+  const tilt = getRadarTilt();
+  if (tilt === 'off') {
+    ctx.drawImage(off, x0, y0);
+  } else {
+    const topScale = tilt === 'subtle' ? 0.96 : 0.92;
+    const cx = x0 + w / 2;
+    for (let row = 0; row < h; row++) {
+      const t = row / (h - 1);
+      const widthScale = topScale + (1 - topScale) * t;
+      const sliceW = w * widthScale;
+      ctx.drawImage(off, 0, row, w, 1, cx - sliceW / 2, y0 + row, sliceW, 1);
+    }
   }
 
   ctx.restore();

@@ -68,7 +68,7 @@ import {
 } from './install-fullscreen.js';
 import { type ParallaxTier, getParallaxTier, setParallaxTier } from './parallax.js';
 import { type BounceMode, getBounceMode, setBounceMode } from './bounce.js';
-import { getRadarVisible, setRadarVisible } from './radar.js';
+import { getRadarVisible, setRadarVisible, getRadarLandscape, setRadarLandscape, getRadarTilt, setRadarTilt, type RadarTilt } from './radar.js';
 import { type KnockbackMode, getKnockbackMode, setKnockbackMode } from './knockback.js';
 import { followUser, shareCompletion, endorseSubject, rankFromWave } from './social.js';
 import { shareRunCard } from './sharecard.js';
@@ -8476,42 +8476,85 @@ export function renderSettings(onBack: () => void): void {
 
   // ── PORTRAIT RADAR ───────────────────────────────────────────────────────
   // Display setting: the Defender-style radar drawn by the portrait follow
-  // camera. On by default; off for players who prefer the bare slice. Only
-  // ever shown in portrait, so it is a plain on / off, not a tri-state.
+  // camera. On by default. Three rows here: MINIMAP toggle (visible at all),
+  // LANDSCAPE toggle (off by default — groundwork for the future landscape
+  // bonus wave) and TILT intensity (off / subtle / cabinet for the
+  // trapezoid scanline warp).
   {
-    const radarHeading = el('p', { parent: overlay, text: 'PORTRAIT RADAR' });
+    const radarHeading = el('p', { parent: overlay, text: 'RADAR' });
     radarHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
-    const radarRow = el('div', { parent: overlay });
-    radarRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;min-width:340px;';
-    el('label', { parent: radarRow, text: 'MINIMAP' })
-      .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
-    const radarBtnWrap = el('div', { parent: radarRow });
-    radarBtnWrap.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;';
-    const radarOpts: ReadonlyArray<{ value: boolean; label: string }> = [
-      { value: true,  label: 'ON' },
-      { value: false, label: 'OFF' },
-    ];
-    const radarBtns = new Map<boolean, HTMLButtonElement>();
-    const paintRadar = (): void => {
-      const cur = getRadarVisible();
-      for (const [val, btn] of radarBtns) {
-        const on = val === cur;
-        btn.style.background = on ? 'rgba(255,216,74,0.18)' : 'rgba(20,12,36,0.6)';
-        btn.style.color = on ? '#ffd84a' : 'rgba(220,210,255,0.7)';
-        btn.style.borderColor = on ? '#ffd84a' : 'rgba(180,140,255,0.45)';
-      }
+
+    // Generic two-column row helper, keyed labels share visual style.
+    const makeRow = (label: string): HTMLElement => {
+      const row = el('div', { parent: overlay });
+      row.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;min-width:340px;';
+      el('label', { parent: row, text: label }).style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
+      const btnWrap = el('div', { parent: row });
+      btnWrap.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;';
+      return btnWrap;
     };
-    for (const o of radarOpts) {
-      const btn = el('button', { className: 'menu-btn secondary', parent: radarBtnWrap, text: o.label }) as HTMLButtonElement;
-      btn.style.cssText += 'font-size:0.72rem;padding:6px 14px;letter-spacing:0.14em;';
-      btn.addEventListener('click', () => {
-        setRadarVisible(o.value);
-        paintRadar();
-      });
-      radarBtns.set(o.value, btn);
+    const styleSegBtn = (btn: HTMLButtonElement, active: boolean): void => {
+      btn.style.background = active ? 'rgba(255,216,74,0.18)' : 'rgba(20,12,36,0.6)';
+      btn.style.color = active ? '#ffd84a' : 'rgba(220,210,255,0.7)';
+      btn.style.borderColor = active ? '#ffd84a' : 'rgba(180,140,255,0.45)';
+    };
+
+    // MINIMAP on/off
+    {
+      const wrap = makeRow('MINIMAP');
+      const opts: ReadonlyArray<{ value: boolean; label: string }> = [
+        { value: true,  label: 'ON' },
+        { value: false, label: 'OFF' },
+      ];
+      const btns = new Map<boolean, HTMLButtonElement>();
+      const paint = (): void => { for (const [v, b] of btns) styleSegBtn(b, v === getRadarVisible()); };
+      for (const o of opts) {
+        const btn = el('button', { className: 'menu-btn secondary', parent: wrap, text: o.label }) as HTMLButtonElement;
+        btn.style.cssText += 'font-size:0.72rem;padding:6px 14px;letter-spacing:0.14em;';
+        btn.addEventListener('click', () => { setRadarVisible(o.value); paint(); });
+        btns.set(o.value, btn);
+      }
+      paint();
     }
-    paintRadar();
-    const radarHint = el('p', { parent: overlay, text: 'Whole-world map for portrait phones' });
+
+    // TILT off/subtle/cabinet
+    {
+      const wrap = makeRow('TILT');
+      const opts: ReadonlyArray<{ value: RadarTilt; label: string }> = [
+        { value: 'off',     label: 'FLAT'    },
+        { value: 'subtle',  label: 'SUBTLE'  },
+        { value: 'cabinet', label: 'CABINET' },
+      ];
+      const btns = new Map<RadarTilt, HTMLButtonElement>();
+      const paint = (): void => { for (const [v, b] of btns) styleSegBtn(b, v === getRadarTilt()); };
+      for (const o of opts) {
+        const btn = el('button', { className: 'menu-btn secondary', parent: wrap, text: o.label }) as HTMLButtonElement;
+        btn.style.cssText += 'font-size:0.72rem;padding:6px 14px;letter-spacing:0.14em;';
+        btn.addEventListener('click', () => { setRadarTilt(o.value); paint(); });
+        btns.set(o.value, btn);
+      }
+      paint();
+    }
+
+    // LANDSCAPE on/off (foundation for future landscape bonus wave)
+    {
+      const wrap = makeRow('LANDSCAPE');
+      const opts: ReadonlyArray<{ value: boolean; label: string }> = [
+        { value: true,  label: 'ON' },
+        { value: false, label: 'OFF' },
+      ];
+      const btns = new Map<boolean, HTMLButtonElement>();
+      const paint = (): void => { for (const [v, b] of btns) styleSegBtn(b, v === getRadarLandscape()); };
+      for (const o of opts) {
+        const btn = el('button', { className: 'menu-btn secondary', parent: wrap, text: o.label }) as HTMLButtonElement;
+        btn.style.cssText += 'font-size:0.72rem;padding:6px 14px;letter-spacing:0.14em;';
+        btn.addEventListener('click', () => { setRadarLandscape(o.value); paint(); });
+        btns.set(o.value, btn);
+      }
+      paint();
+    }
+
+    const radarHint = el('p', { parent: overlay, text: 'Whole-world map. Landscape on prepares for a future wide-arena bonus wave.' });
     radarHint.style.cssText = 'font-size:0.62rem;letter-spacing:0.1em;color:rgba(180,140,255,0.5);margin:-6px 0 0;';
   }
 
@@ -11543,6 +11586,15 @@ function buildDuelInviteUrl(session: string, partnerSlot: 0 | 1): string {
   return `${origin}/?peer=${encodeURIComponent(peer)}&session=${encodeURIComponent(session)}&slot=${partnerSlot}`;
 }
 
+/** Build the spectator page URL. Anyone opening this connects via the
+ *  broker peerwatch role and watches the duel read-only. No slot — the
+ *  spectator sees BOTH ships. */
+function buildSpectateUrl(session: string): string {
+  const peer = buildBrokerPeerUrl(session);
+  const origin = window.location.origin;
+  return `${origin}/?spectate=${encodeURIComponent(session)}&peer=${encodeURIComponent(peer)}`;
+}
+
 /** 8-char crockford-base32-ish session id. Short enough to type, long
  *  enough that a casual collision in the broker's open-session set is
  *  vanishingly unlikely. */
@@ -11605,6 +11657,7 @@ function renderHostPanel(parent: HTMLElement): void {
   // Inviter is slot 0; the partner who scans/pastes lands on slot 1.
   const partnerUrl = buildDuelInviteUrl(session, 1);
   const inviterUrl = buildDuelInviteUrl(session, 0);
+  const spectateUrl = buildSpectateUrl(session);
 
   const info = el('p', { parent });
   info.style.cssText = 'margin:0;font-size:0.88rem;color:rgba(220,210,255,0.8);line-height:1.5;text-align:center;';
@@ -11632,9 +11685,19 @@ function renderHostPanel(parent: HTMLElement): void {
   const readyBtn = el('button', { className: 'menu-btn', parent: copyRow, text: 'READY ⚔' });
   readyBtn.addEventListener('click', () => { window.location.assign(inviterUrl); });
 
+  // ── Spectate-link row (M5). Anyone with this URL can watch the duel.
+  const watchRow = el('div', { className: 'menu-row', parent });
+  watchRow.style.cssText = 'margin-top:4px;';
+  const watchBtn = el('button', { className: 'menu-btn secondary', parent: watchRow, text: '👁  COPY SPECTATE LINK' });
+  watchBtn.addEventListener('click', () => {
+    void navigator.clipboard.writeText(spectateUrl)
+      .then(() => { watchBtn.textContent = 'SPECTATE LINK COPIED ✓'; setTimeout(() => { watchBtn.textContent = '👁  COPY SPECTATE LINK'; }, 1500); })
+      .catch(() => { watchBtn.textContent = 'COPY FAILED'; setTimeout(() => { watchBtn.textContent = '👁  COPY SPECTATE LINK'; }, 1500); });
+  });
+
   const hint = el('p', { parent });
   hint.style.cssText = 'margin:0;font-size:0.78rem;color:rgba(180,140,255,0.6);text-align:center;line-height:1.5;max-width:420px;';
-  hint.textContent = 'You enter as slot 0. The first to press READY waits in the arena until the partner connects; the lockstep buffers your input until then.';
+  hint.textContent = 'You enter as slot 0. The first to press READY waits in the arena until the partner connects; the lockstep buffers your input until then. Share the spectate link with anyone who wants to watch live.';
 }
 
 function renderJoinPanel(parent: HTMLElement): void {
