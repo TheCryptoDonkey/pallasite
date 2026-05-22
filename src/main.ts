@@ -41,6 +41,46 @@ import { WebSocketPeer, SpectatorPeer, type Peer, type PeerSlot } from './peer.j
 import type { GameState } from './types.js';
 import { DOWN_DOUBLE_TAP_WINDOW_MS, WORLD_W, WORLD_H } from './types.js';
 
+// First-uncaught-error overlay. iOS PWAs can't open dev-tools without
+// macOS Safari remote-inspect, so an uncaught exception at boot
+// produces a blank-feeling page with no obvious diagnostic. This
+// listener pins the first error message + stack to the top of the
+// screen in a small red ribbon so the player can read what broke (and
+// screenshot it to me). Subsequent errors are silently appended to a
+// counter — the first one is almost always the proximate cause.
+{
+  let errorCount = 0;
+  let errorPanel: HTMLDivElement | null = null;
+  const surface = (label: string, detail: string): void => {
+    errorCount++;
+    if (!errorPanel) {
+      errorPanel = document.createElement('div');
+      errorPanel.style.cssText = [
+        'position:fixed', 'top:0', 'left:0', 'right:0',
+        'z-index:99999', 'background:rgba(180,30,30,0.92)',
+        'color:#fff', 'padding:6px 10px',
+        'font:11px/1.4 ui-monospace,monospace', 'letter-spacing:0.02em',
+        'border-bottom:1px solid rgba(255,255,255,0.4)',
+        'white-space:pre-wrap', 'max-height:40vh', 'overflow:auto',
+        'pointer-events:auto', 'cursor:pointer',
+      ].join(';');
+      errorPanel.addEventListener('click', () => { if (errorPanel) errorPanel.remove(); errorPanel = null; });
+      const attach = (): void => { if (document.body && errorPanel) document.body.appendChild(errorPanel); };
+      if (document.body) attach(); else document.addEventListener('DOMContentLoaded', attach);
+    }
+    if (errorPanel) errorPanel.textContent = `[${errorCount}] ${label}\n${detail}\n(tap to dismiss)`;
+  };
+  window.addEventListener('error', (ev) => {
+    surface(`${ev.message}`, `${ev.filename ?? '?'}:${ev.lineno ?? '?'}:${ev.colno ?? '?'}\n${ev.error?.stack ?? ''}`);
+  });
+  window.addEventListener('unhandledrejection', (ev) => {
+    const r = ev.reason;
+    const msg = r instanceof Error ? r.message : String(r);
+    const stk = r instanceof Error ? (r.stack ?? '') : '';
+    surface(`unhandledrejection: ${msg}`, stk);
+  });
+}
+
 const PAUSE_DUCK = 0.3;
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
