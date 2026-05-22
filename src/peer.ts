@@ -414,3 +414,110 @@ export class WebSocketPeer implements Peer {
     this.ws.addEventListener('error', () => this.onError());
   }
 }
+
+// ── SpectatorPeer ────────────────────────────────────────────────────────────
+
+/** Per-frame delivery from a spectator drain. Slot tells the lockstep loop
+ *  which player's input log slot to write to; the spectator sees both. */
+export interface SpectatorFrameDelivery { frame: number; slot: PeerSlot; input: number; }
+export interface SpectatorHashDelivery { frame: number; slot: PeerSlot; hash: number; }
+
+/** Read-only peer that drains both slots' frames and hashes from a
+ *  `r=peerwatch` broker connection. Used by the M5 spectator surface
+ *  (watch.pallasite.app/?spectate=…&peer=…). Never sends; the broker
+ *  silently drops anything it receives from a peerwatch socket anyway.
+ *
+ *  Lifecycle:
+ *  - `connect(url, session)` opens the watcher socket. Resolves when the
+ *    broker sends `peerwatch-ready` AND both slots are reported bound.
+ *    A late-arriving peer-joined for the second slot kicks the resolve.
+ *  - `drainFrames()` / `drainHashes()` return slot-tagged inboxes the
+ *    lockstep loop writes into both players' input log positions. */
+export class SpectatorPeer {
+  private ws: WebSocket | null = null;
+  private connected = false;
+  private slotsBound: [boolean, boolean] = [false, false];
+  private frameInbox: SpectatorFrameDelivery[] = [];
+  private hashInbox: SpectatorHashDelivery[] = [];
+  private resolveConnect: (() => void) | null = null;
+  private rejectConnect: ((e: Error) => void) | null = null;
+
+  connect(opts: { url: string; session: string }): Promise<void> {
+    void opts.session;  // session is encoded into opts.url by the caller
+    return new Promise<void>((resolve, reject) => {
+      this.resolveConnect = resolve;
+      this.rejectConnect = reject;
+      try {
+        this.ws = new WebSocket(opts.url);
+      } catch (e) {
+        reject(e instanceof Error ? e : new Error(String(e)));
+        return;
+      }
+      this.ws.addEventListener('open', () => { this.connected = true; });
+      this.ws.addEventListener('message', (ev: MessageEvent) => this.onMessage(ev));
+      this.ws.addEventListener('close', () => {
+        this.connected = false;
+        this.slotsBound = [false, false];
+        if (this.rejectConnect) { this.rejectConnect(new Error('socket closed before both peers joined')); this.resolveConnect = null; this.rejectConnect = null; }
+      });
+      this.ws.addEventListener('error', () => {
+        if (this.rejectConnect) { this.rejectConnect(new Error('socket error')); this.resolveConnect = null; this.rejectConnect = null; }
+      });
+    });
+  }
+
+  disconnect(): void {
+    if (this.ws) this.ws.close();
+    this.ws = null;
+    this.connected = false;
+    this.slotsBound = [false, false];
+  }
+
+  drainFrames(): SpectatorFrameDelivery[] {
+    const out = this.frameInbox;
+    this.frameInbox = [];
+    return out;
+  }
+
+  drainHashes(): SpectatorHashDelivery[] {
+    const out = this.hashInbox;
+    this.hashInbox = [];
+    return out;
+  }
+
+  isConnected(): boolean { return this.connected; }
+  bothPeersBound(): boolean { return this.slotsBound[0] && this.slotsBound[1]; }
+
+  private onMessage(ev: MessageEvent): void {
+    let msg: PeerMsgIn | { type: 'peerwatch-ready' };
+    try {
+      msg = JSON.parse(typeof ev.data === 'string' ? ev.data : '') as PeerMsgIn | { type: 'peerwatch-ready' };
+    } catch { return; }
+    switch (msg.type) {
+      case 'peerwatch-ready':
+        // Ack only; we still wait for both peer-joined slots before resolving.
+        return;
+      case 'peer-joined':
+        this.slotsBound[msg.slot] = true;
+        if (this.bothPeersBound() && this.resolveConnect) {
+          this.resolveConnect();
+          this.resolveConnect = null;
+          this.rejectConnect = null;
+        }
+        return;
+      case 'peer-left':
+        this.slotsBound[msg.slot] = false;
+        return;
+      case 'frame':
+        this.frameInbox.push({ frame: msg.frame, slot: msg.slot, input: msg.input });
+        return;
+      case 'hash':
+        this.hashInbox.push({ frame: msg.frame, slot: msg.slot, hash: msg.hash });
+        return;
+      case 'session-error':
+        if (this.rejectConnect) { this.rejectConnect(new Error('session-error: ' + msg.code)); this.resolveConnect = null; this.rejectConnect = null; }
+        this.disconnect();
+        return;
+    }
+  }
+}
