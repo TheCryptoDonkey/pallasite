@@ -56,7 +56,7 @@ import type { PowerUp, PowerUpType } from './types.js';
 import * as audio from './audio.js';
 import { preloadBackground, invalidateBackgroundCache } from './render.js';
 import { currentMods, lockInDifficulty, getStoredDifficulty, currentDifficulty } from './difficulty.js';
-import { lockInMode, getStoredMode, currentMode, isEndlessMode, isSanctumMode } from './mode.js';
+import { lockInMode, getStoredMode, currentMode, isEndlessMode, isSanctumMode, isDefenderMode } from './mode.js';
 import { arenaActive, arenaCage, confineToArena, clampToArena, outsideArena } from './arena.js';
 import { markAchievement, resetRunAchievements } from './achievements.js';
 import { gameRng, seedRun } from './seed.js';
@@ -285,7 +285,10 @@ export function startGame(s: GameState, forcedSeed?: number, opts?: { players?: 
   const playerCount = opts?.players ?? 1;
   // Defender bonus wave — protect the Council variant. Drives the
   // wave-1 council-spawn check below + win/lose timer in updateGame.
-  s.defenderMode = !!opts?.defender;
+  // Triggered by either the explicit opts.defender (URL flag still
+  // works) OR Mode picker → DEFENDER. lockInMode just ran above so
+  // isDefenderMode() reflects the picked mode here.
+  s.defenderMode = !!opts?.defender || isDefenderMode();
   s.defenderTimerMs = s.defenderMode ? DEFENDER_RUN_MS : 0;
   s.defenderCouncilLost = 0;
   s.players = [];

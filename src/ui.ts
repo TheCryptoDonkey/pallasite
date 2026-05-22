@@ -922,21 +922,10 @@ export function renderTitle(state: GameState): void {
     window.location.assign('/duel');
   });
 
-  // 600bn Defender bonus wave. On its OWN row right under the main menu
-  // so it can't get lost in the button wrap on mobile — full width, yellow
-  // accent so it reads as a high-value alternate mode rather than a
-  // secondary action. Self-contained URL path — taps navigate to
-  // /?defender=1 and the boot reads the flag from there.
-  const bonusRow = el('div', { className: 'menu-row', parent: overlay });
-  bonusRow.style.cssText = 'margin-top:4px;';
-  const defenderBtn = el('button', { className: 'menu-btn', parent: bonusRow, text: '🛡 DEFEND THE 600 BILLION' });
-  defenderBtn.style.cssText += 'font-size:1rem;padding:12px 24px;letter-spacing:0.18em;background:rgba(255,216,74,0.12);border-color:rgba(255,216,74,0.7);color:#ffd84a;text-shadow:0 0 8px rgba(255,216,74,0.5);';
-  defenderBtn.addEventListener('click', () => {
-    void audio.unlockAudio();
-    window.location.assign('/?defender=1');
-  });
-  const bonusHint = el('p', { parent: overlay, text: 'Bonus: defend the Council. 90s. 6 of 11 must survive.' });
-  bonusHint.style.cssText = 'margin:0 auto 12px;font-size:0.78rem;color:rgba(255,216,74,0.6);letter-spacing:0.12em;text-align:center;';
+  // Defender used to be a big-yellow standalone button here; it now
+  // lives in the Mode picker (above) as DEFENDER, same channel as
+  // CAMPAIGN / SANCTUM / etc. The `?defender=1` URL flag still works
+  // for dev / shareable links and is honoured by main.ts boot.
 
   // Show local high scores under the start button if any exist. Local entries
   // sometimes carry an eventId (set when the player published this run via the
@@ -1521,6 +1510,11 @@ function renderModeRow(parent: HTMLElement, state: GameState): void {
         return;
       }
       setStoredMode(info.id);
+      // Re-fit so the renderMode picks up the new mode's camera /
+      // background / radar settings (Defender uses landscape follow +
+      // parallax bg + forced radar — without a refit those wouldn't
+      // engage until the next browser resize event).
+      try { (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.(); } catch { /* ignore */ }
       refresh();
     });
     btn.addEventListener('mouseenter', () => { hint.textContent = info.hint; });
