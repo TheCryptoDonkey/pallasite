@@ -56,18 +56,33 @@ interface ButtonSpec {
   oneShot?: (state: GameState, now: number) => void;
 }
 
+/** Mirror writers touch.ts uses in peer mode so the joystick / button
+ *  state isn't lost to the delayed-input apply step. Solo and couch
+ *  pass `null` for `mirror` — the writes then only go to PlayerState as
+ *  they did pre-multiplayer. */
+export interface TouchInputMirror {
+  setHeading(slot: 0 | 1, heading: number | null): void;
+  setThrust(slot: 0 | 1, thrust: boolean): void;
+  setKey(slot: 0 | 1, code: string, pressed: boolean): void;
+}
+
 /** Wire touch controls. Both input modes are rendered side-by-side; CSS
  *  hides the inactive set via the `data-mode` attribute on the root.
  *
  *  `getLocalSlot` returns which players[] slot the local touch input
  *  should target. Solo / couch passes a fixed-0 accessor; duel mode
  *  passes a closure over `mpSlot` so the slot-1 client's joystick
- *  writes to players[1] rather than into the partner's slot. */
+ *  writes to players[1] rather than into the partner's slot.
+ *
+ *  `mirror` is the peer-mode local input mirror; main.ts passes it when
+ *  the lockstep loop is active so joystick heading + thrust + tap-fire
+ *  survive the per-tick apply step that clobbers p.* fields. */
 export function setupTouchControls(
   state: GameState,
   hyperspace: (s: GameState, now: number) => void,
   activateShield: (s: GameState, now: number) => void,
   getLocalSlot: () => 0 | 1 = () => 0,
+  mirror: TouchInputMirror | null = null,
 ): void {
   const root = document.getElementById(ROOT_ID);
   if (!root) return;
@@ -96,7 +111,7 @@ export function setupTouchControls(
     { parent: buttonsRight, spec: { cls: 'shield', label: '⛨',   keys: [], oneShot: activateShield } },
   ];
   for (const { parent, spec } of [...leftButtons, ...rightButtons]) {
-    attachButton(parent, spec, state, getLocalSlot);
+    attachButton(parent, spec, state, getLocalSlot, mirror);
   }
 
   // ── Joystick mode — left pad + right action cluster ──
@@ -106,7 +121,7 @@ export function setupTouchControls(
   knob.className = 'joystick-knob';
   pad.appendChild(knob);
   root.appendChild(pad);
-  attachJoystick(pad, knob, state, getLocalSlot);
+  attachJoystick(pad, knob, state, getLocalSlot, mirror);
 
   // Right cluster in joystick mode reuses fire/hyper/shield only
   const joyRight = createCluster('right joystick-mode joy-right');
@@ -117,7 +132,7 @@ export function setupTouchControls(
     { parent: joyRight, spec: { cls: 'shield', label: '⛨',   keys: [], oneShot: activateShield } },
   ];
   for (const { parent, spec } of joyRightButtons) {
-    attachButton(parent, spec, state, getLocalSlot);
+    attachButton(parent, spec, state, getLocalSlot, mirror);
   }
 }
 
@@ -127,7 +142,7 @@ function createCluster(modifier: string): HTMLElement {
   return div;
 }
 
-function attachButton(parent: HTMLElement, spec: ButtonSpec, state: GameState, getLocalSlot: () => 0 | 1): void {
+function attachButton(parent: HTMLElement, spec: ButtonSpec, state: GameState, getLocalSlot: () => 0 | 1, mirror: TouchInputMirror | null): void {
   const btn = document.createElement('button');
   btn.className = `touch-btn ${spec.cls}`;
   btn.textContent = spec.label;
@@ -138,13 +153,19 @@ function attachButton(parent: HTMLElement, spec: ButtonSpec, state: GameState, g
     btn.classList.add('held');
     void audio.unlockAudio();
     const slot = getLocalSlot();
-    for (const k of spec.keys) state.players[slot].keys[k] = true;
+    for (const k of spec.keys) {
+      state.players[slot].keys[k] = true;
+      mirror?.setKey(slot, k, true);
+    }
     if (spec.oneShot) spec.oneShot(state, state.elapsed);
   };
   const release = (): void => {
     btn.classList.remove('held');
     const slot = getLocalSlot();
-    for (const k of spec.keys) state.players[slot].keys[k] = false;
+    for (const k of spec.keys) {
+      state.players[slot].keys[k] = false;
+      mirror?.setKey(slot, k, false);
+    }
   };
 
   btn.addEventListener('pointerdown',  e => { e.preventDefault(); press(); });
@@ -167,25 +188,15 @@ function attachButton(parent: HTMLElement, spec: ButtonSpec, state: GameState, g
  *     bullet from the left thumb without affecting heading.
  *   - Release: clears both state hooks so keyboard/no-input resumes.
  */
-function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, getLocalSlot: () => 0 | 1): void {
+function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, getLocalSlot: () => 0 | 1, mirror: TouchInputMirror | null): void {
   const MAX_RADIUS       = 70;    // px — knob travel; bumped from 60 for finger comfort
   const HEADING_DEADZONE = 0.18;  // ignore micro-drift before steering kicks in
   const THRUST_THRESHOLD = 0.45;  // half-push or more = engage thrust
   const TAP_TIME_MS      = 220;   // press shorter than this with no drag = fire
   const TAP_MOVE_PX      = 8;     // total movement allowed before tap is "drag"
   const SNAP_BACK_MS     = 140;   // CSS transition 120ms + small margin to safely remove class
-  // Resolve the local-slot PlayerState on EVERY event, never cache. Two
-  // reasons:
-  //   1) startGame() rebuilds s.players from scratch (`s.players = []`
-  //      then push), so a closure-captured reference from boot points
-  //      at a dead object after the first IGNITE and joystick writes
-  //      silently no-op.
-  //   2) In duel mode the local slot is mpSlot (0 or 1), not always 0.
-  //      Hardcoding `state.players[0]` made the slot-1 client's joystick
-  //      drive the partner's slot — which got overwritten by the
-  //      partner's lockstep input every frame, so the joystick appeared
-  //      dead to the slot-1 player.
-  const p0 = (): typeof state.players[number] => state.players[getLocalSlot()];
+  // Local-slot PlayerState resolved on every event via getLocalSlot(),
+  // never cached. Solo/couch always returns 0; duel returns mpSlot.
 
   let activeId: number | null = null;
   let originX = 0, originY = 0;
@@ -195,9 +206,12 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, g
   let didEngage = false;  // true once we cross the heading deadzone — disables tap-fire
 
   function clearMotion(): void {
-    const p = p0();
+    const slot = getLocalSlot();
+    const p = state.players[slot];
     p.targetHeading = null;
     p.thrustOverride = false;
+    mirror?.setHeading(slot, null);
+    mirror?.setThrust(slot, false);
   }
 
   pad.addEventListener('pointerdown', e => {
@@ -235,17 +249,24 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, g
     const knobY = (originY - padCy) + clipDy;
     knob.style.transform = `translate(${knobX.toFixed(1)}px, ${knobY.toFixed(1)}px)`;
     const magnitude = clipped / MAX_RADIUS;  // 0..1
-    const p = p0();
+    const slot = getLocalSlot();
+    const p = state.players[slot];
     if (magnitude > HEADING_DEADZONE) {
       didEngage = true;
       // Canvas y-down means Math.atan2(dy, dx) returns angle in canvas frame —
       // matches ship.rot which is also in canvas-frame radians.
-      p.targetHeading = Math.atan2(dy, dx);
-      p.thrustOverride = magnitude > THRUST_THRESHOLD;
+      const heading = Math.atan2(dy, dx);
+      const thrust = magnitude > THRUST_THRESHOLD;
+      p.targetHeading = heading;
+      p.thrustOverride = thrust;
+      mirror?.setHeading(slot, heading);
+      mirror?.setThrust(slot, thrust);
     } else {
       // Inside deadzone — release motion so ship coasts straight
       p.targetHeading = null;
       p.thrustOverride = false;
+      mirror?.setHeading(slot, null);
+      mirror?.setThrust(slot, false);
     }
   });
 
@@ -263,10 +284,16 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, g
       // Pulse Space for one frame so the existing fire-on-keydown path triggers.
       // Game reads keys[Space] in its update loop; clearing in a microtask lets
       // exactly one frame see it as held (which is enough for the fire cooldown
-      // path to issue one bullet).
-      const p = p0();
-      p.keys.Space = true;
-      requestAnimationFrame(() => { p0().keys.Space = false; });
+      // path to issue one bullet). Mirror writes go alongside so peer mode's
+      // sample sees the Space too.
+      const slot = getLocalSlot();
+      state.players[slot].keys.Space = true;
+      mirror?.setKey(slot, 'Space', true);
+      requestAnimationFrame(() => {
+        const s2 = getLocalSlot();
+        state.players[s2].keys.Space = false;
+        mirror?.setKey(s2, 'Space', false);
+      });
     }
   }
   pad.addEventListener('pointerup',     release);

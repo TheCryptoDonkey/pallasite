@@ -120,17 +120,30 @@ export const EMPTY_INPUT: PlayerInput = Object.freeze({
  *  round-trip there). Peer mode passes a `localKeys[mpSlot]` map that the
  *  keyboard writes to in parallel with `p.keys`; the sample reads the
  *  un-clobbered local buffer, while apply continues to drive `p.keys`. */
-export function samplePlayerInput(p: PlayerState, edges: EdgeFlags, keysOverride?: Record<string, boolean>): PlayerInput {
+export function samplePlayerInput(
+  p: PlayerState,
+  edges: EdgeFlags,
+  keysOverride?: Record<string, boolean>,
+  thrustOverrideOverride?: boolean,
+  headingOverride?: number | null,
+): PlayerInput {
   const k = keysOverride ?? p.keys;
   const input: PlayerInput = {
     turnLeft:       !!(k['ArrowLeft']  || k['KeyA']),
     turnRight:      !!(k['ArrowRight'] || k['KeyD']),
     thrustHeld:     !!(k['ArrowUp']    || k['KeyW']),
-    thrustOverride: !!p.thrustOverride,
+    // In peer mode the apply step clobbers p.thrustOverride / p.targetHeading
+    // from the delayed input log every inner iteration, so the joystick's
+    // own writes to p are short-lived. main.ts maintains a local mirror
+    // touch.ts writes to and passes here as the override args; sample
+    // reads from the mirror instead of p so the joystick's heading + thrust
+    // survive between sim ticks. Override pass-through is undefined =
+    // "fall back to p" so solo / couch still works unchanged.
+    thrustOverride: thrustOverrideOverride !== undefined ? thrustOverrideOverride : !!p.thrustOverride,
     fire:           !!k['Space'],
     hyperspaceEdge: edges.hyperspace,
     shieldEdge:     edges.shield,
-    heading:        p.targetHeading,
+    heading:        headingOverride !== undefined ? headingOverride : p.targetHeading,
   };
   edges.hyperspace = false;
   edges.shield = false;

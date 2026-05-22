@@ -131,6 +131,15 @@ let peerDesyncFrame = -1;
  *  user's current input survives every sim tick. Solo and couch pass
  *  `undefined` to samplePlayerInput and read directly off `p.keys`. */
 const localKeys: Record<string, boolean>[] = [{}, {}];
+/** Per-slot joystick-state mirror. Same rationale as localKeys: peer
+ *  mode's apply step writes p.targetHeading / p.thrustOverride from the
+ *  delayed input log every sim tick, clobbering the joystick's live
+ *  writes to p. Touch.ts now writes here AND to p; the lockstep sample
+ *  reads from here so the joystick's heading + thrust survive the
+ *  per-tick apply. Solo / couch leave these at null/false and the
+ *  sample falls back to p directly. */
+const localHeading: (number | null)[] = [null, null];
+const localThrust: boolean[] = [false, false];
 
 // Lockstep input log. Re-created whenever the player count changes so each
 // run starts with a clean ring. Sample writes to the current frame; decode
@@ -827,11 +836,14 @@ function loop(now: number): void {
           ? [mpSlot]
           : (state.players.length >= 2 ? [0, 1] : [0]);
       for (const i of localSampleSlots) {
-        // Peer mode reads from the localKeys mirror so apply's delayed
-        // overwrite of `players[i].keys` cannot drop held keys. Solo and
-        // couch pass undefined and read directly off `p.keys`.
+        // Peer mode reads from the localKeys + localHeading + localThrust
+        // mirrors so apply's delayed overwrite of `players[i]` cannot
+        // clobber the live joystick / keyboard input. Solo and couch
+        // pass undefined for every override and read directly off `p`.
         const keysOverride = peer ? localKeys[i] : undefined;
-        const input = samplePlayerInput(state.players[i], edgeFlags[i], keysOverride);
+        const thrustOverrideOverride = peer ? localThrust[i] : undefined;
+        const headingOverride = peer ? localHeading[i] : undefined;
+        const input = samplePlayerInput(state.players[i], edgeFlags[i], keysOverride, thrustOverrideOverride, headingOverride);
         const encoded = encodePlayerInput(input);
         inputLog.record(state.frame, i, encoded);
         if (peer) peer.sendFrame(state.frame, encoded);
@@ -1324,6 +1336,11 @@ async function boot(): Promise<void> {
     (s, now) => { edgeFlags[mpSlot].hyperspace = true; if (!isPeerActive()) tryHyperspace(s, now, s.players[mpSlot]); },
     (s, now) => { edgeFlags[mpSlot].shield = true;     if (!isPeerActive()) tryActivateShield(s, now, s.players[mpSlot]); },
     () => mpSlot,
+    {
+      setHeading: (slot, h) => { localHeading[slot] = h; },
+      setThrust:  (slot, t) => { localThrust[slot] = t; },
+      setKey:     (slot, code, pressed) => { localKeys[slot][code] = pressed; },
+    },
   );
 
   // Long-press the WAVE label on the HUD = open cheat input (mobile equivalent
