@@ -243,6 +243,21 @@ export class InputLog {
    *  packed in storage; callers decode at read time. -1 means "not yet
    *  recorded for this slot." */
   private readonly ring: Int32Array;
+  /** Frame number each ring slot was last written for. Parallel to `ring`.
+   *  Used by `get` to distinguish a fresh write from a stale value left
+   *  behind by ring wrap: if `ringFrame[idx] !== frame`, the ring slot
+   *  belongs to some OTHER frame (typically `frame - capacity`) and `get`
+   *  must return -1, not the misleading older encoded value.
+   *
+   *  Without this, an input that the lockstep loop has not yet received
+   *  for frame N would silently read as the encoded value from frame
+   *  (N - capacity) — typically zero from a pre-keypress slot — and the
+   *  apply step would treat the missing input as "no buttons pressed"
+   *  instead of stalling. That manifested as one peer's keypress never
+   *  reaching the other peer's ship under sustained input load, with
+   *  the stall check unable to fire because it only checked for the
+   *  `-1` sentinel (which the wrap had overwritten). */
+  private readonly ringFrame: Int32Array;
   /** Highest frame so far recorded for each player. Used by readiness checks
    *  ("do I have both sides' input for frame N yet?") in later commits. */
   private readonly lastFrame: number[];
@@ -253,16 +268,25 @@ export class InputLog {
     this.players = players;
     this.capacity = capacity;
     this.ring = new Int32Array(capacity * players).fill(-1);
+    this.ringFrame = new Int32Array(capacity * players).fill(-1);
     this.lastFrame = new Array(players).fill(-1);
   }
 
   /** Record an encoded input for `(frame, playerIdx)`. Idempotent for the same
    *  encoded value; logs a warning in dev if a different value lands on a slot
-   *  already recorded for that frame (would indicate a desync source). */
+   *  already recorded for that frame (would indicate a desync source).
+   *
+   *  Stale-write guard: if the same ring slot already holds a NEWER frame
+   *  (because the caller is replaying a frame from `frame - capacity`),
+   *  the write is dropped — overwriting a fresher value with an older one
+   *  is always wrong. */
   record(frame: number, playerIdx: number, encoded: number): void {
     if (playerIdx < 0 || playerIdx >= this.players) return;
     const slot = (frame % this.capacity + this.capacity) % this.capacity;
-    this.ring[slot * this.players + playerIdx] = encoded >>> 0;
+    const idx = slot * this.players + playerIdx;
+    if (this.ringFrame[idx] > frame) return;
+    this.ring[idx] = encoded >>> 0;
+    this.ringFrame[idx] = frame;
     if (frame > this.lastFrame[playerIdx]) this.lastFrame[playerIdx] = frame;
   }
 
@@ -271,7 +295,9 @@ export class InputLog {
   get(frame: number, playerIdx: number): number {
     if (playerIdx < 0 || playerIdx >= this.players) return -1;
     const slot = (frame % this.capacity + this.capacity) % this.capacity;
-    return this.ring[slot * this.players + playerIdx];
+    const idx = slot * this.players + playerIdx;
+    if (this.ringFrame[idx] !== frame) return -1;
+    return this.ring[idx];
   }
 
   /** Latest frame recorded for a given player. -1 if nothing yet. */
