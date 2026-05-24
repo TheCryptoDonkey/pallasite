@@ -862,10 +862,22 @@ export function renderTitle(state: GameState): void {
   renderPendingClaimBanner(overlay, state);
 
   const row = el('div', { className: 'menu-row', parent: overlay });
-  const startBtn = el('button', { className: 'menu-btn', parent: row, text: 'IGNITE · PRESS ENTER' });
+  // IGNITE label and behaviour both pivot on the stored mode: DUEL routes to
+  // the /duel lobby instead of starting a solo run, so the button reflects
+  // that. Refreshes on every renderTitle (called whenever Mode changes).
+  const duelSelected = getStoredMode() === 'duel';
+  const startBtn = el('button', { className: 'menu-btn', parent: row, text: duelSelected ? 'ENTER LOBBY · PRESS ENTER' : 'IGNITE · PRESS ENTER' });
   startBtn.addEventListener('click', () => {
     void (async () => {
       void audio.unlockAudio();
+      // Duel takes the dedicated route; everything else stays on the solo
+      // path. The lobby reads the same broker the peer arena uses, so no
+      // session needs to be created here — that happens inside the lobby
+      // (HOST flow generates a session id; JOIN consumes one from the URL).
+      if (getStoredMode() === 'duel') {
+        window.location.assign('/duel');
+        return;
+      }
       // Fallback path for IGNITE without first typing a name: rather
       // than starting a session-less run that can't publish scores or
       // earn anything, provision an Anonymous guest identity inline.
@@ -913,14 +925,10 @@ export function renderTitle(state: GameState): void {
     void audio.unlockAudio();
     renderMusicPlayer(state, () => renderTitle(state));
   });
-  // Duel: navigates to the /duel lobby. Self-contained route — solo flow
-  // is untouched. Tap from title → HOST or JOIN → both clients converge
-  // on /?peer=…&session=…&slot=… and the game auto-IGNITEs on peer-joined.
-  const duelBtn = el('button', { className: 'menu-btn secondary', parent: row, text: '⚔ DUEL' });
-  duelBtn.addEventListener('click', () => {
-    void audio.unlockAudio();
-    window.location.assign('/duel');
-  });
+  // DUEL used to live here as a separate action button; it now sits in the
+  // Mode picker alongside CAMPAIGN / DRIFT / ARENA / SANCTUM so the choice
+  // of "what kind of run am I about to start" is on one shelf. Selecting
+  // DUEL flips the IGNITE button's label + behaviour above.
 
   // Defender used to be a big-yellow standalone button here; it now
   // lives in the Mode picker (above) as DEFENDER, same channel as
@@ -1468,7 +1476,6 @@ function globalToLocal(entry: GlobalHighScore & { displayName: string }): Return
  * mode.
  */
 function renderModeRow(parent: HTMLElement, state: GameState): void {
-  void state;
   const wrapper = el('div', { parent });
   wrapper.style.cssText = 'display:flex;flex-direction:column;gap:8px;align-items:center;';
   const label = el('p', { parent: wrapper, text: 'MODE' });
@@ -1509,13 +1516,23 @@ function renderModeRow(parent: HTMLElement, state: GameState): void {
         hint.textContent = 'COMING SOON';
         return;
       }
+      const prev = getStoredMode();
       setStoredMode(info.id);
       // Re-fit so the renderMode picks up the new mode's camera /
       // background / radar settings (Defender uses landscape follow +
       // parallax bg + forced radar — without a refit those wouldn't
       // engage until the next browser resize event).
       try { (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.(); } catch { /* ignore */ }
-      refresh();
+      // Toggling in/out of DUEL changes the IGNITE button's label and
+      // behaviour, so re-render the whole title rather than try to keep
+      // the start button in sync from here. Other mode swaps (e.g.,
+      // CAMPAIGN ↔ DRIFT) don't need a full re-render — refresh() is
+      // enough to restyle the picker buttons + hint.
+      if ((prev === 'duel') !== (info.id === 'duel')) {
+        renderTitle(state);
+      } else {
+        refresh();
+      }
     });
     btn.addEventListener('mouseenter', () => { hint.textContent = info.hint; });
     btn.addEventListener('mouseleave', () => {
