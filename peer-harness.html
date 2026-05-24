@@ -32,8 +32,9 @@
 // path) and the determinism harness (sim-level determinism), this proves
 // M3 transport is ready for the live broker without ever leaving the
 // browser.
-import { makeInitialState, startGame, updateGame, tryActivateShield, tryHyperspace } from '/src/game.ts';
-import { getRngState } from '/src/seed.ts';
+import { makeInitialState, startGame, updateGame, tryActivateShield, tryHyperspace,
+         getEntityIdCounter, setEntityIdCounter } from '/src/game.ts';
+import { getRngState, setRngState } from '/src/seed.ts';
 import { setRenderMode } from '/src/render.ts';
 import { InputLog, encodePlayerInput, decodePlayerInput, applyPlayerInput, EMPTY_INPUT } from '/src/netcode.ts';
 import { loopbackPair } from '/src/peer.ts';
@@ -58,18 +59,22 @@ function fnv1a(str) {
 }
 
 // Serialises BOTH players' state -- the harness compares duel sims that
-// have two ships, not the solo path the other harnesses gate.
-function serialize(s) {
+// have two ships, not the solo path the other harnesses gate. Returns the
+// structured object so callers can both hash it (via JSON.stringify) and
+// diff it field-by-field on divergence.
+function serialize(s, rng) {
   const ent = (e) => [e.pos.x, e.pos.y, e.vel ? e.vel.x : 0, e.vel ? e.vel.y : 0];
   const playerSlice = (p) => [
     p.score, p.lives, p.sats, p.combo, p.fireCooldownUntil,
     p.ship.pos.x, p.ship.pos.y, p.ship.vel.x, p.ship.vel.y, p.ship.rot,
     p.ship.alive, p.ship.shieldUp, p.ship.shieldExpiresAt,
     p.ship.invulnerableUntil, p.ship.hyperspaceReadyAt, p.ship.hyperspaceCloakMs,
+    p.ship.lastHyperspaceAt ?? 0, p.ship.hyperspaceMalfunction ? 1 : 0,
+    p.ship.shieldReadyAt ?? 0, p.ship.rotVel ?? 0,
   ];
-  return JSON.stringify({
+  return {
     f: s.frame, ph: s.phase, w: s.wave, el: s.elapsed, hs: s.hitStopSteps,
-    rng: getRngState(),
+    rng,
     p: s.players.map(playerSlice),
     ast: s.asteroids.map((a) => [a.pos.x, a.pos.y, a.vel.x, a.vel.y, a.radius, a.id, a.hp]),
     ufo: s.ufos.map((u) => [u.pos.x, u.pos.y, u.vel.x, u.vel.y, u.hp ?? 0]),
@@ -78,7 +83,33 @@ function serialize(s) {
     mine: s.mines.map((m) => [m.pos.x, m.pos.y]),
     coin: s.coins.map((c) => [c.pos.x, c.pos.y, c.vel ? c.vel.x : 0, c.vel ? c.vel.y : 0]),
     pow: s.powerups.map((p) => [p.pos.x, p.pos.y]),
-  });
+    pt: (s.pendingTransitions || []).map((t) => [t.kind, t.due, t.epoch, t.arg, t.playerIdx]),
+  };
+}
+
+// Walks two structurally-similar objects and returns a list of leaf paths
+// where they differ. Used to point a debugger at the exact field that broke
+// the lockstep contract.
+function diffLeaves(a, b, path) {
+  path = path || '';
+  const diffs = [];
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) {
+      diffs.push({ path: path + '.length', a: a.length, b: b.length });
+    }
+    const n = Math.max(a.length, b.length);
+    for (let i = 0; i < n; i++) {
+      diffs.push(...diffLeaves(a[i], b[i], path + '[' + i + ']'));
+    }
+  } else if (a && typeof a === 'object' && b && typeof b === 'object') {
+    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    for (const k of keys) {
+      diffs.push(...diffLeaves(a[k], b[k], path ? path + '.' + k : k));
+    }
+  } else if (a !== b) {
+    diffs.push({ path, a, b });
+  }
+  return diffs;
 }
 
 // Two distinct scripted input streams, one per slot. Both exercise the
@@ -141,46 +172,60 @@ function stepSim(s, log, peer, localSlot, step) {
 // Run two paired sims in lockstep for STEPS, returning both hash sequences.
 // Both sims sample + send + drain + apply + tick + updateGame per step, so
 // they advance in true lockstep -- frame N for both before frame N+1.
+//
+// seed.ts's rngState is module-global, so two in-process sims would share it
+// and corrupt each other's deterministic sequence. Real two-client production
+// never hits this (each browser tab is its own process), but the harness must
+// save/restore rngState per sim to honestly model a duel. setRngState before
+// each stepSim, capture after.
 function runDuel(seed, steps) {
   setRenderMode(RETRO_MODE);
   const [peerA, peerB] = loopbackPair(ONE_WAY);
-  // Mark both connected so isConnected() reflects loopback readiness; the
-  // promise from connect() is unused here, this is a synchronous test.
   peerA.connect({ url: '', session: 'duel', localSlot: 0 });
   peerB.connect({ url: '', session: 'duel', localSlot: 1 });
+  // Capture each sim's "context" (rngState + nextEntityId, both module-global
+  // in src/seed.ts and src/game.ts) right after its own startGame, then
+  // restore-and-recapture around each stepSim call. This is the harness-only
+  // patch for in-process sim interleaving; production has one tab per peer
+  // so each peer naturally owns its own copy of those module globals.
   const sA = makeInitialState();
-  const sB = makeInitialState();
   startGame(sA, seed, { players: 2 });
+  let ctxA = { rng: getRngState(), eid: getEntityIdCounter() };
+  const sB = makeInitialState();
   startGame(sB, seed, { players: 2 });
+  let ctxB = { rng: getRngState(), eid: getEntityIdCounter() };
   const logA = new InputLog(2, 256);
   const logB = new InputLog(2, 256);
   const hashesA = new Array(steps);
   const hashesB = new Array(steps);
+  let firstDiverge = null;
   for (let step = 0; step < steps; step++) {
-    // Both sims do their local sample / drain / apply BEFORE peers tick,
-    // mirroring the wall-clock interleaving of two real clients.
+    setRngState(ctxA.rng); setEntityIdCounter(ctxA.eid);
     stepSim(sA, logA, peerA, 0, step);
+    ctxA = { rng: getRngState(), eid: getEntityIdCounter() };
+    setRngState(ctxB.rng); setEntityIdCounter(ctxB.eid);
     stepSim(sB, logB, peerB, 1, step);
-    // Advance loopback latency clocks once per real step.
+    ctxB = { rng: getRngState(), eid: getEntityIdCounter() };
     peerA.tick();
     peerB.tick();
-    hashesA[step] = fnv1a(serialize(sA));
-    hashesB[step] = fnv1a(serialize(sB));
+    const objA = serialize(sA, ctxA.rng);
+    const objB = serialize(sB, ctxB.rng);
+    hashesA[step] = fnv1a(JSON.stringify(objA));
+    hashesB[step] = fnv1a(JSON.stringify(objB));
+    if (firstDiverge === null && hashesA[step] !== hashesB[step]) {
+      firstDiverge = { step, objA, objB };
+    }
   }
-  return { hashesA, hashesB };
+  return { hashesA, hashesB, firstDiverge };
 }
 
 const out = document.getElementById('out');
 let verdict;
 try {
   const t0 = performance.now();
-  const { hashesA, hashesB } = runDuel(SEED, STEPS);
+  const { hashesA, hashesB, firstDiverge } = runDuel(SEED, STEPS);
   const ms = Math.round(performance.now() - t0);
-  let diverged = -1;
-  for (let i = 0; i < STEPS; i++) {
-    if (hashesA[i] !== hashesB[i]) { diverged = i; break; }
-  }
-  if (diverged === -1) {
+  if (firstDiverge === null) {
     verdict = 'PEER-PASS';
     out.textContent = 'PEER-PASS\n\n' +
       'two sims, paired loopback, ' + STEPS + ' steps each, identical hash sequence.\n' +
@@ -190,14 +235,26 @@ try {
       ms + 'ms';
   } else {
     verdict = 'PEER-FAIL';
+    const { step: diverged, objA, objB } = firstDiverge;
+    const diffs = diffLeaves(objA, objB, '');
+    const fmt = (v) => {
+      if (typeof v === 'number') return Number.isInteger(v) ? String(v) : v.toFixed(6);
+      return JSON.stringify(v);
+    };
+    const lines = diffs.slice(0, 30).map((d) => '  ' + d.path + ': A=' + fmt(d.a) + '  B=' + fmt(d.b));
+    const more = diffs.length > 30 ? '\n  ... and ' + (diffs.length - 30) + ' more' : '';
     out.textContent = 'PEER-FAIL\n\n' +
       'duel sims diverged at step ' + diverged + '\n' +
       'sim A hash = ' + hashesA[diverged] + '\n' +
       'sim B hash = ' + hashesB[diverged] + '\n' +
       '(steps 0.. ' + (diverged - 1) + ' matched)\n\n' +
-      'A and B are receiving different effective input sequences. Likely\n' +
-      'culprits: loopback delivery timing, applyPlayerInput round-trip,\n' +
-      'edge dispatch order vs scripted input.';
+      'leaf diffs at step ' + diverged + ' (' + diffs.length + ' total):\n' +
+      lines.join('\n') + more + '\n\n' +
+      '--- sim A player[0] @ ' + diverged + ' ---\n' + JSON.stringify(objA.p[0]) + '\n' +
+      '--- sim B player[0] @ ' + diverged + ' ---\n' + JSON.stringify(objB.p[0]) + '\n' +
+      '--- pendingTransitions ---\n' +
+      'A: ' + JSON.stringify(objA.pt) + '\n' +
+      'B: ' + JSON.stringify(objB.pt);
   }
 } catch (e) {
   verdict = 'PEER-ERROR';

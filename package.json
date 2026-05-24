@@ -10,6 +10,9 @@
     "build": "pnpm run sync-sdk && tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "test": "tsx tools/run-harnesses.ts",
+    "test:e2e": "tsx tools/run-e2e.ts",
+    "test:install": "playwright install chromium",
     "sync-sdk": "if [ -f ../signet-login/dist/signet-login.iife.js ]; then cp ../signet-login/dist/signet-login.iife.js public/signet-login.iife.js; else echo 'sync-sdk: signet-login sibling not present, using committed copy'; fi",
     "gen-backgrounds": "tsx tools/generate-backgrounds.ts",
     "optimise-backgrounds": "tsx tools/optimise-backgrounds.ts",
@@ -26,6 +29,7 @@
   "devDependencies": {
     "@types/qrcode": "^1.5.6",
     "@types/three": "^0.184.1",
+    "playwright": "^1.48.0",
     "sharp": "^0.34.5",
     "tsx": "^4.21.0",
     "typescript": "^5.7.0",

@@ -41,3 +41,4 @@ yarn-error.log*
 !determinism-harness.html
 !lockstep-harness.html
 !peer-harness.html
+!regression-harness.html

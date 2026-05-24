@@ -90,6 +90,15 @@ export function getRngState(): number | null {
   return rngState;
 }
 
+/** Restore the live 32-bit RNG state. Used by the peer harness to save and
+ *  restore per-sim RNG state between two interleaved sims that share this
+ *  module-global rngState — without this swap, simA's gameRng() calls would
+ *  perturb simB's deterministic sequence. Real two-client production never
+ *  hits this path: each browser tab has its own module instance. */
+export function setRngState(n: number | null): void {
+  rngState = n;
+}
+
 /** Stored preference for daily mode (persists across sessions). */
 export function getStoredDailyPref(): boolean {
   try {

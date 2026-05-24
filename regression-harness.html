@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>regression harness</title>
+<style>html,body{margin:0;background:#06080f;color:#8cffb4;font:14px/1.6 ui-monospace,monospace;padding:24px}</style>
+</head>
+<body>
+<pre id="out">running regression checks...</pre>
+<script type="module">
+// Regression harness. One file per duel bug we've fixed; each case is small
+// and checks a sim-level invariant that the original bug would violate. Adds
+// a green/red gate so a future change can't quietly resurrect any of them.
+//
+// Currently covered:
+//
+//   - bc7ec95 distinct 2P spawn — startGame for two players must place the
+//     ships at distinct world positions; the original bug spawned them on
+//     top of each other (both at WORLD_W/2, WORLD_H/2).
+//
+//   - 894b128 localHeading mirror — samplePlayerInput's heading override
+//     must take precedence over p.targetHeading, so the joystick's mirror
+//     survives the lockstep apply step that clobbers p.targetHeading from
+//     the delayed input log.
+//
+//   - 894b128 localThrust mirror — samplePlayerInput's thrustOverride
+//     override must take precedence over p.thrustOverride, same reason.
+import { makeInitialState, startGame } from '/src/game.ts';
+import { setRenderMode } from '/src/render.ts';
+import { samplePlayerInput, applyPlayerInput, EMPTY_INPUT } from '/src/netcode.ts';
+
+const RETRO_MODE = {
+  kind: 'retro', vw: 1280, vh: 720, dpr: 1, scale: 1, tx: 0, ty: 0,
+  insets: { top: 0, right: 0, bottom: 0, left: 0 },
+};
+setRenderMode(RETRO_MODE);
+
+const cases = [];
+
+function test(name, fn) {
+  try {
+    fn();
+    cases.push({ name, ok: true, detail: 'ok' });
+  } catch (e) {
+    cases.push({ name, ok: false, detail: (e && e.message) || String(e) });
+  }
+}
+
+function assertEq(actual, expected, label) {
+  if (actual !== expected) {
+    throw new Error(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+  }
+}
+
+function assertNe(actual, forbidden, label) {
+  if (actual === forbidden) {
+    throw new Error(`${label}: expected NOT ${JSON.stringify(forbidden)}, got ${JSON.stringify(actual)}`);
+  }
+}
+
+// bc7ec95 — distinct 2P spawn.
+test('bc7ec95 distinct 2P spawn', () => {
+  const s = makeInitialState();
+  startGame(s, 0x1234abcd, { players: 2 });
+  assertEq(s.players.length, 2, 'players.length');
+  const p0 = s.players[0].ship.pos;
+  const p1 = s.players[1].ship.pos;
+  // The two ships must NOT share the same point. Anything at the world
+  // centre would mean the distinct-spawn change in bc7ec95 has regressed.
+  if (p0.x === p1.x && p0.y === p1.y) {
+    throw new Error(`p0 and p1 spawn co-located at (${p0.x}, ${p0.y})`);
+  }
+});
+
+// 894b128 — localHeading override takes precedence over p.targetHeading.
+test('894b128 localHeading override read', () => {
+  const s = makeInitialState();
+  startGame(s, 0x1234abcd, { players: 2 });
+  const p = s.players[0];
+  const edges = { hyperspace: false, shield: false };
+  // Live state says heading 1.5 — but the local mirror should win.
+  p.targetHeading = 1.5;
+  const sampled = samplePlayerInput(p, edges, undefined, undefined, 0.5);
+  assertEq(sampled.heading, 0.5, 'sampled.heading (mirror=0.5, live=1.5)');
+});
+
+// 894b128 — undefined override falls through to live p.targetHeading.
+test('894b128 localHeading undefined override', () => {
+  const s = makeInitialState();
+  startGame(s, 0x1234abcd, { players: 2 });
+  const p = s.players[0];
+  const edges = { hyperspace: false, shield: false };
+  p.targetHeading = 1.5;
+  const sampled = samplePlayerInput(p, edges);
+  assertEq(sampled.heading, 1.5, 'sampled.heading (no override, live=1.5)');
+});
+
+// 894b128 — explicit null override holds (does not fall through).
+test('894b128 localHeading null override holds', () => {
+  const s = makeInitialState();
+  startGame(s, 0x1234abcd, { players: 2 });
+  const p = s.players[0];
+  const edges = { hyperspace: false, shield: false };
+  p.targetHeading = 1.5;
+  const sampled = samplePlayerInput(p, edges, undefined, undefined, null);
+  assertEq(sampled.heading, null, 'sampled.heading (override=null, live=1.5)');
+});
+
+// 894b128 — the apply step clobbers p.targetHeading, but a subsequent
+// sample reads the mirror, not the now-stale p value. This is the actual
+// joystick-survives-apply contract that the original bug broke.
+test('894b128 localHeading survives apply clobber', () => {
+  const s = makeInitialState();
+  startGame(s, 0x1234abcd, { players: 2 });
+  const p = s.players[0];
+  const edges = { hyperspace: false, shield: false };
+  // Joystick has written heading 0.5 into its mirror; live p.targetHeading
+  // matches at first.
+  p.targetHeading = 0.5;
+  // The lockstep apply step writes the delayed-log input (heading=null)
+  // back into p, clobbering the live value. The bug was that the next
+  // sample would then read null from p.
+  applyPlayerInput(p, EMPTY_INPUT);
+  assertEq(p.targetHeading, null, 'p.targetHeading clobbered by apply');
+  // The sample with the joystick mirror must STILL see 0.5.
+  const sampled = samplePlayerInput(p, edges, undefined, undefined, 0.5);
+  assertEq(sampled.heading, 0.5, 'sampled.heading after apply (mirror=0.5)');
+});
+
+// 894b128 — thrust mirror, same pattern as heading.
+test('894b128 localThrust override read', () => {
+  const s = makeInitialState();
+  startGame(s, 0x1234abcd, { players: 2 });
+  const p = s.players[0];
+  const edges = { hyperspace: false, shield: false };
+  p.thrustOverride = false;
+  const sampled = samplePlayerInput(p, edges, undefined, true);
+  assertEq(sampled.thrustOverride, true, 'sampled.thrustOverride (mirror=true, live=false)');
+});
+
+// 894b128 — thrust override survives apply clobber.
+test('894b128 localThrust survives apply clobber', () => {
+  const s = makeInitialState();
+  startGame(s, 0x1234abcd, { players: 2 });
+  const p = s.players[0];
+  const edges = { hyperspace: false, shield: false };
+  p.thrustOverride = true;
+  applyPlayerInput(p, EMPTY_INPUT);
+  assertEq(p.thrustOverride, false, 'p.thrustOverride clobbered by apply');
+  const sampled = samplePlayerInput(p, edges, undefined, true);
+  assertEq(sampled.thrustOverride, true, 'sampled.thrustOverride after apply (mirror=true)');
+});
+
+const out = document.getElementById('out');
+const failed = cases.filter((c) => !c.ok);
+let verdict;
+if (failed.length === 0) {
+  verdict = 'REGRESSION-PASS';
+  out.textContent = 'REGRESSION-PASS\n\n' + cases.length + ' cases, all green.\n\n' +
+    cases.map((c) => '  [PASS] ' + c.name).join('\n');
+} else {
+  verdict = 'REGRESSION-FAIL';
+  out.textContent = 'REGRESSION-FAIL\n\n' +
+    failed.length + ' / ' + cases.length + ' cases failing.\n\n' +
+    cases.map((c) => '  [' + (c.ok ? 'PASS' : 'FAIL') + '] ' + c.name + (c.ok ? '' : '\n         ' + c.detail)).join('\n');
+}
+document.title = verdict;
+</script>
+</body>
+</html>
