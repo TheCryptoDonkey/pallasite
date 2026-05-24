@@ -227,6 +227,22 @@ export function loopbackPair(oneWayDelayFrames = 3): [LoopbackPeer, LoopbackPeer
 const RECONNECT_BACKOFF_MS = [250, 500, 1000];
 const RECONNECT_MAX_ATTEMPTS = RECONNECT_BACKOFF_MS.length;
 
+/** Diagnostic ring entry for the wire trace. Each send/receive records one
+ *  of these, capped at WIRE_TRACE_SIZE. Used by the E2E runner to debug
+ *  the duel desync — set `window.__pallasiteWireTrace = 1` (or the URL
+ *  query param `?wiretrace=1`) before constructing the peer. */
+export interface WireTraceEntry {
+  t: number;      // performance.now()
+  dir: 'out' | 'in';
+  kind: 'frame' | 'hash' | 'hello-peer' | 'peer-joined' | 'peer-left' | 'session-error' | 'bye' | 'unknown';
+  frame?: number;
+  slot?: number;
+  input?: number;
+  hash?: number;
+  bufferedAmount?: number;
+}
+const WIRE_TRACE_SIZE = 4096;
+
 export class WebSocketPeer implements Peer {
   private ws: WebSocket | null = null;
   private localSlot: PeerSlot = 0;
@@ -250,6 +266,17 @@ export class WebSocketPeer implements Peer {
    *  Used by the lockstep loop to replay recently-sent input frames
    *  so the partner's input log can refill the gap left by the drop. */
   private onReconnected: (() => void) | null = null;
+  /** Diagnostic wire trace. Enabled by `window.__pallasiteWireTrace = 1`
+   *  before construction. Ring of WIRE_TRACE_SIZE entries, oldest dropped. */
+  private wireTrace: WireTraceEntry[] | null = null;
+  private wireTraceHead = 0;
+  /** Cumulative send/receive counters (always on, lightweight). */
+  public sentFrameCount = 0;
+  public sentHashCount = 0;
+  public recvFrameCount = 0;
+  public recvHashCount = 0;
+  public lastSendFrame = -1;
+  public lastRecvFrame = -1;
 
   connect(opts: PeerConnectOpts): Promise<void> {
     return new Promise<void>((resolve, reject) => {
@@ -260,8 +287,16 @@ export class WebSocketPeer implements Peer {
       this.reconnectAttempt = 0;
       this.resolveConnect = resolve;
       this.rejectConnect = reject;
+      // Opt-in wire trace for the E2E runner. Allocated on connect so the
+      // window flag can be set late (before peer.connect) without missing
+      // boot-time entries.
       try {
-        this.ws = new WebSocket(opts.url);
+        if (typeof window !== 'undefined' && (window as unknown as { __pallasiteWireTrace?: unknown }).__pallasiteWireTrace) {
+          this.wireTrace = new Array(WIRE_TRACE_SIZE);
+        }
+      } catch { /* SSR or sandboxed — no window */ }
+      try {
+        this.ws = new WebSocket(this.buildSocketUrl());
       } catch (e) {
         reject(e instanceof Error ? e : new Error(String(e)));
         return;
@@ -271,6 +306,47 @@ export class WebSocketPeer implements Peer {
       this.ws.addEventListener('close', () => this.onClose());
       this.ws.addEventListener('error', () => this.onError());
     });
+  }
+
+  /** Append one entry to the wire-trace ring. No-op if trace disabled. */
+  private traceEntry(e: WireTraceEntry): void {
+    if (!this.wireTrace) return;
+    this.wireTrace[this.wireTraceHead] = e;
+    this.wireTraceHead = (this.wireTraceHead + 1) % WIRE_TRACE_SIZE;
+  }
+
+  /** Return the wire trace in chronological order. Empty if disabled. */
+  getWireTrace(): WireTraceEntry[] {
+    if (!this.wireTrace) return [];
+    const out: WireTraceEntry[] = [];
+    for (let i = 0; i < WIRE_TRACE_SIZE; i++) {
+      const idx = (this.wireTraceHead + i) % WIRE_TRACE_SIZE;
+      const e = this.wireTrace[idx];
+      if (e) out.push(e);
+    }
+    return out;
+  }
+
+  /** Return lightweight cumulative counters (always available). */
+  getWireCounters(): { sentFrameCount: number; sentHashCount: number; recvFrameCount: number; recvHashCount: number; lastSendFrame: number; lastRecvFrame: number; bufferedAmount: number; readyState: number } {
+    return {
+      sentFrameCount: this.sentFrameCount,
+      sentHashCount: this.sentHashCount,
+      recvFrameCount: this.recvFrameCount,
+      recvHashCount: this.recvHashCount,
+      lastSendFrame: this.lastSendFrame,
+      lastRecvFrame: this.lastRecvFrame,
+      bufferedAmount: this.ws ? this.ws.bufferedAmount : -1,
+      readyState: this.ws ? this.ws.readyState : -1,
+    };
+  }
+
+  /** Compose the broker URL with the role+session+slot query params the
+   *  controller-ws broker reads on `upgrade`. opts.url stays bare ("just the
+   *  broker host") so reconnects rebuild the full URL idempotently. */
+  private buildSocketUrl(): string {
+    const sep = this.url.includes('?') ? '&' : '?';
+    return `${this.url}${sep}s=${encodeURIComponent(this.session)}&r=peer&slot=${this.localSlot}`;
   }
 
   /** Register a callback to fire after a successful reconnect. The
@@ -296,12 +372,17 @@ export class WebSocketPeer implements Peer {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     const msg: PeerMsgOut = { type: 'frame', frame, slot: this.localSlot, input: encoded };
     this.ws.send(JSON.stringify(msg));
+    this.sentFrameCount++;
+    this.lastSendFrame = frame;
+    this.traceEntry({ t: performance.now(), dir: 'out', kind: 'frame', frame, slot: this.localSlot, input: encoded, bufferedAmount: this.ws.bufferedAmount });
   }
 
   sendHash(frame: number, hash: number): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     const msg: PeerMsgOut = { type: 'hash', frame, slot: this.localSlot, hash };
     this.ws.send(JSON.stringify(msg));
+    this.sentHashCount++;
+    this.traceEntry({ t: performance.now(), dir: 'out', kind: 'hash', frame, slot: this.localSlot, hash, bufferedAmount: this.ws.bufferedAmount });
   }
 
   drainFrames(): FrameDelivery[] {
@@ -336,9 +417,14 @@ export class WebSocketPeer implements Peer {
       case 'frame':
         this.frameInbox.push({ frame: msg.frame, input: msg.input });
         if (msg.frame > this.highestRemoteFrame) this.highestRemoteFrame = msg.frame;
+        this.recvFrameCount++;
+        this.lastRecvFrame = msg.frame;
+        this.traceEntry({ t: performance.now(), dir: 'in', kind: 'frame', frame: msg.frame, slot: msg.slot, input: msg.input });
         return;
       case 'hash':
         this.hashInbox.push({ frame: msg.frame, hash: msg.hash });
+        this.recvHashCount++;
+        this.traceEntry({ t: performance.now(), dir: 'in', kind: 'hash', frame: msg.frame, slot: msg.slot, hash: msg.hash });
         return;
       case 'peer-joined': {
         const wasReconnecting = this.reconnectAttempt > 0 && !this.partnerConnected;
@@ -402,7 +488,7 @@ export class WebSocketPeer implements Peer {
 
   private openSocket(): void {
     try {
-      this.ws = new WebSocket(this.url);
+      this.ws = new WebSocket(this.buildSocketUrl());
     } catch {
       // Construction itself failed (rare). Schedule another attempt.
       this.scheduleReconnect();
