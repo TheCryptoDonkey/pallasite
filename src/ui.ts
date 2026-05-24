@@ -11598,10 +11598,22 @@ export function renderAdminV2Panel(state: GameState): void {
 // auto-IGNITEs both clients off the same session-derived seed so the
 // shared arena lands frame-for-frame.
 
+/** Pick the broker base URL. In production points at the dedicated
+ *  controller-ws subdomain; on localhost / 127.0.0.1 it falls back to
+ *  the local dev broker at `ws://<host>:8788/` so the lobby's invite
+ *  links + peerwatch socket work end-to-end without touching production. */
+function defaultBrokerWsUrl(): string {
+  const h = window.location.hostname;
+  if (h === 'localhost' || h === '127.0.0.1' || h === '0.0.0.0') {
+    return `ws://${h}:8788/`;
+  }
+  return CONTROLLER_WS_ENDPOINT_DEFAULT;
+}
+
 /** Build the broker URL for a given session. The broker's `peer` role
  *  takes `?s=<session>&r=peer` and waits for hello-peer to bind a slot. */
 function buildBrokerPeerUrl(session: string): string {
-  const base = CONTROLLER_WS_ENDPOINT_DEFAULT.replace(/\/$/, '');
+  const base = defaultBrokerWsUrl().replace(/\/$/, '');
   return `${base}/?s=${encodeURIComponent(session)}&r=peer`;
 }
 
@@ -11639,18 +11651,28 @@ export function renderDuelLobby(): void {
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
 
-  const header = el('div', { parent: overlay });
-  header.style.cssText = 'display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;justify-content:center;margin-bottom:8px;';
-  el('h2', { parent: header, text: 'PALLASITE · DUEL' });
-  const tag = el('span', { parent: header, text: 'TWO SHIPS · ONE ARENA' });
-  tag.style.cssText = 'font-size:0.72rem;color:rgba(180,140,255,0.7);letter-spacing:0.18em;font-family:monospace;';
+  // Wordmark logo — same image the title uses, mix-blend-mode:screen so the
+  // baked-in starfield drops out over the page background. Reusing the
+  // title's identity here so the lobby feels like part of the game rather
+  // than a separate plain configuration page.
+  const lobbyLogo = el('img', { parent: overlay });
+  lobbyLogo.className = 'title-logo';
+  (lobbyLogo as HTMLImageElement).src = '/logo.webp';
+  (lobbyLogo as HTMLImageElement).alt = 'PALLASITE';
+  (lobbyLogo as HTMLImageElement).decoding = 'async';
+  lobbyLogo.style.cssText = 'max-width:min(360px, 70vw);width:auto;height:auto;';
+
+  const subtitle = el('p', { parent: overlay, text: '⚔ DUEL ⚔' });
+  subtitle.style.cssText = 'font-size:1.2rem;color:var(--hud-yellow);letter-spacing:0.3em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:-8px 0 4px;';
+
+  const tag = el('p', { parent: overlay, text: 'TWO SHIPS · ONE SKY' });
+  tag.style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.85);letter-spacing:0.22em;margin:0 0 14px;font-family:ui-monospace,monospace;';
 
   const rules = el('p', { parent: overlay });
-  rules.style.cssText = 'margin:4px auto 18px;font-size:0.85rem;color:rgba(220,210,255,0.78);max-width:560px;line-height:1.5;text-align:center;';
+  rules.style.cssText = 'margin:0 auto 18px;font-size:0.85rem;color:rgba(220,210,255,0.78);max-width:560px;line-height:1.55;text-align:center;';
   rules.innerHTML =
-    'Shared seeded arena. Both ships in the same field. Friendly fire is off. ' +
-    'The run ends when both ships are out — higher score wins. No sats, no stakes; ' +
-    'this is friendlies only.';
+    'Shared arena, deterministic seed, frame-perfect lockstep. ' +
+    'Friendly fire off. No sats, no stakes — bragging rights only.';
 
   const tabRow = el('div', { className: 'menu-row', parent: overlay });
   const hostTab = el('button', { className: 'menu-btn', parent: tabRow, text: 'HOST' });
@@ -11659,75 +11681,249 @@ export function renderDuelLobby(): void {
   const panel = el('div', { parent: overlay });
   panel.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:14px;margin:14px auto 4px;max-width:560px;width:100%;';
 
-  let activeTab: 'host' | 'join' = 'host';
+  // Each panel render may attach long-lived resources (the host panel
+  // opens a peerwatch WebSocket so it can show the partner's join state
+  // live). setTab calls the previous render's teardown before clearing
+  // the DOM so we don't leak sockets when the user toggles HOST ↔ JOIN.
+  let teardown: (() => void) | null = null;
   const setTab = (next: 'host' | 'join'): void => {
-    activeTab = next;
     hostTab.className = `menu-btn${next === 'host' ? '' : ' secondary'}`;
     joinTab.className = `menu-btn${next === 'join' ? '' : ' secondary'}`;
+    try { teardown?.(); } catch { /* ignore */ }
+    teardown = null;
     panel.innerHTML = '';
-    if (next === 'host') renderHostPanel(panel);
-    else renderJoinPanel(panel);
+    teardown = next === 'host' ? renderHostPanel(panel) : renderJoinPanel(panel);
   };
   hostTab.addEventListener('click', () => setTab('host'));
   joinTab.addEventListener('click', () => setTab('join'));
 
   const footer = el('div', { className: 'menu-row', parent: overlay });
-  const backBtn = el('button', { className: 'menu-btn secondary', parent: footer, text: 'BACK TO TITLE' });
-  backBtn.addEventListener('click', () => { window.location.assign('/'); });
-  void activeTab;
+  const backBtn = el('button', { className: 'menu-btn secondary', parent: footer, text: '◀ BACK TO TITLE' });
+  backBtn.addEventListener('click', () => {
+    try { teardown?.(); } catch { /* ignore */ }
+    window.location.assign('/');
+  });
 
   setTab('host');
 }
 
-function renderHostPanel(parent: HTMLElement): void {
+function renderHostPanel(parent: HTMLElement): (() => void) {
   const session = generateSessionId();
   // Inviter is slot 0; the partner who scans/pastes lands on slot 1.
   const partnerUrl = buildDuelInviteUrl(session, 1);
   const inviterUrl = buildDuelInviteUrl(session, 0);
   const spectateUrl = buildSpectateUrl(session);
 
-  const info = el('p', { parent });
-  info.style.cssText = 'margin:0;font-size:0.88rem;color:rgba(220,210,255,0.8);line-height:1.5;text-align:center;';
-  info.innerHTML = 'Send the invite to your opponent. Once they open it, tap <strong>READY</strong> below to enter the arena.';
+  // ── Partner-status badge ──────────────────────────────────────────────
+  // Live indicator that flips the moment slot 1 binds at the broker. The
+  // panel opens a peerwatch socket on the same session id; the broker
+  // forwards a peer-joined message when slot 1 connects (and peer-left
+  // when they drop). Without this, the host clicks READY blind, with no
+  // way to know if their partner has even scanned the QR yet.
+  const status = el('div', { parent });
+  status.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px 18px;border-radius:999px;border:1.5px solid rgba(255,216,74,0.45);background:rgba(255,216,74,0.08);';
+  const statusDot = el('span', { parent: status });
+  statusDot.style.cssText = 'width:10px;height:10px;border-radius:50%;background:#ffd84a;box-shadow:0 0 12px rgba(255,216,74,0.85);animation:pallasiteWaitPulse 1.4s ease-in-out infinite;';
+  const statusText = el('span', { parent: status, text: 'WAITING FOR OPPONENT…' });
+  statusText.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:0.95rem;letter-spacing:0.18em;color:#ffd84a;";
+  ensurePulseKeyframes();
 
-  // QR for the partner URL. qrcode lib renders into a <canvas>.
-  const qrCanvas = el('canvas', { parent });
-  qrCanvas.style.cssText = 'background:#fff;padding:10px;border-radius:8px;max-width:240px;width:100%;height:auto;';
-  void QRCode.toCanvas(qrCanvas, partnerUrl, { width: 240, margin: 1 })
+  const setPartnerStatus = (connected: boolean): void => {
+    if (connected) {
+      statusDot.style.background = '#8cffb4';
+      statusDot.style.boxShadow = '0 0 14px rgba(140,255,180,0.9)';
+      statusDot.style.animation = 'none';
+      statusText.textContent = 'OPPONENT CONNECTED ✓';
+      statusText.style.color = '#8cffb4';
+      status.style.borderColor = 'rgba(140,255,180,0.55)';
+      status.style.background = 'rgba(140,255,180,0.1)';
+    } else {
+      statusDot.style.background = '#ffd84a';
+      statusDot.style.boxShadow = '0 0 12px rgba(255,216,74,0.85)';
+      statusDot.style.animation = 'pallasiteWaitPulse 1.4s ease-in-out infinite';
+      statusText.textContent = 'WAITING FOR OPPONENT…';
+      statusText.style.color = '#ffd84a';
+      status.style.borderColor = 'rgba(255,216,74,0.45)';
+      status.style.background = 'rgba(255,216,74,0.08)';
+    }
+  };
+
+  // Open the peerwatch socket. Best-effort: if the broker is down we just
+  // leave the badge in WAITING and let READY work as before. The watch is
+  // a purely informational channel — nothing about the duel flow depends
+  // on it succeeding.
+  const watchUrl = `${defaultBrokerWsUrl().replace(/\/$/, '')}/?s=${encodeURIComponent(session)}&r=peerwatch`;
+  let watchSocket: WebSocket | null = null;
+  try {
+    watchSocket = new WebSocket(watchUrl);
+    watchSocket.addEventListener('message', (ev: MessageEvent) => {
+      try {
+        const msg = JSON.parse(typeof ev.data === 'string' ? ev.data : '') as { type: string; slot?: number };
+        // Only slot 1 binding/leaving matters — slot 0 is the host, which
+        // doesn't bind until READY anyway.
+        if (msg.type === 'peer-joined' && msg.slot === 1) setPartnerStatus(true);
+        else if (msg.type === 'peer-left' && msg.slot === 1) setPartnerStatus(false);
+      } catch { /* malformed — ignore */ }
+    });
+    // Silent failures are OK; the badge just stays in WAITING.
+    watchSocket.addEventListener('error', () => { /* leave badge as-is */ });
+  } catch { /* socket construction itself failed */ }
+
+  // ── INVITE block ──────────────────────────────────────────────────────
+  // Card-shaped section so the invite reads as one unit (QR + session +
+  // copy) rather than three loose rows stacked on top of each other.
+  const inviteCard = lobbyCard(parent, 'INVITE YOUR OPPONENT');
+
+  const info = el('p', { parent: inviteCard });
+  info.style.cssText = 'margin:0;font-size:0.85rem;color:rgba(220,210,255,0.78);line-height:1.45;text-align:center;max-width:420px;';
+  info.textContent = 'Send the link or have them scan the code.';
+
+  const qrCanvas = el('canvas', { parent: inviteCard });
+  qrCanvas.style.cssText = 'background:#fff;padding:10px;border-radius:8px;max-width:220px;width:100%;height:auto;';
+  void QRCode.toCanvas(qrCanvas, partnerUrl, { width: 220, margin: 1 })
     .catch((err: unknown) => { console.warn('[duel] QR render failed:', err); });
 
-  const sessionRow = el('div', { parent });
-  sessionRow.style.cssText = 'display:flex;align-items:center;gap:8px;font-family:monospace;font-size:0.88rem;color:rgba(220,210,255,0.85);';
-  el('span', { parent: sessionRow, text: 'SESSION:' }).style.cssText = 'color:rgba(180,140,255,0.7);letter-spacing:0.1em;';
-  el('span', { parent: sessionRow, text: session.toUpperCase() });
+  const sessionRow = el('div', { parent: inviteCard });
+  sessionRow.style.cssText = 'display:flex;align-items:center;gap:8px;font-family:ui-monospace,monospace;font-size:0.85rem;color:rgba(220,210,255,0.85);';
+  el('span', { parent: sessionRow, text: 'SESSION' }).style.cssText = 'color:rgba(180,140,255,0.7);letter-spacing:0.18em;font-size:0.72rem;';
+  el('span', { parent: sessionRow, text: session.toUpperCase() }).style.cssText = 'letter-spacing:0.08em;color:#ffd84a;';
 
-  const copyRow = el('div', { className: 'menu-row', parent });
-  const copyBtn = el('button', { className: 'menu-btn secondary', parent: copyRow, text: 'COPY INVITE LINK' });
-  copyBtn.addEventListener('click', () => {
-    void navigator.clipboard.writeText(partnerUrl)
-      .then(() => { copyBtn.textContent = 'COPIED ✓'; setTimeout(() => { copyBtn.textContent = 'COPY INVITE LINK'; }, 1500); })
-      .catch(() => { copyBtn.textContent = 'COPY FAILED'; setTimeout(() => { copyBtn.textContent = 'COPY INVITE LINK'; }, 1500); });
-  });
+  const copyBtn = el('button', { className: 'menu-btn secondary', parent: inviteCard, text: 'COPY INVITE LINK' });
+  attachCopyButton(copyBtn, partnerUrl, 'COPY INVITE LINK');
 
-  const readyBtn = el('button', { className: 'menu-btn', parent: copyRow, text: 'READY ⚔' });
+  // ── SPECTATE block ────────────────────────────────────────────────────
+  // Coequal section, not a buried footer. Anyone with the spectate link
+  // can watch the duel live via a read-only peerwatch socket — this is
+  // a genuinely novel feature and deserves visible billing in the lobby
+  // instead of getting tucked under the READY button.
+  const watchCard = lobbyCard(parent, '👁  SHARE THE FIGHT');
+
+  const watchInfo = el('p', { parent: watchCard });
+  watchInfo.style.cssText = 'margin:0;font-size:0.85rem;color:rgba(220,210,255,0.78);line-height:1.45;text-align:center;max-width:420px;';
+  watchInfo.textContent = 'Anyone with this link can watch the duel live, no account needed.';
+
+  const watchBtn = el('button', { className: 'menu-btn secondary', parent: watchCard, text: 'COPY SPECTATE LINK' });
+  attachCopyButton(watchBtn, spectateUrl, 'COPY SPECTATE LINK');
+
+  // ── READY ─────────────────────────────────────────────────────────────
+  // Promoted out of the copy row to its own full-width block so it reads
+  // as THE primary action. Tapping READY here drops the host into the
+  // arena as slot 0; the lockstep buffers their input until slot 1
+  // connects, so it's safe to press immediately even before the partner
+  // has scanned the QR.
+  const readyRow = el('div', { className: 'menu-row', parent });
+  readyRow.style.cssText = 'margin-top:6px;';
+  const readyBtn = el('button', { className: 'menu-btn', parent: readyRow, text: 'READY · ENTER THE ARENA ⚔' });
+  readyBtn.style.cssText = 'font-size:1.05rem;padding:12px 28px;letter-spacing:0.2em;';
   readyBtn.addEventListener('click', () => { window.location.assign(inviterUrl); });
 
-  // ── Spectate-link row (M5). Anyone with this URL can watch the duel.
-  const watchRow = el('div', { className: 'menu-row', parent });
-  watchRow.style.cssText = 'margin-top:4px;';
-  const watchBtn = el('button', { className: 'menu-btn secondary', parent: watchRow, text: '👁  COPY SPECTATE LINK' });
-  watchBtn.addEventListener('click', () => {
-    void navigator.clipboard.writeText(spectateUrl)
-      .then(() => { watchBtn.textContent = 'SPECTATE LINK COPIED ✓'; setTimeout(() => { watchBtn.textContent = '👁  COPY SPECTATE LINK'; }, 1500); })
-      .catch(() => { watchBtn.textContent = 'COPY FAILED'; setTimeout(() => { watchBtn.textContent = '👁  COPY SPECTATE LINK'; }, 1500); });
-  });
+  // ── While-you-wait ────────────────────────────────────────────────────
+  // The host might sit here for tens of seconds waiting for the partner
+  // to scan and join. Give them something to read + a hook back to the
+  // single-player draw (today's daily leader) so the page doesn't feel
+  // dead in the meantime.
+  const tipStripTeardown = lobbyTipStrip(parent);
+  renderDailyLeaderChip(parent);
 
-  const hint = el('p', { parent });
-  hint.style.cssText = 'margin:0;font-size:0.78rem;color:rgba(180,140,255,0.6);text-align:center;line-height:1.5;max-width:420px;';
-  hint.textContent = 'You enter as slot 0. The first to press READY waits in the arena until the partner connects; the lockstep buffers your input until then. Share the spectate link with anyone who wants to watch live.';
+  // Teardown — close the peerwatch socket when the panel is swapped out
+  // (tab toggle or back to title). Without this the socket lingers until
+  // GC + ws timeout, leaving an orphan watcher on the broker for minutes.
+  // Also stops the tip rotation timer.
+  return () => {
+    if (watchSocket) {
+      try { watchSocket.close(); } catch { /* already closed */ }
+      watchSocket = null;
+    }
+    try { tipStripTeardown(); } catch { /* ignore */ }
+  };
 }
 
-function renderJoinPanel(parent: HTMLElement): void {
+/** A purple-tinted strip below the READY button that cycles through a
+ *  short tour of duel-specific tips. Tries to fill the "ok now what"
+ *  dead time between READY-being-pressable and the partner actually
+ *  joining, without adding heavy chrome.
+ *
+ *  Returns a teardown that stops the rotation timer; the panel switch
+ *  in renderDuelLobby calls it so we don't leak intervals across tabs. */
+function lobbyTipStrip(parent: HTMLElement): (() => void) {
+  const TIPS: readonly string[] = [
+    'You enter as slot 0. Lockstep buffers your input until slot 1 joins, so READY is safe to press now.',
+    'Friendly fire is off — bullets pass through your opponent\'s ship.',
+    'No sats, no stakes. Bragging rights only.',
+    'Share the spectate link so anyone can watch the duel live.',
+    'The run ends when both ships are out. Higher score wins.',
+    'Hyperspace doubles as a panic button. Shield burns a cooldown.',
+    'You and your opponent see the EXACT same arena — same seed, same rocks.',
+  ];
+
+  const tip = el('p', { parent });
+  tip.style.cssText = [
+    'margin:6px 0 0', 'min-height:2.2em',
+    'font-size:0.82rem', 'color:rgba(180,140,255,0.7)',
+    'text-align:center', 'line-height:1.5', 'max-width:460px',
+    'transition:opacity 280ms ease-in-out',
+  ].join(';');
+  let idx = 0;
+  tip.textContent = TIPS[0];
+
+  // Start on second tip after the first interval; fade out then in.
+  const interval = window.setInterval(() => {
+    if (!document.body.contains(tip)) {
+      window.clearInterval(interval);
+      return;
+    }
+    tip.style.opacity = '0';
+    window.setTimeout(() => {
+      idx = (idx + 1) % TIPS.length;
+      tip.textContent = TIPS[idx];
+      tip.style.opacity = '1';
+    }, 280);
+  }, 5_000);
+
+  return (): void => { window.clearInterval(interval); };
+}
+
+/** Inject the @keyframes the partner-status badge uses for its "waiting"
+ *  dot pulse. Idempotent — only attaches once per page. Lobby-only style;
+ *  not worth a CSS file. */
+function ensurePulseKeyframes(): void {
+  if (document.getElementById('pallasite-lobby-keyframes')) return;
+  const style = document.createElement('style');
+  style.id = 'pallasite-lobby-keyframes';
+  style.textContent = '@keyframes pallasiteWaitPulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(0.85); } }';
+  document.head.appendChild(style);
+}
+
+/** Card-style container used by the lobby's host panel to group related
+ *  controls (INVITE block, SHARE block). Visual border + label keep the
+ *  three sections distinguishable without burying any of them. */
+function lobbyCard(parent: HTMLElement, label: string): HTMLDivElement {
+  const card = el('div', { parent }) as HTMLDivElement;
+  card.style.cssText = [
+    'display:flex', 'flex-direction:column', 'align-items:center', 'gap:10px',
+    'width:100%', 'max-width:480px',
+    'padding:14px 16px 16px',
+    'background:rgba(15,8,32,0.55)',
+    'border:1px solid rgba(184,144,255,0.25)',
+    'border-radius:10px',
+  ].join(';');
+  const cardLabel = el('p', { parent: card, text: label });
+  cardLabel.style.cssText = 'margin:0 0 2px;font-size:0.72rem;letter-spacing:0.28em;color:rgba(180,140,255,0.85);';
+  return card;
+}
+
+/** Wire a button to copy `text` to the clipboard with success/failure
+ *  feedback. Restores the original label after 1.5s. Used by both the
+ *  invite-link and spectate-link buttons. */
+function attachCopyButton(btn: HTMLButtonElement, text: string, originalLabel: string): void {
+  btn.addEventListener('click', () => {
+    void navigator.clipboard.writeText(text)
+      .then(() => { btn.textContent = 'COPIED ✓'; setTimeout(() => { btn.textContent = originalLabel; }, 1500); })
+      .catch(() => { btn.textContent = 'COPY FAILED'; setTimeout(() => { btn.textContent = originalLabel; }, 1500); });
+  });
+}
+
+function renderJoinPanel(parent: HTMLElement): (() => void) {
   const info = el('p', { parent });
   info.style.cssText = 'margin:0;font-size:0.88rem;color:rgba(220,210,255,0.8);line-height:1.5;text-align:center;max-width:480px;';
   info.innerHTML = 'Scan the QR on your opponent\'s screen, or paste the invite link they sent you.';
@@ -11929,4 +12125,10 @@ function renderJoinPanel(parent: HTMLElement): void {
   const hint = el('p', { parent });
   hint.style.cssText = 'margin:0;font-size:0.78rem;color:rgba(180,140,255,0.6);text-align:center;line-height:1.5;max-width:420px;';
   hint.textContent = 'Live camera works on iOS Safari, Android Chrome, and desktop browsers with a webcam.';
+
+  // Teardown — stop the camera stream if it's still live. Otherwise
+  // toggling tabs (or backing out to title) leaves the camera indicator
+  // lit and the MediaStream pinning the device. stopScan handles both
+  // the rAF loop and the track.stop() calls.
+  return () => { try { stopScan(); } catch { /* ignore */ } };
 }
