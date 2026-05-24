@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx tools/run-harnesses.ts",
     "test:e2e": "tsx tools/run-e2e.ts",
+    "test:lobby": "tsx tools/run-lobby-e2e.ts",
     "test:install": "playwright install chromium",
     "sync-sdk": "if [ -f ../signet-login/dist/signet-login.iife.js ]; then cp ../signet-login/dist/signet-login.iife.js public/signet-login.iife.js; else echo 'sync-sdk: signet-login sibling not present, using committed copy'; fi",
     "gen-backgrounds": "tsx tools/generate-backgrounds.ts",
