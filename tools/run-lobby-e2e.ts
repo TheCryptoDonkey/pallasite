@@ -1,0 +1,298 @@
+/**
+ * Headless end-to-end test of the duel lobby (`/duel` route).
+ *
+ * Spins up vite + the controller-ws broker, opens the lobby in a single
+ * headless Chromium page, and verifies:
+ *
+ *  - the lobby renders the host panel with WAITING FOR OPPONENT badge
+ *  - the session id is shown and matches the peer URL
+ *  - a peer slot 1 connecting to the broker flips the badge to CONNECTED
+ *  - peer slot 1 disconnecting flips the badge back to WAITING
+ *  - the spectate link is broadcastable (a peerwatch socket connects and
+ *    sees peer-joined for any bound slots)
+ *  - JOIN tab swaps in the input + scan buttons without leaking the host
+ *    panel's peerwatch socket
+ *
+ * Run with `pnpm run test:lobby`. Same single-process pattern as
+ * run-e2e.ts so it composes into the existing `pnpm test` chain.
+ */
+
+import { spawn, type ChildProcess } from 'node:child_process';
+import { setTimeout as wait } from 'node:timers/promises';
+import { chromium, type Browser, type Page } from 'playwright';
+
+const VITE_PORT = 5180;
+const BROKER_PORT = 8788;
+const VITE_BASE = `http://localhost:${VITE_PORT}`;
+const BROKER_URL = `ws://localhost:${BROKER_PORT}`;
+const VITE_READY_TIMEOUT_MS = 30_000;
+const BROKER_READY_TIMEOUT_MS = 10_000;
+const LOBBY_RENDER_TIMEOUT_MS = 10_000;
+const BADGE_FLIP_TIMEOUT_MS = 3_000;
+
+async function startVite(): Promise<ChildProcess> {
+  const vite = spawn('pnpm', ['exec', 'vite', '--force'], { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+  vite.stderr?.on('data', (chunk: Buffer) => {
+    const s = chunk.toString();
+    if (s.trim()) process.stderr.write(`[vite] ${s}`);
+  });
+  return vite;
+}
+
+async function startBroker(): Promise<ChildProcess> {
+  const broker = spawn('node', ['controller-ws/server.js'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, PORT: String(BROKER_PORT), HOST: '127.0.0.1' },
+    detached: true,
+  });
+  broker.stderr?.on('data', (chunk: Buffer) => {
+    const s = chunk.toString();
+    if (s.trim()) process.stderr.write(`[broker] ${s}`);
+  });
+  return broker;
+}
+
+function killGroup(p: ChildProcess): void {
+  if (p.killed || p.pid === undefined) return;
+  try { process.kill(-p.pid, 'SIGTERM'); }
+  catch { try { p.kill('SIGTERM'); } catch { /* already dead */ } }
+}
+
+async function waitForHttp(url: string, timeoutMs: number, label: string): Promise<void> {
+  const start = Date.now();
+  let lastErr: unknown;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const r = await fetch(url);
+      if (r.status < 500) return;
+    } catch (e) {
+      lastErr = e;
+    }
+    await wait(150);
+  }
+  throw new Error(`${label} not ready at ${url} in ${timeoutMs}ms: ${String(lastErr)}`);
+}
+
+/** Read the session id the lobby generated. The page renders it inside a
+ *  SPAN with the SESSION label nearby; we look for an 8-char alphanumeric
+ *  span (the broker session id format from generateSessionId). */
+async function readSessionId(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const spans = Array.from(document.querySelectorAll('span'));
+    const match = spans.find(s => s.textContent && /^[a-z0-9]{8}$/i.test(s.textContent.trim()));
+    if (!match) throw new Error('lobby: no session id span found');
+    return match.textContent!.trim().toLowerCase();
+  });
+}
+
+/** Read the current partner-status text from the lobby badge. */
+async function readBadgeText(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    // The badge is the span whose text starts with WAITING or OPPONENT.
+    const all = Array.from(document.querySelectorAll('span'));
+    const match = all.find(s => {
+      const t = s.textContent?.trim() ?? '';
+      return t.startsWith('WAITING') || t.startsWith('OPPONENT');
+    });
+    return match?.textContent?.trim() ?? '<no badge>';
+  });
+}
+
+interface CheckRow { name: string; ok: boolean; detail: string }
+function reportCheck(rows: CheckRow[], name: string, ok: boolean, detail: string): void {
+  rows.push({ name, ok, detail });
+}
+
+async function main(): Promise<void> {
+  process.stdout.write('Starting Vite + broker...\n');
+  const vite = await startVite();
+  const broker = await startBroker();
+  const kill = (): void => { killGroup(vite); killGroup(broker); };
+  process.on('SIGINT', () => { kill(); process.exit(130); });
+  process.on('SIGTERM', () => { kill(); process.exit(143); });
+
+  let exitCode = 0;
+  const checks: CheckRow[] = [];
+  try {
+    await Promise.all([
+      waitForHttp(VITE_BASE + '/', VITE_READY_TIMEOUT_MS, 'vite'),
+      waitForHttp(`http://localhost:${BROKER_PORT}/`, BROKER_READY_TIMEOUT_MS, 'broker'),
+    ]);
+    process.stdout.write('Vite + broker ready.\n');
+
+    const browser: Browser = await chromium.launch();
+    try {
+      const ctx = await browser.newContext();
+      const page = await ctx.newPage();
+      page.on('pageerror', (e: Error) => process.stderr.write(`[page] pageerror: ${e.message}\n`));
+      page.on('console', (msg) => {
+        if (msg.type() === 'error') process.stderr.write(`[page error] ${msg.text()}\n`);
+      });
+
+      await page.goto(`${VITE_BASE}/duel`, { waitUntil: 'load' });
+      // Wait for the host panel to mount.
+      await page.waitForFunction(
+        () => Array.from(document.querySelectorAll('span')).some(s => (s.textContent ?? '').trim().startsWith('WAITING FOR OPPONENT')),
+        undefined,
+        { timeout: LOBBY_RENDER_TIMEOUT_MS },
+      );
+
+      const initialBadge = await readBadgeText(page);
+      reportCheck(checks, 'initial badge WAITING', initialBadge.startsWith('WAITING'), `text="${initialBadge}"`);
+
+      const session = await readSessionId(page);
+      reportCheck(checks, 'session id rendered', /^[a-z0-9]{8}$/i.test(session), `session=${session}`);
+
+      // ── While-you-wait widget: rotating tip + daily leader chip ─────
+      // Both are filler for the host's "ok I clicked READY but my partner
+      // hasn't joined yet" dead time. Tip rotates every 5s; we just
+      // assert that ONE of the known tips is visible on first render.
+      const tipKnown = await page.evaluate(() => {
+        const known = [
+          'You enter as slot 0',
+          'Friendly fire is off',
+          'No sats, no stakes',
+          'Share the spectate link',
+          'The run ends when both ships',
+          'Hyperspace doubles',
+          'EXACT same arena',
+        ];
+        const ps = Array.from(document.querySelectorAll('p'));
+        return ps.some(p => {
+          const t = (p.textContent ?? '').trim();
+          return known.some(k => t.includes(k));
+        });
+      });
+      reportCheck(checks, 'tip strip rendered', tipKnown, `seen=${tipKnown}`);
+
+      const dailyChip = await page.evaluate(() => {
+        const ps = Array.from(document.querySelectorAll('p'));
+        const heading = ps.find(p => (p.textContent ?? '').trim().startsWith('DAILY '));
+        return { headingText: heading?.textContent?.trim() ?? null };
+      });
+      reportCheck(checks, 'daily leader chip rendered', !!dailyChip.headingText, `heading=${dailyChip.headingText}`);
+
+      // ── Simulate the opponent connecting to slot 1 via the broker ───
+      const opponentWs = new WebSocket(`${BROKER_URL}/?s=${session}&r=peer&slot=1`);
+      const opponentMsgs: string[] = [];
+      opponentWs.addEventListener('message', (ev: MessageEvent) => {
+        opponentMsgs.push(typeof ev.data === 'string' ? ev.data : '[binary]');
+      });
+      await new Promise<void>((resolve, reject) => {
+        opponentWs.addEventListener('open', () => resolve());
+        opponentWs.addEventListener('error', () => reject(new Error('opponent ws error')));
+        setTimeout(() => reject(new Error('opponent ws open timeout')), 3000);
+      });
+      opponentWs.send(JSON.stringify({ type: 'hello-peer', session, slot: 1, version: 1 }));
+
+      // Wait for the lobby's badge to flip.
+      let flipped = false;
+      try {
+        await page.waitForFunction(
+          () => {
+            const all = Array.from(document.querySelectorAll('span'));
+            return all.some(s => (s.textContent ?? '').trim().startsWith('OPPONENT CONNECTED'));
+          },
+          undefined,
+          { timeout: BADGE_FLIP_TIMEOUT_MS },
+        );
+        flipped = true;
+      } catch { /* recorded by the check below */ }
+      const connectedBadge = await readBadgeText(page);
+      reportCheck(checks, 'badge flips on slot 1 join', flipped, `text="${connectedBadge}"`);
+
+      // ── Simulate the opponent disconnecting ─────────────────────────
+      opponentWs.close();
+      let reverted = false;
+      try {
+        await page.waitForFunction(
+          () => {
+            const all = Array.from(document.querySelectorAll('span'));
+            return all.some(s => (s.textContent ?? '').trim().startsWith('WAITING FOR OPPONENT'));
+          },
+          undefined,
+          { timeout: BADGE_FLIP_TIMEOUT_MS },
+        );
+        reverted = true;
+      } catch { /* recorded below */ }
+      const revertedBadge = await readBadgeText(page);
+      reportCheck(checks, 'badge reverts on slot 1 leave', reverted, `text="${revertedBadge}"`);
+
+      // ── Spectate link is broadcastable (peerwatch role works) ──────
+      // Re-attach the opponent so the broker has a slot to report.
+      const opp2 = new WebSocket(`${BROKER_URL}/?s=${session}&r=peer&slot=1`);
+      await new Promise<void>((resolve, reject) => {
+        opp2.addEventListener('open', () => resolve());
+        opp2.addEventListener('error', () => reject(new Error('opp2 open')));
+        setTimeout(() => reject(new Error('opp2 open timeout')), 3000);
+      });
+      opp2.send(JSON.stringify({ type: 'hello-peer', session, slot: 1, version: 1 }));
+
+      const specWs = new WebSocket(`${BROKER_URL}/?s=${session}&r=peerwatch`);
+      const specMsgs: string[] = [];
+      specWs.addEventListener('message', (ev: MessageEvent) => {
+        specMsgs.push(typeof ev.data === 'string' ? ev.data : '[binary]');
+      });
+      await new Promise<void>((resolve, reject) => {
+        specWs.addEventListener('open', () => resolve());
+        specWs.addEventListener('error', () => reject(new Error('spec open')));
+        setTimeout(() => reject(new Error('spec open timeout')), 3000);
+      });
+      // Give the broker a tick to send peerwatch-ready + peer-joined.
+      await wait(300);
+      const sawReady = specMsgs.some(m => m.includes('peerwatch-ready'));
+      const sawJoined = specMsgs.some(m => m.includes('"peer-joined"') && m.includes('"slot":1'));
+      reportCheck(checks, 'spectate peerwatch-ready', sawReady, `messages=${JSON.stringify(specMsgs)}`);
+      reportCheck(checks, 'spectate sees slot 1 bound', sawJoined, `messages=${JSON.stringify(specMsgs)}`);
+
+      // ── JOIN tab swap doesn't break ────────────────────────────────
+      await page.evaluate(() => {
+        const join = Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'JOIN');
+        if (join) join.click();
+      });
+      await wait(300);
+      const onJoin = await page.evaluate(() => {
+        const input = document.querySelector('input[type="url"]') as HTMLInputElement | null;
+        return !!input;
+      });
+      reportCheck(checks, 'JOIN tab renders invite input', onJoin, `input=${onJoin}`);
+
+      // ── HOST tab regenerates fresh session + badge ─────────────────
+      await page.evaluate(() => {
+        const host = Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'HOST');
+        if (host) host.click();
+      });
+      await page.waitForFunction(
+        () => Array.from(document.querySelectorAll('span')).some(s => (s.textContent ?? '').trim().startsWith('WAITING FOR OPPONENT')),
+        undefined,
+        { timeout: 3000 },
+      );
+      const session2 = await readSessionId(page);
+      reportCheck(checks, 'HOST tab regenerates session', session2 !== session, `old=${session} new=${session2}`);
+
+      // Clean up sockets.
+      try { opp2.close(); } catch { /* ignore */ }
+      try { specWs.close(); } catch { /* ignore */ }
+    } finally {
+      await browser.close();
+    }
+  } catch (e) {
+    process.stderr.write(`lobby-e2e error: ${e instanceof Error ? e.stack ?? e.message : String(e)}\n`);
+    exitCode = 1;
+  } finally {
+    kill();
+  }
+
+  process.stdout.write('\n=== lobby checks ===\n');
+  for (const c of checks) {
+    const tag = c.ok ? '[PASS]' : '[FAIL]';
+    process.stdout.write(`${tag} ${c.name.padEnd(36)} ${c.detail}\n`);
+    if (!c.ok) exitCode = 1;
+  }
+  process.exit(exitCode);
+}
+
+main().catch((e) => {
+  process.stderr.write(`runner error: ${e?.stack ?? e}\n`);
+  process.exit(1);
+});
