@@ -12,7 +12,7 @@ import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './see
 import { render, preloadBackground, setRenderMode, getRenderModeKind, drawAsciiHud } from './render.js';
 import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderDuelLobby, renderDuelConnecting, simulateStart } from './ui.js';
 import { postHeartbeat } from './faucet.js';
-import { currentMode, setStoredMode, isStoredDefenderMode } from './mode.js';
+import { currentMode, setStoredMode, getStoredMode, isStoredDefenderMode } from './mode.js';
 import {
   startStreamSession,
   publishStreamFrame,
@@ -613,6 +613,15 @@ window.addEventListener('keydown', e => {
   // clicking IGNITE.
   if (e.code === 'Enter' && state.phase === 'title' && !focusedIsButton && !document.querySelector('[data-onboarding="open"]')) {
     void audio.unlockAudio();
+    // DUEL is a title-only meta-mode that routes to the dedicated lobby
+    // instead of starting a solo run. Mirror the click handler in
+    // renderTitle's IGNITE button so Enter and the on-screen button stay
+    // consistent. Done BEFORE the difficulty lock + gateBehindOnboarding
+    // because none of that applies to the lobby flow.
+    if (getStoredMode() === 'duel' && !peer && !spectator) {
+      window.location.assign('/duel');
+      return;
+    }
     lockInDifficulty(getStoredDifficulty());
     gateBehindOnboarding(() => {
       setDailySeed(getStoredDailyPref() ? todayUTC() : null);

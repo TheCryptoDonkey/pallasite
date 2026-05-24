@@ -1,5 +1,5 @@
 /**
- * Run mode: campaign, drift, arena, sanctum, plus a bossrush stub.
+ * Run mode: campaign, drift, arena, sanctum, duel, plus a bossrush stub.
  *
  * Selection persists in localStorage and is locked in at startGame, mirroring
  * the difficulty pattern. Mid-run mode changes are not supported.
@@ -15,9 +15,15 @@
  *             600b.pallasite.app) made selectable from the main site. Council
  *             roster + the-cult bed + textured fillers. Same gameplay as
  *             flavour=600bn wave 1 but reachable from pallasite.app via Mode.
+ * - duel:     meta-mode that routes IGNITE to the /duel lobby instead of
+ *             starting a solo run. lockInMode normalises it back to 'campaign'
+ *             so the gameplay code (currentMode, isEndlessMode, etc.) never
+ *             observes it — the stored value just remembers the player's
+ *             choice between sessions and drives the title-screen IGNITE
+ *             label + navigation.
  */
 
-export type RunMode = 'campaign' | 'drift' | 'bossrush' | 'arena' | 'sanctum' | 'defender';
+export type RunMode = 'campaign' | 'drift' | 'bossrush' | 'arena' | 'sanctum' | 'defender' | 'duel';
 
 const STORAGE_KEY = 'pallasite:mode';
 
@@ -29,7 +35,7 @@ export function getStoredMode(): RunMode {
     // Defender out into its own game, so a stored 'defender' from an
     // earlier build is normalised back to 'campaign'. The ?defenderMode=1
     // URL flag in main.ts is unaffected — it doesn't read this storage.
-    if (v === 'campaign' || v === 'drift' || v === 'bossrush' || v === 'arena' || v === 'sanctum') return v;
+    if (v === 'campaign' || v === 'drift' || v === 'bossrush' || v === 'arena' || v === 'sanctum' || v === 'duel') return v;
     if (v === 'defender') {
       try { localStorage.setItem(STORAGE_KEY, 'campaign'); } catch { /* ignore */ }
       return 'campaign';
@@ -45,7 +51,10 @@ export function setStoredMode(m: RunMode): void {
 let active: RunMode = 'campaign';
 
 export function lockInMode(m: RunMode): void {
-  active = m;
+  // 'duel' is a title-screen meta-mode that routes to /duel — gameplay code
+  // should never see it as the active mode. The duel lobby + peer arena run
+  // on campaign rules; normalise here so currentMode() callers stay simple.
+  active = m === 'duel' ? 'campaign' : m;
 }
 
 export function currentMode(): RunMode {
@@ -105,4 +114,5 @@ export const MODE_LIST: readonly ModeInfo[] = [
   { id: 'bossrush', label: 'BOSS RUSH', hint: 'Boss after boss. Coming soon.',                           ready: false },
   { id: 'arena',    label: 'ARENA',    hint: 'No wrap. Hard walls that close in.',                       ready: true },
   { id: 'sanctum',  label: 'SANCTUM',  hint: '600bn Sanctum — Council roster, the-cult bed, endless.',   ready: true },
+  { id: 'duel',     label: 'DUEL',     hint: 'Two ships, one arena. Host or join over the broker.',      ready: true },
 ];
