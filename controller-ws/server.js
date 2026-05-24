@@ -47,9 +47,13 @@ const ORPHAN_TIMEOUT_MS = 5 * 60 * 1000;
 const SESSION_RE = /^[a-z0-9_-]{4,128}$/i;
 /** Pair-role: 1-to-1 phone↔host controller. Stream-role: 1-to-many
  *  publisher↔subscribers for live frame broadcast. Peer-role: two duel
- *  clients sharing one arena, slotted 0 and 1. All share session-id
- *  matching; multiplicity rules differ per role. */
-const ROLES = new Set(['host', 'phone', 'publish', 'subscribe', 'peer']);
+ *  clients sharing one arena, slotted 0 and 1. Peerwatch-role: read-only
+ *  observers of a duel session; receive peer-joined/peer-left lifecycle
+ *  events plus a verbatim copy of every frame/hash forwarded between the
+ *  two duel peers. Used by spectate links and by the duel lobby's host
+ *  panel to know the moment slot 1 binds. All share session-id matching;
+ *  multiplicity rules differ per role. */
+const ROLES = new Set(['host', 'phone', 'publish', 'subscribe', 'peer', 'peerwatch']);
 
 /** Map sessionId → { host?: ws, phone?: ws, createdAt }. */
 const sessions = new Map();
@@ -93,14 +97,14 @@ server.on('upgrade', (req, socket, head) => {
 function attach(ws, session, role, peerSlot = -1) {
   let slot = sessions.get(session);
   if (!slot) {
-    slot = { host: undefined, phone: undefined, publish: undefined, subscribe: new Set(), peers: [undefined, undefined], createdAt: Date.now() };
+    slot = { host: undefined, phone: undefined, publish: undefined, subscribe: new Set(), peers: [undefined, undefined], watchers: new Set(), createdAt: Date.now() };
     sessions.set(session, slot);
     // Orphan sweep so unattached sessions don't leak the map slot.
     setTimeout(() => {
       const current = sessions.get(session);
       if (!current) return;
       const empty = !current.host && !current.phone && !current.publish && current.subscribe.size === 0
-                 && !current.peers[0] && !current.peers[1];
+                 && !current.peers[0] && !current.peers[1] && current.watchers.size === 0;
       const pairIncomplete = !current.host || !current.phone;
       const streamIncomplete = !current.publish && current.subscribe.size === 0;
       const peersIncomplete = !current.peers[0] || !current.peers[1];
@@ -110,6 +114,7 @@ function attach(ws, session, role, peerSlot = -1) {
         if (current.publish) try { current.publish.close(); } catch {}
         for (const s of current.subscribe) try { s.close(); } catch {}
         for (const p of current.peers) if (p) try { p.close(); } catch {}
+        for (const w of current.watchers) try { w.close(); } catch {}
         sessions.delete(session);
       }
     }, ORPHAN_TIMEOUT_MS);
@@ -119,6 +124,9 @@ function attach(ws, session, role, peerSlot = -1) {
   //   host/phone/publish: singleton — new connection replaces old.
   //   subscribe:          many — added to a Set.
   //   peer:               two slots (0, 1). Third joiner is rejected.
+  //   peerwatch:          many — added to a Set. Read-only observer of the
+  //                       duel; receives peer-joined/peer-left + a copy of
+  //                       every forwarded peer message.
   if (role === 'peer') {
     if (slot.peers[peerSlot]) {
       // Slot already taken — reject as a third joiner.
@@ -129,6 +137,20 @@ function attach(ws, session, role, peerSlot = -1) {
     slot.peers[peerSlot] = ws;
   } else if (role === 'subscribe') {
     slot.subscribe.add(ws);
+  } else if (role === 'peerwatch') {
+    slot.watchers.add(ws);
+    // Greet the watcher with a ready ack and a peer-joined for each
+    // currently-bound slot so they pick up the state immediately rather
+    // than waiting for the next bind event. Two separate messages so the
+    // client can use one schema (peer-joined per slot) regardless of
+    // whether the slot bound before or after they connected.
+    try { ws.send(JSON.stringify({ type: 'peerwatch-ready' })); } catch {}
+    for (let i = 0; i < 2; i++) {
+      const p = slot.peers[i];
+      if (p && p.readyState === p.OPEN) {
+        try { ws.send(JSON.stringify({ type: 'peer-joined', slot: i })); } catch {}
+      }
+    }
   } else {
     if (slot[role]) {
       try { slot[role].close(1000, 'replaced'); } catch {}
@@ -173,6 +195,17 @@ function attach(ws, session, role, peerSlot = -1) {
         const otherState = other ? other.readyState : 'no-peer';
         console.log(`[peer-DROP] from=${peerSlot} to=${peerSlot === 0 ? 1 : 0} otherState=${otherState} msg=${preview}`);
       }
+      // Fan out to peerwatch sockets. Read-only: watchers don't see each
+      // other's traffic; they observe the duel only. Send failures are
+      // swallowed — the close handler will sweep dead watchers, and a
+      // hiccup on one watcher must not stall the peer-to-peer forward.
+      for (const w of slot.watchers) {
+        if (w.readyState !== w.OPEN) continue;
+        try { w.send(data, { binary: isBinary }); } catch {}
+      }
+    } else if (role === 'peerwatch') {
+      // Watchers are read-only. Silently drop anything they try to send so
+      // a misbehaving spectator can't drive either peer's input.
     }
   });
 
@@ -181,12 +214,14 @@ function attach(ws, session, role, peerSlot = -1) {
       if (slot.peers[peerSlot] === ws) slot.peers[peerSlot] = undefined;
     } else if (role === 'subscribe') {
       slot.subscribe.delete(ws);
+    } else if (role === 'peerwatch') {
+      slot.watchers.delete(ws);
     } else if (slot[role] === ws) {
       slot[role] = undefined;
     }
     notifyPeerState(slot, role, peerSlot);
     const empty = !slot.host && !slot.phone && !slot.publish && slot.subscribe.size === 0
-               && !slot.peers[0] && !slot.peers[1];
+               && !slot.peers[0] && !slot.peers[1] && slot.watchers.size === 0;
     if (empty) sessions.delete(session);
   };
   ws.on('close', closeHandler);
@@ -211,6 +246,21 @@ function notifyPeerState(slot, changedRole, peerSlot = -1) {
       const survivor = aUp ? a : (bUp ? b : null);
       if (survivor && peerSlot >= 0) {
         try { survivor.send(JSON.stringify({ type: 'peer-left', slot: peerSlot, reason: 'closed' })); } catch {}
+      }
+    }
+    // Watchers see EACH slot's bind/unbind regardless of the other slot's
+    // state — that's how the duel lobby's host panel knows the moment
+    // slot 1 connects (before slot 0 has even pressed READY). One message
+    // per change, derived from `peerSlot` (which slot changed) and whether
+    // it's currently bound after the change.
+    if (peerSlot >= 0 && slot.watchers.size > 0) {
+      const nowBound = peerSlot === 0 ? aUp : bUp;
+      const watcherMsg = JSON.stringify(nowBound
+        ? { type: 'peer-joined', slot: peerSlot }
+        : { type: 'peer-left', slot: peerSlot, reason: 'closed' });
+      for (const w of slot.watchers) {
+        if (w.readyState !== w.OPEN) continue;
+        try { w.send(watcherMsg); } catch {}
       }
     }
     return;
