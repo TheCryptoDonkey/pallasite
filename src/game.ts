@@ -182,6 +182,11 @@ export function nextStreamEntityId(): number {
   nextEntityId = (nextEntityId + 1) % 1_000_000;
   return nextEntityId;
 }
+/** Read/write the module-global entity ID counter. Used by the peer harness
+ *  to save and restore per-sim state between two interleaved in-process sims
+ *  (a real two-client deployment has one counter per tab and never collides). */
+export function getEntityIdCounter(): number { return nextEntityId; }
+export function setEntityIdCounter(n: number): void { nextEntityId = n; }
 
 function makeShip(): Ship {
   return {

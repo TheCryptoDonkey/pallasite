@@ -49,6 +49,57 @@ const canvas = document.getElementById('game') as HTMLCanvasElement;
 // main canvas via fit() below.
 const overlay3d = document.getElementById('game3d') as HTMLCanvasElement | null;
 const state: GameState = makeInitialState();
+// Test hook: the headless E2E runner reads live sim state (frame, phase,
+// players) here without scraping the DOM. Production code never references it.
+(window as unknown as { __pallasiteState?: GameState }).__pallasiteState = state;
+// In peer mode, p.keys is clobbered by every applyPlayerInput from the
+// delayed input log, so it doesn't reflect the live keyboard. localKeys is
+// the input-source mirror that the lockstep sample reads from; exposing it
+// for the E2E runner so the input-capture check looks at the right field.
+const __testHooks = {
+  // Filled in below once localKeys is declared.
+  localKeysRef: null as Record<string, boolean>[] | null,
+  // Filled in once the peer is constructed (duel mode only). Returns the
+  // wire trace + cumulative counters captured by WebSocketPeer; null in
+  // solo / couch / spectate. Used by tools/run-e2e.ts to dump the wire on
+  // failure so we can bisect where input messages go missing.
+  peerRef: null as { getWireTrace?: () => unknown[]; getWireCounters?: () => unknown } | null,
+};
+(window as unknown as { __pallasiteTestHooks?: typeof __testHooks }).__pallasiteTestHooks = __testHooks;
+// Wire trace is opt-in (heavyweight ring buffer of every send/receive).
+// Set by ?wiretrace=1 in the URL; checked by WebSocketPeer.connect().
+const wireTraceEnabled = new URLSearchParams(window.location.search).has('wiretrace');
+if (wireTraceEnabled) {
+  (window as unknown as { __pallasiteWireTrace?: number }).__pallasiteWireTrace = 1;
+}
+// Apply trace: parallel arrays recording what the lockstep loop ACTUALLY
+// consumed at each apply step, alongside the wall-clock time of the apply.
+// Three separate arrays so each entry costs 12 bytes instead of a JS object.
+// Capacity 4096 covers 2048 frames × 2 slots = ~34s at 60Hz.
+const APPLY_TRACE_CAP = 4096;
+const applyTraceReadFrame: Int32Array | null = wireTraceEnabled ? new Int32Array(APPLY_TRACE_CAP) : null;
+const applyTraceSlot: Int8Array | null = wireTraceEnabled ? new Int8Array(APPLY_TRACE_CAP) : null;
+const applyTraceEncoded: Int32Array | null = wireTraceEnabled ? new Int32Array(APPLY_TRACE_CAP) : null;
+const applyTraceTime: Float64Array | null = wireTraceEnabled ? new Float64Array(APPLY_TRACE_CAP) : null;
+let applyTraceHead = 0;
+let applyTraceCount = 0;
+(window as unknown as { __pallasiteApplyTrace?: () => unknown }).__pallasiteApplyTrace = () => {
+  if (!applyTraceReadFrame || !applyTraceSlot || !applyTraceEncoded || !applyTraceTime) return [];
+  const out: { readFrame: number; slot: number; encoded: number; t: number }[] = [];
+  const len = Math.min(applyTraceCount, APPLY_TRACE_CAP);
+  // Walk from oldest to newest.
+  const start = applyTraceCount > APPLY_TRACE_CAP ? applyTraceHead : 0;
+  for (let i = 0; i < len; i++) {
+    const idx = (start + i) % APPLY_TRACE_CAP;
+    out.push({
+      readFrame: applyTraceReadFrame[idx],
+      slot: applyTraceSlot[idx],
+      encoded: applyTraceEncoded[idx],
+      t: applyTraceTime[idx],
+    });
+  }
+  return out;
+};
 
 /** True when ?couch=1 is present — enables two-player local co-op. */
 const couchMode = new URLSearchParams(window.location.search).has('couch');
@@ -131,6 +182,7 @@ let peerDesyncFrame = -1;
  *  user's current input survives every sim tick. Solo and couch pass
  *  `undefined` to samplePlayerInput and read directly off `p.keys`. */
 const localKeys: Record<string, boolean>[] = [{}, {}];
+__testHooks.localKeysRef = localKeys;
 /** Per-slot joystick-state mirror. Same rationale as localKeys: peer
  *  mode's apply step writes p.targetHeading / p.thrustOverride from the
  *  delayed input log every sim tick, clobbering the joystick's live
@@ -881,6 +933,20 @@ function loop(now: number): void {
           if (input.hyperspaceEdge) tryHyperspace(state, state.elapsed, state.players[i]);
           if (input.shieldEdge) tryActivateShield(state, state.elapsed, state.players[i]);
         }
+        // E2E diagnostic: when wire-trace is on, record what the apply step
+        // actually consumed for each slot at each frame. Lets the runner see
+        // whether the remote slot's input was 0 at apply time (suggesting
+        // the wire frame arrived too late) or non-zero (suggesting the bug
+        // is elsewhere). Keep this off the hot path when not in wire-trace
+        // mode -- the ring write is a few words, not free.
+        if (applyTraceReadFrame && applyTraceSlot && applyTraceEncoded && applyTraceTime) {
+          applyTraceReadFrame[applyTraceHead] = readFrame;
+          applyTraceSlot[applyTraceHead] = i;
+          applyTraceEncoded[applyTraceHead] = encoded;
+          applyTraceTime[applyTraceHead] = performance.now();
+          applyTraceHead = (applyTraceHead + 1) % APPLY_TRACE_CAP;
+          applyTraceCount++;
+        }
       }
     }
     updateGame(state);
@@ -1223,6 +1289,10 @@ async function boot(): Promise<void> {
   // refill the gap.
   if (mpMode && mpUrl && mpSession) {
     peer = new WebSocketPeer();
+    // Expose the peer to the E2E test hooks so the runner can pull the
+    // wire trace + counters on failure. Type-only cast because the Peer
+    // interface intentionally omits the diagnostic methods.
+    __testHooks.peerRef = peer as unknown as { getWireTrace?: () => unknown[]; getWireCounters?: () => unknown };
     // Surface a "Connecting" placeholder so the player isn't staring at a
     // blank canvas while peer.connect() blocks on the partner's arrival.
     // simulateStart's clearOverlay() removes this once peer-joined fires.
