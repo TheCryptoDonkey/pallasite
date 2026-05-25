@@ -75,6 +75,13 @@ import { getVisualStyle, isWebGLOverlayReady } from './visual-style.js';
   asteroidTier: getVisualStyle('asteroid'),
   webglOverlayReady: isWebGLOverlayReady(),
 });
+// E2E hook: surface peerActive so tests can verify the spectator /
+// duel handshake is actually engaged before asserting on lockstep
+// behaviour. Polled, not pushed, to keep the hot path clean.
+Object.defineProperty(window, '__pallasitePeerActive', {
+  configurable: true, enumerable: false,
+  get: () => isPeerActive(),
+});
 // Desync-hunter hook: dump the input log around a given frame so the
 // hunter can see what each peer actually received via the wire for each
 // slot. Reads inputLog (declared further below) lazily so the closure
@@ -888,6 +895,26 @@ function loop(now: number): void {
   // Bank real time, clamped, then spend it one fixed sim step at a time.
   stepAccumulator += Math.min(MAX_CATCHUP_STEPS * FIXED_STEP_S, (now - lastFrame) / 1000);
   lastFrame = now;
+  // Spectator catch-up: a late-joining peerwatch receives a long replay
+  // burst (up to PEER_FRAME_BUFFER frames) from the broker, but the
+  // real-time stepAccumulator above can only afford one or two sim
+  // steps per rAF, so it'd never close the gap. When the spectator's
+  // own state.frame is well behind the latest input it's holding, top
+  // up the accumulator with extra steps so the inner while-loop can
+  // walk multiple frames per rAF until live. Capped so a slow client
+  // doesn't burn the rest of the frame budget rendering. Has no effect
+  // on solo or duel (`spectator` is null), so the hot path stays
+  // identical for non-spectate sessions.
+  if (spectator && inputLog) {
+    const latest = Math.min(inputLog.latest(0), inputLog.latest(1));
+    const behind = latest - state.frame;
+    if (behind > 30) {
+      // Up to 4 extra sim steps per rAF — 5× live rate. 540 frames of
+      // lag burns down in ~2.5s at 60Hz, well inside any realistic
+      // PEER_STALL_DISCONNECT window.
+      stepAccumulator += 4 * FIXED_STEP_S;
+    }
+  }
   // Peer stall accounting: capture the sim frame before the inner loop so
   // we can tell, after it runs, whether ANY frame actually advanced. Only
   // meaningful when a peer is wired; solo and couch skip the bookkeeping
@@ -923,7 +950,14 @@ function loop(now: number): void {
     // requires a canonical input source.
     if (state.hitStopSteps === 0 && peerActive) {
       if (!inputLog || inputLog.players !== state.players.length) {
-        inputLog = new InputLog(state.players.length);
+        // Spectators may receive a long history replay from the broker
+        // on attach (up to PEER_FRAME_BUFFER frames, see controller-ws),
+        // which can far exceed the default 256-slot ring. Sizing the
+        // ring to 4096 covers the broker's 3000-frame buffer with
+        // headroom; duel/couch peers still effectively use only ~50
+        // slots (PEER_INPUT_DELAY=5 × a couple of jitter frames) so
+        // the extra capacity is essentially free.
+        inputLog = new InputLog(state.players.length, 4096);
       }
       // 1) Drain remote frames into the log FIRST so the stall check sees
       //    everything currently available. Duel: the OTHER slot only.

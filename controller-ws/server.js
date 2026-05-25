@@ -83,6 +83,13 @@ const MAX_PHONES_PER_SESSION = parseInt(process.env.MAX_PHONES ?? '8', 10);
  *  buffer is above this. Lockstep payloads are ~50 bytes; this only fires
  *  on a stuck or much-slower peer. */
 const PEER_BACKPRESSURE_BYTES = parseInt(process.env.PEER_BACKPRESSURE_BYTES ?? '65536', 10);
+/** Per peer-mode session, how many recent `frame` messages to buffer
+ *  for replay to late-joining peerwatchers. Each message is ~50 bytes;
+ *  3000 ≈ 150KB per active session, covers ~25s of duel @ 60Hz × 2
+ *  slots. The whole window must include frame 0 — a spectator that
+ *  joins after the buffer has wrapped loses the lockstep prefix and
+ *  its sim never advances past PEER_INPUT_DELAY (=5). */
+const PEER_FRAME_BUFFER = parseInt(process.env.PEER_FRAME_BUFFER ?? '3000', 10);
 
 // SESSION_RE accepts controller pairing codes (4 letters) AND the
 // longer stream ids used by the live frame relay (player master pubkey,
@@ -149,6 +156,14 @@ function attach(ws, session, role, wantsMulti) {
       // either peer sends is fanned out to every entry here. Watchers
       // never speak; their `message` handler is a no-op.
       peerWatchers: new Set(),
+      // Recent peer frame messages, kept so a late-joining peerwatcher
+      // can replay missed frames and pass its lockstep stall check at
+      // state.frame=PEER_INPUT_DELAY (5). Sized for ~25 seconds of duel
+      // at 60Hz (1500 frames × 2 slots = 3000 entries). The lockstep
+      // sim cannot recover from missing the FIRST few frames, so the
+      // buffer must include frame 0 to be useful — purged only on
+      // session orphan sweep / broker restart.
+      recentFrames: [],
       createdAt: Date.now(),
     };
     sessions.set(session, slot);
@@ -291,6 +306,15 @@ function attachPeerWatcher(slot, session, ws) {
     for (let i = 0; i < 2; i++) {
       if (slot.peers[i]) ws.send(JSON.stringify({ type: 'peer-joined', slot: i }));
     }
+    // Replay buffered frame history so the spectator can pass its
+    // lockstep stall check at frame 5. Without this, a peerwatch that
+    // attaches even one frame after either peer's first send loses
+    // those inputs forever and its sim stalls at PEER_INPUT_DELAY.
+    // Order preserved (buffer is a FIFO ring) so the deterministic
+    // ordering the spectator's lockstep depends on stays intact.
+    for (const payload of slot.recentFrames) {
+      ws.send(payload);
+    }
   } catch { /* socket may already be closed */ }
 
   // Silently drop everything the watcher sends. No "they accidentally
@@ -350,6 +374,19 @@ function attachPeer(slot, session, ws) {
           peerDropped++;
         } else {
           try { target.send(payload, { binary: false }); } catch {}
+        }
+      }
+      // Buffer frames (only — not hashes) so a late-joining peerwatch
+      // can replay them on attach. Hashes are 1/60 the rate and a
+      // late spectator can resync from the next live one. Cap at
+      // PEER_FRAME_BUFFER entries; oldest dropped first. Spectators
+      // joining after the buffer has wrapped won't see frames 0..N,
+      // which means their lockstep sim is dead-on-arrival — same as
+      // pre-buffer behaviour, but with a generous grace window.
+      if (msg.type === 'frame') {
+        slot.recentFrames.push(payload);
+        if (slot.recentFrames.length > PEER_FRAME_BUFFER) {
+          slot.recentFrames.shift();
         }
       }
       // Fan out the same payload to every peerwatch socket on this
