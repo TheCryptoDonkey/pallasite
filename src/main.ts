@@ -1162,15 +1162,18 @@ function loop(now: number): void {
     delete document.body.dataset.peerDesync;
   }
 
-  // Peer-mode render throttle: render at ~30Hz instead of every rAF
-  // when in lockstep, freeing the main thread for WS event handling.
-  // Production diagnostics showed render work was starving the WS
-  // event loop — broker forwarded all frames but the browser's
-  // onmessage callback couldn't keep up, dropping the game into the
+  // Peer-mode render gate: in lockstep, render ONLY on rAFs where
+  // state.frame actually advanced. Stalled rAFs (waiting for the
+  // partner's input) get no render — the screen doesn't need updating
+  // because nothing in the sim changed, and the saved main-thread time
+  // goes to the WebSocket event handler. Production diagnostics showed
+  // render work was starving onmessage, dropping the game into the
   // watchdog-tears-down-the-connection failure mode after ~10 frames.
-  // Halving render rate is a substantial main-thread budget recovery
-  // without making the game feel laggy at duel pace.
-  if (!isPeerActive() || (now - lastRenderTime) >= 1000 / 33) {
+  // Cap at 33Hz max even when advancing, to keep some headroom even
+  // when the sim is running smoothly.
+  const peerStalled = isPeerActive() && state.frame === frameBeforeStep;
+  const renderDue = !isPeerActive() || (!peerStalled && (now - lastRenderTime) >= 1000 / 33);
+  if (renderDue) {
     render(canvas, state, now);
     applyThemeFrame(canvas, now);
     if (getTheme() === 'ascii') drawAsciiHud(canvas, state);
