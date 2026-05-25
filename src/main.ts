@@ -999,7 +999,6 @@ function loop(now: number): void {
           ? [mpSlot]
           : (state.players.length >= 2 ? [0, 1] : [0]);
       for (const i of localSampleSlots) {
-        if (inputLog.get(state.frame, i) >= 0) continue;
         // Peer mode reads from the localKeys + localHeading + localThrust
         // mirrors so apply's delayed overwrite of `players[i]` cannot
         // clobber the live joystick / keyboard input. Solo and couch
