@@ -51,7 +51,7 @@ import {
   POWERUP_CONFIG, POWERUP_TTL_MS, POWERUP_RADIUS,
   RAPID_COOLDOWN_MUL, SATBOOST_MUL,
   TRIDENT_SPREAD, MAGNET_MAX_ACCEL, MAGNET_RANGE,
-  WAVE_SAT_BUDGET,
+  satBudgetForWave,
 } from './types.js';
 import type { PowerUp, PowerUpType } from './types.js';
 import * as audio from './audio.js';
@@ -2102,11 +2102,18 @@ function rollPickupKind(s: GameState, asteroidType?: AsteroidType, size?: Astero
   // Large + medium asteroid breaks never roll for sat — gate is "drive to
   // the smalls". Mines + UFOs pass with size === undefined so they fall
   // through this guard.
-  if (size !== undefined && size !== 'small') return 'dust';
-  // Per-wave sat budget. Once WAVE_SAT_BUDGET sat-kind rolls have landed
-  // this wave, everything else is dust. Keeps a full 25-wave run in the
-  // ~25 sats ballpark the operator budget targets.
-  if (s.satRollsThisWave >= WAVE_SAT_BUDGET) return 'dust';
+  //
+  // WAVE 1 EXCEPTION: relax the gate so the cold-open actually rains
+  // sats. A new player's first sat lands when they break their first
+  // LARGE (~5 seconds in), not after chaining all the way down to a
+  // small (~20+ seconds in). The wave-1 budget caps how many sats can
+  // drop, so this exception doesn't blow the per-run accrual cap.
+  // From wave 2 onward the chase-the-smalls economy resumes.
+  if (s.wave !== 1 && size !== undefined && size !== 'small') return 'dust';
+  // Per-wave sat budget. Once the budget for this wave's rolls have
+  // landed, everything else is dust. satBudgetForWave returns 5 on
+  // wave 1 and 1 on every other wave — see types.ts.
+  if (s.satRollsThisWave >= satBudgetForWave(s.wave)) return 'dust';
   // First eligible drop of the wave is a guaranteed sat — the player sees
   // visible sat feedback early in the level instead of waiting on the
   // denom roll, which on its own would leave most waves silent. Pallasite
@@ -2121,9 +2128,9 @@ function rollPickupKind(s: GameState, asteroidType?: AsteroidType, size?: Astero
     s.satRollsThisWave += 1;
     return 'sat';
   }
-  // Belt-and-braces: subsequent rolls still go through the denom in case
-  // WAVE_SAT_BUDGET is raised above 1 later — denom controls whether the
-  // 2nd / 3rd allowable drop in a wave actually lands.
+  // Belt-and-braces: subsequent rolls still go through the denom — the
+  // wave-1 budget allows up to 5 drops and the denom controls whether
+  // the 2nd / 3rd / 4th / 5th allowable drop in the wave actually lands.
   const denom = Math.max(1, getGameConfig().sat_drop_denom);
   if (gameRng() < (1 / denom)) {
     s.satRollsThisWave += 1;
