@@ -216,16 +216,14 @@ export function loopbackPair(oneWayDelayFrames = 3): [LoopbackPeer, LoopbackPeer
  *    overflow).
  *
  *  Brief-drop tolerance: if the socket closes unexpectedly while we were
- *  happily connected, we auto-reconnect with a short backoff. Each
- *  reconnect re-sends hello-peer; the broker's peer-joined fires when
- *  both peers are bound again. Callers can register `setOnReconnected`
- *  to replay recently-sent input frames so the input log fills the
- *  hole left by the drop. After RECONNECT_MAX_ATTEMPTS the peer gives
- *  up and stays disconnected so the lockstep loop's existing
- *  120-frame disconnect timer can end the run.
+ *  happily connected, the worker auto-reconnects with a short backoff
+ *  (see `RECONNECT_BACKOFF_MS` in peer-worker.ts). Each reconnect re-sends
+ *  hello-peer; the broker's peer-joined fires when both peers are bound
+ *  again. Callers can register `setOnReconnected` to replay recently-sent
+ *  input frames so the input log fills the hole left by the drop. After
+ *  the worker exhausts its reconnect budget it stays disconnected so the
+ *  lockstep loop's existing 120-frame disconnect timer can end the run.
  */
-const RECONNECT_BACKOFF_MS = [250, 500, 1000];
-const RECONNECT_MAX_ATTEMPTS = RECONNECT_BACKOFF_MS.length;
 
 /** Diagnostic ring entry for the wire trace. Each send/receive records one
  *  of these, capped at WIRE_TRACE_SIZE. Used by the E2E runner to debug
@@ -243,77 +241,123 @@ export interface WireTraceEntry {
 }
 const WIRE_TRACE_SIZE = 4096;
 
+/** Implementation note: as of the v193 rewrite, this class is a thin facade
+ *  over a Web Worker that owns the actual WebSocket. Main-thread render work
+ *  (postFX + WebGL on every rAF) was previously starving the recv handler,
+ *  leaving `frame` messages queued for hundreds of ms while the lockstep
+ *  loop's stall watchdog tore the connection down. The worker has its own
+ *  event loop so the socket is read instantly regardless of main-thread
+ *  jank; only the postMessage drain is subject to main-thread scheduling,
+ *  and that's cheap (no JSON parse, no socket I/O) so it catches up quickly.
+ *  See `peer-worker.ts` for the worker-side protocol. The public interface
+ *  of this class is unchanged from the pre-worker version. */
 export class WebSocketPeer implements Peer {
-  private ws: WebSocket | null = null;
-  private localSlot: PeerSlot = 0;
-  private session = '';
-  private url = '';
+  private worker: Worker | null = null;
   private connected = false;
-  private partnerConnected = false;
   private frameInbox: FrameDelivery[] = [];
   private hashInbox: HashDelivery[] = [];
   private highestRemoteFrame = -1;
   private resolveConnect: (() => void) | null = null;
   private rejectConnect: ((e: Error) => void) | null = null;
-  /** Set true by disconnect() so the close handler doesn't reschedule. */
-  private deliberateClose = false;
-  /** Reconnect attempts since the last successful peer-joined. Reset to
-   *  0 once we observe peer-joined again. */
-  private reconnectAttempt = 0;
-  /** Pending reconnect timer so disconnect() can cancel it. */
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Optional caller hook fired AFTER a reconnect's peer-joined arrives.
-   *  Used by the lockstep loop to replay recently-sent input frames
-   *  so the partner's input log can refill the gap left by the drop. */
   private onReconnected: (() => void) | null = null;
-  /** Diagnostic wire trace. Enabled by `window.__pallasiteWireTrace = 1`
-   *  before construction. Ring of WIRE_TRACE_SIZE entries, oldest dropped. */
+  /** Wire-trace mirror, fed by the worker on every send/recv when enabled.
+   *  Ring of WIRE_TRACE_SIZE entries, oldest dropped. */
   private wireTrace: WireTraceEntry[] | null = null;
   private wireTraceHead = 0;
-  /** Cumulative send/receive counters (always on, lightweight). */
+  /** Cumulative counters. Send counters are bumped locally on each send;
+   *  recv counters are bumped when the worker posts a frame/hash. */
   public sentFrameCount = 0;
   public sentHashCount = 0;
   public recvFrameCount = 0;
   public recvHashCount = 0;
   public lastSendFrame = -1;
   public lastRecvFrame = -1;
+  /** Latest socket snapshot the worker has pushed (~4Hz). -1 before any. */
+  private latestBufferedAmount = -1;
+  private latestReadyState = -1;
 
   connect(opts: PeerConnectOpts): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      this.localSlot = opts.localSlot;
-      this.session = opts.session;
-      this.url = opts.url;
-      this.deliberateClose = false;
-      this.reconnectAttempt = 0;
       this.resolveConnect = resolve;
       this.rejectConnect = reject;
-      // Opt-in wire trace for the E2E runner. Allocated on connect so the
-      // window flag can be set late (before peer.connect) without missing
-      // boot-time entries.
+      let enableWireTrace = false;
       try {
         if (typeof window !== 'undefined' && (window as unknown as { __pallasiteWireTrace?: unknown }).__pallasiteWireTrace) {
+          enableWireTrace = true;
           this.wireTrace = new Array(WIRE_TRACE_SIZE);
         }
       } catch { /* SSR or sandboxed — no window */ }
       try {
-        this.ws = new WebSocket(this.buildSocketUrl());
+        this.worker = new Worker(new URL('./peer-worker.ts', import.meta.url), { type: 'module' });
       } catch (e) {
         reject(e instanceof Error ? e : new Error(String(e)));
         return;
       }
-      this.ws.addEventListener('open', () => this.onOpen());
-      this.ws.addEventListener('message', (ev: MessageEvent) => this.onMessage(ev));
-      this.ws.addEventListener('close', () => this.onClose());
-      this.ws.addEventListener('error', () => this.onError());
+      this.worker.addEventListener('message', this.onWorkerMessage);
+      this.worker.postMessage({
+        kind: 'connect',
+        url: opts.url,
+        session: opts.session,
+        localSlot: opts.localSlot,
+        enableWireTrace,
+      });
     });
   }
 
-  /** Append one entry to the wire-trace ring. No-op if trace disabled. */
-  private traceEntry(e: WireTraceEntry): void {
-    if (!this.wireTrace) return;
-    this.wireTrace[this.wireTraceHead] = e;
-    this.wireTraceHead = (this.wireTraceHead + 1) % WIRE_TRACE_SIZE;
-  }
+  /** Worker → main thread message handler. Arrow form so we can pass it as
+   *  a stable reference to addEventListener / removeEventListener. */
+  private onWorkerMessage = (ev: MessageEvent<unknown>): void => {
+    const m = ev.data as
+      | { kind: 'connected' }
+      | { kind: 'reconnected' }
+      | { kind: 'connect-failed'; error: string }
+      | { kind: 'peer-left' }
+      | { kind: 'session-error'; code: string }
+      | { kind: 'frame'; frame: number; slot: PeerSlot; input: number }
+      | { kind: 'hash'; frame: number; slot: PeerSlot; hash: number }
+      | { kind: 'wire-entry'; entry: WireTraceEntry }
+      | { kind: 'counters'; bufferedAmount: number; readyState: number };
+    switch (m.kind) {
+      case 'connected':
+        this.connected = true;
+        if (this.resolveConnect) { this.resolveConnect(); this.resolveConnect = null; this.rejectConnect = null; }
+        return;
+      case 'reconnected':
+        this.connected = true;
+        if (this.onReconnected) try { this.onReconnected(); } catch { /* don't let a buggy hook poison the wire */ }
+        return;
+      case 'connect-failed':
+        if (this.rejectConnect) { this.rejectConnect(new Error(m.error)); this.resolveConnect = null; this.rejectConnect = null; }
+        return;
+      case 'peer-left':
+        this.connected = false;
+        return;
+      case 'session-error':
+        if (this.rejectConnect) { this.rejectConnect(new Error('session-error: ' + m.code)); this.resolveConnect = null; this.rejectConnect = null; }
+        this.disconnect();
+        return;
+      case 'frame':
+        this.frameInbox.push({ frame: m.frame, input: m.input });
+        if (m.frame > this.highestRemoteFrame) this.highestRemoteFrame = m.frame;
+        this.recvFrameCount++;
+        this.lastRecvFrame = m.frame;
+        return;
+      case 'hash':
+        this.hashInbox.push({ frame: m.frame, hash: m.hash });
+        this.recvHashCount++;
+        return;
+      case 'wire-entry':
+        if (this.wireTrace) {
+          this.wireTrace[this.wireTraceHead] = m.entry;
+          this.wireTraceHead = (this.wireTraceHead + 1) % WIRE_TRACE_SIZE;
+        }
+        return;
+      case 'counters':
+        this.latestBufferedAmount = m.bufferedAmount;
+        this.latestReadyState = m.readyState;
+        return;
+    }
+  };
 
   /** Return the wire trace in chronological order. Empty if disabled. */
   getWireTrace(): WireTraceEntry[] {
@@ -336,17 +380,9 @@ export class WebSocketPeer implements Peer {
       recvHashCount: this.recvHashCount,
       lastSendFrame: this.lastSendFrame,
       lastRecvFrame: this.lastRecvFrame,
-      bufferedAmount: this.ws ? this.ws.bufferedAmount : -1,
-      readyState: this.ws ? this.ws.readyState : -1,
+      bufferedAmount: this.latestBufferedAmount,
+      readyState: this.latestReadyState,
     };
-  }
-
-  /** Compose the broker URL with the role+session+slot query params the
-   *  controller-ws broker reads on `upgrade`. opts.url stays bare ("just the
-   *  broker host") so reconnects rebuild the full URL idempotently. */
-  private buildSocketUrl(): string {
-    const sep = this.url.includes('?') ? '&' : '?';
-    return `${this.url}${sep}s=${encodeURIComponent(this.session)}&r=peer&slot=${this.localSlot}`;
   }
 
   /** Register a callback to fire after a successful reconnect. The
@@ -356,33 +392,26 @@ export class WebSocketPeer implements Peer {
   }
 
   disconnect(): void {
-    this.deliberateClose = true;
-    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
-    if (this.ws && this.connected) {
-      const bye: PeerMsgOut = { type: 'bye', slot: this.localSlot };
-      try { this.ws.send(JSON.stringify(bye)); } catch { /* socket may already be closed */ }
+    if (this.worker) {
+      try { this.worker.postMessage({ kind: 'disconnect' }); } catch { /* worker may already be gone */ }
+      this.worker.removeEventListener('message', this.onWorkerMessage);
+      this.worker.terminate();
+      this.worker = null;
     }
-    if (this.ws) this.ws.close();
-    this.ws = null;
     this.connected = false;
-    this.partnerConnected = false;
   }
 
   sendFrame(frame: number, encoded: number): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    const msg: PeerMsgOut = { type: 'frame', frame, slot: this.localSlot, input: encoded };
-    this.ws.send(JSON.stringify(msg));
+    if (!this.worker) return;
+    this.worker.postMessage({ kind: 'send-frame', frame, input: encoded });
     this.sentFrameCount++;
     this.lastSendFrame = frame;
-    this.traceEntry({ t: performance.now(), dir: 'out', kind: 'frame', frame, slot: this.localSlot, input: encoded, bufferedAmount: this.ws.bufferedAmount });
   }
 
   sendHash(frame: number, hash: number): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    const msg: PeerMsgOut = { type: 'hash', frame, slot: this.localSlot, hash };
-    this.ws.send(JSON.stringify(msg));
+    if (!this.worker) return;
+    this.worker.postMessage({ kind: 'send-hash', frame, hash });
     this.sentHashCount++;
-    this.traceEntry({ t: performance.now(), dir: 'out', kind: 'hash', frame, slot: this.localSlot, hash, bufferedAmount: this.ws.bufferedAmount });
   }
 
   drainFrames(): FrameDelivery[] {
@@ -397,108 +426,8 @@ export class WebSocketPeer implements Peer {
     return out;
   }
 
-  isConnected(): boolean { return this.connected && this.partnerConnected; }
+  isConnected(): boolean { return this.connected; }
   lastReceivedFrame(): number { return this.highestRemoteFrame; }
-
-  private onOpen(): void {
-    const hello: PeerMsgOut = { type: 'hello-peer', session: this.session, slot: this.localSlot, version: 1 };
-    if (this.ws) this.ws.send(JSON.stringify(hello));
-    this.connected = true;
-    // We do not resolve here: the partner may not have joined yet. The
-    // resolver fires on `peer-joined` (or rejects on session-error).
-  }
-
-  private onMessage(ev: MessageEvent): void {
-    let msg: PeerMsgIn;
-    try {
-      msg = JSON.parse(typeof ev.data === 'string' ? ev.data : '') as PeerMsgIn;
-    } catch { return; }
-    switch (msg.type) {
-      case 'frame':
-        this.frameInbox.push({ frame: msg.frame, input: msg.input });
-        if (msg.frame > this.highestRemoteFrame) this.highestRemoteFrame = msg.frame;
-        this.recvFrameCount++;
-        this.lastRecvFrame = msg.frame;
-        this.traceEntry({ t: performance.now(), dir: 'in', kind: 'frame', frame: msg.frame, slot: msg.slot, input: msg.input });
-        return;
-      case 'hash':
-        this.hashInbox.push({ frame: msg.frame, hash: msg.hash });
-        this.recvHashCount++;
-        this.traceEntry({ t: performance.now(), dir: 'in', kind: 'hash', frame: msg.frame, slot: msg.slot, hash: msg.hash });
-        return;
-      case 'peer-joined': {
-        const wasReconnecting = this.reconnectAttempt > 0 && !this.partnerConnected;
-        this.partnerConnected = true;
-        if (this.resolveConnect) { this.resolveConnect(); this.resolveConnect = null; this.rejectConnect = null; }
-        if (wasReconnecting) {
-          this.reconnectAttempt = 0;
-          // Caller (main.ts) replays the local input ring so the partner
-          // can fill their input log over the gap we left.
-          if (this.onReconnected) try { this.onReconnected(); } catch { /* don't let a buggy hook poison the wire */ }
-        }
-        return;
-      }
-      case 'peer-left':
-        this.partnerConnected = false;
-        return;
-      case 'session-error':
-        if (this.rejectConnect) { this.rejectConnect(new Error('session-error: ' + msg.code)); this.resolveConnect = null; this.rejectConnect = null; }
-        this.disconnect();
-        return;
-    }
-  }
-
-  private onClose(): void {
-    const wasConnecting = this.rejectConnect !== null;
-    const wasFullyConnected = this.connected && this.partnerConnected;
-    this.connected = false;
-    this.partnerConnected = false;
-    if (wasConnecting && this.rejectConnect) {
-      this.rejectConnect(new Error('socket closed before partner joined'));
-      this.resolveConnect = null;
-      this.rejectConnect = null;
-      return;
-    }
-    // Auto-reconnect only on an unexpected drop after we'd reached
-    // peer-joined. Initial connect failures and deliberate disconnects
-    // never reach here.
-    if (!this.deliberateClose && wasFullyConnected) {
-      this.scheduleReconnect();
-    }
-  }
-
-  private onError(): void {
-    if (this.rejectConnect) {
-      this.rejectConnect(new Error('socket error'));
-      this.resolveConnect = null;
-      this.rejectConnect = null;
-    }
-  }
-
-  private scheduleReconnect(): void {
-    if (this.reconnectAttempt >= RECONNECT_MAX_ATTEMPTS) return;
-    const delay = RECONNECT_BACKOFF_MS[this.reconnectAttempt];
-    this.reconnectAttempt++;
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      if (this.deliberateClose) return;
-      this.openSocket();
-    }, delay);
-  }
-
-  private openSocket(): void {
-    try {
-      this.ws = new WebSocket(this.buildSocketUrl());
-    } catch {
-      // Construction itself failed (rare). Schedule another attempt.
-      this.scheduleReconnect();
-      return;
-    }
-    this.ws.addEventListener('open', () => this.onOpen());
-    this.ws.addEventListener('message', (ev: MessageEvent) => this.onMessage(ev));
-    this.ws.addEventListener('close', () => this.onClose());
-    this.ws.addEventListener('error', () => this.onError());
-  }
 }
 
 // ── SpectatorPeer ────────────────────────────────────────────────────────────
