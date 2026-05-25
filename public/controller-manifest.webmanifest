@@ -17,9 +17,21 @@
       "purpose": "any"
     },
     {
-      "src": "/kempston.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
+      "src": "/kempston-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/kempston-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/kempston-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
       "purpose": "maskable"
     }
   ]

@@ -1,0 +1,285 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!--
+    Pallasite app icon (rich, 512+ / apple-touch).
+    Polished cross-section: iron-nickel matrix with Widmanstätten etch,
+    embedded olivine (peridot) crystals. Matches the wordmark aesthetic.
+  -->
+  <defs>
+    <!-- Cosmic background -->
+    <radialGradient id="space" cx="50%" cy="50%" r="65%">
+      <stop offset="0%" stop-color="#1a1430"/>
+      <stop offset="55%" stop-color="#0a0418"/>
+      <stop offset="100%" stop-color="#000000"/>
+    </radialGradient>
+
+    <!-- Iron-nickel base: cooler, deeper steel with patchy lighting -->
+    <radialGradient id="ironNickel" cx="36%" cy="30%" r="92%">
+      <stop offset="0%"  stop-color="#c8ced8"/>
+      <stop offset="25%" stop-color="#8c93a4"/>
+      <stop offset="55%" stop-color="#5a6072"/>
+      <stop offset="80%" stop-color="#363b4c"/>
+      <stop offset="100%" stop-color="#1c2030"/>
+    </radialGradient>
+
+    <!-- Asymmetric darker patch (mineral mottle) -->
+    <radialGradient id="mottle" cx="70%" cy="65%" r="55%">
+      <stop offset="0%"  stop-color="#1a1d28" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#1a1d28" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Brighter polish highlight -->
+    <radialGradient id="polish" cx="32%" cy="22%" r="40%">
+      <stop offset="0%" stop-color="#f4f6fc" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#f4f6fc" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Widmanstätten etch: irregular bands, more like real iron-nickel polish -->
+    <pattern id="widA" patternUnits="userSpaceOnUse" width="46" height="46" patternTransform="rotate(38)">
+      <line x1="0" y1="6" x2="46" y2="6"   stroke="#05070d" stroke-opacity="0.30" stroke-width="2.2"/>
+      <line x1="0" y1="22" x2="46" y2="22" stroke="#05070d" stroke-opacity="0.18" stroke-width="0.9"/>
+      <line x1="0" y1="34" x2="46" y2="34" stroke="#ffffff" stroke-opacity="0.10" stroke-width="0.7"/>
+      <line x1="0" y1="40" x2="46" y2="40" stroke="#05070d" stroke-opacity="0.22" stroke-width="1.3"/>
+    </pattern>
+    <pattern id="widB" patternUnits="userSpaceOnUse" width="56" height="56" patternTransform="rotate(-52)">
+      <line x1="0" y1="10" x2="56" y2="10" stroke="#05070d" stroke-opacity="0.22" stroke-width="1.6"/>
+      <line x1="0" y1="30" x2="56" y2="30" stroke="#ffffff" stroke-opacity="0.08" stroke-width="0.6"/>
+      <line x1="0" y1="46" x2="56" y2="46" stroke="#05070d" stroke-opacity="0.16" stroke-width="1.0"/>
+    </pattern>
+    <!-- Subtle metallic noise: tiny dots scattered in the matrix -->
+    <pattern id="grain" patternUnits="userSpaceOnUse" width="14" height="14">
+      <circle cx="3"  cy="5"  r="0.6" fill="#ffffff" fill-opacity="0.12"/>
+      <circle cx="10" cy="2"  r="0.5" fill="#05070d" fill-opacity="0.25"/>
+      <circle cx="7"  cy="11" r="0.5" fill="#05070d" fill-opacity="0.22"/>
+      <circle cx="12" cy="9"  r="0.4" fill="#ffffff" fill-opacity="0.08"/>
+    </pattern>
+
+    <!-- Olivine gradients — varied, all peridot family -->
+    <radialGradient id="olv1" cx="32%" cy="26%" r="78%">
+      <stop offset="0%" stop-color="#f8ff96"/>
+      <stop offset="35%" stop-color="#c4e87a"/>
+      <stop offset="75%" stop-color="#5fae54"/>
+      <stop offset="100%" stop-color="#15391c"/>
+    </radialGradient>
+    <radialGradient id="olv2" cx="35%" cy="28%" r="80%">
+      <stop offset="0%" stop-color="#fff0a8"/>
+      <stop offset="40%" stop-color="#d4d870"/>
+      <stop offset="80%" stop-color="#7a8a3a"/>
+      <stop offset="100%" stop-color="#1f2a0e"/>
+    </radialGradient>
+    <radialGradient id="olv3" cx="30%" cy="24%" r="74%">
+      <stop offset="0%" stop-color="#e8ffb8"/>
+      <stop offset="45%" stop-color="#92d480"/>
+      <stop offset="85%" stop-color="#3a7f48"/>
+      <stop offset="100%" stop-color="#0e2614"/>
+    </radialGradient>
+    <radialGradient id="olv4" cx="38%" cy="30%" r="82%">
+      <stop offset="0%" stop-color="#ffeb7a"/>
+      <stop offset="40%" stop-color="#b8c850"/>
+      <stop offset="80%" stop-color="#5e7028"/>
+      <stop offset="100%" stop-color="#161e0a"/>
+    </radialGradient>
+    <radialGradient id="olv5" cx="34%" cy="28%" r="76%">
+      <stop offset="0%" stop-color="#f0ffa8"/>
+      <stop offset="40%" stop-color="#a8c668"/>
+      <stop offset="80%" stop-color="#4a6628"/>
+      <stop offset="100%" stop-color="#10180a"/>
+    </radialGradient>
+
+    <!-- Glint highlight on individual gems -->
+    <radialGradient id="glint" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.9"/>
+      <stop offset="55%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Subtle dark vignette so the slice doesn't look like a 3D button -->
+    <radialGradient id="vignette" cx="50%" cy="50%" r="50%">
+      <stop offset="78%" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.55"/>
+    </radialGradient>
+
+    <!-- Halo around the slice -->
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="58%" stop-color="#7fffb0" stop-opacity="0"/>
+      <stop offset="84%" stop-color="#7fffb0" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#7fffb0" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Irregular pebble paths (centred on origin) -->
+    <symbol id="pebbleA" overflow="visible">
+      <path d="M -28,-8 C -34,-26 -12,-34 6,-30 C 26,-26 34,-8 30,12 C 26,28 8,34 -10,30 C -26,24 -32,8 -28,-8 Z"/>
+    </symbol>
+    <symbol id="pebbleB" overflow="visible">
+      <path d="M -22,-14 C -30,-22 -14,-30 4,-26 C 22,-22 30,-6 26,12 C 22,26 4,30 -12,24 C -26,18 -28,2 -22,-14 Z"/>
+    </symbol>
+    <symbol id="pebbleC" overflow="visible">
+      <path d="M -20,-6 C -26,-20 -6,-28 10,-22 C 24,-16 28,2 22,16 C 16,26 -2,28 -16,20 C -26,14 -24,4 -20,-6 Z"/>
+    </symbol>
+    <symbol id="pebbleD" overflow="visible">
+      <path d="M -18,-12 C -24,-22 -8,-26 8,-22 C 22,-18 26,-2 22,12 C 16,24 0,26 -14,20 C -22,14 -22,2 -18,-12 Z"/>
+    </symbol>
+    <symbol id="pebbleE" overflow="visible">
+      <path d="M -24,-10 C -30,-24 -8,-30 10,-26 C 26,-22 32,-4 26,14 C 20,28 0,30 -16,24 C -28,18 -28,4 -24,-10 Z"/>
+    </symbol>
+
+    <!-- Clip to the slice -->
+    <clipPath id="diskClip">
+      <circle cx="256" cy="256" r="218"/>
+    </clipPath>
+  </defs>
+
+  <!-- Cosmic backdrop -->
+  <rect width="512" height="512" fill="url(#space)"/>
+
+  <!-- Faint star field -->
+  <g fill="#cfd6ff" fill-opacity="0.6">
+    <circle cx="62" cy="88" r="1.4"/>
+    <circle cx="432" cy="118" r="1.8"/>
+    <circle cx="98" cy="408" r="1.4"/>
+    <circle cx="392" cy="426" r="1.4"/>
+    <circle cx="460" cy="72" r="0.9"/>
+    <circle cx="50" cy="292" r="0.9"/>
+    <circle cx="442" cy="320" r="0.9"/>
+    <circle cx="208" cy="50" r="0.9"/>
+    <circle cx="318" cy="468" r="0.9"/>
+    <circle cx="488" cy="240" r="1.1"/>
+    <circle cx="28" cy="180" r="0.7"/>
+    <circle cx="488" cy="420" r="0.7"/>
+  </g>
+
+  <!-- Outer halo -->
+  <circle cx="256" cy="256" r="248" fill="url(#halo)"/>
+
+  <!-- Iron-nickel disk + texture stack -->
+  <g clip-path="url(#diskClip)">
+    <circle cx="256" cy="256" r="218" fill="url(#ironNickel)"/>
+    <circle cx="256" cy="256" r="218" fill="url(#mottle)"/>
+    <rect x="38" y="38" width="436" height="436" fill="url(#widA)"/>
+    <rect x="38" y="38" width="436" height="436" fill="url(#widB)"/>
+    <rect x="38" y="38" width="436" height="436" fill="url(#grain)"/>
+    <!-- Extra mineral patches: irregular dark blobs that break up the regularity -->
+    <ellipse cx="180" cy="320" rx="80" ry="40" fill="#10141e" fill-opacity="0.18" transform="rotate(-25 180 320)"/>
+    <ellipse cx="360" cy="160" rx="60" ry="30" fill="#10141e" fill-opacity="0.20" transform="rotate(35 360 160)"/>
+    <ellipse cx="320" cy="340" rx="50" ry="25" fill="#e6eaf2" fill-opacity="0.08" transform="rotate(15 320 340)"/>
+    <circle cx="256" cy="256" r="218" fill="url(#polish)"/>
+  </g>
+
+  <!-- Olivine pebbles, clipped to the disk -->
+  <g clip-path="url(#diskClip)">
+
+    <!-- A: upper-left, large -->
+    <g transform="translate(170 165) rotate(-12) scale(1.55)">
+      <use href="#pebbleA" fill="#000" fill-opacity="0.45" transform="translate(2.5 3.5)"/>
+      <use href="#pebbleA" fill="url(#olv1)" stroke="#0e2614" stroke-width="1.2" stroke-opacity="0.7"/>
+      <ellipse cx="-10" cy="-14" rx="9" ry="5" fill="url(#glint)" transform="rotate(-25)"/>
+    </g>
+
+    <!-- B: upper-centre, medium -->
+    <g transform="translate(290 145) rotate(28) scale(1.15)">
+      <use href="#pebbleB" fill="#000" fill-opacity="0.45" transform="translate(2.5 3.5)"/>
+      <use href="#pebbleB" fill="url(#olv2)" stroke="#262e0e" stroke-width="1.1" stroke-opacity="0.7"/>
+      <ellipse cx="-6" cy="-10" rx="6" ry="3" fill="url(#glint)" transform="rotate(15)"/>
+    </g>
+
+    <!-- C: upper-right, small -->
+    <g transform="translate(385 200) rotate(54) scale(0.95)">
+      <use href="#pebbleC" fill="#000" fill-opacity="0.45" transform="translate(2 3)"/>
+      <use href="#pebbleC" fill="url(#olv3)" stroke="#0e2614" stroke-width="0.9" stroke-opacity="0.65"/>
+      <ellipse cx="-5" cy="-8" rx="5" ry="2.5" fill="url(#glint)"/>
+    </g>
+
+    <!-- D: mid-left, medium-large -->
+    <g transform="translate(135 262) rotate(8) scale(1.28)">
+      <use href="#pebbleD" fill="#000" fill-opacity="0.45" transform="translate(2.5 3.5)"/>
+      <use href="#pebbleD" fill="url(#olv1)" stroke="#0e2614" stroke-width="1.1" stroke-opacity="0.7"/>
+      <ellipse cx="-6" cy="-10" rx="7" ry="3" fill="url(#glint)" transform="rotate(-10)"/>
+    </g>
+
+    <!-- E: centre, medium -->
+    <g transform="translate(252 246) rotate(-32) scale(1.1)">
+      <use href="#pebbleE" fill="#000" fill-opacity="0.45" transform="translate(2.5 3.5)"/>
+      <use href="#pebbleE" fill="url(#olv4)" stroke="#1a200a" stroke-width="1.1" stroke-opacity="0.7"/>
+      <ellipse cx="-8" cy="-12" rx="7" ry="3.5" fill="url(#glint)" transform="rotate(-10)"/>
+    </g>
+
+    <!-- F: mid-right, medium -->
+    <g transform="translate(355 285) rotate(22) scale(1.15)">
+      <use href="#pebbleC" fill="#000" fill-opacity="0.45" transform="translate(2.5 3.5)"/>
+      <use href="#pebbleC" fill="url(#olv2)" stroke="#262e0e" stroke-width="1" stroke-opacity="0.65"/>
+      <ellipse cx="-6" cy="-9" rx="6" ry="3" fill="url(#glint)"/>
+    </g>
+
+    <!-- G: lower-left, large -->
+    <g transform="translate(158 368) rotate(-18) scale(1.42)">
+      <use href="#pebbleB" fill="#000" fill-opacity="0.45" transform="translate(2.5 3.5)"/>
+      <use href="#pebbleB" fill="url(#olv3)" stroke="#0e2614" stroke-width="1.1" stroke-opacity="0.7"/>
+      <ellipse cx="-8" cy="-12" rx="8" ry="4" fill="url(#glint)" transform="rotate(-15)"/>
+    </g>
+
+    <!-- H: lower-centre, small -->
+    <g transform="translate(265 362) rotate(38) scale(1)">
+      <use href="#pebbleD" fill="#000" fill-opacity="0.45" transform="translate(2 3)"/>
+      <use href="#pebbleD" fill="url(#olv5)" stroke="#15200a" stroke-width="0.9" stroke-opacity="0.65"/>
+      <ellipse cx="-5" cy="-9" rx="5" ry="2.5" fill="url(#glint)"/>
+    </g>
+
+    <!-- I: lower-right, medium -->
+    <g transform="translate(360 372) rotate(-8) scale(1.22)">
+      <use href="#pebbleA" fill="#000" fill-opacity="0.45" transform="translate(2.5 3.5)"/>
+      <use href="#pebbleA" fill="url(#olv4)" stroke="#1a200a" stroke-width="1.1" stroke-opacity="0.7"/>
+      <ellipse cx="-7" cy="-11" rx="7" ry="3" fill="url(#glint)"/>
+    </g>
+
+    <!-- J: filler between E/G -->
+    <g transform="translate(218 308) rotate(62) scale(0.92)">
+      <use href="#pebbleC" fill="#000" fill-opacity="0.4" transform="translate(2 2.5)"/>
+      <use href="#pebbleC" fill="url(#olv1)" stroke="#0e2614" stroke-width="0.8" stroke-opacity="0.6"/>
+      <ellipse cx="-4" cy="-7" rx="4" ry="2" fill="url(#glint)"/>
+    </g>
+
+    <!-- K: small upper -->
+    <g transform="translate(320 210) rotate(15) scale(0.78)">
+      <use href="#pebbleD" fill="#000" fill-opacity="0.4" transform="translate(2 2.5)"/>
+      <use href="#pebbleD" fill="url(#olv3)" stroke="#0e2614" stroke-width="0.7" stroke-opacity="0.6"/>
+      <ellipse cx="-3" cy="-5" rx="3" ry="1.5" fill="url(#glint)"/>
+    </g>
+
+    <!-- L: small left -->
+    <g transform="translate(195 215) rotate(-40) scale(0.68)">
+      <use href="#pebbleB" fill="#000" fill-opacity="0.4" transform="translate(1.5 2)"/>
+      <use href="#pebbleB" fill="url(#olv2)" stroke="#262e0e" stroke-width="0.6" stroke-opacity="0.55"/>
+      <ellipse cx="-3" cy="-5" rx="3" ry="1.5" fill="url(#glint)"/>
+    </g>
+
+    <!-- M: small upper-right -->
+    <g transform="translate(395 150) rotate(70) scale(0.62)">
+      <use href="#pebbleA" fill="#000" fill-opacity="0.4" transform="translate(1.5 2)"/>
+      <use href="#pebbleA" fill="url(#olv5)" stroke="#15200a" stroke-width="0.6" stroke-opacity="0.55"/>
+    </g>
+
+    <!-- N: small lower -->
+    <g transform="translate(310 415) rotate(-25) scale(0.72)">
+      <use href="#pebbleC" fill="#000" fill-opacity="0.4" transform="translate(1.5 2)"/>
+      <use href="#pebbleC" fill="url(#olv4)" stroke="#1a200a" stroke-width="0.6" stroke-opacity="0.55"/>
+    </g>
+
+    <!-- O: small near rim left -->
+    <g transform="translate(90 195) rotate(35) scale(0.7)">
+      <use href="#pebbleD" fill="#000" fill-opacity="0.4" transform="translate(1.5 2)"/>
+      <use href="#pebbleD" fill="url(#olv1)" stroke="#0e2614" stroke-width="0.6" stroke-opacity="0.55"/>
+    </g>
+
+    <!-- P: small near rim right -->
+    <g transform="translate(420 350) rotate(-50) scale(0.66)">
+      <use href="#pebbleE" fill="#000" fill-opacity="0.4" transform="translate(1.5 2)"/>
+      <use href="#pebbleE" fill="url(#olv3)" stroke="#0e2614" stroke-width="0.6" stroke-opacity="0.55"/>
+    </g>
+
+  </g>
+
+  <!-- Dark vignette inside the slice (gives polished-stone depth, not button) -->
+  <circle cx="256" cy="256" r="218" fill="url(#vignette)" clip-path="url(#diskClip)"/>
+
+  <!-- Crisp outline of the slice -->
+  <circle cx="256" cy="256" r="218" fill="none" stroke="#06080e" stroke-width="3" stroke-opacity="0.85"/>
+  <circle cx="256" cy="256" r="215" fill="none" stroke="#ffffff" stroke-width="1" stroke-opacity="0.18"/>
+</svg>
