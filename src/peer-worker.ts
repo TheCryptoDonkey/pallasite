@@ -108,6 +108,8 @@ function onOpen(): void {
   const hello: PeerMsgOut = { type: 'hello-peer', session, slot: localSlot, version: 1 };
   if (ws) ws.send(JSON.stringify(hello));
   connected = true;
+  // eslint-disable-next-line no-console
+  console.log('[peer-worker] ws open, hello sent slot=' + localSlot);
   // We do not post 'connected' here — main waits for partner-joined.
 }
 
@@ -137,6 +139,8 @@ function onMessage(ev: MessageEvent): void {
       partnerConnected = true;
       if (!initialConnectDone) {
         initialConnectDone = true;
+        // eslint-disable-next-line no-console
+        console.log('[peer-worker] peer-joined; posting connected to main slot=' + localSlot);
         post({ kind: 'connected' });
       } else if (wasReconnecting) {
         reconnectAttempt = 0;
@@ -158,6 +162,8 @@ function onMessage(ev: MessageEvent): void {
 function onClose(): void {
   const wasConnecting = !initialConnectDone;
   const wasFullyConnected = connected && partnerConnected;
+  // eslint-disable-next-line no-console
+  console.log(`[peer-worker] ws close (wasConnecting=${wasConnecting} wasFullyConnected=${wasFullyConnected} deliberate=${deliberateClose}) slot=` + localSlot);
   connected = false;
   partnerConnected = false;
   if (wasConnecting) {
