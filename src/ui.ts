@@ -7151,7 +7151,7 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
     identity.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:6px;';
     const nameLine = el('div', { parent: identity });
     nameLine.style.cssText = 'display:flex;align-items:center;gap:8px;';
-    el('span', { parent: nameLine, text: 'Playing as' }).style.cssText = 'color:rgba(220,210,255,0.7);letter-spacing:0.08em;';
+    el('span', { parent: nameLine, text: 'Signed in as' }).style.cssText = 'color:rgba(220,210,255,0.7);letter-spacing:0.08em;';
     const nameBtn = el('button', { parent: nameLine, text: guestName }) as HTMLButtonElement;
     nameBtn.style.cssText = 'background:transparent;border:none;color:var(--hud-yellow);font-weight:bold;font-size:1.05rem;letter-spacing:0.06em;cursor:pointer;padding:2px 6px;border-bottom:1px dashed rgba(255,216,74,0.4);';
     nameBtn.title = 'Tap to rename';
@@ -7230,7 +7230,7 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
       if (!privHex) return;
       openGuestKeyExport(session.pubkey, privHex);
     });
-    const wipe = el('button', { className: 'menu-btn secondary', parent: row, text: 'CLEAR' }) as HTMLButtonElement;
+    const wipe = el('button', { className: 'menu-btn secondary', parent: row, text: 'SIGN OUT' }) as HTMLButtonElement;
     wipe.style.cssText += 'font-size:0.72rem;padding:4px 12px;letter-spacing:0.14em;color:rgba(255,120,120,0.85);border-color:rgba(255,120,120,0.4);';
     wipe.title = 'Forget this local identity. You\'ll be asked for your name again next time you visit.';
     wipe.addEventListener('click', () => {
@@ -7265,7 +7265,7 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
           identityRow.appendChild(img);
         }
         const text = document.createElement('div');
-        text.innerHTML = `Locked to <span style="color:var(--hud-yellow);font-weight:bold;">${escapeHtml(name)}</span> via <span style="color:var(--hud-blue)">${method}</span>`;
+        text.innerHTML = `Signed in as <span style="color:var(--hud-yellow);font-weight:bold;">${escapeHtml(name)}</span> <span style="color:rgba(180,180,200,0.55);font-size:0.78em;">· ${method}</span>`;
         identityRow.appendChild(text);
       }
     };
@@ -7343,7 +7343,7 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
         }
       });
     }
-    const out = el('button', { className: 'menu-btn secondary', parent: row, text: 'EJECT' });
+    const out = el('button', { className: 'menu-btn secondary', parent: row, text: 'SIGN OUT' });
     let ejecting = false;
     const doEject = async (): Promise<void> => {
       if (ejecting) return;
