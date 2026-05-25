@@ -35,8 +35,14 @@ export function fnv1a32(str: string): number {
 /** Two-player aware gameplay slice. Includes every player in turn so
  *  the canary works for couch + duel runs. Entities are summarised by
  *  position / velocity (plus identifying fields where they exist) so
- *  cosmetic pools (particles, debris) never feed the canary. */
-export function serializeForCanary(s: GameState): string {
+ *  cosmetic pools (particles, debris) never feed the canary.
+ *
+ *  Optional `appliedInputs` lets the lockstep loop pass the encoded
+ *  inputs it just applied to each player — surfaced in the hash so the
+ *  desync hunter can pinpoint "they computed differently because they
+ *  applied different inputs" vs "they computed differently from
+ *  identical inputs" (the latter would be a real determinism bug). */
+export function serializeForCanary(s: GameState, appliedInputs?: ReadonlyArray<number>): string {
   const players = s.players.map((p: PlayerState) => [
     p.score, p.lives, p.sats, p.combo,
     p.ship.pos.x, p.ship.pos.y, p.ship.vel.x, p.ship.vel.y, p.ship.rot,
@@ -46,6 +52,7 @@ export function serializeForCanary(s: GameState): string {
   return JSON.stringify({
     f: s.frame, ph: s.phase, w: s.wave, el: s.elapsed, hs: s.hitStopSteps,
     rng: getRngState(),
+    inp: appliedInputs ?? null,
     players,
     ast: s.asteroids.map((a: Asteroid) => [a.pos.x, a.pos.y, a.vel.x, a.vel.y, a.radius, a.id, a.hp]),
     ufo: s.ufos.map((u: Ufo) => [u.pos.x, u.pos.y, u.vel.x, u.vel.y, u.hp ?? 0]),
