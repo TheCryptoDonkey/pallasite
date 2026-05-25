@@ -60,7 +60,7 @@ import { currentMods, lockInDifficulty, getStoredDifficulty, currentDifficulty }
 import { lockInMode, getStoredMode, currentMode, isEndlessMode, isSanctumMode, isDefenderMode } from './mode.js';
 import { arenaActive, arenaCage, confineToArena, clampToArena, outsideArena } from './arena.js';
 import { markAchievement, resetRunAchievements } from './achievements.js';
-import { gameRng, seedRun } from './seed.js';
+import { gameRng, seedRun, getRngState } from './seed.js';
 import { haptic } from './haptics.js';
 import { markSkinUnlocked } from './skins.js';
 import {
@@ -109,6 +109,8 @@ export function makeInitialState(): GameState {
     runTimeMs: 0,
     runStartedAt: 0,
     seed: 0,
+    rng: null,
+    nextEntityId: 0,
     bossDefeated: false,
     defenderMode: false,
     defenderTimerMs: 0,
@@ -278,6 +280,11 @@ export function startGame(s: GameState, forcedSeed?: number, opts?: { players?: 
   // now (daily mode keys off the date, otherwise a fresh random seed) so a
   // run can be deterministically re-simulated from s.seed (B3).
   s.seed = seedRun(forcedSeed);
+  // seedRun() set seed.ts's module rngState; mirror onto state.rng so
+  // updateGame can load/save the per-state value each tick. The module
+  // global is still the live value during this startGame run (beginWave
+  // below will call gameRng()), captured back onto state below.
+  s.rng = getRngState();
 
   // Defensive re-lock — the title-screen IGNITE path also locks, but the
   // gameover SPAWN AGAIN and completion IGNITE AGAIN buttons jump straight
@@ -357,9 +364,17 @@ export function startGame(s: GameState, forcedSeed?: number, opts?: { players?: 
   lastGhostPoseRunMs = -1;
   lastReplayRecordedAt = 0;
   // Entity-id counter resets per run so a run's wire IDs reproduce from a
-  // fresh start — needed for deterministic re-simulation (B3).
+  // fresh start — needed for deterministic re-simulation (B3). Reset BOTH
+  // the module global (which beginWave's nextStreamEntityId calls are
+  // reading from) and the state mirror.
   nextEntityId = 0;
+  s.nextEntityId = 0;
   beginWave(s, 1);
+  // Capture the post-beginWave module values back onto state so the next
+  // updateGame loads from the right baseline. (beginWave bumped both via
+  // gameRng() and nextStreamEntityId() to spawn the initial asteroids.)
+  s.rng = getRngState();
+  s.nextEntityId = nextEntityId;
   audio.startHeartbeat();
   audio.startAmbient();
 }
@@ -2655,6 +2670,11 @@ export function updateGame(s: GameState): void {
   // making the call independently.
   if (s.hitStopSteps > 0) {
     s.hitStopSteps--;
+    // Module RNG / entity-id state untouched this tick — keep the
+    // state mirror in sync with module so a later canary read of s.rng
+    // matches what gameRng would see next call.
+    s.rng = getRngState();
+    s.nextEntityId = nextEntityId;
     return;
   }
   const dt = FIXED_STEP_S;
@@ -3464,6 +3484,11 @@ export function updateGame(s: GameState): void {
   if (s.toast && now > s.toastUntil) {
     s.toast = null;
   }
+  // Bridge save: capture the post-tick module RNG + entity-id values
+  // back onto state so the next tick (or another sim's next tick) sees
+  // an honest baseline. See the matching load at the top of updateGame.
+  s.rng = getRngState();
+  s.nextEntityId = nextEntityId;
 }
 
 /**

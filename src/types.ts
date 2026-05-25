@@ -577,6 +577,19 @@ export interface GameState {
    *  so the run can be deterministically re-simulated (B3 verifiable
    *  replay). 0 before the first run. */
   seed: number;
+  /** Snapshot of seed.ts's module rngState taken at the END of every
+   *  updateGame tick (and every other sim entry point). The module
+   *  global stays the live value during a tick; this mirror lets the
+   *  desync canary serialise the RNG state as part of `state` rather
+   *  than reaching across files into a global. Null when daily mode
+   *  is off (gameRng falls through to Math.random). */
+  rng: number | null;
+  /** Snapshot of game.ts's module nextEntityId taken at the END of
+   *  every updateGame tick. Same shape as `rng` — a per-state mirror
+   *  so canary / replay code reads from `state` rather than a module
+   *  global. Wraps at 1_000_000 to keep JSON tuples compact for long
+   *  runs. */
+  nextEntityId: number;
   /** Wave 25 boss state */
   bossDefeated: boolean;
 
