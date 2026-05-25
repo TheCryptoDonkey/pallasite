@@ -45,15 +45,19 @@ interface OverlayHandle {
   diffuseCache: Map<string, THREE.Texture>;
   /** Per-council-member portrait texture cache. */
   councilTextureCache: Map<string, THREE.Texture>;
-  /** Singleton ship mesh — built lazily on first ship frame. */
-  shipMesh: THREE.Object3D | null;
-  shipThrust: THREE.Mesh | null;
-  /** Singleton shield dome — built lazily on first shield-up frame.
-   *  Faceted icosphere + edge wireframe parented under one group so a
-   *  single position.set() per frame is enough to track the ship. */
-  shieldMesh: THREE.Group | null;
-  shieldSphereMat: THREE.MeshPhongMaterial | null;
-  shieldEdgeMat: THREE.LineBasicMaterial | null;
+  /** Per-slot ship meshes — built lazily on each slot's first ship
+   *  frame. Index 0 = player slot 0, etc. A slot with no mesh yet is
+   *  null; an unused slot keeps a hidden mesh around (rebuild is more
+   *  expensive than holding 50KB of geometry). */
+  shipMeshes: (THREE.Object3D | null)[];
+  shipThrusts: (THREE.Mesh | null)[];
+  /** Per-slot shield dome — built lazily on each slot's first
+   *  shield-up frame. Faceted icosphere + edge wireframe parented
+   *  under one group per slot so a single position.set() per frame
+   *  is enough to track the corresponding ship. */
+  shieldMeshes: (THREE.Group | null)[];
+  shieldSphereMats: (THREE.MeshPhongMaterial | null)[];
+  shieldEdgeMats: (THREE.LineBasicMaterial | null)[];
   /** Cached canvas.width × canvas.height so setSize only fires on
    *  actual size change (always-on setSize re-clears every frame). */
   lastSizeKey: number;
@@ -554,11 +558,11 @@ export function ensureWebGLOverlay(): Promise<OverlayHandle> {
       powerupMeshes: new Map(),
       diffuseCache: new Map(),
       councilTextureCache: new Map(),
-      shipMesh: null,
-      shipThrust: null,
-      shieldMesh: null,
-      shieldSphereMat: null,
-      shieldEdgeMat: null,
+      shipMeshes: [],
+      shipThrusts: [],
+      shieldMeshes: [],
+      shieldSphereMats: [],
+      shieldEdgeMats: [],
       lastSizeKey: 0,
       shipChunks: [],
       lastFrameMs: 0,
@@ -1646,11 +1650,199 @@ export function clearShipChunks(): void {
   handle.shipChunks.length = 0;
 }
 
+/** Build a fresh ship mesh group (hull + cockpit + fin + wings + pods +
+ *  barrel + thrust cone). Called once per ship slot — the renderOverlay
+ *  ship loop caches the returned group per slot so the geometry isn't
+ *  rebuilt on every respawn.
+ *
+ *  Returns the group + the thrust cone so callers can toggle the cone
+ *  on/off based on the live ship.thrusting flag. */
+function buildShipMesh(): { group: THREE.Group; thrust: THREE.Mesh } {
+  const group = new THREE.Group();
+  // Beefed-up hull — slightly larger, deeper extrude for more
+  // visible 3D form at the player ship's small on-screen size.
+  const hullGeo = new THREE.ExtrudeGeometry(
+    new THREE.Shape([
+      new THREE.Vector2(16, 0),
+      new THREE.Vector2(-12, 10),
+      new THREE.Vector2(-8, 0),
+      new THREE.Vector2(-12, -10),
+    ]),
+    { depth: 5, bevelEnabled: true, bevelSize: 1.5, bevelThickness: 1.5, bevelSegments: 3 },
+  );
+  hullGeo.translate(0, 0, -2.5);
+  const hullMat = new THREE.MeshPhongMaterial({
+    color: 0x9be7ff,
+    shininess: 80,
+    specular: 0xffffff,
+    emissive: 0x4080a0,
+    emissiveIntensity: 0.45,
+  });
+  const hullMesh = new THREE.Mesh(hullGeo, hullMat);
+  hullMesh.frustumCulled = false;
+  group.add(hullMesh);
+  // Cockpit canopy — translucent dome on top of hull, sells the
+  // 3D form better than a flat extrude alone.
+  const cockpitGeo = new THREE.SphereGeometry(4.5, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2);
+  cockpitGeo.rotateX(-Math.PI / 2);
+  const cockpitMat = new THREE.MeshPhongMaterial({
+    color: 0xb8f0ff,
+    shininess: 240,
+    specular: 0xffffff,
+    emissive: 0x4080a0,
+    emissiveIntensity: 0.5,
+    transparent: true,
+    opacity: 0.78,
+  });
+  const cockpitMesh = new THREE.Mesh(cockpitGeo, cockpitMat);
+  cockpitMesh.position.set(1, 0, 4.5);
+  cockpitMesh.frustumCulled = false;
+  group.add(cockpitMesh);
+  // Dorsal fin — small vertical spike behind the cockpit. Reads
+  // as a stabiliser/comms array from above.
+  const finShape = new THREE.Shape([
+    new THREE.Vector2(0, 0),
+    new THREE.Vector2(-7, 0),
+    new THREE.Vector2(-5, 5),
+    new THREE.Vector2(0, 4),
+  ]);
+  const finGeo = new THREE.ExtrudeGeometry(finShape, {
+    depth: 1.4, bevelEnabled: true, bevelSize: 0.3, bevelThickness: 0.3, bevelSegments: 1,
+  });
+  const finMat = new THREE.MeshPhongMaterial({
+    color: 0x8ad4ff,
+    shininess: 60,
+    specular: 0xffffff,
+    emissive: 0x305070,
+    emissiveIntensity: 0.4,
+  });
+  const finMesh = new THREE.Mesh(finGeo, finMat);
+  finMesh.position.set(-2, -0.7, 3);
+  finMesh.frustumCulled = false;
+  group.add(finMesh);
+  // Stub wings — short angled fins on each side of the hull.
+  const wingShape = new THREE.Shape([
+    new THREE.Vector2(0, 0),
+    new THREE.Vector2(7, 0),
+    new THREE.Vector2(5, 4),
+    new THREE.Vector2(0, 3),
+  ]);
+  const wingGeo = new THREE.ExtrudeGeometry(wingShape, {
+    depth: 1.2, bevelEnabled: true, bevelSize: 0.3, bevelThickness: 0.3, bevelSegments: 1,
+  });
+  const wingMat = new THREE.MeshPhongMaterial({
+    color: 0x6db4dc,
+    shininess: 80,
+    specular: 0xffffff,
+    emissive: 0x305070,
+    emissiveIntensity: 0.35,
+  });
+  const wingL = new THREE.Mesh(wingGeo, wingMat);
+  wingL.position.set(-8, 6, -0.5);
+  wingL.frustumCulled = false;
+  group.add(wingL);
+  const wingR = new THREE.Mesh(wingGeo, wingMat);
+  wingR.position.set(-8, -6, -0.5);
+  wingR.rotation.x = Math.PI;
+  wingR.frustumCulled = false;
+  group.add(wingR);
+  // Side engine pods — two cylinders flanking the rear thrust.
+  const podGeo = new THREE.CylinderGeometry(2.2, 2.6, 8, 12);
+  podGeo.rotateZ(Math.PI / 2);
+  const podMat = new THREE.MeshPhongMaterial({
+    color: 0x4a7eb0,
+    shininess: 100,
+    specular: 0xffffff,
+    emissive: 0xff8040,
+    emissiveIntensity: 0.45,
+  });
+  const podL = new THREE.Mesh(podGeo, podMat);
+  podL.position.set(-10, 7.5, 0);
+  podL.frustumCulled = false;
+  group.add(podL);
+  const podR = new THREE.Mesh(podGeo, podMat);
+  podR.position.set(-10, -7.5, 0);
+  podR.frustumCulled = false;
+  group.add(podR);
+  // Nose laser barrel — small cylinder protruding from the bow.
+  const barrelGeo = new THREE.CylinderGeometry(1.4, 1.4, 7, 10);
+  barrelGeo.rotateZ(Math.PI / 2);
+  barrelGeo.translate(19, 0, 0);
+  const barrelMat = new THREE.MeshPhongMaterial({
+    color: 0x6080a0,
+    shininess: 140,
+    specular: 0xffffff,
+    emissive: 0xff8040,
+    emissiveIntensity: 0.6,
+  });
+  const barrelMesh = new THREE.Mesh(barrelGeo, barrelMat);
+  barrelMesh.frustumCulled = false;
+  group.add(barrelMesh);
+  // Thrust cone — additive flame at the rear, shown only when
+  // thrusting. Larger and centred between the engine pods now.
+  const thrustGeo = new THREE.ConeGeometry(6, 16, 12);
+  thrustGeo.rotateZ(Math.PI / 2);
+  thrustGeo.translate(-18, 0, 0);
+  const thrustMat = new THREE.MeshBasicMaterial({
+    color: 0xffb84a,
+    transparent: true,
+    opacity: 0.85,
+    blending: THREE.AdditiveBlending,
+  });
+  const thrustMesh = new THREE.Mesh(thrustGeo, thrustMat);
+  thrustMesh.frustumCulled = false;
+  thrustMesh.visible = false;
+  group.add(thrustMesh);
+  return { group, thrust: thrustMesh };
+}
+
+/** Build a fresh shield dome — faceted icosphere + edge wireframe in
+ *  one group so a single position.set per frame tracks the ship.
+ *  Sized off the SHIP's radius (NOT ship.radius * x) so per-slot
+ *  shields can each follow a possibly-different ship radius if we
+ *  ever introduce size-mod ships. */
+function buildShieldDome(shipRadius: number): {
+  group: THREE.Group;
+  sphereMat: THREE.MeshPhongMaterial;
+  edgeMat: THREE.LineBasicMaterial;
+} {
+  const group = new THREE.Group();
+  const radius = shipRadius * 2.2;
+  const sphereGeo = new THREE.IcosahedronGeometry(radius, 1);
+  const sphereMat = new THREE.MeshPhongMaterial({
+    color: 0x5b9dff,
+    emissive: 0x305070,
+    emissiveIntensity: 0.5,
+    shininess: 90,
+    specular: 0xffffff,
+    transparent: true,
+    opacity: 0.18,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const sphereMesh = new THREE.Mesh(sphereGeo, sphereMat);
+  sphereMesh.frustumCulled = false;
+  group.add(sphereMesh);
+  const edgesGeo = new THREE.EdgesGeometry(sphereGeo);
+  const edgeMat = new THREE.LineBasicMaterial({
+    color: 0xb4d8ff,
+    transparent: true,
+    opacity: 0.85,
+  });
+  const edges = new THREE.LineSegments(edgesGeo, edgeMat);
+  edges.frustumCulled = false;
+  group.add(edges);
+  return { group, sphereMat, edgeMat };
+}
+
 export function renderOverlay(opts: {
   asteroids: ReadonlyArray<Asteroid>;
   ufos: ReadonlyArray<Ufo>;
   powerups: ReadonlyArray<PowerUp>;
-  ship: Ship | null;
+  /** Every live ship to render. Array index == player slot, so per-slot
+   *  mesh handles are kept stable across frames. Empty = no ships
+   *  (e.g. during an intertitle hold). See WebGLOverlayCall jsdoc. */
+  ships: ReadonlyArray<Ship>;
   /** Sim clock (ms) — time base for the shield-dome expiry fade. */
   elapsed: number;
   dpr: number;
@@ -1914,221 +2106,98 @@ export function renderOverlay(opts: {
   }
   sweepStale(scene, handle.powerupMeshes, frameCounter);
 
-  // ── Ship ─────────────────────────────────────────────────────────
-  if (opts.ship && opts.ship.alive) {
-    if (!handle.shipMesh) {
-      const group = new THREE.Group();
-      // Beefed-up hull — slightly larger, deeper extrude for more
-      // visible 3D form at the player ship's small on-screen size.
-      const hullGeo = new THREE.ExtrudeGeometry(
-        new THREE.Shape([
-          new THREE.Vector2(16, 0),
-          new THREE.Vector2(-12, 10),
-          new THREE.Vector2(-8, 0),
-          new THREE.Vector2(-12, -10),
-        ]),
-        { depth: 5, bevelEnabled: true, bevelSize: 1.5, bevelThickness: 1.5, bevelSegments: 3 },
-      );
-      hullGeo.translate(0, 0, -2.5);
-      const hullMat = new THREE.MeshPhongMaterial({
-        color: 0x9be7ff,
-        shininess: 80,
-        specular: 0xffffff,
-        emissive: 0x4080a0,
-        emissiveIntensity: 0.45,
-      });
-      const hullMesh = new THREE.Mesh(hullGeo, hullMat);
-      hullMesh.frustumCulled = false;
-      group.add(hullMesh);
-      // Cockpit canopy — translucent dome on top of hull, sells the
-      // 3D form better than a flat extrude alone.
-      const cockpitGeo = new THREE.SphereGeometry(4.5, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2);
-      cockpitGeo.rotateX(-Math.PI / 2);
-      const cockpitMat = new THREE.MeshPhongMaterial({
-        color: 0xb8f0ff,
-        shininess: 240,
-        specular: 0xffffff,
-        emissive: 0x4080a0,
-        emissiveIntensity: 0.5,
-        transparent: true,
-        opacity: 0.78,
-      });
-      const cockpitMesh = new THREE.Mesh(cockpitGeo, cockpitMat);
-      cockpitMesh.position.set(1, 0, 4.5);
-      cockpitMesh.frustumCulled = false;
-      group.add(cockpitMesh);
-      // Dorsal fin — small vertical spike behind the cockpit. Reads
-      // as a stabiliser/comms array from above.
-      const finShape = new THREE.Shape([
-        new THREE.Vector2(0, 0),
-        new THREE.Vector2(-7, 0),
-        new THREE.Vector2(-5, 5),
-        new THREE.Vector2(0, 4),
-      ]);
-      const finGeo = new THREE.ExtrudeGeometry(finShape, {
-        depth: 1.4, bevelEnabled: true, bevelSize: 0.3, bevelThickness: 0.3, bevelSegments: 1,
-      });
-      const finMat = new THREE.MeshPhongMaterial({
-        color: 0x8ad4ff,
-        shininess: 60,
-        specular: 0xffffff,
-        emissive: 0x305070,
-        emissiveIntensity: 0.4,
-      });
-      const finMesh = new THREE.Mesh(finGeo, finMat);
-      finMesh.position.set(-2, -0.7, 3);
-      finMesh.frustumCulled = false;
-      group.add(finMesh);
-      // Stub wings — short angled fins on each side of the hull.
-      const wingShape = new THREE.Shape([
-        new THREE.Vector2(0, 0),
-        new THREE.Vector2(7, 0),
-        new THREE.Vector2(5, 4),
-        new THREE.Vector2(0, 3),
-      ]);
-      const wingGeo = new THREE.ExtrudeGeometry(wingShape, {
-        depth: 1.2, bevelEnabled: true, bevelSize: 0.3, bevelThickness: 0.3, bevelSegments: 1,
-      });
-      const wingMat = new THREE.MeshPhongMaterial({
-        color: 0x6db4dc,
-        shininess: 80,
-        specular: 0xffffff,
-        emissive: 0x305070,
-        emissiveIntensity: 0.35,
-      });
-      const wingL = new THREE.Mesh(wingGeo, wingMat);
-      wingL.position.set(-8, 6, -0.5);
-      wingL.frustumCulled = false;
-      group.add(wingL);
-      const wingR = new THREE.Mesh(wingGeo, wingMat);
-      wingR.position.set(-8, -6, -0.5);
-      wingR.rotation.x = Math.PI;
-      wingR.frustumCulled = false;
-      group.add(wingR);
-      // Side engine pods — two cylinders flanking the rear thrust.
-      const podGeo = new THREE.CylinderGeometry(2.2, 2.6, 8, 12);
-      podGeo.rotateZ(Math.PI / 2);
-      const podMat = new THREE.MeshPhongMaterial({
-        color: 0x4a7eb0,
-        shininess: 100,
-        specular: 0xffffff,
-        emissive: 0xff8040,
-        emissiveIntensity: 0.45,
-      });
-      const podL = new THREE.Mesh(podGeo, podMat);
-      podL.position.set(-10, 7.5, 0);
-      podL.frustumCulled = false;
-      group.add(podL);
-      const podR = new THREE.Mesh(podGeo, podMat);
-      podR.position.set(-10, -7.5, 0);
-      podR.frustumCulled = false;
-      group.add(podR);
-      // Nose laser barrel — small cylinder protruding from the bow.
-      const barrelGeo = new THREE.CylinderGeometry(1.4, 1.4, 7, 10);
-      barrelGeo.rotateZ(Math.PI / 2);
-      barrelGeo.translate(19, 0, 0);
-      const barrelMat = new THREE.MeshPhongMaterial({
-        color: 0x6080a0,
-        shininess: 140,
-        specular: 0xffffff,
-        emissive: 0xff8040,
-        emissiveIntensity: 0.6,
-      });
-      const barrelMesh = new THREE.Mesh(barrelGeo, barrelMat);
-      barrelMesh.frustumCulled = false;
-      group.add(barrelMesh);
-      // Thrust cone — additive flame at the rear, shown only when
-      // thrusting. Larger and centred between the engine pods now.
-      const thrustGeo = new THREE.ConeGeometry(6, 16, 12);
-      thrustGeo.rotateZ(Math.PI / 2);
-      thrustGeo.translate(-18, 0, 0);
-      const thrustMat = new THREE.MeshBasicMaterial({
-        color: 0xffb84a,
-        transparent: true,
-        opacity: 0.85,
-        blending: THREE.AdditiveBlending,
-      });
-      const thrustMesh = new THREE.Mesh(thrustGeo, thrustMat);
-      thrustMesh.frustumCulled = false;
-      thrustMesh.visible = false;
-      group.add(thrustMesh);
-      scene.add(group);
-      handle.shipMesh = group;
-      handle.shipThrust = thrustMesh;
+  // ── Ships ────────────────────────────────────────────────────────
+  // One mesh per slot; cached per-slot in handle.shipMeshes so 2P duel
+  // / couch (which feed both players' ships) gets two distinct meshes
+  // moving independently. Slots absent from opts.ships keep a hidden
+  // mesh around so the rebuild cost (one ExtrudeGeometry per piece)
+  // doesn't repeat on every respawn.
+  for (let slot = 0; slot < opts.ships.length; slot++) {
+    const ship = opts.ships[slot];
+    if (ship && ship.alive) {
+      let group = handle.shipMeshes[slot] as THREE.Object3D | undefined;
+      let thrust = handle.shipThrusts[slot] as THREE.Mesh | undefined;
+      if (!group) {
+        const built = buildShipMesh();
+        group = built.group;
+        thrust = built.thrust;
+        scene.add(group);
+        handle.shipMeshes[slot] = group;
+        handle.shipThrusts[slot] = thrust;
+      }
+      group.visible = true;
+      group.position.set(ship.pos.x, 720 - ship.pos.y, 0);
+      group.rotation.set(0, 0, -ship.rot);
+      if (thrust) {
+        thrust.visible = !!ship.thrusting;
+        const s = 0.85 + Math.random() * 0.3;
+        thrust.scale.set(s, s, s);
+      }
+    } else {
+      const group = handle.shipMeshes[slot];
+      if (group) group.visible = false;
+      const thrust = handle.shipThrusts[slot];
+      if (thrust) thrust.visible = false;
     }
-    const group = handle.shipMesh;
-    group.visible = true;
-    group.position.set(opts.ship.pos.x, 720 - opts.ship.pos.y, 0);
-    group.rotation.set(0, 0, -opts.ship.rot);
-    if (handle.shipThrust) {
-      handle.shipThrust.visible = !!opts.ship.thrusting;
-      const s = 0.85 + Math.random() * 0.3;
-      handle.shipThrust.scale.set(s, s, s);
-    }
-  } else if (handle.shipMesh) {
-    handle.shipMesh.visible = false;
-    if (handle.shipThrust) handle.shipThrust.visible = false;
+  }
+  // Hide any cached meshes for slots that are NO LONGER present in opts
+  // (e.g. a player slot was removed between renders — uncommon but
+  // possible during mode swap).
+  for (let slot = opts.ships.length; slot < handle.shipMeshes.length; slot++) {
+    const group = handle.shipMeshes[slot];
+    if (group) group.visible = false;
+    const thrust = handle.shipThrusts[slot];
+    if (thrust) thrust.visible = false;
   }
 
-  // ── Shield dome ──────────────────────────────────────────────────
-  // Faceted icosphere + edge wireframe, parented to the ship's world
-  // position (NOT the ship group, so the shield doesn't roll with hull
-  // rotation — it's a sphere around the ship, not a fixed shape).
-  // Lazy-create on first activation; kept around invisible afterwards
-  // because re-creating the geometry every shield burst is wasteful.
-  if (opts.ship && opts.ship.alive && opts.ship.shieldUp && opts.ship.hyperspaceCloakMs <= 0) {
-    if (!handle.shieldMesh) {
-      const group = new THREE.Group();
-      const radius = opts.ship.radius * 2.2;
-      const sphereGeo = new THREE.IcosahedronGeometry(radius, 1);
-      const sphereMat = new THREE.MeshPhongMaterial({
-        color: 0x5b9dff,
-        emissive: 0x305070,
-        emissiveIntensity: 0.5,
-        shininess: 90,
-        specular: 0xffffff,
-        transparent: true,
-        opacity: 0.18,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      });
-      const sphereMesh = new THREE.Mesh(sphereGeo, sphereMat);
-      sphereMesh.frustumCulled = false;
-      group.add(sphereMesh);
-      const edgesGeo = new THREE.EdgesGeometry(sphereGeo);
-      const edgesMat = new THREE.LineBasicMaterial({
-        color: 0xb4d8ff,
-        transparent: true,
-        opacity: 0.85,
-      });
-      const edges = new THREE.LineSegments(edgesGeo, edgesMat);
-      edges.frustumCulled = false;
-      group.add(edges);
-      scene.add(group);
-      handle.shieldMesh = group;
-      handle.shieldSphereMat = sphereMat;
-      handle.shieldEdgeMat = edgesMat;
+  // ── Shield domes ─────────────────────────────────────────────────
+  // Faceted icosphere + edge wireframe per ship slot, parented at the
+  // ship's world position (NOT the ship group, so the shield doesn't
+  // roll with hull rotation — it's a sphere around the ship, not a
+  // fixed shape). Lazy-create on first activation per slot; kept
+  // around invisible afterwards because re-creating the geometry every
+  // shield burst is wasteful.
+  for (let slot = 0; slot < opts.ships.length; slot++) {
+    const ship = opts.ships[slot];
+    if (ship && ship.alive && ship.shieldUp && ship.hyperspaceCloakMs <= 0) {
+      let shield = handle.shieldMeshes[slot] as THREE.Group | undefined;
+      let sphereMat = handle.shieldSphereMats[slot] as THREE.MeshPhongMaterial | undefined;
+      let edgeMat = handle.shieldEdgeMats[slot] as THREE.LineBasicMaterial | undefined;
+      if (!shield) {
+        const built = buildShieldDome(ship.radius);
+        shield = built.group;
+        sphereMat = built.sphereMat;
+        edgeMat = built.edgeMat;
+        scene.add(shield);
+        handle.shieldMeshes[slot] = shield;
+        handle.shieldSphereMats[slot] = sphereMat;
+        handle.shieldEdgeMats[slot] = edgeMat;
+      }
+      shield.visible = true;
+      shield.position.set(ship.pos.x, 720 - ship.pos.y, 0);
+      // Slow drift rotation — gives the dome a living-energy feel without
+      // chasing ship rotation (so the player reads it as a field, not armour).
+      shield.rotation.x += 0.004;
+      shield.rotation.y += 0.006;
+      // Final-300ms fade so the shield isn't yanked off the screen at expiry.
+      const remaining = Math.max(0, ship.shieldExpiresAt - opts.elapsed);
+      const fade = Math.min(1, remaining / 300);
+      const hit = Math.max(0, Math.min(1, ship.shieldHitFlash));
+      if (sphereMat) {
+        sphereMat.opacity = (0.18 + hit * 0.45) * fade;
+        sphereMat.emissiveIntensity = 0.5 + hit * 1.6;
+      }
+      if (edgeMat) {
+        edgeMat.opacity = (0.85 + hit * 0.15) * fade;
+      }
+    } else {
+      const shield = handle.shieldMeshes[slot];
+      if (shield) shield.visible = false;
     }
-    const shield = handle.shieldMesh;
-    shield.visible = true;
-    shield.position.set(opts.ship.pos.x, 720 - opts.ship.pos.y, 0);
-    // Slow drift rotation — gives the dome a living-energy feel without
-    // chasing ship rotation (so the player reads it as a field, not armour).
-    shield.rotation.x += 0.004;
-    shield.rotation.y += 0.006;
-    // Final-300ms fade so the shield isn't yanked off the screen at expiry.
-    const remaining = Math.max(0, opts.ship.shieldExpiresAt - opts.elapsed);
-    const fade = Math.min(1, remaining / 300);
-    const hit = Math.max(0, Math.min(1, opts.ship.shieldHitFlash));
-    if (handle.shieldSphereMat) {
-      handle.shieldSphereMat.opacity = (0.18 + hit * 0.45) * fade;
-      handle.shieldSphereMat.emissiveIntensity = 0.5 + hit * 1.6;
-    }
-    if (handle.shieldEdgeMat) {
-      handle.shieldEdgeMat.opacity = (0.85 + hit * 0.15) * fade;
-    }
-  } else if (handle.shieldMesh) {
-    handle.shieldMesh.visible = false;
+  }
+  for (let slot = opts.ships.length; slot < handle.shieldMeshes.length; slot++) {
+    const shield = handle.shieldMeshes[slot];
+    if (shield) shield.visible = false;
   }
 
   // ── Ship-explosion chunks ────────────────────────────────────────
