@@ -65,6 +65,13 @@ let wsSentFrameCount = 0;
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
+// One-time boot signal so a test driver can count how many fresh worker
+// instances came up during a session — repeated re-instantiation is a
+// sign the connect promise is rejecting and main is retrying, which
+// would look like "broker→worker dropped frames" externally.
+// eslint-disable-next-line no-console
+console.log('[peer-worker] boot');
+
 function post(m: PeerWorkerOutbound): void {
   ctx.postMessage(m);
 }
@@ -112,6 +119,12 @@ function onMessage(ev: MessageEvent): void {
   switch (msg.type) {
     case 'frame':
       wsRecvFrameCount++;
+      // First-frame log: confirms broker→worker actually delivers data.
+      // Quiet after that so we don't flood the console at 60Hz.
+      // eslint-disable-next-line no-console
+      if (wsRecvFrameCount === 1) console.log('[peer-worker] first frame recv slot=' + msg.slot);
+      // eslint-disable-next-line no-console
+      if (wsRecvFrameCount === 30) console.log('[peer-worker] 30 frames recv');
       post({ kind: 'frame', frame: msg.frame, slot: msg.slot, input: msg.input });
       trace({ t: performance.now(), dir: 'in', kind: 'frame', frame: msg.frame, slot: msg.slot, input: msg.input });
       return;
