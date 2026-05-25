@@ -295,7 +295,12 @@ export class WebSocketPeer implements Peer {
         }
       } catch { /* SSR or sandboxed — no window */ }
       try {
-        this.worker = new Worker(new URL('./peer-worker.ts', import.meta.url), { type: 'module' });
+        // Classic worker (no { type: 'module' }) — module workers in Vite's
+        // production IIFE wrapping had a bug where the WebSocket inside the
+        // worker only dispatched the first message event (peer-joined) and
+        // then stopped firing. Classic worker works fine; the worker code
+        // has no runtime imports so it doesn't need module semantics.
+        this.worker = new Worker(new URL('./peer-worker.ts', import.meta.url));
       } catch (e) {
         reject(e instanceof Error ? e : new Error(String(e)));
         return;
