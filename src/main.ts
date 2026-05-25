@@ -66,6 +66,16 @@ const __testHooks = {
   peerRef: null as { getWireTrace?: () => unknown[]; getWireCounters?: () => unknown } | null,
 };
 (window as unknown as { __pallasiteTestHooks?: typeof __testHooks }).__pallasiteTestHooks = __testHooks;
+// Render-test hooks: expose just enough internals so tools/run-render-e2e.ts
+// can confirm what visual tier is active and whether the WebGL overlay is
+// up. These are zero-cost when not called and never referenced in prod.
+import { getVisualStyle, isWebGLOverlayReady } from './visual-style.js';
+(window as unknown as { __pallasiteRenderProbe?: () => unknown }).__pallasiteRenderProbe = () => ({
+  shipTier: getVisualStyle('ship'),
+  asteroidTier: getVisualStyle('asteroid'),
+  webglOverlayReady: isWebGLOverlayReady(),
+});
+
 // Wire trace is opt-in (heavyweight ring buffer of every send/receive).
 // Set by ?wiretrace=1 in the URL; checked by WebSocketPeer.connect().
 const wireTraceEnabled = new URLSearchParams(window.location.search).has('wiretrace');
