@@ -272,6 +272,20 @@ export const SAT_DROP_CHANCE_DENOM = 14;
  *  zeroth-roll) so the player gets visible sat feedback early in every
  *  wave — beats waiting on randomness through a whole level. */
 export const WAVE_SAT_BUDGET = 1;
+/** Wave 1 gets a fatter sat budget so the cold open actually delivers
+ *  on the "STACK SATS" tagline. A new player should see sat coins
+ *  rain in their first ~30 seconds, not trickle one-at-a-time. Tied
+ *  to wave 1 specifically (not first-run-ever) so every fresh session
+ *  re-hooks the player — the dopamine should hit consistently, not
+ *  just the first time. Operator cost: an extra ~4 sats per run,
+ *  which the existing per-run anti-cheat cap absorbs comfortably. */
+export const WAVE_SAT_BUDGET_FIRST_WAVE = 5;
+/** Resolve the active sat budget for the given wave. Centralised so
+ *  the rollPickupKind path and any future telemetry / display surface
+ *  read from the same lookup. */
+export function satBudgetForWave(wave: number): number {
+  return wave === 1 ? WAVE_SAT_BUDGET_FIRST_WAVE : WAVE_SAT_BUDGET;
+}
 
 /** Pallasite VEIN tuning. The event is a long engagement — the prize is
  *  fat and the fight is real. Streams sats per hit, lands a jackpot on
