@@ -113,11 +113,25 @@ function onOpen(): void {
   // We do not post 'connected' here — main waits for partner-joined.
 }
 
+let onMessageFireCount = 0;
 function onMessage(ev: MessageEvent): void {
+  onMessageFireCount++;
+  // Log first few messages and every 30th. Tells us whether onMessage is
+  // even firing for the frames broker logs as forwarded.
+  // eslint-disable-next-line no-console
+  if (onMessageFireCount <= 3 || onMessageFireCount % 30 === 0) {
+    const preview = typeof ev.data === 'string' ? ev.data.slice(0, 80) : `[${typeof ev.data}]`;
+    // eslint-disable-next-line no-console
+    console.log(`[peer-worker] onMessage #${onMessageFireCount} dataType=${typeof ev.data} preview=${preview}`);
+  }
   let msg: PeerMsgIn;
   try {
     msg = JSON.parse(typeof ev.data === 'string' ? ev.data : '') as PeerMsgIn;
-  } catch { return; }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.log(`[peer-worker] onMessage parse failed: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
   switch (msg.type) {
     case 'frame':
       wsRecvFrameCount++;
