@@ -36,7 +36,7 @@ import { warmWebGLIfPreviouslyEnabled, getTheme, getAsciiCols, getBitDepth, getB
 import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
 import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges, EMPTY_INPUT, isPeerActive, setPeerActive } from './netcode.js';
-import { hashState, PEER_HASH_PERIOD } from './peer-canary.js';
+import { hashState, PEER_HASH_PERIOD, serializeForCanary } from './peer-canary.js';
 import { WebSocketPeer, SpectatorPeer, type Peer, type PeerSlot } from './peer.js';
 import type { GameState } from './types.js';
 import { DOWN_DOUBLE_TAP_WINDOW_MS, WORLD_W, WORLD_H } from './types.js';
@@ -75,10 +75,32 @@ import { getVisualStyle, isWebGLOverlayReady } from './visual-style.js';
   asteroidTier: getVisualStyle('asteroid'),
   webglOverlayReady: isWebGLOverlayReady(),
 });
+// Desync-hunter hook: dump the input log around a given frame so the
+// hunter can see what each peer actually received via the wire for each
+// slot. Reads inputLog (declared further below) lazily so the closure
+// captures the live binding rather than the initial null.
+(window as unknown as { __pallasiteInputLogProbe?: (from: number, to: number) => unknown }).__pallasiteInputLogProbe = (from: number, to: number) => {
+  if (!inputLog) return null;
+  const out: Array<[number, number, number]> = [];
+  for (let f = from; f <= to; f++) {
+    for (let slot = 0; slot < inputLog.players; slot++) {
+      out.push([f, slot, inputLog.get(f, slot)]);
+    }
+  }
+  return out;
+};
 
 // Wire trace is opt-in (heavyweight ring buffer of every send/receive).
 // Set by ?wiretrace=1 in the URL; checked by WebSocketPeer.connect().
 const wireTraceEnabled = new URLSearchParams(window.location.search).has('wiretrace');
+// Desync hunter — opt-in via ?desync-hunt=1. Allocates a ring of recent
+// per-frame serialised states keyed by sim frame so the test runner can
+// diff state across all peers and find the first frame where any of them
+// disagree. Zero cost when off.
+const desyncHuntEnabled = new URLSearchParams(window.location.search).has('desync-hunt');
+if (desyncHuntEnabled) {
+  (window as unknown as { __pallasiteCanaryHistory?: Map<number, string> }).__pallasiteCanaryHistory = new Map();
+}
 if (wireTraceEnabled) {
   (window as unknown as { __pallasiteWireTrace?: number }).__pallasiteWireTrace = 1;
 }
@@ -888,6 +910,12 @@ function loop(now: number): void {
     // slot and stomp the canonical input for that frame.
     const peerActive = isPeerActive();
     const activeDelay = peerActive ? PEER_INPUT_DELAY : inputDelay;
+    // Encoded inputs the apply step fed into this sim tick. Captured here
+    // so the desync hunter's canary serialiser (further down) can include
+    // them — answers "did the peers apply different inputs at this frame,
+    // or compute differently from identical inputs?". Empty array on a
+    // hit-stop frame or non-peer mode (no apply step ran).
+    let appliedThisStep: number[] = [];
     // Solo and couch take the pre-M2 direct path: keydown handlers already
     // dispatched the edge actions synchronously and players[i].keys still
     // holds the live input -- updateGame reads it as it always did. The
@@ -897,10 +925,48 @@ function loop(now: number): void {
       if (!inputLog || inputLog.players !== state.players.length) {
         inputLog = new InputLog(state.players.length);
       }
-      // 1) Sample LOCAL slot(s) and (if peer) send.
-      //    Spectator mode has NO local slots — every input comes from the
-      //    broker tap. Duel mode samples just the local slot; couch (which
-      //    never sets peerActive today) samples both.
+      // 1) Drain remote frames into the log FIRST so the stall check sees
+      //    everything currently available. Duel: the OTHER slot only.
+      //    Spectator: whichever slot each delivery is tagged with (both).
+      if (spectator) {
+        const drained = spectator.drainFrames();
+        for (const d of drained) inputLog.record(d.frame, d.slot, d.input);
+        if (duelDebugMode && drained.length > 0) try { window.dispatchEvent(new CustomEvent('pallasite:peer-frame-drain', { detail: { count: drained.length } })); } catch { /* ignore */ }
+      } else if (peer) {
+        const remoteSlot = (1 - mpSlot) as 0 | 1;
+        const drained = peer.drainFrames();
+        for (const d of drained) inputLog.record(d.frame, remoteSlot, d.input);
+        if (duelDebugMode && drained.length > 0) try { window.dispatchEvent(new CustomEvent('pallasite:peer-frame-drain', { detail: { count: drained.length } })); } catch { /* ignore */ }
+      }
+      // 2) Stall check in any peer-driven mode: every slot's input for
+      //    the read frame must be present. The read frame can be negative
+      //    in the first `activeDelay` frames (pre-roll); EMPTY_INPUT is
+      //    used and the sim coasts.
+      //
+      //    Local-slot input for `readFrame` was written by an EARLIER
+      //    iteration's sample (state.frame == readFrame, activeDelay
+      //    iterations ago). We have not yet sampled at `state.frame` for
+      //    THIS iteration — that's step 3, after the stall check passes.
+      const readFrame = state.frame - activeDelay;
+      let stalled = false;
+      if (peerActive && readFrame >= 0) {
+        for (let i = 0; i < state.players.length; i++) {
+          if (inputLog.get(readFrame, i) < 0) { stalled = true; break; }
+        }
+      }
+      if (stalled) break;  // hold the accumulator; next rAF retries
+      // 3) Sample LOCAL slot(s) and (if peer) send — ONLY now that we
+      //    know this iteration will advance. Sampling before the stall
+      //    check (the previous order) re-sampled the same `state.frame`
+      //    on every rAF retry while stalled, producing duplicate wire
+      //    sends with whatever the keyboard read at THAT moment. The
+      //    receiver's last-write-wins guarantee then meant peers could
+      //    end up applying different in-flight values depending on
+      //    drain timing — the canonical lockstep desync.
+      //
+      //    Spectator mode has NO local slots — every input comes from
+      //    the broker tap. Duel mode samples just the local slot; couch
+      //    (which never sets peerActive today) samples both.
       const localSampleSlots = spectator
         ? []
         : peer
@@ -919,33 +985,12 @@ function loop(now: number): void {
         inputLog.record(state.frame, i, encoded);
         if (peer) peer.sendFrame(state.frame, encoded);
       }
-      // 2) Drain remote frames into the log. Duel: the OTHER slot only.
-      //    Spectator: whichever slot each delivery is tagged with (both).
-      if (spectator) {
-        const drained = spectator.drainFrames();
-        for (const d of drained) inputLog.record(d.frame, d.slot, d.input);
-        if (duelDebugMode && drained.length > 0) try { window.dispatchEvent(new CustomEvent('pallasite:peer-frame-drain', { detail: { count: drained.length } })); } catch { /* ignore */ }
-      } else if (peer) {
-        const remoteSlot = (1 - mpSlot) as 0 | 1;
-        const drained = peer.drainFrames();
-        for (const d of drained) inputLog.record(d.frame, remoteSlot, d.input);
-        if (duelDebugMode && drained.length > 0) try { window.dispatchEvent(new CustomEvent('pallasite:peer-frame-drain', { detail: { count: drained.length } })); } catch { /* ignore */ }
-      }
-      // 3) Stall check in any peer-driven mode: every slot's input for
-      //    the read frame must be present. The read frame can be negative
-      //    in the first `activeDelay` frames (pre-roll); EMPTY_INPUT is
-      //    used and the sim coasts.
-      const readFrame = state.frame - activeDelay;
-      let stalled = false;
-      if (peerActive && readFrame >= 0) {
-        for (let i = 0; i < state.players.length; i++) {
-          if (inputLog.get(readFrame, i) < 0) { stalled = true; break; }
-        }
-      }
-      if (stalled) break;  // hold the accumulator; next rAF retries
-      // 4) Apply + edge dispatch.
+      // 4) Apply + edge dispatch. Record each slot's applied encoded
+      // input for this step so the desync hunter can compare what each
+      // peer actually fed into the sim.
       for (let i = 0; i < state.players.length; i++) {
         const encoded = readFrame >= 0 ? inputLog.get(readFrame, i) : -1;
+        appliedThisStep.push(encoded);
         const input = encoded >= 0 ? decodePlayerInput(encoded) : EMPTY_INPUT;
         applyPlayerInput(state.players[i], input);
         if (state.phase === 'playing') {
@@ -974,6 +1019,22 @@ function loop(now: number): void {
     // of GameState and send to the partner. We retain our own hash so a
     // later-arriving partner hash can be compared. Solo / couch skip
     // this entirely (no peer, no exchange).
+    // Desync hunter: when ?desync-hunt=1, capture the FULL serialised
+    // state EVERY frame so the test runner can find the exact frame
+    // (not just the nearest canary period) where peers first diverge.
+    // Memory bound to a ring so even long runs don't blow up.
+    if (desyncHuntEnabled && peerActive && (peer || spectator) && state.frame > 0) {
+      const history = (window as unknown as { __pallasiteCanaryHistory?: Map<number, string> }).__pallasiteCanaryHistory;
+      if (history) {
+        history.set(state.frame, serializeForCanary(state, appliedThisStep));
+        // Keep ~2000 frames (~33 seconds at 60Hz). The first divergence
+        // is what matters; we don't need a longer window than that.
+        if (history.size > 2000) {
+          const oldest = Math.min(...history.keys());
+          history.delete(oldest);
+        }
+      }
+    }
     if (peerActive && peer && !spectator && state.frame > 0 && (state.frame % PEER_HASH_PERIOD) === 0) {
       const h = hashState(state);
       localCanaryHashes.set(state.frame, h);
