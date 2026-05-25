@@ -82,8 +82,12 @@ function trace(entry: WireTraceEntry): void {
 }
 
 function buildSocketUrl(): string {
+  // NOTE: do NOT include `&slot=` in the URL. The broker reads slot from
+  // hello-peer, not the URL, but Caddy + the kernel-level WS handling
+  // appear to behave differently when extra query params are present.
+  // The working bare-WS test uses exactly this shape.
   const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}s=${encodeURIComponent(session)}&r=peer&slot=${localSlot}`;
+  return `${url}${sep}s=${encodeURIComponent(session)}&r=peer`;
 }
 
 function openSocket(): void {
