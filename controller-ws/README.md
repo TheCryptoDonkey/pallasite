@@ -1,10 +1,13 @@
 # Pallasite controller WebSocket relay
 
-> **Note (2026-05-14):** This directory is a one-week rollback path.
-> The canonical broker source has moved out of this repo. Edits made
-> here no longer deploy to production. Track changes upstream and
-> delete this directory after the rollback window has passed (target
-> 2026-05-21).
+> **Note:** The canonical broker source lives in `joystick/packages/broker/`
+> and is what deploys to controller.pallasite.app. This directory is a
+> committed test fixture: tools/run-e2e.ts, run-lobby-e2e.ts,
+> run-desync-hunter.ts, run-spectate-latejoin-e2e.ts all spin up a fresh
+> broker per run from server.js here so they don't depend on the joystick
+> sibling being checked out. **Production edits go to joystick;** any
+> change made here must also be ported there (and vice versa — the two
+> server.js files should stay byte-identical).
 
 Tiny Node service that pairs phone controllers with the big-screen
 game host. Bypasses the higher-latency Nostr publish/subscribe path
