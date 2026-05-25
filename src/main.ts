@@ -892,6 +892,20 @@ function loop(now: number): void {
     requestAnimationFrame(loop);
     return;
   }
+  // Peer-mode throttle: when in a lockstep duel/spectate session, cap
+  // the loop to the sim's fixed step rate. Without this, browsers that
+  // run rAF faster than 60Hz (chromium-headless under load, 120Hz
+  // displays) hammer the main thread with render + sim work and starve
+  // the WebSocket event loop, dropping inbound frame messages. Real
+  // 60Hz browsers see no change (the check is "did 16.67ms pass?",
+  // which is true on every native rAF). Headless / high-refresh
+  // displays drop a fraction of rAFs, freeing up CPU for WS events
+  // and (more importantly) eliminating the main-thread back-pressure
+  // that was tipping production lockstep into deadlock.
+  if (isPeerActive() && (now - lastFrame) * 0.001 < FIXED_STEP_S * 0.9) {
+    requestAnimationFrame(loop);
+    return;
+  }
   // Bank real time, clamped, then spend it one fixed sim step at a time.
   stepAccumulator += Math.min(MAX_CATCHUP_STEPS * FIXED_STEP_S, (now - lastFrame) / 1000);
   lastFrame = now;
