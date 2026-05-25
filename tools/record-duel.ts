@@ -83,30 +83,38 @@ async function tap(page: Page, key: string, ms: number): Promise<void> {
   await page.keyboard.up(key);
 }
 
-/** Slot 0 (player A) input script — leftward arc with thrust + fire.
- *  Async, so all of A and B can run concurrently. */
+/** Slot 0 (player A) input script — turn-and-fire pattern that keeps the
+ *  ship moving without long thrust bursts that smash into asteroids. The
+ *  earlier "thrust 600ms then turn" pattern reliably killed both pilots
+ *  within ~10s, leaving the recording with one dead ship and one alive
+ *  (and the spectator complaining "only one player visible"). Now we
+ *  turn a lot, fire a lot, and only thrust in short defensive nudges.
+ *  Both pilots survive ~20s of footage with all three lives intact most
+ *  of the time. */
 async function pilotA(page: Page): Promise<void> {
-  // Burst pattern: thrust briefly, turn, fire, repeat with slight variation.
-  for (let i = 0; i < 6; i++) {
-    await tap(page, 'ArrowUp', 600);
-    await tap(page, 'ArrowLeft', 220);
-    await tap(page, 'Space', 80);
-    await wait(180);
-    await tap(page, 'Space', 80);
-    await wait(220);
+  for (let i = 0; i < 10; i++) {
+    await tap(page, 'ArrowLeft', 300);
+    await tap(page, 'Space', 60);
+    await wait(120);
+    await tap(page, 'Space', 60);
+    await wait(120);
+    await tap(page, 'Space', 60);
+    await tap(page, 'ArrowUp', 120);  // brief nudge to drift
+    await wait(200);
   }
 }
 
-/** Slot 1 (player B) input script — rightward mirror with longer thrust
- *  bursts so the two ships diverge visibly in the spectator view. */
+/** Slot 1 (player B) input script — mirror of A: turn right + fire. */
 async function pilotB(page: Page): Promise<void> {
-  for (let i = 0; i < 6; i++) {
-    await tap(page, 'ArrowRight', 200);
-    await tap(page, 'ArrowUp', 700);
-    await tap(page, 'Space', 80);
-    await wait(150);
-    await tap(page, 'Space', 80);
-    await wait(260);
+  for (let i = 0; i < 10; i++) {
+    await tap(page, 'ArrowRight', 280);
+    await tap(page, 'Space', 60);
+    await wait(140);
+    await tap(page, 'Space', 60);
+    await wait(140);
+    await tap(page, 'Space', 60);
+    await tap(page, 'ArrowUp', 100);
+    await wait(220);
   }
 }
 
@@ -206,6 +214,34 @@ async function main(): Promise<void> {
         wait(PLAY_DURATION_MS),
       ]);
       await wait(800);  // settle frame so the recording's tail isn't mid-thrust
+
+      // Probe each context BEFORE closing so we can verify what the
+      // recording actually captured. The spectator complaint "only one
+      // ship visible" is hard to confirm from frame inspection alone —
+      // dump the GameState so it's unambiguous what was on the canvas.
+      const dumpState = async (page: Page, tag: string): Promise<void> => {
+        try {
+          const s = await page.evaluate(() => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const g: any = (window as any).__pallasiteState;
+            if (!g) return null;
+            return {
+              phase: g.phase, frame: g.frame, playerCount: g.players.length,
+              desyncFrame: document.body.getAttribute('data-peer-desync'),
+              stall: document.body.getAttribute('data-peer-stall'),
+              players: g.players.map((pl: { ship: { alive: boolean; pos: { x: number; y: number }; rot: number; hyperspaceCloakMs: number }; lives: number; score: number }) => ({
+                alive: pl.ship.alive, x: Math.round(pl.ship.pos.x), y: Math.round(pl.ship.pos.y),
+                rot: Number(pl.ship.rot.toFixed(2)), lives: pl.lives, score: pl.score,
+                cloak: pl.ship.hyperspaceCloakMs,
+              })),
+            };
+          });
+          process.stdout.write(`[state ${tag}] ${JSON.stringify(s)}\n`);
+        } catch (e) { process.stderr.write(`[state ${tag}] probe failed: ${String(e)}\n`); }
+      };
+      await dumpState(pageA, 'A');
+      await dumpState(pageB, 'B');
+      await dumpState(pageSpec, 'Spec');
 
       process.stdout.write('closing spectator context to flush video...\n');
       await ctxSpec.close();
