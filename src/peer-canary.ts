@@ -16,7 +16,6 @@
  */
 
 import type { GameState, PlayerState, Asteroid, Ufo, Bullet, Mine, Coin, PowerUp } from './types.js';
-import { getRngState } from './seed.js';
 
 /** Hash every N sim frames. 60 = once per second at fixed 60Hz. Keeps
  *  bandwidth trivial (one int per second per peer) and gives a useful
@@ -51,7 +50,7 @@ export function serializeForCanary(s: GameState, appliedInputs?: ReadonlyArray<n
   ]);
   return JSON.stringify({
     f: s.frame, ph: s.phase, w: s.wave, el: s.elapsed, hs: s.hitStopSteps,
-    rng: getRngState(),
+    rng: s.rng,
     inp: appliedInputs ?? null,
     players,
     ast: s.asteroids.map((a: Asteroid) => [a.pos.x, a.pos.y, a.vel.x, a.vel.y, a.radius, a.id, a.hp]),
