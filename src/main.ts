@@ -854,6 +854,10 @@ document.addEventListener('resume', hardResume);
 const MAX_CATCHUP_STEPS = 5;
 let lastFrame = performance.now();
 let stepAccumulator = 0;
+/** Wall-clock ms of the most recent render call. Used by the peer-mode
+ *  render throttle to cap render rate at ~30Hz (vs the natural 60Hz)
+ *  and leave main-thread headroom for the WebSocket event handler. */
+let lastRenderTime = 0;
 let lastPhase = state.phase;
 
 /** Apply the active presentation theme to the finished frame. With a theme
@@ -1158,9 +1162,20 @@ function loop(now: number): void {
     delete document.body.dataset.peerDesync;
   }
 
-  render(canvas, state, now);
-  applyThemeFrame(canvas, now);
-  if (getTheme() === 'ascii') drawAsciiHud(canvas, state);
+  // Peer-mode render throttle: render at ~30Hz instead of every rAF
+  // when in lockstep, freeing the main thread for WS event handling.
+  // Production diagnostics showed render work was starving the WS
+  // event loop — broker forwarded all frames but the browser's
+  // onmessage callback couldn't keep up, dropping the game into the
+  // watchdog-tears-down-the-connection failure mode after ~10 frames.
+  // Halving render rate is a substantial main-thread budget recovery
+  // without making the game feel laggy at duel pace.
+  if (!isPeerActive() || (now - lastRenderTime) >= 1000 / 33) {
+    render(canvas, state, now);
+    applyThemeFrame(canvas, now);
+    if (getTheme() === 'ascii') drawAsciiHud(canvas, state);
+    lastRenderTime = now;
+  }
 
   // Phase transitions render UI overlays
   if (state.phase !== lastPhase) {
