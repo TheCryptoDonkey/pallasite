@@ -1,52 +1,105 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <!-- Pallasite app icon: peridot olivine crystal in iron-nickel matrix.
-       Stylised cross-section of a real pallasite specimen. -->
+  <!--
+    Pallasite favicon (simple, optimised for 16-192px).
+    Bold silhouette: silver disk + 5 oversized olivine pebbles.
+    No Widmanstätten lines — they vanish at favicon size.
+  -->
   <defs>
-    <radialGradient id="bg" cx="50%" cy="50%" r="60%">
+    <radialGradient id="space" cx="50%" cy="50%" r="65%">
       <stop offset="0%" stop-color="#1a1430"/>
       <stop offset="60%" stop-color="#0a0418"/>
       <stop offset="100%" stop-color="#000000"/>
     </radialGradient>
-    <linearGradient id="crystal" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#ffd84a"/>
-      <stop offset="50%" stop-color="#7fffb0"/>
-      <stop offset="100%" stop-color="#3da067"/>
-    </linearGradient>
-    <radialGradient id="shine" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.5"/>
-      <stop offset="40%" stop-color="#ffffff" stop-opacity="0"/>
+
+    <radialGradient id="ironNickel" cx="36%" cy="30%" r="92%">
+      <stop offset="0%"  stop-color="#cdd3dd"/>
+      <stop offset="35%" stop-color="#8a92a4"/>
+      <stop offset="75%" stop-color="#454c5e"/>
+      <stop offset="100%" stop-color="#1c2030"/>
     </radialGradient>
+
+    <radialGradient id="olvGreen" cx="32%" cy="26%" r="78%">
+      <stop offset="0%" stop-color="#f8ff96"/>
+      <stop offset="38%" stop-color="#b8e066"/>
+      <stop offset="78%" stop-color="#4e9a3e"/>
+      <stop offset="100%" stop-color="#10381a"/>
+    </radialGradient>
+    <radialGradient id="olvGold" cx="35%" cy="28%" r="80%">
+      <stop offset="0%" stop-color="#fff0a8"/>
+      <stop offset="42%" stop-color="#d8d860"/>
+      <stop offset="82%" stop-color="#6e7e2c"/>
+      <stop offset="100%" stop-color="#1e260c"/>
+    </radialGradient>
+
+    <radialGradient id="glint" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.9"/>
+      <stop offset="60%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+
+    <radialGradient id="vignette" cx="50%" cy="50%" r="50%">
+      <stop offset="74%" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.6"/>
+    </radialGradient>
+
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="58%" stop-color="#7fffb0" stop-opacity="0"/>
+      <stop offset="84%" stop-color="#7fffb0" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#7fffb0" stop-opacity="0"/>
+    </radialGradient>
+
+    <symbol id="bigPebble" overflow="visible">
+      <path d="M -50,-18 C -58,-46 -22,-58 6,-52 C 42,-46 56,-14 50,18 C 44,46 14,58 -16,52 C -44,44 -56,18 -50,-18 Z"/>
+    </symbol>
+
+    <clipPath id="diskClip">
+      <circle cx="256" cy="256" r="220"/>
+    </clipPath>
   </defs>
-  <!-- Background field -->
-  <rect width="512" height="512" fill="url(#bg)"/>
-  <!-- Iron-nickel matrix outline (subtle ring) -->
-  <circle cx="256" cy="256" r="220" fill="none" stroke="#5b9dff" stroke-width="2" stroke-opacity="0.25"/>
-  <circle cx="256" cy="256" r="200" fill="none" stroke="#b48cff" stroke-width="1" stroke-opacity="0.2"/>
-  <!-- Faint star scatter (cosmic field) -->
-  <g fill="#cfd6ff" fill-opacity="0.55">
-    <circle cx="78" cy="120" r="1.5"/>
-    <circle cx="430" cy="180" r="2"/>
-    <circle cx="120" cy="400" r="1.5"/>
-    <circle cx="380" cy="430" r="1.5"/>
-    <circle cx="450" cy="80" r="1"/>
-    <circle cx="60" cy="280" r="1"/>
-    <circle cx="420" cy="320" r="1"/>
-    <circle cx="200" cy="60" r="1"/>
-    <circle cx="320" cy="450" r="1"/>
+
+  <rect width="512" height="512" fill="url(#space)"/>
+
+  <!-- halo -->
+  <circle cx="256" cy="256" r="248" fill="url(#halo)"/>
+
+  <!-- disk -->
+  <circle cx="256" cy="256" r="220" fill="url(#ironNickel)"/>
+
+  <!-- pebbles -->
+  <g clip-path="url(#diskClip)">
+    <!-- Top-left big green -->
+    <g transform="translate(168 178) rotate(-14) scale(1.05)">
+      <use href="#bigPebble" fill="#000" fill-opacity="0.5" transform="translate(4 5)"/>
+      <use href="#bigPebble" fill="url(#olvGreen)" stroke="#10381a" stroke-width="2" stroke-opacity="0.75"/>
+      <ellipse cx="-22" cy="-26" rx="18" ry="9" fill="url(#glint)" transform="rotate(-22)"/>
+    </g>
+    <!-- Top-right gold -->
+    <g transform="translate(348 188) rotate(34) scale(0.85)">
+      <use href="#bigPebble" fill="#000" fill-opacity="0.5" transform="translate(4 5)"/>
+      <use href="#bigPebble" fill="url(#olvGold)" stroke="#1e260c" stroke-width="2" stroke-opacity="0.75"/>
+      <ellipse cx="-18" cy="-22" rx="14" ry="7" fill="url(#glint)" transform="rotate(10)"/>
+    </g>
+    <!-- Centre-bottom big green -->
+    <g transform="translate(230 348) rotate(48) scale(1.1)">
+      <use href="#bigPebble" fill="#000" fill-opacity="0.5" transform="translate(4 5)"/>
+      <use href="#bigPebble" fill="url(#olvGreen)" stroke="#10381a" stroke-width="2" stroke-opacity="0.75"/>
+      <ellipse cx="-24" cy="-28" rx="18" ry="9" fill="url(#glint)" transform="rotate(-18)"/>
+    </g>
+    <!-- Right-mid gold -->
+    <g transform="translate(372 322) rotate(-22) scale(0.78)">
+      <use href="#bigPebble" fill="#000" fill-opacity="0.5" transform="translate(3 4)"/>
+      <use href="#bigPebble" fill="url(#olvGold)" stroke="#1e260c" stroke-width="1.8" stroke-opacity="0.7"/>
+      <ellipse cx="-16" cy="-20" rx="13" ry="6" fill="url(#glint)"/>
+    </g>
+    <!-- Left-mid small green -->
+    <g transform="translate(120 296) rotate(-44) scale(0.62)">
+      <use href="#bigPebble" fill="#000" fill-opacity="0.5" transform="translate(3 4)"/>
+      <use href="#bigPebble" fill="url(#olvGreen)" stroke="#10381a" stroke-width="1.6" stroke-opacity="0.7"/>
+      <ellipse cx="-14" cy="-18" rx="12" ry="6" fill="url(#glint)"/>
+    </g>
   </g>
-  <!-- Peridot crystal (rhombus / diamond) -->
-  <g transform="translate(256 256) rotate(20)">
-    <polygon points="0,-150 110,0 0,150 -110,0"
-             fill="url(#crystal)"
-             stroke="#7fffb0"
-             stroke-width="3"
-             filter="drop-shadow(0 0 24 #7fffb0)"/>
-    <!-- Refraction facet lines -->
-    <line x1="0" y1="-100" x2="0" y2="100" stroke="#ffffff" stroke-width="1.5" stroke-opacity="0.55"/>
-    <line x1="-80" y1="0" x2="80" y2="0" stroke="#ffffff" stroke-width="1.5" stroke-opacity="0.55"/>
-    <line x1="-55" y1="-75" x2="55" y2="75" stroke="#ffffff" stroke-width="1" stroke-opacity="0.3"/>
-    <line x1="55" y1="-75" x2="-55" y2="75" stroke="#ffffff" stroke-width="1" stroke-opacity="0.3"/>
-    <!-- Highlight glint -->
-    <ellipse cx="-30" cy="-50" rx="22" ry="40" fill="url(#shine)"/>
-  </g>
+
+  <!-- vignette + rim -->
+  <circle cx="256" cy="256" r="220" fill="url(#vignette)" clip-path="url(#diskClip)"/>
+  <circle cx="256" cy="256" r="220" fill="none" stroke="#06080e" stroke-width="4" stroke-opacity="0.9"/>
+  <circle cx="256" cy="256" r="216" fill="none" stroke="#ffffff" stroke-width="1.5" stroke-opacity="0.2"/>
 </svg>
