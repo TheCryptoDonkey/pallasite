@@ -11627,11 +11627,16 @@ function buildDuelInviteUrl(session: string, partnerSlot: 0 | 1): string {
 
 /** Build the spectator page URL. Anyone opening this connects via the
  *  broker peerwatch role and watches the duel read-only. No slot — the
- *  spectator sees BOTH ships. */
+ *  spectator sees BOTH ships. The encoded `peer` param carries the FULL
+ *  peerwatch URL (broker base + `?s=…&r=peerwatch`) so the spectator's
+ *  SpectatorPeer.connect can open it directly; it must NOT reuse the
+ *  duel peer URL (that one has `r=peer`, which the broker treats as a
+ *  half-handshake peer and the spectator never resolves). */
 function buildSpectateUrl(session: string): string {
-  const peer = buildBrokerPeerUrl(session);
+  const base = defaultBrokerWsUrl().replace(/\/$/, '');
+  const peerWatchUrl = `${base}/?s=${encodeURIComponent(session)}&r=peerwatch`;
   const origin = window.location.origin;
-  return `${origin}/?spectate=${encodeURIComponent(session)}&peer=${encodeURIComponent(peer)}`;
+  return `${origin}/?spectate=${encodeURIComponent(session)}&peer=${encodeURIComponent(peerWatchUrl)}`;
 }
 
 /** 8-char crockford-base32-ish session id. Short enough to type, long
