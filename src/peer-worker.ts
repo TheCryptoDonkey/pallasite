@@ -39,7 +39,7 @@ export type PeerWorkerOutbound =
   | { kind: 'frame'; frame: number; slot: PeerSlot; input: number }
   | { kind: 'hash'; frame: number; slot: PeerSlot; hash: number }
   | { kind: 'wire-entry'; entry: WireTraceEntry }
-  | { kind: 'counters'; bufferedAmount: number; readyState: number };
+  | { kind: 'counters'; bufferedAmount: number; readyState: number; wsRecvFrameCount: number; wsSentFrameCount: number };
 
 // ── Worker-side WebSocket state ──────────────────────────────────────────────
 
@@ -57,6 +57,11 @@ let initialConnectDone = false;
 let deliberateClose = false;
 let reconnectAttempt = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+// Ground-truth recv/send counts measured INSIDE the worker (i.e., before
+// any postMessage hop to main). Compared against main-side recv counts in
+// getWireCounters() to see if worker→main delivery is the bottleneck.
+let wsRecvFrameCount = 0;
+let wsSentFrameCount = 0;
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
@@ -106,6 +111,7 @@ function onMessage(ev: MessageEvent): void {
   } catch { return; }
   switch (msg.type) {
     case 'frame':
+      wsRecvFrameCount++;
       post({ kind: 'frame', frame: msg.frame, slot: msg.slot, input: msg.input });
       trace({ t: performance.now(), dir: 'in', kind: 'frame', frame: msg.frame, slot: msg.slot, input: msg.input });
       return;
@@ -184,7 +190,13 @@ function cleanupSocket(): void {
 // Periodic counters snapshot for diagnostics. Cheap; main caches the latest.
 const COUNTERS_INTERVAL_MS = 250;
 setInterval(() => {
-  post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: ws ? ws.readyState : -1 });
+  post({
+    kind: 'counters',
+    bufferedAmount: ws ? ws.bufferedAmount : -1,
+    readyState: ws ? ws.readyState : -1,
+    wsRecvFrameCount,
+    wsSentFrameCount,
+  });
 }, COUNTERS_INTERVAL_MS);
 
 ctx.addEventListener('message', (ev: MessageEvent<PeerWorkerInbound>) => {
@@ -212,6 +224,7 @@ ctx.addEventListener('message', (ev: MessageEvent<PeerWorkerInbound>) => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       const out: PeerMsgOut = { type: 'frame', frame: msg.frame, slot: localSlot, input: msg.input };
       ws.send(JSON.stringify(out));
+      wsSentFrameCount++;
       trace({ t: performance.now(), dir: 'out', kind: 'frame', frame: msg.frame, slot: localSlot, input: msg.input, bufferedAmount: ws.bufferedAmount });
       return;
     }

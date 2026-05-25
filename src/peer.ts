@@ -275,6 +275,13 @@ export class WebSocketPeer implements Peer {
   /** Latest socket snapshot the worker has pushed (~4Hz). -1 before any. */
   private latestBufferedAmount = -1;
   private latestReadyState = -1;
+  /** Worker-side ground-truth counters from the periodic snapshot. The
+   *  main-side recvFrameCount only ticks once main has processed each
+   *  worker→main postMessage; comparing the two shows whether worker→main
+   *  delivery is starving (vs. broker→worker which would show in the WS
+   *  layer itself). */
+  private wsRecvFrameCount = 0;
+  private wsSentFrameCount = 0;
 
   connect(opts: PeerConnectOpts): Promise<void> {
     return new Promise<void>((resolve, reject) => {
@@ -316,7 +323,7 @@ export class WebSocketPeer implements Peer {
       | { kind: 'frame'; frame: number; slot: PeerSlot; input: number }
       | { kind: 'hash'; frame: number; slot: PeerSlot; hash: number }
       | { kind: 'wire-entry'; entry: WireTraceEntry }
-      | { kind: 'counters'; bufferedAmount: number; readyState: number };
+      | { kind: 'counters'; bufferedAmount: number; readyState: number; wsRecvFrameCount: number; wsSentFrameCount: number };
     switch (m.kind) {
       case 'connected':
         this.connected = true;
@@ -355,6 +362,8 @@ export class WebSocketPeer implements Peer {
       case 'counters':
         this.latestBufferedAmount = m.bufferedAmount;
         this.latestReadyState = m.readyState;
+        this.wsRecvFrameCount = m.wsRecvFrameCount;
+        this.wsSentFrameCount = m.wsSentFrameCount;
         return;
     }
   };
@@ -372,7 +381,7 @@ export class WebSocketPeer implements Peer {
   }
 
   /** Return lightweight cumulative counters (always available). */
-  getWireCounters(): { sentFrameCount: number; sentHashCount: number; recvFrameCount: number; recvHashCount: number; lastSendFrame: number; lastRecvFrame: number; bufferedAmount: number; readyState: number } {
+  getWireCounters(): { sentFrameCount: number; sentHashCount: number; recvFrameCount: number; recvHashCount: number; lastSendFrame: number; lastRecvFrame: number; bufferedAmount: number; readyState: number; wsRecvFrameCount: number; wsSentFrameCount: number } {
     return {
       sentFrameCount: this.sentFrameCount,
       sentHashCount: this.sentHashCount,
@@ -382,6 +391,8 @@ export class WebSocketPeer implements Peer {
       lastRecvFrame: this.lastRecvFrame,
       bufferedAmount: this.latestBufferedAmount,
       readyState: this.latestReadyState,
+      wsRecvFrameCount: this.wsRecvFrameCount,
+      wsSentFrameCount: this.wsSentFrameCount,
     };
   }
 
