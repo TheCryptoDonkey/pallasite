@@ -58,8 +58,12 @@ async function main(): Promise<void> {
 
   const browser: Browser = await chromium.launch();
   try {
-    const ctxA = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-    const ctxB = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+    // Block service-worker registration so the test doesn't get caught
+    // in the controllerchange → reload cycle that fires on a fresh
+    // chromium with no prior SW. Real users on the second+ visit
+    // already have the SW controlling and skip this dance.
+    const ctxA = await browser.newContext({ viewport: { width: 1280, height: 720 }, serviceWorkers: 'block' });
+    const ctxB = await browser.newContext({ viewport: { width: 1280, height: 720 }, serviceWorkers: 'block' });
     const pageA = await ctxA.newPage();
     const pageB = await ctxB.newPage();
     const interesting = (msg: import('playwright').ConsoleMessage): boolean => {
