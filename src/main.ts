@@ -959,44 +959,22 @@ function loop(now: number): void {
         // the extra capacity is essentially free.
         inputLog = new InputLog(state.players.length, 4096);
       }
-      // 1) Drain remote frames into the log FIRST so the stall check sees
-      //    everything currently available. Duel: the OTHER slot only.
-      //    Spectator: whichever slot each delivery is tagged with (both).
-      if (spectator) {
-        const drained = spectator.drainFrames();
-        for (const d of drained) inputLog.record(d.frame, d.slot, d.input);
-        if (duelDebugMode && drained.length > 0) try { window.dispatchEvent(new CustomEvent('pallasite:peer-frame-drain', { detail: { count: drained.length } })); } catch { /* ignore */ }
-      } else if (peer) {
-        const remoteSlot = (1 - mpSlot) as 0 | 1;
-        const drained = peer.drainFrames();
-        for (const d of drained) inputLog.record(d.frame, remoteSlot, d.input);
-        if (duelDebugMode && drained.length > 0) try { window.dispatchEvent(new CustomEvent('pallasite:peer-frame-drain', { detail: { count: drained.length } })); } catch { /* ignore */ }
-      }
-      // 2) Stall check in any peer-driven mode: every slot's input for
-      //    the read frame must be present. The read frame can be negative
-      //    in the first `activeDelay` frames (pre-roll); EMPTY_INPUT is
-      //    used and the sim coasts.
+      // 1) Sample LOCAL slot(s) and send — UNCONDITIONAL on every iter
+      //    at state.frame=N. The receiver's lockstep needs our frame N
+      //    in their inputLog before they can pass their iter N+5 stall
+      //    check, so a stalled local iter that didn't send would
+      //    deadlock the partner.
       //
-      //    Local-slot input for `readFrame` was written by an EARLIER
-      //    iteration's sample (state.frame == readFrame, activeDelay
-      //    iterations ago). We have not yet sampled at `state.frame` for
-      //    THIS iteration — that's step 3, after the stall check passes.
-      const readFrame = state.frame - activeDelay;
-      let stalled = false;
-      if (peerActive && readFrame >= 0) {
-        for (let i = 0; i < state.players.length; i++) {
-          if (inputLog.get(readFrame, i) < 0) { stalled = true; break; }
-        }
-      }
-      if (stalled) break;  // hold the accumulator; next rAF retries
-      // 3) Sample LOCAL slot(s) and (if peer) send — ONLY now that we
-      //    know this iteration will advance. Sampling before the stall
-      //    check (the previous order) re-sampled the same `state.frame`
-      //    on every rAF retry while stalled, producing duplicate wire
-      //    sends with whatever the keyboard read at THAT moment. The
-      //    receiver's last-write-wins guarantee then meant peers could
-      //    end up applying different in-flight values depending on
-      //    drain timing — the canonical lockstep desync.
+      //    BUT idempotent: sample only if inputLog[state.frame][slot]
+      //    is empty (-1). On a retry at the same state.frame (stalled
+      //    from a previous rAF), the slot is already populated; we
+      //    skip the re-sample so the wire sees ONE message per frame.
+      //    This is what prevents the desync the prior order tried to
+      //    fix by deferring sample — re-sampling with fresh keyboard
+      //    state would send duplicate (frame, value) pairs with
+      //    DIFFERENT values, and the receiver's last-write-wins ring
+      //    would diverge based on drain timing. Idempotent sample
+      //    keeps the frame's value stable across retries.
       //
       //    Spectator mode has NO local slots — every input comes from
       //    the broker tap. Duel mode samples just the local slot; couch
@@ -1007,6 +985,7 @@ function loop(now: number): void {
           ? [mpSlot]
           : (state.players.length >= 2 ? [0, 1] : [0]);
       for (const i of localSampleSlots) {
+        if (inputLog.get(state.frame, i) >= 0) continue;
         // Peer mode reads from the localKeys + localHeading + localThrust
         // mirrors so apply's delayed overwrite of `players[i]` cannot
         // clobber the live joystick / keyboard input. Solo and couch
@@ -1019,6 +998,30 @@ function loop(now: number): void {
         inputLog.record(state.frame, i, encoded);
         if (peer) peer.sendFrame(state.frame, encoded);
       }
+      // 2) Drain remote frames into the log. Duel: the OTHER slot only.
+      //    Spectator: whichever slot each delivery is tagged with (both).
+      if (spectator) {
+        const drained = spectator.drainFrames();
+        for (const d of drained) inputLog.record(d.frame, d.slot, d.input);
+        if (duelDebugMode && drained.length > 0) try { window.dispatchEvent(new CustomEvent('pallasite:peer-frame-drain', { detail: { count: drained.length } })); } catch { /* ignore */ }
+      } else if (peer) {
+        const remoteSlot = (1 - mpSlot) as 0 | 1;
+        const drained = peer.drainFrames();
+        for (const d of drained) inputLog.record(d.frame, remoteSlot, d.input);
+        if (duelDebugMode && drained.length > 0) try { window.dispatchEvent(new CustomEvent('pallasite:peer-frame-drain', { detail: { count: drained.length } })); } catch { /* ignore */ }
+      }
+      // 3) Stall check in any peer-driven mode: every slot's input for
+      //    the read frame must be present. The read frame can be negative
+      //    in the first `activeDelay` frames (pre-roll); EMPTY_INPUT is
+      //    used and the sim coasts.
+      const readFrame = state.frame - activeDelay;
+      let stalled = false;
+      if (peerActive && readFrame >= 0) {
+        for (let i = 0; i < state.players.length; i++) {
+          if (inputLog.get(readFrame, i) < 0) { stalled = true; break; }
+        }
+      }
+      if (stalled) break;  // hold the accumulator; next rAF retries
       // 4) Apply + edge dispatch. Record each slot's applied encoded
       // input for this step so the desync hunter can compare what each
       // peer actually fed into the sim.
