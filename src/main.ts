@@ -854,10 +854,6 @@ document.addEventListener('resume', hardResume);
 const MAX_CATCHUP_STEPS = 5;
 let lastFrame = performance.now();
 let stepAccumulator = 0;
-/** Wall-clock ms of the most recent render call. Used by the peer-mode
- *  render throttle to cap render rate at ~30Hz (vs the natural 60Hz)
- *  and leave main-thread headroom for the WebSocket event handler. */
-let lastRenderTime = 0;
 let lastPhase = state.phase;
 
 /** Apply the active presentation theme to the finished frame. With a theme
@@ -1162,23 +1158,16 @@ function loop(now: number): void {
     delete document.body.dataset.peerDesync;
   }
 
-  // Peer-mode render gate: in lockstep, render ONLY on rAFs where
-  // state.frame actually advanced. Stalled rAFs (waiting for the
-  // partner's input) get no render — the screen doesn't need updating
-  // because nothing in the sim changed, and the saved main-thread time
-  // goes to the WebSocket event handler. Production diagnostics showed
-  // render work was starving onmessage, dropping the game into the
-  // watchdog-tears-down-the-connection failure mode after ~10 frames.
-  // Cap at 33Hz max even when advancing, to keep some headroom even
-  // when the sim is running smoothly.
-  const peerStalled = isPeerActive() && state.frame === frameBeforeStep;
-  const renderDue = !isPeerActive() || (!peerStalled && (now - lastRenderTime) >= 1000 / 33);
-  if (renderDue) {
-    render(canvas, state, now);
-    applyThemeFrame(canvas, now);
-    if (getTheme() === 'ascii') drawAsciiHud(canvas, state);
-    lastRenderTime = now;
-  }
+  // Render every rAF. The peer-mode throttle that used to gate this was a
+  // workaround for main-thread WS-event starvation; the WebSocket now lives
+  // in peer-worker.ts, so the recv path runs off-thread and doesn't need
+  // the main thread to yield render time. Throttling render here actually
+  // backfires under chromium-headless — when no frames are drawn the
+  // browser slows rAF, which then can't push enough sends/sec to keep
+  // lockstep moving.
+  render(canvas, state, now);
+  applyThemeFrame(canvas, now);
+  if (getTheme() === 'ascii') drawAsciiHud(canvas, state);
 
   // Phase transitions render UI overlays
   if (state.phase !== lastPhase) {
