@@ -72,6 +72,19 @@ const ctx = self as unknown as DedicatedWorkerGlobalScope;
 // eslint-disable-next-line no-console
 console.log('[peer-worker] boot');
 
+// Catch unhandled errors anywhere in the worker — including inside
+// addEventListener handlers — so we don't lose diagnostic data on
+// production. Bug: peer-joined fired once then no further WS message
+// events arrived; suspected silent throw somewhere.
+ctx.addEventListener('error', (ev: ErrorEvent) => {
+  // eslint-disable-next-line no-console
+  console.log(`[peer-worker] global error: ${ev.message} at ${ev.filename}:${ev.lineno}:${ev.colno}`);
+});
+ctx.addEventListener('unhandledrejection', (ev: PromiseRejectionEvent) => {
+  // eslint-disable-next-line no-console
+  console.log(`[peer-worker] unhandled rejection: ${String(ev.reason)}`);
+});
+
 function post(m: PeerWorkerOutbound): void {
   ctx.postMessage(m);
 }
