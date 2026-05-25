@@ -4207,22 +4207,38 @@ function spawnPointClear(s: GameState, x: number, y: number): boolean {
  *  regardless, so a hazard parked on the point cannot soft-lock it. */
 function respawnShip(s: GameState, p: PlayerState, deadline: number): boolean {
   if (s.phase === 'gameover' || s.phase === 'title') return true;
-  // Set-piece waves with a custom player spawn (e.g. heist drops you at
-  // the bottom edge) need the same coords on respawn.
-  const spawn = arenaActive() ? undefined : WAVE_SET_PIECES[s.wave]?.playerSpawn;
-  const px = spawn?.x ?? WORLD_W / 2;
-  const py = spawn?.y ?? WORLD_H / 2;
+  // Resolve the respawn point in priority order:
+  //   1. WAVE_SET_PIECES override (heist drops you at the bottom edge etc.)
+  //   2. Per-slot spawn in 2-player runs (mirrors startGame so a respawned
+  //      ship doesn't pile on top of its partner at world centre — bug
+  //      observed in the duel recording, where slot 1 died once and then
+  //      both ships shared (WORLD_W/2, WORLD_H/2) and the renderer drew
+  //      what looked like a single ship for the rest of the run)
+  //   3. World centre, single-player default
+  const wavePiece = arenaActive() ? undefined : WAVE_SET_PIECES[s.wave]?.playerSpawn;
+  const slot = s.players.indexOf(p);
+  const twoPlayer = s.players.length === 2;
+  let px: number, py: number, prot: number;
+  if (wavePiece) {
+    px = wavePiece.x;
+    py = wavePiece.y;
+    prot = wavePiece.rot ?? -Math.PI / 2;
+  } else if (twoPlayer && slot === 0) {
+    px = WORLD_W * 0.30; py = WORLD_H * 0.50; prot = 0;
+  } else if (twoPlayer && slot === 1) {
+    px = WORLD_W * 0.70; py = WORLD_H * 0.50; prot = Math.PI;
+  } else {
+    px = WORLD_W / 2; py = WORLD_H / 2; prot = -Math.PI / 2;
+  }
   // Hold the respawn until the spawn point is clear of hazards so the
   // player never materialises onto a rock — retry next step until then.
   if (s.elapsed < deadline && !spawnPointClear(s, px, py)) {
     return false;
   }
   p.ship = makeShip();
-  if (spawn) {
-    p.ship.pos.x = spawn.x;
-    p.ship.pos.y = spawn.y;
-    p.ship.rot = spawn.rot ?? -Math.PI / 2;
-  }
+  p.ship.pos.x = px;
+  p.ship.pos.y = py;
+  p.ship.rot = prot;
   p.ship.invulnerableUntil = s.elapsed + RESPAWN_INVULN_MS;
   toastNow(s, '');
   return true;
