@@ -42,3 +42,8 @@ yarn-error.log*
 !lockstep-harness.html
 !peer-harness.html
 !regression-harness.html
+
+# Duel recorder output (tools/record-duel.ts writes the spectator's video
+# here as a .webm chunk + transcodes to duel-demo.mp4). Local artefacts;
+# we don't ship them in the repo.
+/tools/record-out/
