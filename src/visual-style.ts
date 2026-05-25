@@ -213,7 +213,13 @@ export interface WebGLOverlayCall {
   asteroids: ReadonlyArray<Asteroid>;
   ufos: ReadonlyArray<Ufo>;
   powerups: ReadonlyArray<PowerUp>;
-  ship: Ship | null;
+  /** Every live ship to render as a 3D mesh. Empty array = no meshes
+   *  (the caller wants the 2D path, e.g. during an intertitle hold or
+   *  with ship tier set to shaded/vector). Index in this array IS the
+   *  player slot — the overlay caches per-slot mesh handles, so a slot
+   *  that disappears from this array gets its mesh hidden, and a new
+   *  slot rebuilds. */
+  ships: ReadonlyArray<Ship>;
   /** Sim clock (ms) for time-based overlay effects such as the shield
    *  dome's expiry fade. Wall-clock would mismatch the sim-clock deadlines
    *  the gameplay state now carries (B3 determinism). */

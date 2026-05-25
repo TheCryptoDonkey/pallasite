@@ -670,7 +670,7 @@ function drawShield(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elap
   ctx.restore();
 }
 
-function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapsed: number, idleSway = false, force2D = false): void {
+function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapsed: number, idleSway = false): void {
   if (!ship.alive) return;
   // Hide ship entirely during hyperspace cloak — except when the warp is
   // malfunctioning, in which case render a red distortion at the departure
@@ -687,13 +687,7 @@ function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapse
   const shipTier = getVisualStyle('ship');
   // MESH ship draws on the WebGL overlay; skip the 2D path entirely
   // once the overlay's loaded so the player sees the 3D mesh alone.
-  // The `force2D` flag overrides this — used by the multi-player path
-  // because the WebGL overlay only renders ONE ship (opts.ship is
-  // singular), and a 2P game with mesh enabled was leaving slot 1
-  // invisible (the spectator's "only one ship" bug). When forced,
-  // every ship goes through the SHADED/VECTOR 2D path so all of them
-  // render at the cost of losing the 3D mesh look in 2P runs.
-  if (!force2D && shipTier === 'mesh' && isWebGLOverlayReady()) return;
+  if (shipTier === 'mesh' && isWebGLOverlayReady()) return;
   // MESH falls back to SHADED rendering while the overlay is loading,
   // and SHADED itself is the lit gradient hull.
   const shipShaded = shipTier !== 'vector';
@@ -4089,15 +4083,10 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       drawGhostShip(ctx, state);
       drawGhostAttract(ctx, state, now);
       const idleSway = state.phase === 'title' || state.phase === 'wavestart';
-      // 2P runs force every ship through the 2D drawShip path: the WebGL
-      // overlay's renderOverlay() only accepts a single Ship, so a mesh-
-      // tier 2P game was rendering ONLY slot 0 (via WebGL) with slot 1
-      // dropping out entirely. 2D supports all players in one loop.
-      const force2D = state.players.length > 1;
       for (const pl of state.players) {
         if (pl.ship.alive || pl.ship.hyperspaceCloakMs > 0) {
           drawShield(ctx, pl.ship, now, state.elapsed);
-          drawShip(ctx, pl.ship, now, state.elapsed, idleSway, force2D);
+          drawShip(ctx, pl.ship, now, state.elapsed, idleSway);
         }
       }
       if (isGhost) ctx.restore();
@@ -4172,17 +4161,14 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     // While an act-boundary intertitle holds the screen black, feed the
     // overlay empty lists so its canvas stays clear of the story card.
     const holding = isIntertitleHolding(state);
-    // 2P runs skip the WebGL ship: the overlay only accepts ONE Ship,
-    // so feeding it slot 0 would leave slot 1 invisible. The 2D path
-    // above (force2D = state.players.length > 1) renders every ship
-    // instead. Cost: 2P ships lose the 3D mesh look. Cleaner long-term
-    // fix is to widen renderOverlay's ship arg to Ship[].
-    const multiPlayer = state.players.length > 1;
+    // Mesh path now supports multi-ship: feed every player's ship by
+    // slot. The overlay caches a mesh per slot so both ships render
+    // with the full 3D look in duel / couch (was: slot 1 dropped out).
     callWebGLOverlay({
       asteroids: !holding && asteroidTier === 'mesh' ? state.asteroids : [],
       ufos: !holding && ufosMesh ? state.ufos : [],
       powerups: !holding && particleTier === 'mesh' ? state.powerups : [],
-      ship: !holding && !multiPlayer && shipTier === 'mesh' ? p0.ship : null,
+      ships: !holding && shipTier === 'mesh' ? state.players.map((pl) => pl.ship) : [],
       elapsed: state.elapsed,
       dpr: renderMode.dpr,
       // Camera-adjusted transform so mesh-tier entities track the follow
