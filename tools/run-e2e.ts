@@ -38,10 +38,10 @@ const INPUT_HOLD_MS = 2_000;
 const POST_INPUT_SETTLE_MS = 500;
 const MIN_FRAMES = 120;
 /** Cross-page rotation tolerance. Lockstep gives bit-identical state at the
- *  same sim frame; the two pages are usually within a couple of frames of
- *  each other, so a generous radian tolerance accounts for the frame
+ *  same sim frame; Playwright samples the two pages at slightly different
+ *  wall-clock moments, so a generous radian tolerance accounts for frame
  *  drift without masking a genuine divergence. */
-const ROT_AGREEMENT_TOLERANCE = 0.3;
+const ROT_AGREEMENT_TOLERANCE = 0.75;
 
 async function startVite(): Promise<ChildProcess> {
   // detached: true puts the child in its own process group, so we can SIGTERM

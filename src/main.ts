@@ -189,7 +189,7 @@ let peer: Peer | null = null;
 let spectator: SpectatorPeer | null = null;
 /** Input-delay in sim frames when a peer is wired. Sized to comfortably
  *  cover the broker round trip on a typical near-relay path. */
-const PEER_INPUT_DELAY = 5;
+const PEER_INPUT_DELAY = 20;
 /** Consecutive stalled sim frames before the "waiting for OPPONENT" overlay
  *  surfaces. ~100ms tolerates ordinary network jitter without flicker. */
 const PEER_STALL_OVERLAY_FRAMES = 6;
