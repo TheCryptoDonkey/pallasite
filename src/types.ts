@@ -502,6 +502,10 @@ export interface PlayerState {
   ai?: boolean;
 
   score: number;
+  /** Deathmatch-only round stats. Kept zero in campaign/arena. */
+  deathmatchKills: number;
+  deathmatchDeaths: number;
+  deathmatchStreak: number;
   /** In-game sats counter (mirrors backend credit). Multiplayer never pays out. */
   sats: number;
   /** HUD counter easing toward `sats`. */
@@ -538,6 +542,15 @@ export interface PlayerState {
   runStats: RunStats;
 }
 
+export interface DeathmatchFeedEntry {
+  /** Sim-clock ms when the event occurred. */
+  t: number;
+  attackerSlot: number | null;
+  victimSlot: number;
+  points: number;
+  streak: number;
+}
+
 export interface GameState {
   phase: GamePhase;
   /** One PlayerState per ship. Length 1 is every solo mode (byte-identical
@@ -553,6 +566,8 @@ export interface GameState {
   powerups: PowerUp[];
   particles: Particle[];
   debris: Debris[];
+  /** Recent deathmatch kill/death events for the HUD kill feed. */
+  deathmatchFeed: DeathmatchFeedEntry[];
 
   wave: number;
 

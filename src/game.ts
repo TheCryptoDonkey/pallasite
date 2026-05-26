@@ -107,6 +107,7 @@ export function makeInitialState(): GameState {
     powerups: [],
     particles: [],
     debris: [],
+    deathmatchFeed: [],
     shockwaveRings: [],
     hyperspaceEffects: [],
     waveClearAt: null,
@@ -258,6 +259,9 @@ function makePlayerState(): PlayerState {
     thrustOverride: false,
     keys: {},
     score: 0,
+    deathmatchKills: 0,
+    deathmatchDeaths: 0,
+    deathmatchStreak: 0,
     sats: 0,
     displaySats: 0,
     lives: 3,
@@ -383,6 +387,7 @@ export function startGame(s: GameState, forcedSeed?: number, opts?: { players?: 
   s.deathReplay = null;
   s.initialsEnteredThisRun = false;
   s.debris = [];
+  s.deathmatchFeed = [];
   s.cheatedThisRun = false;
   s.ghostSamples = [];
   s.ghostPoseSamples = [];
@@ -987,9 +992,18 @@ const LODESTONE_PULL = 150;
  *  spawn point must be free of, and the cap on how long the respawn waits
  *  for that zone to clear before spawning anyway. */
 const RESPAWN_INVULN_MS = 2_000;
-const DEATHMATCH_RESPAWN_INVULN_MS = 3_000;
-const SAFE_SPAWN_RADIUS = 150;
+const DEATHMATCH_INITIAL_INVULN_MS = 3_500;
+const DEATHMATCH_RESPAWN_DELAY_MS = 1_100;
+const DEATHMATCH_RESPAWN_INVULN_MS = 2_600;
+const RESPAWN_SAFE_RADIUS = 150;
+const DEATHMATCH_SAFE_SPAWN_RADIUS = 260;
 const RESPAWN_MAX_WAIT_MS = 2_500;
+const DEATHMATCH_RESPAWN_MAX_WAIT_MS = 2_200;
+const DEATHMATCH_FEED_MAX = 6;
+const DEATHMATCH_KILL_BASE = 1000;
+const DEATHMATCH_STREAK_BONUS = 250;
+const DEATHMATCH_STREAK_BONUS_MAX = 1500;
+const DEATHMATCH_GRAVITY_RANGE_SCALE = 4.2;
 
 /** Arena round spawn: a procedural rock field scaled by s.wave. Arena is
  *  pure rock-survival, so no set pieces, veins, mines or boss. */
@@ -1035,46 +1049,71 @@ function spawnDeathmatchTerrain(s: GameState): void {
   const ww = deathmatchWorldW();
   const wh = deathmatchWorldH();
   const centre = { x: ww / 2, y: wh / 2 };
-  const fields = [
-    { x: ww * 0.24, y: wh * 0.24, r: 235, type: 'ballast' as AsteroidType },
-    { x: ww * 0.78, y: wh * 0.28, r: 285, type: 'iron' as AsteroidType },
-    { x: ww * 0.30, y: wh * 0.74, r: 310, type: 'carbonaceous' as AsteroidType },
-    { x: ww * 0.72, y: wh * 0.72, r: 245, type: 'mesosiderite' as AsteroidType },
-    { x: ww * 0.50, y: wh * 0.50, r: 190, type: 'pallasite' as AsteroidType },
-  ];
-  for (const f of fields) {
-    const a = spawnAsteroid('large', 20, { x: f.x, y: f.y }, { x: 0, y: 0 }, f.type, { terrain: true, gravity: 36 });
-    a.radius = f.r;
+  const tightenTerrainShape = (a: Asteroid): void => {
+    a.shape = a.shape.map((v) => Math.max(0.84, Math.min(0.99, 0.84 + (v - 0.7) * 0.34)));
+  };
+  const lockTerrain = (a: Asteroid, radius: number): Asteroid => {
+    a.radius = radius;
     a.hp = Number.POSITIVE_INFINITY;
     a.hpMax = Number.POSITIVE_INFINITY;
     a.vel.x = 0;
     a.vel.y = 0;
-    a.rotVel *= 0.12;
-    s.asteroids.push(a);
+    a.rotVel *= 0.10;
+    tightenTerrainShape(a);
+    return a;
+  };
+  const clearOfTerrain = (x: number, y: number, radius: number): boolean => {
+    for (const a of s.asteroids) {
+      if (!a.alive || !a.terrain) continue;
+      const min = a.radius + radius + 160;
+      const dx = a.pos.x - x;
+      const dy = a.pos.y - y;
+      if (dx * dx + dy * dy < min * min) return false;
+    }
+    for (const p of s.players) {
+      const min = p.ship.radius + radius + 260;
+      const dx = p.ship.pos.x - x;
+      const dy = p.ship.pos.y - y;
+      if (dx * dx + dy * dy < min * min) return false;
+    }
+    return true;
+  };
+  const fields = [
+    { x: ww * 0.24, y: wh * 0.24, r: 260, gravity: 12, type: 'ballast' as AsteroidType },
+    { x: ww * 0.78, y: wh * 0.28, r: 330, gravity: 14, type: 'iron' as AsteroidType },
+    { x: ww * 0.30, y: wh * 0.74, r: 350, gravity: 14, type: 'carbonaceous' as AsteroidType },
+    { x: ww * 0.72, y: wh * 0.72, r: 280, gravity: 12, type: 'mesosiderite' as AsteroidType },
+    { x: ww * 0.50, y: wh * 0.50, r: 220, gravity: 10, type: 'pallasite' as AsteroidType },
+    { x: ww * 0.50, y: wh * 0.18, r: 205, gravity: 9, type: 'lodestone' as AsteroidType },
+    { x: ww * 0.18, y: wh * 0.52, r: 190, gravity: 9, type: 'tektite' as AsteroidType },
+    { x: ww * 0.84, y: wh * 0.54, r: 215, gravity: 10, type: 'chondrite' as AsteroidType },
+  ];
+  for (const f of fields) {
+    const a = spawnAsteroid('large', 20, { x: f.x, y: f.y }, { x: 0, y: 0 }, f.type, { terrain: true, gravity: f.gravity });
+    s.asteroids.push(lockTerrain(a, f.r));
   }
-  const extraCover = Math.min(12, Math.max(0, Math.floor(s.players.length / 8)));
+  const extraCover = Math.min(14, Math.max(0, Math.floor((s.players.length + 3) / 6)));
   for (let i = 0; i < extraCover; i++) {
     const angle = (i / Math.max(1, extraCover)) * Math.PI * 2 + 0.28;
     const dist = 920 + (i % 3) * 430;
     const x = Math.max(240, Math.min(ww - 240, centre.x + Math.cos(angle) * dist));
     const y = Math.max(240, Math.min(wh - 240, centre.y + Math.sin(angle) * dist));
     const type = i % 4 === 0 ? 'iron' : i % 4 === 1 ? 'carbonaceous' : i % 4 === 2 ? 'mesosiderite' : 'ballast';
-    const a = spawnAsteroid('large', 20, { x, y }, { x: 0, y: 0 }, type, { terrain: true, gravity: 22 });
-    a.radius = 150 + (i % 4) * 28;
-    a.hp = Number.POSITIVE_INFINITY;
-    a.hpMax = Number.POSITIVE_INFINITY;
-    a.vel.x = 0;
-    a.vel.y = 0;
-    a.rotVel *= 0.08;
-    s.asteroids.push(a);
+    const a = spawnAsteroid('large', 20, { x, y }, { x: 0, y: 0 }, type, { terrain: true, gravity: 7 + (i % 3) * 2 });
+    s.asteroids.push(lockTerrain(a, 165 + (i % 4) * 34));
   }
   for (let i = 0; i < 16; i++) {
-    const angle = gameRng() * Math.PI * 2;
-    const dist = 650 + gameRng() * 1250;
-    const x = Math.max(180, Math.min(ww - 180, centre.x + Math.cos(angle) * dist));
-    const y = Math.max(180, Math.min(wh - 180, centre.y + Math.sin(angle) * dist));
+    let x = centre.x;
+    let y = centre.y;
+    for (let attempt = 0; attempt < 16; attempt++) {
+      const angle = gameRng() * Math.PI * 2;
+      const dist = 650 + gameRng() * 1250;
+      x = Math.max(180, Math.min(ww - 180, centre.x + Math.cos(angle) * dist));
+      y = Math.max(180, Math.min(wh - 180, centre.y + Math.sin(angle) * dist));
+      if (clearOfTerrain(x, y, 70)) break;
+    }
     const speed = 10 + gameRng() * 25;
-    const drift = angle + Math.PI / 2 + (gameRng() - 0.5) * 0.7;
+    const drift = Math.atan2(y - centre.y, x - centre.x) + Math.PI / 2 + (gameRng() - 0.5) * 0.7;
     s.asteroids.push(spawnAsteroid('large', 12, { x, y }, { x: Math.cos(drift) * speed, y: Math.sin(drift) * speed }, pickAsteroidType(20)));
   }
 }
@@ -1095,7 +1134,7 @@ function beginDeathmatch(s: GameState): void {
     p.ship.vel.y = 0;
     p.ship.rot = spawn.rot;
     p.ship.rotVel = 0;
-    p.ship.invulnerableUntil = s.elapsed + ARENA_INVULN_MS;
+    p.ship.invulnerableUntil = s.elapsed + DEATHMATCH_INITIAL_INVULN_MS;
   }
   s.phase = 'playing';
   s.phaseStart = s.elapsed;
@@ -1388,7 +1427,7 @@ function applyDeathmatchGravity(wells: readonly Asteroid[], pos: Vec2, vel: Vec2
     if (gravity === undefined) continue;
     const dx = well.pos.x - pos.x;
     const dy = well.pos.y - pos.y;
-    const range = well.radius * 5.5;
+    const range = well.radius * DEATHMATCH_GRAVITY_RANGE_SCALE;
     const distSq = dx * dx + dy * dy;
     if (distSq <= 1 || distSq > range * range) continue;
     const dist = Math.sqrt(distSq);
@@ -1397,6 +1436,67 @@ function applyDeathmatchGravity(wells: readonly Asteroid[], pos: Vec2, vel: Vec2
     vel.x += (dx / dist) * pull * dt;
     vel.y += (dy / dist) * pull * dt;
   }
+}
+
+function pushDeathmatchFeed(s: GameState, attackerSlot: number | null, victimSlot: number, points: number, streak: number): void {
+  s.deathmatchFeed.push({ t: s.elapsed, attackerSlot, victimSlot, points, streak });
+  if (s.deathmatchFeed.length > DEATHMATCH_FEED_MAX) {
+    s.deathmatchFeed.splice(0, s.deathmatchFeed.length - DEATHMATCH_FEED_MAX);
+  }
+}
+
+function recordDeathmatchDeath(s: GameState, victim: PlayerState, attacker: PlayerState | null | undefined): void {
+  if (!deathmatchActive()) return;
+  const victimSlot = s.players.indexOf(victim);
+  if (victimSlot < 0) return;
+  victim.deathmatchDeaths += 1;
+  victim.deathmatchStreak = 0;
+
+  const attackerSlot = attacker ? s.players.indexOf(attacker) : -1;
+  if (attacker && attacker !== victim && attackerSlot >= 0) {
+    attacker.deathmatchKills += 1;
+    attacker.deathmatchStreak += 1;
+    attacker.combo = Math.min(COMBO_MAX, attacker.combo + 1);
+    attacker.comboExpiresAt = s.elapsed + COMBO_WINDOW_MS;
+    const streakBonus = Math.min(DEATHMATCH_STREAK_BONUS_MAX, Math.max(0, attacker.deathmatchStreak - 1) * DEATHMATCH_STREAK_BONUS);
+    const points = DEATHMATCH_KILL_BASE + streakBonus;
+    attacker.score += points;
+    pushDeathmatchFeed(s, attackerSlot, victimSlot, points, attacker.deathmatchStreak);
+    if (!attacker.ai || !victim.ai) {
+      const streak = attacker.deathmatchStreak >= 3 ? ` x${attacker.deathmatchStreak}` : '';
+      toastNow(s, `P${attackerSlot + 1}${streak} +${points} · P${victimSlot + 1} DOWN`);
+    }
+  } else {
+    pushDeathmatchFeed(s, null, victimSlot, 0, 0);
+    if (!victim.ai) toastNow(s, `P${victimSlot + 1} LOST`);
+  }
+}
+
+function resolveDeathmatchTerrainContact(ship: Ship, terrain: Asteroid): boolean {
+  let dx = ship.pos.x - terrain.pos.x;
+  let dy = ship.pos.y - terrain.pos.y;
+  let dist = Math.hypot(dx, dy);
+  if (dist < 0.001) {
+    dx = Math.cos(ship.rot);
+    dy = Math.sin(ship.rot);
+    dist = 1;
+  }
+  const minDist = ship.radius + terrain.radius + 2;
+  if (dist >= minDist) return false;
+  const nx = dx / dist;
+  const ny = dy / dist;
+  const overlap = minDist - dist;
+  ship.pos.x += nx * overlap;
+  ship.pos.y += ny * overlap;
+  const intoTerrain = ship.vel.x * nx + ship.vel.y * ny;
+  if (intoTerrain < 0) {
+    ship.vel.x -= intoTerrain * nx * 1.25;
+    ship.vel.y -= intoTerrain * ny * 1.25;
+  }
+  ship.vel.x *= 0.92;
+  ship.vel.y *= 0.92;
+  confineToDeathmatch(ship.pos, ship.vel, ship.radius, 0.25);
+  return true;
 }
 
 /** BONUS phase length + sub-phase split. 60s total: 45s HYPER BLITZ
@@ -3419,6 +3519,7 @@ export function updateGame(s: GameState): void {
     const asteroids = deathmatchBroadphase ? deathmatchBroadphase.asteroids.queryCircle(b.pos, b.radius) : s.asteroids;
     for (const a of asteroids) {
       if (!a.alive) continue;
+      if ((a.depth ?? 3) !== 3) continue;
       if (circlesHit(b, a)) {
         // Carom: a bullet that has already broken one asteroid earns the
         // bonus on its next break. Wrap: a bullet that has crossed a playfield
@@ -3486,15 +3587,7 @@ export function updateGame(s: GameState): void {
           b.alive = false;
           b.hasLanded = true;
           const attacker = s.players[b.owner];
-          if (attacker) {
-            attacker.score += 1000;
-            attacker.combo = Math.min(COMBO_MAX, attacker.combo + 1);
-            attacker.comboExpiresAt = s.elapsed + COMBO_WINDOW_MS;
-            if (!attacker.ai || !target.ai) {
-              toastNow(s, `P${b.owner + 1} +1000 · P${ship.slot + 1} DOWN`);
-            }
-          }
-          killShip(s, target);
+          killShip(s, target, attacker);
           break;
         }
       }
@@ -3523,11 +3616,12 @@ export function updateGame(s: GameState): void {
     if (p.ship.alive && p.ship.shieldUp) {
       const asteroids = deathmatchBroadphase ? deathmatchBroadphase.asteroids.queryCircle(p.ship.pos, p.ship.radius) : s.asteroids;
       for (const a of asteroids) {
-        // Backgrounds (depth 1, 2) read as distant + faded, so they
-        // pass through. Gameplay plane (3) and foregrounds (4, 5) are
-        // fully opaque and visually "in your face" — they hit / deflect.
-        if (!a.alive || (a.depth ?? 3) < 3) continue;
+        if (!a.alive || (a.depth ?? 3) !== 3) continue;
         if (circlesHit(p.ship, a)) {
+          if (deathmatch && a.terrain) {
+            if (resolveDeathmatchTerrainContact(p.ship, a)) p.ship.shieldHitFlash = 1;
+            continue;
+          }
           // Use wrap-aware delta so reflections at the edges push the asteroid
           // along the actual contact normal, not a normal flipped by the wrap.
           // Arena has no wrap, so a plain delta is already the real normal.
@@ -3580,12 +3674,12 @@ export function updateGame(s: GameState): void {
     if (p.ship.alive && !p.ship.shieldUp && p.ship.hyperspaceCloakMs <= 0 && now > p.ship.invulnerableUntil) {
       const asteroids = deathmatchBroadphase ? deathmatchBroadphase.asteroids.queryCircle(p.ship.pos, p.ship.radius) : s.asteroids;
       for (const a of asteroids) {
-        // Backgrounds (depth 1, 2) are faded + distant-reading and pass
-        // through the ship. Gameplay plane (3) AND foregrounds (4, 5) are
-        // fully opaque, large, and visually "in your face" — letting one
-        // sail through reads as a bug ("asteroid passed right through
-        // me"), so foregrounds are hazards too.
-        if (a.alive && (a.depth ?? 3) >= 3 && circlesHit(p.ship, a)) {
+        if (!a.alive || (a.depth ?? 3) !== 3) continue;
+        if (circlesHit(p.ship, a)) {
+          if (deathmatch && a.terrain) {
+            resolveDeathmatchTerrainContact(p.ship, a);
+            continue;
+          }
           killShip(s, p);
           break;
         }
@@ -4426,7 +4520,7 @@ function spawnShipDebris(s: GameState, ship: Ship): void {
   }
 }
 
-function killShip(s: GameState, p: PlayerState): void {
+function killShip(s: GameState, p: PlayerState, attacker?: PlayerState | null): void {
   const deathmatch = deathmatchActive();
   // Capture the impact-frame snapshot BEFORE flipping ship.alive — the
   // standard recordReplaySnapshot at frame start was taken at the ship's
@@ -4436,6 +4530,7 @@ function killShip(s: GameState, p: PlayerState): void {
   if (!deathmatch) pushReplayImpactFrame(s);
 
   const deathPos: Vec2 = { x: p.ship.pos.x, y: p.ship.pos.y };
+  if (deathmatch) recordDeathmatchDeath(s, p, attacker);
   p.ship.alive = false;
   resetCombo(s, p);
   audio.explosion(1.4);
@@ -4502,30 +4597,43 @@ function killShip(s: GameState, p: PlayerState): void {
       }
     }
   } else {
-    scheduleSimTransition(s, 'respawn', s.elapsed + 1500, 0, s.elapsed + 1500 + RESPAWN_MAX_WAIT_MS, s.players.indexOf(p));
+    const delay = deathmatch ? DEATHMATCH_RESPAWN_DELAY_MS : 1500;
+    const maxWait = deathmatch ? DEATHMATCH_RESPAWN_MAX_WAIT_MS : RESPAWN_MAX_WAIT_MS;
+    scheduleSimTransition(s, 'respawn', s.elapsed + delay, 0, s.elapsed + delay + maxWait, s.players.indexOf(p));
   }
 }
 
-/** True when the spawn point has no gameplay asteroid, UFO or mine within
- *  SAFE_SPAWN_RADIUS — the respawn holds until this reads clear. */
-function spawnPointClear(s: GameState, x: number, y: number): boolean {
-  const rSq = SAFE_SPAWN_RADIUS * SAFE_SPAWN_RADIUS;
+/** Clearance margin at a spawn point. Positive means the ship can safely
+ *  appear there; negative means a hazard is inside the clear radius. */
+function spawnPointClearance(s: GameState, x: number, y: number, ignorePlayer?: PlayerState, clearRadius = RESPAWN_SAFE_RADIUS): number {
+  let best = Infinity;
   for (const a of s.asteroids) {
     if (!a.alive || (a.depth ?? 3) !== 3) continue;
     const dx = a.pos.x - x, dy = a.pos.y - y;
-    if (dx * dx + dy * dy < rSq) return false;
+    best = Math.min(best, Math.hypot(dx, dy) - (a.radius + clearRadius));
   }
   for (const u of s.ufos) {
     if (!u.alive) continue;
     const dx = u.pos.x - x, dy = u.pos.y - y;
-    if (dx * dx + dy * dy < rSq) return false;
+    best = Math.min(best, Math.hypot(dx, dy) - (u.radius + clearRadius));
   }
   for (const m of s.mines) {
     if (!m.alive) continue;
     const dx = m.pos.x - x, dy = m.pos.y - y;
-    if (dx * dx + dy * dy < rSq) return false;
+    best = Math.min(best, Math.hypot(dx, dy) - (m.radius + clearRadius));
   }
-  return true;
+  for (const pl of s.players) {
+    if (pl === ignorePlayer || !pl.ship.alive) continue;
+    const dx = pl.ship.pos.x - x, dy = pl.ship.pos.y - y;
+    best = Math.min(best, Math.hypot(dx, dy) - (pl.ship.radius + clearRadius));
+  }
+  return best;
+}
+
+/** True when the spawn point has no gameplay asteroid, UFO, mine or live
+ *  ship inside its clear radius — the respawn holds until this reads clear. */
+function spawnPointClear(s: GameState, x: number, y: number, ignorePlayer?: PlayerState, clearRadius = RESPAWN_SAFE_RADIUS): boolean {
+  return spawnPointClearance(s, x, y, ignorePlayer, clearRadius) >= 0;
 }
 
 /** Attempt a ship respawn. Returns true when the ship is placed — the
@@ -4547,9 +4655,22 @@ function respawnShip(s: GameState, p: PlayerState, deadline: number): boolean {
   const slot = s.players.indexOf(p);
   const twoPlayer = s.players.length === 2;
   let px: number, py: number, prot: number;
-  if (deathmatchActive()) {
-    const spawn = deathmatchSpawnPoint(Math.max(0, slot), s.players.length);
-    px = spawn.x; py = spawn.y; prot = spawn.rot;
+  const deathmatch = deathmatchActive();
+  if (deathmatch) {
+    const spawnSlot = Math.max(0, slot);
+    let best = deathmatchSpawnPoint(spawnSlot, s.players.length);
+    let bestScore = -Infinity;
+    for (let variant = 0; variant < 8; variant++) {
+      const candidate = deathmatchSpawnPoint(spawnSlot, s.players.length, variant);
+      const score = spawnPointClearance(s, candidate.x, candidate.y, p, DEATHMATCH_SAFE_SPAWN_RADIUS);
+      if (score > bestScore) {
+        bestScore = score;
+        best = candidate;
+      }
+      if (score >= 0) break;
+    }
+    if (s.elapsed < deadline && bestScore < 0) return false;
+    px = best.x; py = best.y; prot = best.rot;
   } else if (wavePiece) {
     px = wavePiece.x;
     py = wavePiece.y;
@@ -4563,14 +4684,14 @@ function respawnShip(s: GameState, p: PlayerState, deadline: number): boolean {
   }
   // Hold the respawn until the spawn point is clear of hazards so the
   // player never materialises onto a rock — retry next step until then.
-  if (s.elapsed < deadline && !spawnPointClear(s, px, py)) {
+  if (!deathmatch && s.elapsed < deadline && !spawnPointClear(s, px, py, p)) {
     return false;
   }
   p.ship = makeShip();
   p.ship.pos.x = px;
   p.ship.pos.y = py;
   p.ship.rot = prot;
-  p.ship.invulnerableUntil = s.elapsed + (deathmatchActive() ? DEATHMATCH_RESPAWN_INVULN_MS : RESPAWN_INVULN_MS);
+  p.ship.invulnerableUntil = s.elapsed + (deathmatch ? DEATHMATCH_RESPAWN_INVULN_MS : RESPAWN_INVULN_MS);
   toastNow(s, '');
   return true;
 }

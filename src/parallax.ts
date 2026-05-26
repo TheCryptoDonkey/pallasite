@@ -74,13 +74,9 @@ export const DEPTH_CONFIGS: Record<number, DepthConfig> = {
   2: { sizeMul: 0.65, speedMul: 0.55, alphaMul: 0.70, meshZ: -40, collide: false },
   // Gameplay plane — fully opaque.
   3: { sizeMul: 1.00, speedMul: 1.00, alphaMul: 1.00, meshZ:   0, collide: true  },
-  // Foregrounds are CLOSER to the camera — they occlude what's behind
-  // and they HIT the ship (depth 3/4/5 are all hazards). Speed is only
-  // marginally above gameplay-plane: pre-1.0 we ran them 1.35×/1.70×
-  // for parallax-speed-cue feel, but that read as "fast rocks zooming
-  // up from off-screen and killing you" once foregrounds became
-  // hazards. Spin is bumped at spawn (in spawnAsteroid) to keep the
-  // close-and-tumbling read without the lethal velocity.
+  // Foregrounds are CLOSER to the camera but remain decorative. They do
+  // not collide with ships, bullets, or other asteroids; depth reads from
+  // size, opacity, speed, and WebGL z rather than hidden gameplay rules.
   4: { sizeMul: 1.40, speedMul: 1.05, alphaMul: 1.00, meshZ:  40, collide: false },
   5: { sizeMul: 1.85, speedMul: 1.20, alphaMul: 1.00, meshZ:  80, collide: false },
 };
