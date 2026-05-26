@@ -494,12 +494,6 @@ function buildPeerWorkerSource(): string {
     var initialConnectDone = false;
     var wsRecvFrameCount = 0;
     var wsSentFrameCount = 0;
-    var sendFrameAttempts = 0;
-    var sendFrameRejected = 0;
-    // Generic counter: every ws.onmessage fire, regardless of type. If this
-    // is much higher than wsRecvFrameCount, the parse/switch is dropping
-    // messages. If it's the same low number, the WS layer isn't dispatching.
-    var wsMessageEventCount = 0;
     function post(m) { self.postMessage(m); }
     function buildSocketUrl() {
       var sep = url.indexOf('?') >= 0 ? '&' : '?';
@@ -516,14 +510,8 @@ function buildPeerWorkerSource(): string {
         var hello = { type: 'hello-peer', session: session, slot: localSlot, version: 1 };
         if (ws) ws.send(JSON.stringify(hello));
         connected = true;
-        console.log('[peer-worker] ws open slot=' + localSlot + ' readyState=' + ws.readyState);
       });
       ws.addEventListener('message', function (ev) {
-        wsMessageEventCount++;
-        if (wsMessageEventCount <= 3 || wsMessageEventCount % 50 === 0) {
-          var preview = typeof ev.data === 'string' ? ev.data.slice(0, 60) : '[bin]';
-          console.log('[peer-worker] ws.onmessage #' + wsMessageEventCount + ' slot=' + localSlot + ' preview=' + preview);
-        }
         var msg;
         try { msg = JSON.parse(typeof ev.data === 'string' ? ev.data : ''); } catch (e) { return; }
         if (msg.type === 'frame') {
@@ -542,15 +530,13 @@ function buildPeerWorkerSource(): string {
           post({ kind: 'session-error', code: msg.code });
         }
       });
-      ws.addEventListener('close', function (ev) {
-        console.log('[peer-worker] ws close slot=' + localSlot + ' code=' + ev.code + ' wasClean=' + ev.wasClean + ' initialConnectDone=' + initialConnectDone);
+      ws.addEventListener('close', function () {
         if (!initialConnectDone) {
           initialConnectDone = true;
           post({ kind: 'connect-failed', error: 'socket closed before partner joined' });
         }
       });
       ws.addEventListener('error', function () {
-        console.log('[peer-worker] ws error slot=' + localSlot);
         if (!initialConnectDone) {
           initialConnectDone = true;
           post({ kind: 'connect-failed', error: 'socket error' });
@@ -558,9 +544,7 @@ function buildPeerWorkerSource(): string {
       });
     }
     setInterval(function () {
-      var state = ws ? ws.readyState : -1;
-      post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: state, wsRecvFrameCount: wsRecvFrameCount, wsSentFrameCount: wsSentFrameCount });
-      console.log('[peer-worker] tick slot=' + localSlot + ' readyState=' + state + ' wsSent=' + wsSentFrameCount + ' wsRecv=' + wsRecvFrameCount + ' sendAttempts=' + sendFrameAttempts + ' sendRejected=' + sendFrameRejected);
+      post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: ws ? ws.readyState : -1, wsRecvFrameCount: wsRecvFrameCount, wsSentFrameCount: wsSentFrameCount });
     }, 1000);
     self.addEventListener('message', function (ev) {
       var msg = ev.data;
@@ -570,22 +554,13 @@ function buildPeerWorkerSource(): string {
         localSlot = msg.localSlot;
         openSocket();
       } else if (msg.kind === 'disconnect') {
-        // Final counters post so main has a fresh snapshot before terminate.
         post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: ws ? ws.readyState : -1, wsRecvFrameCount: wsRecvFrameCount, wsSentFrameCount: wsSentFrameCount });
-        console.log('[peer-worker] disconnect requested slot=' + localSlot + ' final wsSent=' + wsSentFrameCount + ' wsRecv=' + wsRecvFrameCount + ' wsMessageEvents=' + wsMessageEventCount + ' sendAttempts=' + sendFrameAttempts + ' sendRejected=' + sendFrameRejected);
         if (ws && connected) {
           try { ws.send(JSON.stringify({ type: 'bye', slot: localSlot })); } catch (e) {}
         }
         if (ws) { try { ws.close(); } catch (e) {} ws = null; }
       } else if (msg.kind === 'send-frame') {
-        sendFrameAttempts++;
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-          sendFrameRejected++;
-          if (sendFrameRejected <= 3 || sendFrameRejected % 30 === 0) {
-            console.log('[peer-worker] send-frame REJECTED slot=' + localSlot + ' frame=' + msg.frame + ' ws=' + (ws ? 'set' : 'null') + ' readyState=' + (ws ? ws.readyState : 'n/a') + ' #' + sendFrameRejected);
-          }
-          return;
-        }
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
         ws.send(JSON.stringify({ type: 'frame', frame: msg.frame, slot: localSlot, input: msg.input }));
         wsSentFrameCount++;
       } else if (msg.kind === 'send-hash') {

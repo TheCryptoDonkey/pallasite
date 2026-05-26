@@ -1123,8 +1123,6 @@ function loop(now: number): void {
         // Tear the peer / spectator down so the sim drops back into the solo
         // path (the game-over overlay is then dismissable as usual).
         peerDisconnectDeclared = true;
-        // eslint-disable-next-line no-console
-        console.log(`[duel] tear-down: partnerLeft=${partnerLeft} overFrames=${overFrames} stallFrames=${peerStallFrames} simFrame=${state.frame}`);
         setPeerActive(false);
         try { peer?.disconnect(); } catch { /* socket may already be closed */ }
         peer = null;
