@@ -199,10 +199,19 @@ const PEER_STALL_OVERLAY_FRAMES = 6;
  *  a few real-time seconds to refill the gap; tearing down at 2s killed
  *  recoverable duels in production. */
 const PEER_STALL_DISCONNECT_FRAMES = 600;
+/** When lockstep stalls, resend this many recent local input frames so a
+ *  partner missing an earlier command can backfill the exact frame it is
+ *  blocked on. Normal advancing play still sends only the current frame. */
+const PEER_RESEND_WINDOW_FRAMES = 60;
+/** Cap the bulk resend cadence. Current-frame keepalives still go out every
+ *  loop; the expensive history replay only needs to run often enough to
+ *  backfill a hole. */
+const PEER_RESEND_INTERVAL_MS = 100;
 /** Count of consecutive frames the lockstep loop has been unable to
  *  advance (remote input missing). Reset every time a frame ticks. Only
  *  meaningful while a peer is active. */
 let peerStallFrames = 0;
+let lastPeerResendAt = -Infinity;
 /** Sticky flag: once the partner is declared lost we tear the peer down
  *  and stop trying. Prevents the disconnect path firing every rAF after
  *  game-over. */
@@ -250,6 +259,17 @@ void inputDelay;  // exporters / wiring in M2 step 7
 // source (keyboard here, touch via callback, controller PWA via direct
 // import) can raise without a dependency back to main.ts.
 const edgeFlags = localEdges;
+
+function resendRecentPeerInputs(throughFrame: number, now: number): void {
+  if (!peer || !inputLog || throughFrame < 0) return;
+  if (now - lastPeerResendAt < PEER_RESEND_INTERVAL_MS) return;
+  lastPeerResendAt = now;
+  const from = Math.max(0, throughFrame - PEER_RESEND_WINDOW_FRAMES + 1);
+  for (let f = from; f <= throughFrame; f++) {
+    const encoded = inputLog.get(f, mpSlot);
+    if (encoded >= 0) peer.sendFrame(f, encoded);
+  }
+}
 
 /** Timestamp of the most recent ArrowDown keydown — used for double-tap detection. */
 let lastDownArrowAt = 0;
@@ -896,7 +916,8 @@ function loop(now: number): void {
     return;
   }
   // Bank real time, clamped, then spend it one fixed sim step at a time.
-  stepAccumulator += Math.min(MAX_CATCHUP_STEPS * FIXED_STEP_S, (now - lastFrame) / 1000);
+  const frameDeltaS = Math.min(MAX_CATCHUP_STEPS * FIXED_STEP_S, Math.max(0, (now - lastFrame) / 1000));
+  stepAccumulator += frameDeltaS;
   lastFrame = now;
   // Spectator catch-up: a late-joining peerwatch receives a long replay
   // burst (up to PEER_FRAME_BUFFER frames) from the broker, but the
@@ -988,23 +1009,22 @@ function loop(now: number): void {
           ? [mpSlot]
           : (state.players.length >= 2 ? [0, 1] : [0]);
       for (const i of localSampleSlots) {
-        // Re-sample + re-send EVERY rAF iter when at the same state.frame.
-        // Reasoning: in production chromium, an idle WebSocket worker
-        // (no recent send/recv activity) lets incoming forwards stall in
-        // the dispatch layer — onmessage stops firing. The continuous
-        // 60Hz trickle of (re-)sends keeps the worker busy and WS
-        // dispatch alive, AND it's the redundancy backstop for any
-        // forward the partner missed. The wire cost is trivial (a few
-        // dozen bytes per send) compared to the cost of a stuck duel.
-        // Peer mode reads from the localKeys + localHeading + localThrust
-        // mirrors so apply's delayed overwrite of `players[i]` cannot
-        // clobber the live joystick / keyboard input.
-        const keysOverride = peer ? localKeys[i] : undefined;
-        const thrustOverrideOverride = peer ? localThrust[i] : undefined;
-        const headingOverride = peer ? localHeading[i] : undefined;
-        const input = samplePlayerInput(state.players[i], edgeFlags[i], keysOverride, thrustOverrideOverride, headingOverride);
-        const encoded = encodePlayerInput(input);
-        inputLog.record(state.frame, i, encoded);
+        // Sample once per sim frame, then re-send that SAME encoded value
+        // every retry while stalled. The repeated send keeps Chromium's WS
+        // dispatch warm and gives the partner redundant copies, but the
+        // frame's canonical input cannot drift based on wall-clock key state.
+        let encoded = inputLog.get(state.frame, i);
+        if (encoded < 0) {
+          // Peer mode reads from the localKeys + localHeading + localThrust
+          // mirrors so apply's delayed overwrite of `players[i]` cannot
+          // clobber the live joystick / keyboard input.
+          const keysOverride = peer ? localKeys[i] : undefined;
+          const thrustOverrideOverride = peer ? localThrust[i] : undefined;
+          const headingOverride = peer ? localHeading[i] : undefined;
+          const input = samplePlayerInput(state.players[i], edgeFlags[i], keysOverride, thrustOverrideOverride, headingOverride);
+          encoded = encodePlayerInput(input);
+          inputLog.record(state.frame, i, encoded);
+        }
         if (peer) peer.sendFrame(state.frame, encoded);
       }
       // 2) Drain remote frames into the log. Duel: the OTHER slot only.
@@ -1030,7 +1050,13 @@ function loop(now: number): void {
           if (inputLog.get(readFrame, i) < 0) { stalled = true; break; }
         }
       }
-      if (stalled) break;  // hold the accumulator; next rAF retries
+      if (stalled) {
+        // We already sent state.frame above. Re-send the recent committed
+        // prefix too; the partner may be blocked on state.frame - delay, not
+        // on the newest duplicate we would otherwise keep trickling.
+        resendRecentPeerInputs(state.frame - 1, now);
+        break;  // hold the accumulator; next rAF retries
+      }
       // 4) Apply + edge dispatch. Record each slot's applied encoded
       // input for this step so the desync hunter can compare what each
       // peer actually fed into the sim.
@@ -1110,12 +1136,10 @@ function loop(now: number): void {
     if (advanced && !partnerLeft) {
       peerStallFrames = 0;
     } else {
-      // Counting in sim frames is approximate when the sim is stalled (we
-      // never advance state.frame), so tick by the number of fixed steps
-      // worth of real time that piled up this rAF. Falls back to +1 so we
-      // still progress on a single starved tick.
-      const elapsedFrames = Math.max(1, Math.round((now - lastFrame + (stepAccumulator * 1000)) / (FIXED_STEP_S * 1000)));
-      peerStallFrames += elapsedFrames;
+      // Count wall-clock time once per rAF. Do not include stepAccumulator:
+      // it intentionally remains banked while stalled, and adding it every
+      // tick makes the timeout grow 1+2+3... instead of at real-time pace.
+      peerStallFrames += frameDeltaS / FIXED_STEP_S;
     }
     if (!peerDisconnectDeclared) {
       const overFrames = peerStallFrames >= PEER_STALL_DISCONNECT_FRAMES;
