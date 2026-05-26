@@ -13,6 +13,7 @@ on:
       - 'package.json'
       - 'pnpm-lock.yaml'
       - '.github/workflows/deploy.yml'
+      - '.github/workflows/release-static.yml'
 
 # Cancel any in-flight deploy when a newer push lands; we only ever want
 # the latest tip of main on the server.
