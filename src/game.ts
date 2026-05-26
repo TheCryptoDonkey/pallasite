@@ -4696,6 +4696,13 @@ function respawnShip(s: GameState, p: PlayerState, deadline: number): boolean {
   return true;
 }
 
+/** Regression-harness hook for the deterministic respawn placement contract.
+ *  Kept as a tiny wrapper so tests can exercise the real private respawn
+ *  code without duplicating its slot/clearance logic. */
+export function __testRespawnShip(s: GameState, p: PlayerState, deadline: number): boolean {
+  return respawnShip(s, p, deadline);
+}
+
 export function pauseGame(s: GameState): void {
   if (s.phase !== 'playing') return;
   s.phase = 'paused';
