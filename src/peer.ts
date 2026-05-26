@@ -443,18 +443,19 @@ export class WebSocketPeer implements Peer {
       this.pingIntervalId = null;
     }
     if (this.worker) {
+      // Tell the worker to close the WS but do NOT terminate the worker
+      // immediately. Calling worker.terminate() drops any pending TCP
+      // recvs that haven't been dispatched yet, and earlier diagnostics
+      // showed the broker continues forwarding right up until ws.close
+      // round-trips — those forwards would be lost. Instead just close
+      // the socket inside the worker; the worker keeps running until
+      // the page unloads, which is fine (no leak on a one-page-per-
+      // session app).
       try { this.worker.postMessage({ kind: 'disconnect' }); } catch { /* worker may already be gone */ }
-      // Wait one macrotask so the worker can fire its last counters tick
-      // back to us BEFORE we terminate. Without this, the mirrored
-      // wsRecvFrameCount in getWireCounters() is whatever was current
-      // at the LAST periodic tick (250ms ago at worst), which can be
-      // very stale when diagnosing.
-      const w = this.worker;
+      // Detach our listener so further worker postMessages don't
+      // flip our `connected` flag back on.
+      try { this.worker.removeEventListener('message', this.onWorkerMessage); } catch { /* ignore */ }
       this.worker = null;
-      setTimeout(() => {
-        try { w.removeEventListener('message', this.onWorkerMessage); } catch { /* ignore */ }
-        try { w.terminate(); } catch { /* ignore */ }
-      }, 50);
     }
     this.connected = false;
   }
