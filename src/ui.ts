@@ -8948,7 +8948,7 @@ export function renderGameOver(state: GameState): void {
   // identity churn. `initialsEnteredThisRun` is repurposed as "high
   // score for this run has been written" so REPLAY KILL re-renders
   // don't double-count.
-  const isNewHigh = isHighScore(state.players[0].score) && state.players[0].score > 0;
+  const isNewHigh = currentMode() !== 'deathmatch' && isHighScore(state.players[0].score) && state.players[0].score > 0;
   if (isNewHigh && !state.initialsEnteredThisRun) {
     addLocalHighScore({
       name: scoreboardNameFor(state),
@@ -8987,7 +8987,88 @@ function scoreboardNameFor(state: GameState): string {
 function renderGameOverRecap(state: GameState): void {
   // Non-high-score gameovers land directly on the credits stage — no
   // initials to enter, but the credits + zap flow still applies.
+  if (currentMode() === 'deathmatch') {
+    renderDeathmatchGameOver(state);
+    return;
+  }
   renderRunCredits(state, { headerText: 'GAME OVER' });
+}
+
+function deathmatchRows(state: GameState): Array<{ slot: number; kills: number; deaths: number; streak: number; score: number; alive: boolean }> {
+  return state.players
+    .map((p, slot) => ({
+      slot,
+      kills: p.deathmatchKills,
+      deaths: p.deathmatchDeaths,
+      streak: p.deathmatchStreak,
+      score: p.score,
+      alive: p.ship.alive,
+    }))
+    .sort((a, b) => b.kills - a.kills || b.score - a.score || a.deaths - b.deaths || a.slot - b.slot);
+}
+
+function renderDeathmatchSummary(parent: HTMLElement, state: GameState): void {
+  const rows = deathmatchRows(state);
+  const winner = rows[0];
+  const tied = rows.length > 1 && rows[1].kills === winner.kills && rows[1].score === winner.score;
+  const wrap = el('div', { parent });
+  wrap.style.cssText = [
+    'display:flex', 'flex-direction:column', 'align-items:center', 'gap:12px',
+    'width:100%', 'max-width:720px',
+    'margin:4px auto 14px', 'padding:14px 16px',
+    'background:rgba(4,8,18,0.72)',
+    'border:1px solid rgba(120,150,255,0.34)',
+    'border-radius:8px',
+  ].join(';');
+
+  const verdict = el('p', { parent: wrap, text: tied ? 'DRAW' : `WINNER · P${winner.slot + 1}` });
+  verdict.style.cssText = 'margin:0;font-size:1.35rem;letter-spacing:0.24em;color:var(--hud-yellow);text-shadow:0 0 10px rgba(255,216,74,0.45);';
+
+  const meta = el('p', { parent: wrap, text: `${state.players.length} pilots · ${rows.reduce((sum, r) => sum + r.kills, 0)} confirmed kills · ${rows.filter(r => r.alive).length} still live` });
+  meta.style.cssText = 'margin:-4px 0 0;font:0.78rem ui-monospace,monospace;color:rgba(220,230,255,0.72);letter-spacing:0.12em;text-align:center;';
+
+  const table = el('div', { parent: wrap });
+  table.style.cssText = 'display:grid;grid-template-columns:54px repeat(4, minmax(58px, 1fr));gap:0;width:100%;font-family:ui-monospace,monospace;font-size:0.86rem;overflow:hidden;border:1px solid rgba(180,200,255,0.16);border-radius:6px;';
+  const cell = (text: string, header = false, highlight = false): void => {
+    const c = el('div', { parent: table, text });
+    c.style.cssText = [
+      'padding:7px 8px', 'text-align:center',
+      'border-bottom:1px solid rgba(180,200,255,0.10)',
+      'background:' + (header ? 'rgba(120,150,255,0.14)' : highlight ? 'rgba(255,216,74,0.08)' : 'rgba(2,5,13,0.30)'),
+      'color:' + (header ? '#ffd84a' : highlight ? '#fff5d8' : 'rgba(230,238,255,0.86)'),
+      'letter-spacing:' + (header ? '0.12em' : '0.04em'),
+    ].join(';');
+  };
+  for (const h of ['PILOT', 'KILLS', 'DEATHS', 'STREAK', 'SCORE']) cell(h, true);
+  for (const r of rows.slice(0, Math.min(12, rows.length))) {
+    const top = !tied && r.slot === winner.slot;
+    cell(`P${r.slot + 1}`, false, top);
+    cell(String(r.kills), false, top);
+    cell(String(r.deaths), false, top);
+    cell(r.streak > 0 ? `x${r.streak}` : '-', false, top);
+    cell(String(r.score), false, top);
+  }
+}
+
+function renderDeathmatchGameOver(state: GameState): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+  el('h2', { parent: overlay, text: 'DEATHMATCH OVER' });
+  renderDeathmatchSummary(overlay, state);
+
+  const row = el('div', { className: 'menu-row', parent: overlay });
+  const again = el('button', { className: 'menu-btn', parent: row, text: 'REMATCH' });
+  onTap(again, () => {
+    void audio.unlockAudio();
+    onStartCb?.();
+  });
+  const title = el('button', { className: 'menu-btn secondary', parent: row, text: 'BACK TO TITLE' });
+  onTap(title, () => {
+    clearEntitiesForTitle(state);
+    state.phase = 'title';
+    renderTitle(state);
+  });
 }
 
 const LN_ADDRESS_KEY = 'pallasite:lightning_address';
@@ -11837,12 +11918,29 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
   const updateInviteViews = (): void => {
     for (const [count, btn] of sizeButtons) btn.className = `menu-btn${count === playerCount ? '' : ' secondary'}`;
     copyBtn.textContent = playerCount === 2 ? 'COPY INVITE LINK' : 'COPY INVITE LINKS';
-    watchBtn.textContent = 'COPY SPECTATE LINK';
+    watchBtn.textContent = 'COPY WATCH LINK';
+    watchInfo.textContent = playerCount === 2
+      ? 'Anyone with this link can watch the duel live, no account needed.'
+      : `Anyone with this link can watch all ${playerCount} pilots live, no account needed.`;
+    slotLinks.replaceChildren();
+    if (playerCount > 2) {
+      for (let slot = 1; slot < playerCount; slot++) {
+        const slotBtn = el('button', { className: 'menu-btn secondary', parent: slotLinks, text: `P${slot + 1}` }) as HTMLButtonElement;
+        slotBtn.style.cssText = 'padding:5px 9px;font-size:0.72rem;letter-spacing:0.08em;';
+        slotBtn.title = `Copy invite for player ${slot + 1}`;
+        slotBtn.addEventListener('click', () => {
+          const original = slotBtn.textContent ?? `P${slot + 1}`;
+          void navigator.clipboard.writeText(buildDuelInviteUrl(session, slot, playerCount))
+            .then(() => { slotBtn.textContent = 'OK'; setTimeout(() => { slotBtn.textContent = original; }, 900); })
+            .catch(() => { slotBtn.textContent = 'ERR'; setTimeout(() => { slotBtn.textContent = original; }, 900); });
+        });
+      }
+    }
     void QRCode.toCanvas(qrCanvas, partnerUrl(), { width: 220, margin: 1 })
       .catch((err: unknown) => { console.warn('[duel] QR render failed:', err); });
     renderSessionStatus();
   };
-  for (const count of [2, 4, 8]) {
+  for (const count of [2, 4, 8, 16, 64]) {
     const btn = el('button', { className: `menu-btn${count === playerCount ? '' : ' secondary'}`, parent: sizeRow, text: `${count}P` });
     sizeButtons.set(count, btn);
     btn.addEventListener('click', () => {
@@ -11872,6 +11970,9 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
       .catch(() => { copyBtn.textContent = 'COPY FAILED'; setTimeout(() => { copyBtn.textContent = original; }, 1500); });
   });
 
+  const slotLinks = el('div', { parent: inviteCard });
+  slotLinks.style.cssText = 'display:flex;flex-wrap:wrap;justify-content:center;gap:6px;max-width:440px;';
+
   // ── SPECTATE block ────────────────────────────────────────────────────
   // Coequal section, not a buried footer. Anyone with the spectate link
   // can watch the duel live via a read-only peerwatch socket — this is
@@ -11883,11 +11984,17 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
   watchInfo.style.cssText = 'margin:0;font-size:0.85rem;color:rgba(220,210,255,0.78);line-height:1.45;text-align:center;max-width:420px;';
   watchInfo.textContent = 'Anyone with this link can watch the duel live, no account needed.';
 
-  const watchBtn = el('button', { className: 'menu-btn secondary', parent: watchCard, text: 'COPY SPECTATE LINK' });
+  const watchRow = el('div', { className: 'menu-row', parent: watchCard });
+  watchRow.style.cssText = 'gap:8px;flex-wrap:wrap;margin:0;';
+  const watchBtn = el('button', { className: 'menu-btn secondary', parent: watchRow, text: 'COPY WATCH LINK' });
   watchBtn.addEventListener('click', () => {
     void navigator.clipboard.writeText(spectateUrl())
-      .then(() => { watchBtn.textContent = 'COPIED ✓'; setTimeout(() => { watchBtn.textContent = 'COPY SPECTATE LINK'; }, 1500); })
-      .catch(() => { watchBtn.textContent = 'COPY FAILED'; setTimeout(() => { watchBtn.textContent = 'COPY SPECTATE LINK'; }, 1500); });
+      .then(() => { watchBtn.textContent = 'COPIED ✓'; setTimeout(() => { watchBtn.textContent = 'COPY WATCH LINK'; }, 1500); })
+      .catch(() => { watchBtn.textContent = 'COPY FAILED'; setTimeout(() => { watchBtn.textContent = 'COPY WATCH LINK'; }, 1500); });
+  });
+  const openWatchBtn = el('button', { className: 'menu-btn secondary', parent: watchRow, text: 'OPEN WATCH' });
+  openWatchBtn.addEventListener('click', () => {
+    window.open(spectateUrl(), '_blank', 'noopener,noreferrer');
   });
 
   // ── READY ─────────────────────────────────────────────────────────────

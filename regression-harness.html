@@ -25,8 +25,21 @@
 //
 //   - 894b128 localThrust mirror — samplePlayerInput's thrustOverride
 //     override must take precedence over p.thrustOverride, same reason.
-import { makeInitialState, startGame } from '/src/game.ts';
-import { setRenderMode } from '/src/render.ts';
+//
+//   - deathmatch/parallax/rendering invariants: decorative asteroids never
+//     collide, terrain cover deflects instead of kills, deathmatch respawns
+//     choose a clear variant, and the death replay impact spawns a visible
+//     particle/debris burst.
+import {
+  makeInitialState,
+  startGame,
+  updateGame,
+  spawnAsteroid,
+  __testRespawnShip,
+} from '/src/game.ts';
+import { render, setRenderMode } from '/src/render.ts';
+import { deathmatchSpawnPoint } from '/src/deathmatch.ts';
+import { REPLAY_EXPLOSION_MS, REPLAY_SLOW_MS, REPLAY_SLOW_RATE } from '/src/types.ts';
 import { samplePlayerInput, applyPlayerInput, EMPTY_INPUT } from '/src/netcode.ts';
 
 const RETRO_MODE = {
@@ -56,6 +69,14 @@ function assertNe(actual, forbidden, label) {
   if (actual === forbidden) {
     throw new Error(`${label}: expected NOT ${JSON.stringify(forbidden)}, got ${JSON.stringify(actual)}`);
   }
+}
+
+function assert(condition, label) {
+  if (!condition) throw new Error(label);
+}
+
+function dist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
 // bc7ec95 — distinct 2P spawn.
@@ -149,6 +170,144 @@ test('894b128 localThrust survives apply clobber', () => {
   assertEq(p.thrustOverride, false, 'p.thrustOverride clobbered by apply');
   const sampled = samplePlayerInput(p, edges, undefined, true);
   assertEq(sampled.thrustOverride, true, 'sampled.thrustOverride after apply (mirror=true)');
+});
+
+// Decorative parallax rocks are visual only. They should not kill a ship even
+// when exactly co-located with the player, and they should survive bullets.
+test('decorative parallax asteroids never collide', () => {
+  const s = makeInitialState();
+  startGame(s, 0x51a7, { players: 1, runMode: 'campaign' });
+  s.phase = 'playing';
+  s.elapsed = 5000;
+  const p = s.players[0];
+  p.ship.pos.x = 640;
+  p.ship.pos.y = 360;
+  p.ship.vel.x = 0;
+  p.ship.vel.y = 0;
+  p.ship.invulnerableUntil = -1;
+  p.ship.alive = true;
+  const decorative = spawnAsteroid(
+    'large',
+    12,
+    { x: p.ship.pos.x, y: p.ship.pos.y },
+    { x: 0, y: 0 },
+    'stony',
+    { depth: 1 },
+  );
+  s.asteroids = [decorative];
+  updateGame(s);
+  assertEq(p.ship.alive, true, 'ship survives decorative overlap');
+  assertEq(decorative.alive, true, 'decorative asteroid remains alive');
+});
+
+// Deathmatch terrain cover should be an obstacle, not a death trigger.
+test('deathmatch terrain pushes instead of kills', () => {
+  const s = makeInitialState();
+  startGame(s, 0x51a7, { players: 2, runMode: 'deathmatch' });
+  s.phase = 'playing';
+  s.elapsed = 5000;
+  const p = s.players[0];
+  const terrain = s.asteroids.find((a) => a.terrain);
+  assert(terrain, 'expected deathmatch terrain');
+  s.asteroids = [terrain];
+  const minDist = p.ship.radius + terrain.radius + 2;
+  p.ship.pos.x = terrain.pos.x + minDist - 24;
+  p.ship.pos.y = terrain.pos.y;
+  p.ship.vel.x = -120;
+  p.ship.vel.y = 0;
+  p.ship.invulnerableUntil = -1;
+  p.ship.shieldUp = false;
+  p.ship.alive = true;
+  const lives = p.lives;
+  updateGame(s);
+  assertEq(p.ship.alive, true, 'ship survives terrain contact');
+  assertEq(p.lives, lives, 'terrain contact does not consume a respawn');
+  assert(dist(p.ship.pos, terrain.pos) >= minDist - 0.75, `ship pushed clear of terrain (dist=${dist(p.ship.pos, terrain.pos)}, min=${minDist})`);
+});
+
+// Deathmatch respawn should skip blocked spawn variants while the deadline has
+// not expired, avoiding both giant terrain and live ships.
+test('deathmatch respawn chooses a clear spawn variant', () => {
+  const s = makeInitialState();
+  startGame(s, 0x51a7, { players: 4, runMode: 'deathmatch' });
+  s.phase = 'playing';
+  s.elapsed = 7000;
+  s.asteroids = [];
+  const dead = s.players[0];
+  const base = deathmatchSpawnPoint(0, s.players.length, 0);
+  const variant1 = deathmatchSpawnPoint(0, s.players.length, 1);
+  const blocker = spawnAsteroid(
+    'large',
+    20,
+    { x: base.x, y: base.y },
+    { x: 0, y: 0 },
+    'ballast',
+    { terrain: true, gravity: 0 },
+  );
+  blocker.radius = 320;
+  blocker.hp = Number.POSITIVE_INFINITY;
+  blocker.hpMax = Number.POSITIVE_INFINITY;
+  s.asteroids.push(blocker);
+  s.players[1].ship.pos.x = variant1.x;
+  s.players[1].ship.pos.y = variant1.y;
+  s.players[1].ship.alive = true;
+  dead.ship.alive = false;
+  dead.lives = 3;
+  const placed = __testRespawnShip(s, dead, s.elapsed + 2000);
+  assertEq(placed, true, 'respawn placed before deadline');
+  assertEq(dead.ship.alive, true, 'respawned ship alive');
+  assert(dist(dead.ship.pos, base) > 400, 'respawn avoided terrain-blocked base spawn');
+  assert(dist(dead.ship.pos, variant1) > 260, 'respawn avoided live-player-blocked variant');
+});
+
+// Death replay should produce the actual visual burst at impact time: green,
+// yellow and white particles plus line debris rendered near the death point.
+test('death replay explosion is visible at impact', () => {
+  const s = makeInitialState();
+  startGame(s, 0x51a7, { players: 1, runMode: 'campaign' });
+  const impact = { x: 640, y: 360 };
+  s.phase = 'deathreplay';
+  s.phaseStart = 0;
+  s.elapsed = 0;
+  s.asteroids = [];
+  s.ufos = [];
+  s.mines = [];
+  s.bullets = [];
+  s.enemyBullets = [];
+  s.particles = [];
+  s.debris = [];
+  s.deathReplay = {
+    snapshots: [
+      { t: 0, ship: { pos: { x: 620, y: 360 }, rot: 0, alive: true, thrusting: true }, asteroids: [], ufos: [], bullets: [], enemyBullets: [], mines: [] },
+      { t: 1000, ship: { pos: impact, rot: 0.35, alive: true, thrusting: false }, asteroids: [], ufos: [], bullets: [], enemyBullets: [], mines: [] },
+    ],
+    startedAt: 0,
+    spanMs: 1000,
+    explosionAt: impact,
+    explosionShip: { pos: impact, vel: { x: 40, y: -15 }, rot: 0.35 },
+    explosionSpawned: false,
+  };
+  const impactWall = Math.max(0, 1000 - Math.min(REPLAY_SLOW_MS, 1000))
+    + Math.min(REPLAY_SLOW_MS, 1000) / REPLAY_SLOW_RATE;
+  const ticks = Math.ceil((impactWall + REPLAY_EXPLOSION_MS * 0.25) / (1000 / 60));
+  for (let i = 0; i < ticks; i++) updateGame(s);
+  assertEq(s.deathReplay.explosionSpawned, true, 'explosion spawned');
+  assert(s.particles.length >= 70, `expected particle burst, got ${s.particles.length}`);
+  assert(s.debris.length >= 4, `expected ship debris, got ${s.debris.length}`);
+
+  const c = document.createElement('canvas');
+  c.width = 1280;
+  c.height = 720;
+  render(c, s, s.elapsed);
+  const ctx = c.getContext('2d');
+  assert(ctx, '2D context available');
+  const data = ctx.getImageData(impact.x - 48, impact.y - 48, 96, 96).data;
+  let bright = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    if (Math.max(r, g, b) > 150 && (g > 100 || r > 180)) bright++;
+  }
+  assert(bright > 80, `expected visible explosion pixels, got ${bright}`);
 });
 
 const out = document.getElementById('out');
