@@ -4,6 +4,9 @@ import { writeFileSync } from 'fs';
 import { resolve } from 'path';
 
 function getBuildId(): string {
+  if (process.env.GITHUB_ACTIONS === 'true' && process.env.GITHUB_SHA) {
+    return process.env.GITHUB_SHA.slice(0, 7);
+  }
   try {
     const sha = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
     const dirty = execSync('git status --porcelain', { encoding: 'utf8' }).trim().length > 0;
