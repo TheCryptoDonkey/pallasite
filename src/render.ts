@@ -26,6 +26,7 @@ import { getRadarVisible, getRadarLandscape, getRadarTilt } from './radar.js';
 import { buildSeamlessStarfield, drawParallaxStarfield } from './starfield.js';
 import { isSanctumMode } from './mode.js';
 import { arenaActive, arenaCage, type ArenaCage } from './arena.js';
+import { deathmatchActive, deathmatchWorldH, deathmatchWorldW } from './deathmatch.js';
 
 // ── Stars ─────────────────────────────────────────────────────────────────────
 
@@ -275,6 +276,7 @@ export function setRenderMode(info: RenderModeInfo): void { renderMode = info; }
 /** Smoothed camera-centre X in world coords. Render-only state: the sim never
  *  reads it, so it cannot affect B3 determinism. */
 let camX = WORLD_W / 2;
+let camY = WORLD_H / 2;
 /** False until the camera has been seeded onto the ship for the current run. */
 let camInit = false;
 /** Timestamp of the previous follow frame, for frame-rate-independent easing. */
@@ -292,6 +294,19 @@ function wrapDelta(from: number, to: number): number {
   if (d < -WORLD_W / 2) d += WORLD_W;
   if (d > WORLD_W / 2) d -= WORLD_W;
   return d;
+}
+
+function renderWorldW(): number {
+  return deathmatchActive() ? deathmatchWorldW() : WORLD_W;
+}
+
+function renderWorldH(): number {
+  return deathmatchActive() ? deathmatchWorldH() : WORLD_H;
+}
+
+function clampCamera(v: number, strip: number, world: number): number {
+  if (strip >= world) return world / 2;
+  return Math.max(strip / 2, Math.min(world - strip / 2, v));
 }
 
 /** Phases the follow camera tracks the ship through. Menus, game-over, the
@@ -542,12 +557,71 @@ function drawDefenderBackground(ctx: CanvasRenderingContext2D): void {
   ctx.restore();
 }
 
+function drawDeathmatchBackground(ctx: CanvasRenderingContext2D, now: number): void {
+  const rw = deathmatchWorldW();
+  const rh = deathmatchWorldH();
+  ctx.fillStyle = '#02050c';
+  ctx.fillRect(0, 0, rw, rh);
+
+  const nebulae = [
+    { x: rw * 0.18, y: rh * 0.22, r: 720, c0: 'rgba(70, 120, 210, 0.24)', c1: 'rgba(70, 120, 210, 0)' },
+    { x: rw * 0.76, y: rh * 0.34, r: 860, c0: 'rgba(190, 80, 120, 0.18)', c1: 'rgba(190, 80, 120, 0)' },
+    { x: rw * 0.54, y: rh * 0.78, r: 940, c0: 'rgba(70, 210, 180, 0.13)', c1: 'rgba(70, 210, 180, 0)' },
+  ];
+  for (const n of nebulae) {
+    const g = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r);
+    g.addColorStop(0, n.c0);
+    g.addColorStop(1, n.c1);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const galaxies = [
+    { x: rw * 0.34, y: rh * 0.16, rx: 260, ry: 70, rot: -0.35 },
+    { x: rw * 0.82, y: rh * 0.72, rx: 320, ry: 84, rot: 0.42 },
+  ];
+  for (const g of galaxies) {
+    ctx.save();
+    ctx.translate(g.x, g.y);
+    ctx.rotate(g.rot + Math.sin(now * 0.00004) * 0.02);
+    const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, g.rx);
+    grad.addColorStop(0, 'rgba(245, 240, 210, 0.55)');
+    grad.addColorStop(0.22, 'rgba(160, 190, 255, 0.24)');
+    grad.addColorStop(1, 'rgba(160, 190, 255, 0)');
+    ctx.scale(1, g.ry / g.rx);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(0, 0, g.rx, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  ctx.fillStyle = 'rgba(230, 245, 255, 0.9)';
+  for (let i = 0; i < 360; i++) {
+    const x = ((i * 977 + 271) % 4096) / 4096 * rw;
+    const y = ((i * 577 + 911) % 4096) / 4096 * rh;
+    const twinkle = 0.55 + 0.45 * Math.sin(now * 0.0015 + i * 11.37);
+    const r = (i % 9 === 0 ? 1.8 : i % 5 === 0 ? 1.25 : 0.75) * twinkle;
+    ctx.globalAlpha = 0.42 + twinkle * 0.5;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
 function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: number): void {
   // Defender preview: replace the wave bg with a multi-layer parallax
   // starfield that scrolls under the follow camera. Skips the wave webp +
   // procedural fallback paths entirely.
   if (renderMode.defender) {
     drawDefenderBackground(ctx);
+    return;
+  }
+  if (deathmatchActive() && state.phase !== 'title') {
+    drawDeathmatchBackground(ctx, now);
     return;
   }
   // Arena replaces the wave backdrop with a flat containment void; the grid
@@ -687,7 +761,7 @@ function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapse
   const shipTier = getVisualStyle('ship');
   // MESH ship draws on the WebGL overlay; skip the 2D path entirely
   // once the overlay's loaded so the player sees the 3D mesh alone.
-  if (shipTier === 'mesh' && isWebGLOverlayReady()) return;
+  if (shipTier === 'mesh' && isWebGLOverlayReady() && !deathmatchActive()) return;
   // MESH falls back to SHADED rendering while the overlay is loading,
   // and SHADED itself is the lit gradient hull.
   const shipShaded = shipTier !== 'vector';
@@ -1231,7 +1305,7 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   // "massive" than the 2D gold-halo vector circle that used to leak
   // through underneath. The bespoke gold halo is sacrificed in mesh tier;
   // shaded/vector tiers still get the original treatment below.
-  if (asteroidTier === 'mesh' && isWebGLOverlayReady()) return;
+  if (asteroidTier === 'mesh' && isWebGLOverlayReady() && !deathmatchActive()) return;
   // SHADED-tier asteroids get the "tumbling through space" treatment:
   // drop shadow under, camera-fixed rim light + terminator shading on
   // top, neutral outline (no per-type tint). Council members carry
@@ -2637,6 +2711,7 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   // wave number to count — hide both the SATS counter and the WAVE
   // label outright. The SCORE column still shows.
   const is600bn = getFlavour() === '600bn' || isSanctumMode();
+  const isDeathmatch = deathmatchActive();
   const showSats = s.session && !s.cheatedThisRun && !is600bn;
 
   ctx.font = '24px ui-monospace, monospace';
@@ -2661,7 +2736,7 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
 
   // WAVE label — top-centre. 600bn / Sanctum has no waves so the label
   // is suppressed entirely (the SIGNAL strapline takes the centre column
-  // by itself). Arena gets its own ARENA label. Campaign shows WAVE n.
+  // by itself). Arena/deathmatch get mode labels. Campaign shows WAVE n.
   const isArena = arenaActive();
   ctx.fillStyle = is600bn ? '#ffd84a' : '#5b9dff';
   ctx.shadowColor = is600bn ? '#ff8a3a' : '#5b9dff';
@@ -2673,6 +2748,8 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   } else if (isArena) {
     // Arena is a continuous infinity run — no wave number or name.
     ctx.fillText('ARENA', w / 2, topY + 14);
+  } else if (isDeathmatch) {
+    ctx.fillText('DEATHMATCH', w / 2, topY + 14);
   } else {
     ctx.fillText('WAVE', w / 2, topY);
     ctx.fillText(pad(s.wave, 2), w / 2, topY + 26);
@@ -2682,7 +2759,11 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   ctx.fillStyle = '#fff5d8';
   ctx.letterSpacing = '0.18em' as unknown as string;
   if (!isArena) {
-    ctx.fillText(is600bn ? 'THE SIGNAL' : waveName(s.wave).toUpperCase(), w / 2, is600bn ? topY + 14 : topY + 56);
+    ctx.fillText(
+      is600bn ? 'THE SIGNAL' : isDeathmatch ? `${s.players.length} PILOTS` : waveName(s.wave).toUpperCase(),
+      w / 2,
+      is600bn ? topY + 14 : topY + 56,
+    );
   }
   ctx.letterSpacing = '0em' as unknown as string;
 
@@ -2691,25 +2772,30 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   ctx.shadowColor = '#58ff58';
   ctx.shadowBlur = 0;
   ctx.textAlign = 'right';
-  ctx.fillText('LIVES', rightX, topY);
-  for (let i = 0; i < p0.lives; i++) {
-    const x = rightX - i * 22;
-    const y = topY + 40;
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(-Math.PI / 2);
-    ctx.lineWidth = 1.4;
-    ctx.strokeStyle = '#58ff58';
-    ctx.shadowColor = '#58ff58';
-    ctx.shadowBlur = 6;
-    ctx.beginPath();
-    ctx.moveTo(8, 0);
-    ctx.lineTo(-6, 5);
-    ctx.lineTo(-3, 0);
-    ctx.lineTo(-6, -5);
-    ctx.closePath();
-    ctx.stroke();
-    ctx.restore();
+  if (isDeathmatch) {
+    ctx.fillText('RESPAWNS', rightX, topY);
+    ctx.fillText(pad(p0.lives, 2), rightX, topY + 26);
+  } else {
+    ctx.fillText('LIVES', rightX, topY);
+    for (let i = 0; i < p0.lives; i++) {
+      const x = rightX - i * 22;
+      const y = topY + 40;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(-Math.PI / 2);
+      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = '#58ff58';
+      ctx.shadowColor = '#58ff58';
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      ctx.moveTo(8, 0);
+      ctx.lineTo(-6, 5);
+      ctx.lineTo(-3, 0);
+      ctx.lineTo(-6, -5);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   // Combo + buff chips — left rail, stacked below the SCORE/SATS column.
@@ -2760,7 +2846,7 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   // Couch 2-player: P2 readouts (SCORE + LIVES) below the P1 LIVES corner on
   // the right rail. A blue "P2" tag so the stacked rail reads clearly.
   // Per-player SATS and buff chips for P2 are a polish follow-up.
-  if (s.players.length >= 2) {
+  if (s.players.length >= 2 && !isDeathmatch) {
     const p2 = s.players[1];
     ctx.font = 'bold 16px ui-monospace, monospace';
     ctx.fillStyle = '#7fbfff';
@@ -3754,11 +3840,12 @@ function getRadarOffscreen(w: number, h: number): HTMLCanvasElement {
  *  Reads like a sloped cabinet console rather than a flat sticker. */
 function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
   if (!isFollowPhase(s.phase)) return;
+  const radarDeathmatch = deathmatchActive();
   // Defender mode forces the radar on — the wide-arena scroll only reads
   // with whole-world awareness. Outside defender, the player's preference
   // governs (default on for portrait, off for landscape).
-  if (!renderMode.defender && !getRadarVisible()) return;
-  if (!renderMode.follow && !getRadarLandscape() && !renderMode.defender) return;
+  if (!renderMode.defender && !radarDeathmatch && !getRadarVisible()) return;
+  if (!renderMode.follow && !getRadarLandscape() && !renderMode.defender && !radarDeathmatch) return;
 
   ctx.save();
   ctx.setTransform(renderMode.dpr, 0, 0, renderMode.dpr, 0, 0);
@@ -3790,10 +3877,14 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
 
   // World -> offscreen mapping. Same shape as before but anchored at 0,0
   // inside the offscreen canvas; the warp on the way out positions it.
+  const radarWorldW = renderWorldW();
+  const radarWorldH = renderWorldH();
   const blip = (wx: number, wy: number, r: number, fill: string): void => {
     oc.fillStyle = fill;
     oc.beginPath();
-    oc.arc((wrapInto(wx) / WORLD_W) * w, (wy / WORLD_H) * h, r, 0, Math.PI * 2);
+    const bx = radarDeathmatch ? (wx / radarWorldW) * w : (wrapInto(wx) / WORLD_W) * w;
+    const by = (wy / radarWorldH) * h;
+    oc.arc(bx, by, r, 0, Math.PI * 2);
     oc.fill();
   };
   for (const a of s.asteroids) {
@@ -3809,11 +3900,17 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
 
   // Visible-strip box — the slice the follow camera currently shows.
   const strip = renderMode.vw / (renderMode.vh / WORLD_H);
-  const boxW = Math.min(strip / WORLD_W, 1) * w;
-  const boxX = (wrapInto(camX - strip / 2) / WORLD_W) * w;
+  const boxW = Math.min(strip / radarWorldW, 1) * w;
+  const boxX = radarDeathmatch
+    ? Math.max(0, Math.min(w - boxW, ((camX - strip / 2) / radarWorldW) * w))
+    : (wrapInto(camX - strip / 2) / WORLD_W) * w;
+  const boxH = radarDeathmatch ? Math.min(WORLD_H / radarWorldH, 1) * h : h - 2;
+  const boxY = radarDeathmatch ? Math.max(1, Math.min(h - boxH - 1, ((camY - WORLD_H / 2) / radarWorldH) * h)) : 1;
   oc.strokeStyle = 'rgba(255, 240, 180, 0.95)';
   oc.lineWidth = 1.5;
-  if (boxX + boxW <= w) {
+  if (radarDeathmatch) {
+    oc.strokeRect(boxX, boxY, boxW, boxH);
+  } else if (boxX + boxW <= w) {
     oc.strokeRect(boxX, 1, boxW, h - 2);
   } else {
     const first = w - boxX;
@@ -3900,40 +3997,58 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   const followActive = !!renderMode.follow && isFollowPhase(state.phase);
   // Arena cage: shown from wavestart onward (title keeps the bg cycle).
   const arenaRun = arenaActive() && state.phase !== 'title';
+  const deathmatchRun = deathmatchActive() && state.phase !== 'title';
+  const noWrapRun = arenaRun || deathmatchRun;
+  const rw = renderWorldW();
+  const rh = renderWorldH();
   const arenaCageR = arenaRun ? arenaCage(state.runTimeMs) : null;
   let scale = renderMode.scale;
   let tx = renderMode.tx;
   let ty = renderMode.ty;
   let camStrip = 0;
+  let camStripY = WORLD_H;
   const followXs: number[] = [0];
   if (followActive) {
     scale = renderMode.vh / WORLD_H;        // full world height fills the viewport
     camStrip = renderMode.vw / scale;       // visible world width
+    camStripY = renderMode.vh / scale;
     const sx = p0.ship.pos.x;
+    const sy = p0.ship.pos.y;
     if (!camInit) {
       // Fresh run, post-death respawn, or a rotation into portrait: snap on.
-      camX = wrapInto(sx);
+      camX = deathmatchRun ? clampCamera(sx, camStrip, rw) : wrapInto(sx);
+      camY = deathmatchRun ? clampCamera(sy, camStripY, rh) : WORLD_H / 2;
       camInit = true;
     } else if (p0.ship.alive) {
       // Dead-zone follow: the camera holds until the ship leaves a central
       // band, then eases toward the band edge. Held entirely while the ship is
       // dead so a death is not yanked off-centre.
       const dz = camStrip * 0.16;
-      const d = wrapDelta(camX, sx);
+      const d = deathmatchRun ? (sx - camX) : wrapDelta(camX, sx);
       let target = camX;
       if (d > dz) target = camX + (d - dz);
       else if (d < -dz) target = camX + (d + dz);
       const dt = Math.min(0.05, Math.max(0, (now - camPrevNow) / 1000));
       const k = 1 - Math.exp(-dt / 0.12);   // ~120ms time constant
-      camX = wrapInto(camX + wrapDelta(camX, target) * k);
+      if (deathmatchRun) {
+        camX = clampCamera(camX + (target - camX) * k, camStrip, rw);
+        const dy = sy - camY;
+        const dzY = camStripY * 0.16;
+        let targetY = camY;
+        if (dy > dzY) targetY = camY + (dy - dzY);
+        else if (dy < -dzY) targetY = camY + (dy + dzY);
+        camY = clampCamera(camY + (targetY - camY) * k, camStripY, rh);
+      } else {
+        camX = wrapInto(camX + wrapDelta(camX, target) * k);
+      }
     }
     camPrevNow = now;
     tx = renderMode.vw / 2 - camX * scale;
-    ty = 0;
+    ty = deathmatchRun ? (renderMode.vh / 2 - camY * scale) : 0;
     // Seam-wrap copies: pull in a world-neighbour copy only when the visible
     // strip actually overruns a seam, so calm frames stay single-pass.
     // Arena has no wrap, so no seam copies: the camera simply scrolls.
-    if (!arenaRun) {
+    if (!noWrapRun) {
       if (camX - camStrip / 2 < 0) followXs.push(-WORLD_W);
       if (camX + camStrip / 2 > WORLD_W) followXs.push(WORLD_W);
     }
@@ -3966,7 +4081,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // visible seam copy so a strip straddling x=0 / WORLD_W stays starred.
   // Skipped in defender mode where the parallax starfield from
   // drawDefenderBackground is the entire star layer.
-  if (!renderMode.defender) {
+  if (!renderMode.defender && !deathmatchRun) {
     for (const dx of followXs) {
       if (dx === 0) {
         drawStars(ctx, now);
@@ -3998,7 +4113,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   const ghostYs: number[] = [0];
   // Arena confines entities to the inset box, so they never straddle a world
   // seam: skip the ghost scan and leave ghostXs / ghostYs single-pass.
-  if (!arenaRun) {
+  if (!noWrapRun) {
     const BAND = 140;  // largest entity radius plus a lead-in
     let nearL = false, nearR = false, nearT = false, nearB = false;
     const scan = (x: number, y: number): void => {
@@ -4036,9 +4151,13 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   if (followActive) {
     // The follow camera fills the viewport with the strip; clip to the strip
     // so the seam-wrap world copies are trimmed to what is actually visible.
-    ctx.rect(camX - camStrip / 2, 0, camStrip, WORLD_H);
+    if (deathmatchRun) {
+      ctx.rect(camX - camStrip / 2, camY - camStripY / 2, camStrip, camStripY);
+    } else {
+      ctx.rect(camX - camStrip / 2, 0, camStrip, WORLD_H);
+    }
   } else {
-    ctx.rect(0, 0, WORLD_W, WORLD_H);
+    ctx.rect(0, 0, rw, rh);
   }
   ctx.clip();
   ctx.translate(shakeX, shakeY);
@@ -4165,10 +4284,10 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     // slot. The overlay caches a mesh per slot so both ships render
     // with the full 3D look in duel / couch (was: slot 1 dropped out).
     callWebGLOverlay({
-      asteroids: !holding && asteroidTier === 'mesh' ? state.asteroids : [],
+      asteroids: !holding && asteroidTier === 'mesh' && !deathmatchRun ? state.asteroids : [],
       ufos: !holding && ufosMesh ? state.ufos : [],
       powerups: !holding && particleTier === 'mesh' ? state.powerups : [],
-      ships: !holding && shipTier === 'mesh' ? state.players.map((pl) => pl.ship) : [],
+      ships: !holding && shipTier === 'mesh' && !deathmatchRun ? state.players.map((pl) => pl.ship) : [],
       elapsed: state.elapsed,
       dpr: renderMode.dpr,
       // Camera-adjusted transform so mesh-tier entities track the follow

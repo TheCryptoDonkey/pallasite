@@ -59,6 +59,14 @@ import { preloadBackground, invalidateBackgroundCache } from './render.js';
 import { currentMods, lockInDifficulty, getStoredDifficulty, currentDifficulty } from './difficulty.js';
 import { lockInMode, getStoredMode, currentMode, isEndlessMode, isSanctumMode, isDefenderMode } from './mode.js';
 import { arenaActive, arenaCage, confineToArena, clampToArena, outsideArena } from './arena.js';
+import {
+  deathmatchActive,
+  deathmatchSpawnPoint,
+  deathmatchWorldH,
+  deathmatchWorldW,
+  confineToDeathmatch,
+  outsideDeathmatch,
+} from './deathmatch.js';
 import { markAchievement, resetRunAchievements } from './achievements.js';
 import { gameRng, seedRun, getRngState } from './seed.js';
 import { haptic } from './haptics.js';
@@ -76,6 +84,14 @@ import {
  *  run reproduces bit-identically from its seed and inputs (B3). */
 export const FIXED_STEP_S = 1 / 60;
 export const FIXED_STEP_MS = 1000 / 60;
+
+function worldW(): number {
+  return deathmatchActive() ? deathmatchWorldW() : WORLD_W;
+}
+
+function worldH(): number {
+  return deathmatchActive() ? deathmatchWorldH() : WORLD_H;
+}
 
 export function makeInitialState(): GameState {
   return {
@@ -268,7 +284,7 @@ function makePlayerState(): PlayerState {
 const DEFENDER_RUN_MS = 90_000;
 export const DEFENDER_WIN_THRESHOLD = 6;
 
-export function startGame(s: GameState, forcedSeed?: number, opts?: { players?: 1 | 2; defender?: boolean }): void {
+export function startGame(s: GameState, forcedSeed?: number, opts?: { players?: number; defender?: boolean }): void {
   // 600bn flavour now runs through the standard Pallasite startGame +
   // beginWave path. beginWave(s, 1) detects flavour=600bn and spawns
   // council-member-textured asteroids instead of the wave-1 default.
@@ -296,7 +312,8 @@ export function startGame(s: GameState, forcedSeed?: number, opts?: { players?: 
   // that bypass title need this to honour the picked mode.
   lockInMode(getStoredMode());
   const mods = currentMods();
-  const playerCount = opts?.players ?? 1;
+  const deathmatch = deathmatchActive();
+  const playerCount = deathmatch ? Math.max(4, opts?.players ?? 4) : (opts?.players ?? 1);
   // Defender bonus wave — protect the Council variant. Drives the
   // wave-1 council-spawn check below + win/lose timer in updateGame.
   // Triggered by either the explicit opts.defender (URL flag still
@@ -311,7 +328,7 @@ export function startGame(s: GameState, forcedSeed?: number, opts?: { players?: 
   // Lives: admin override (starting_lives > 0) wins over the
   // difficulty default. 0 = inherit (the common case).
   const livesOverride = getGameConfig().starting_lives;
-  const startingLives = livesOverride > 0 ? livesOverride : mods.livesStart;
+  const startingLives = deathmatch ? 99 : (livesOverride > 0 ? livesOverride : mods.livesStart);
   for (const pl of s.players) {
     pl.lives = startingLives;
   }
@@ -322,7 +339,15 @@ export function startGame(s: GameState, forcedSeed?: number, opts?: { players?: 
   // makeShip() defaults both to (WORLD_W/2, WORLD_H/2) which collapses
   // the spawn into a single visible ship — exactly the "no duel /
   // interaction" symptom on first contact.
-  if (playerCount === 2) {
+  if (deathmatch) {
+    for (let i = 0; i < s.players.length; i++) {
+      const spawn = deathmatchSpawnPoint(i, s.players.length);
+      s.players[i].ship.pos.x = spawn.x;
+      s.players[i].ship.pos.y = spawn.y;
+      s.players[i].ship.rot = spawn.rot;
+      if (i > 0) s.players[i].ai = true;
+    }
+  } else if (playerCount === 2) {
     s.players[0].ship.pos.x = WORLD_W * 0.30;
     s.players[0].ship.pos.y = WORLD_H * 0.50;
     s.players[0].ship.rot = 0;                  // facing right (toward P2)
@@ -400,14 +425,15 @@ function makeAsteroidShape(): number[] {
  */
 function pickAsteroidType(wave: number): AsteroidType {
   const arena = arenaActive();
+  const deathmatch = deathmatchActive();
   const r = gameRng();
   // Campaign eases in with three stony-only waves; arena wants variety
   // from round one, so it skips that onboarding.
-  if (!arena && wave <= 3) return 'stony';
+  if (!arena && !deathmatch && wave <= 3) return 'stony';
   // Behavioural specials roll on their own draw so they do not skew the
   // meteorite-type bands below. Kinetic is arena-only (it needs cage
   // walls). Arena rolls them from round one; campaign/drift from wave 5.
-  if (arena || wave >= 5) {
+  if (arena || deathmatch || wave >= 5) {
     const sp = gameRng();
     if (sp < 0.05) return 'volatile';
     if (sp < 0.09) return 'tektite';
@@ -417,7 +443,7 @@ function pickAsteroidType(wave: number): AsteroidType {
   }
   // Arena draws the full meteorite roster from the start; campaign widens
   // it wave by wave.
-  const w = arena ? 20 : wave;
+  const w = arena || deathmatch ? 20 : wave;
   if (w <= 6) {
     if (r < 0.05) return 'pallasite';
     if (r < 0.30) return 'iron';
@@ -597,12 +623,14 @@ function randomEdgePosition(): EdgeSpawn {
   // inwardAngle points toward the centre half of the playfield so the
   // asteroid actually enters view (vs picking a random angle that could be
   // edge-parallel or outward).
+  const ww = worldW();
+  const wh = worldH();
   const edge = Math.floor(gameRng() * 4);
   switch (edge) {
-    case 0: return { pos: { x: gameRng() * WORLD_W, y: -RADIUS_PER_SIZE.large }, inwardAngle: Math.PI / 2 };  // top → moves down
-    case 1: return { pos: { x: WORLD_W + RADIUS_PER_SIZE.large, y: gameRng() * WORLD_H }, inwardAngle: Math.PI };  // right → moves left
-    case 2: return { pos: { x: gameRng() * WORLD_W, y: WORLD_H + RADIUS_PER_SIZE.large }, inwardAngle: -Math.PI / 2 };  // bottom → moves up
-    default: return { pos: { x: -RADIUS_PER_SIZE.large, y: gameRng() * WORLD_H }, inwardAngle: 0 };  // left → moves right
+    case 0: return { pos: { x: gameRng() * ww, y: -RADIUS_PER_SIZE.large }, inwardAngle: Math.PI / 2 };  // top -> moves down
+    case 1: return { pos: { x: ww + RADIUS_PER_SIZE.large, y: gameRng() * wh }, inwardAngle: Math.PI };  // right -> moves left
+    case 2: return { pos: { x: gameRng() * ww, y: wh + RADIUS_PER_SIZE.large }, inwardAngle: -Math.PI / 2 };  // bottom -> moves up
+    default: return { pos: { x: -RADIUS_PER_SIZE.large, y: gameRng() * wh }, inwardAngle: 0 };  // left -> moves right
   }
 }
 
@@ -998,6 +1026,63 @@ function arenaTickSpawn(s: GameState, dtMs: number): void {
   }
 }
 
+function spawnDeathmatchTerrain(s: GameState): void {
+  const ww = deathmatchWorldW();
+  const wh = deathmatchWorldH();
+  const centre = { x: ww / 2, y: wh / 2 };
+  const fields = [
+    { x: ww * 0.24, y: wh * 0.24, r: 235, type: 'ballast' as AsteroidType },
+    { x: ww * 0.78, y: wh * 0.28, r: 285, type: 'iron' as AsteroidType },
+    { x: ww * 0.30, y: wh * 0.74, r: 310, type: 'carbonaceous' as AsteroidType },
+    { x: ww * 0.72, y: wh * 0.72, r: 245, type: 'mesosiderite' as AsteroidType },
+    { x: ww * 0.50, y: wh * 0.50, r: 190, type: 'pallasite' as AsteroidType },
+  ];
+  for (const f of fields) {
+    const a = spawnAsteroid('large', 20, { x: f.x, y: f.y }, { x: 0, y: 0 }, f.type);
+    a.radius = f.r;
+    a.hp = 9999;
+    a.hpMax = 9999;
+    a.vel.x = 0;
+    a.vel.y = 0;
+    a.rotVel *= 0.12;
+    s.asteroids.push(a);
+  }
+  for (let i = 0; i < 16; i++) {
+    const angle = gameRng() * Math.PI * 2;
+    const dist = 650 + gameRng() * 1250;
+    const x = Math.max(180, Math.min(ww - 180, centre.x + Math.cos(angle) * dist));
+    const y = Math.max(180, Math.min(wh - 180, centre.y + Math.sin(angle) * dist));
+    const speed = 10 + gameRng() * 25;
+    const drift = angle + Math.PI / 2 + (gameRng() - 0.5) * 0.7;
+    s.asteroids.push(spawnAsteroid('large', 12, { x, y }, { x: Math.cos(drift) * speed, y: Math.sin(drift) * speed }, pickAsteroidType(20)));
+  }
+}
+
+function beginDeathmatch(s: GameState): void {
+  s.asteroids = [];
+  s.ufos = [];
+  s.mines = [];
+  s.powerups = [];
+  s.enemyBullets = [];
+  spawnDeathmatchTerrain(s);
+  for (let i = 0; i < s.players.length; i++) {
+    const spawn = deathmatchSpawnPoint(i, s.players.length);
+    const p = s.players[i];
+    p.ship.pos.x = spawn.x;
+    p.ship.pos.y = spawn.y;
+    p.ship.vel.x = 0;
+    p.ship.vel.y = 0;
+    p.ship.rot = spawn.rot;
+    p.ship.rotVel = 0;
+    p.ship.invulnerableUntil = s.elapsed + ARENA_INVULN_MS;
+  }
+  s.phase = 'playing';
+  s.phaseStart = s.elapsed;
+  s.nextUfoSpawn = Number.POSITIVE_INFINITY;
+  audio.setHeartbeatPeriod(0.55);
+  toastNow(s, 'DEATHMATCH');
+}
+
 export function beginWave(s: GameState, wave: number): void {
   s.wave = wave;
   // Milestone achievements on wave entry — fired here so the badge lands
@@ -1050,6 +1135,10 @@ export function beginWave(s: GameState, wave: number): void {
     s.phase = 'playing';
     s.phaseStart = s.elapsed;
     audio.setHeartbeatPeriod(Math.max(0.35, 1.0 - wave * 0.06));
+    return;
+  }
+  if (deathmatchActive()) {
+    beginDeathmatch(s);
     return;
   }
   const setPiece = WAVE_SET_PIECES[wave];
@@ -1184,6 +1273,47 @@ function startWarp(s: GameState, targetWave?: number): void {
   audio.warpJump();
   haptic('celebrate');
   scheduleSimTransition(s, 'warp-begin-wave', s.elapsed + WARP_MS, epoch, next);
+}
+
+function angleDelta(from: number, to: number): number {
+  let d = to - from;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
+function updateDeathmatchAi(s: GameState): void {
+  if (!deathmatchActive()) return;
+  for (let i = 0; i < s.players.length; i++) {
+    const p = s.players[i];
+    if (!p.ai) continue;
+    p.keys = {};
+    p.targetHeading = null;
+    p.thrustOverride = false;
+    if (!p.ship.alive || p.ship.hyperspaceCloakMs > 0) continue;
+    let target: PlayerState | null = null;
+    let bestSq = Infinity;
+    for (const other of s.players) {
+      if (other === p || !other.ship.alive) continue;
+      const dx = other.ship.pos.x - p.ship.pos.x;
+      const dy = other.ship.pos.y - p.ship.pos.y;
+      const dSq = dx * dx + dy * dy;
+      if (dSq < bestSq) {
+        bestSq = dSq;
+        target = other;
+      }
+    }
+    if (!target) continue;
+    const dx = target.ship.pos.x - p.ship.pos.x;
+    const dy = target.ship.pos.y - p.ship.pos.y;
+    const aim = Math.atan2(dy, dx);
+    const delta = angleDelta(p.ship.rot, aim);
+    if (delta < -0.08) p.keys.ArrowLeft = true;
+    if (delta > 0.08) p.keys.ArrowRight = true;
+    const dist = Math.sqrt(bestSq);
+    p.keys.ArrowUp = dist > 340 || Math.abs(delta) > 0.75;
+    p.keys.Space = dist < 980 && Math.abs(delta) < 0.32;
+  }
 }
 
 /** BONUS phase length + sub-phase split. 60s total: 45s HYPER BLITZ
@@ -2182,15 +2312,17 @@ function wrap(p: Vec2, margin = 0): void {
   // the sim, adapts to the viewport — so the wrap cycle is always the world
   // plus the courtesy margin (an entity flies its radius off-screen before
   // reappearing).
-  if (p.x <= -margin) p.x += WORLD_W + margin * 2;
-  if (p.x >= WORLD_W + margin) p.x -= WORLD_W + margin * 2;
-  if (p.y <= -margin) p.y += WORLD_H + margin * 2;
-  if (p.y >= WORLD_H + margin) p.y -= WORLD_H + margin * 2;
+  const ww = worldW();
+  const wh = worldH();
+  if (p.x <= -margin) p.x += ww + margin * 2;
+  if (p.x >= ww + margin) p.x -= ww + margin * 2;
+  if (p.y <= -margin) p.y += wh + margin * 2;
+  if (p.y >= wh + margin) p.y -= wh + margin * 2;
 }
 
 function circlesHit(a: { pos: Vec2; radius: number }, b: { pos: Vec2; radius: number }): boolean {
   const r = a.radius + b.radius;
-  if (arenaActive()) {
+  if (arenaActive() || deathmatchActive()) {
     // Arena has hard walls and no wrap, so the torus fold (which can pull two
     // entities near opposite world edges into a false hit) must not run.
     const ex = a.pos.x - b.pos.x;
@@ -2199,10 +2331,12 @@ function circlesHit(a: { pos: Vec2; radius: number }, b: { pos: Vec2; radius: nu
   }
   // Wrap-aware shortest delta on the fixed WORLD_W x WORLD_H torus. Proper
   // modulo so positions more than one wrap apart still fold back correctly.
-  let dx = (((a.pos.x - b.pos.x) % WORLD_W) + WORLD_W) % WORLD_W;
-  if (dx > WORLD_W / 2) dx -= WORLD_W;
-  let dy = (((a.pos.y - b.pos.y) % WORLD_H) + WORLD_H) % WORLD_H;
-  if (dy > WORLD_H / 2) dy -= WORLD_H;
+  const ww = worldW();
+  const wh = worldH();
+  let dx = (((a.pos.x - b.pos.x) % ww) + ww) % ww;
+  if (dx > ww / 2) dx -= ww;
+  let dy = (((a.pos.y - b.pos.y) % wh) + wh) % wh;
+  if (dy > wh / 2) dy -= wh;
   return dx * dx + dy * dy <= r * r;
 }
 
@@ -2703,6 +2837,7 @@ export function updateGame(s: GameState): void {
   // Both derive from s.runTimeMs and are read by every entity loop below;
   // campaign and drift leave `arena` false and behave exactly as before.
   const arena = arenaActive();
+  const deathmatch = deathmatchActive();
   const cage = arenaCage(s.runTimeMs);
 
   // HUD ticker eases toward s.players[0].sats every frame regardless of phase, so the
@@ -2797,6 +2932,7 @@ export function updateGame(s: GameState): void {
       d.ttl -= dt * 1000;
       d.vel.x *= Math.exp(-0.6 * dt); d.vel.y *= Math.exp(-0.6 * dt);
       if (arena) confineToArena(d.pos, d.vel, 0, cage, 0.5);
+      else if (deathmatch) confineToDeathmatch(d.pos, d.vel, 0, 0.45);
       else wrap(d.pos, 20);
     }
     s.debris = s.debris.filter(d => d.ttl > 0);
@@ -2813,6 +2949,8 @@ export function updateGame(s: GameState): void {
   if (s.phase === 'playing') {
     s.runTimeMs += dt * 1000;
   }
+
+  updateDeathmatchAi(s);
 
   // ── Ship input ──
   for (const p of s.players) {
@@ -2878,6 +3016,7 @@ export function updateGame(s: GameState): void {
       p.ship.pos.x += p.ship.vel.x * dt;
       p.ship.pos.y += p.ship.vel.y * dt;
       if (arena) confineToArena(p.ship.pos, p.ship.vel, p.ship.radius, cage, 0.4);
+      else if (deathmatch) confineToDeathmatch(p.ship.pos, p.ship.vel, p.ship.radius, 0.35);
       else wrap(p.ship.pos);
 
       // Recoil decays linearly — a 1.8px kick fades in ~75ms at 24 px/s.
@@ -2907,10 +3046,10 @@ export function updateGame(s: GameState): void {
         s.missedShotsThisWave += 1;
         s.players[0].runStats.bulletsMissed += 1;
       }
-    } else if (arena) {
+    } else if (arena || deathmatch) {
       // No wrap in arena: a bullet that reaches the wall is spent. An
       // unlanded wall-expiry still counts as a miss, like a TTL expiry.
-      if (outsideArena(b.pos, b.radius, cage)) {
+      if (arena ? outsideArena(b.pos, b.radius, cage) : outsideDeathmatch(b.pos, b.radius)) {
         b.alive = false;
         if (!b.hasLanded) {
           s.missedShotsThisWave += 1;
@@ -2936,6 +3075,8 @@ export function updateGame(s: GameState): void {
     b.ttl -= dt * 1000;
     const offField = arena
       ? outsideArena(b.pos, b.radius, cage)
+      : deathmatch
+      ? outsideDeathmatch(b.pos, b.radius)
       : (b.pos.x < -10 || b.pos.x > WORLD_W + 10 || b.pos.y < -10 || b.pos.y > WORLD_H + 10);
     if (b.ttl <= 0 || offField) {
       b.alive = false;
@@ -2948,8 +3089,8 @@ export function updateGame(s: GameState): void {
   // is enough fight on its own. Set-piece waves with their own UFO logic
   // (curtain) also suppress the default spawn timer.
   const mods = currentMods();
-  const easyBossArena = !arena && s.wave === FINAL_WAVE && currentDifficulty() === 'easy';
-  const setPiece = arena ? undefined : WAVE_SET_PIECES[s.wave];
+  const easyBossArena = !arena && !deathmatch && s.wave === FINAL_WAVE && currentDifficulty() === 'easy';
+  const setPiece = arena || deathmatch ? undefined : WAVE_SET_PIECES[s.wave];
   const suppressSpawn = easyBossArena || setPiece?.suppressDefaultUfos === true;
   const minionCount = s.ufos.filter(u => u.type !== 'boss').length;
   s.nextUfoSpawn -= dt * 1000;
@@ -3089,6 +3230,8 @@ export function updateGame(s: GameState): void {
           a.vel.y *= KINETIC_GAIN;
         }
       }
+    } else if (deathmatch) {
+      confineToDeathmatch(a.pos, a.vel, a.radius, 0.92);
     } else wrap(a.pos);
   }
 
@@ -3125,6 +3268,7 @@ export function updateGame(s: GameState): void {
     d.vel.x *= Math.exp(-0.6 * dt);
     d.vel.y *= Math.exp(-0.6 * dt);
     if (arena) confineToArena(d.pos, d.vel, 0, cage, 0.5);
+    else if (deathmatch) confineToDeathmatch(d.pos, d.vel, 0, 0.45);
     else wrap(d.pos, 20);
   }
   s.debris = s.debris.filter(d => d.ttl > 0);
@@ -3138,6 +3282,7 @@ export function updateGame(s: GameState): void {
     c.vel.y *= Math.exp(-0.8 * dt);
     if (c.ttl <= 0) c.alive = false;
     if (arena) confineToArena(c.pos, c.vel, c.radius, cage, 0.55);
+    else if (deathmatch) confineToDeathmatch(c.pos, c.vel, c.radius, 0.5);
     else wrap(c.pos);
 
     // Pull toward ship — short-range natural magnetism always, plus a strong
@@ -3224,6 +3369,30 @@ export function updateGame(s: GameState): void {
     }
   }
 
+  // ── Deathmatch: player bullets × ships ──
+  if (deathmatch) {
+    for (const b of s.bullets) {
+      if (!b.alive) continue;
+      for (let i = 0; i < s.players.length; i++) {
+        if (i === b.owner) continue;
+        const target = s.players[i];
+        if (!target.ship.alive || target.ship.hyperspaceCloakMs > 0 || now <= target.ship.invulnerableUntil) continue;
+        if (circlesHit(b, target.ship)) {
+          b.alive = false;
+          b.hasLanded = true;
+          const attacker = s.players[b.owner];
+          if (attacker) {
+            attacker.score += 1000;
+            attacker.combo = Math.min(COMBO_MAX, attacker.combo + 1);
+            attacker.comboExpiresAt = s.elapsed + COMBO_WINDOW_MS;
+          }
+          killShip(s, target);
+          break;
+        }
+      }
+    }
+  }
+
   // ── Shield contact with mines ──
   // Shield protects the ship from death but no longer destroys the mine —
   // matches how shield handles asteroids (pure deflect, no damage). Mines
@@ -3253,7 +3422,7 @@ export function updateGame(s: GameState): void {
           // along the actual contact normal, not a normal flipped by the wrap.
           // Arena has no wrap, so a plain delta is already the real normal.
           let dx: number, dy: number;
-          if (arena) {
+          if (arena || deathmatch) {
             dx = a.pos.x - p.ship.pos.x;
             dy = a.pos.y - p.ship.pos.y;
           } else {
@@ -3380,6 +3549,7 @@ export function updateGame(s: GameState): void {
       p.ttl -= dt * 1000;
       if (p.ttl <= 0) p.alive = false;
       if (arena) confineToArena(p.pos, p.vel, p.radius, cage, 0.55);
+      else if (deathmatch) confineToDeathmatch(p.pos, p.vel, p.radius, 0.5);
       else wrap(p.pos);
       for (const pl of s.players) {
         if (pl.ship.alive && circlesHit(pl.ship, p)) {
@@ -3406,7 +3576,7 @@ export function updateGame(s: GameState): void {
     // can't even hit them.
     const collideAsteroids = s.asteroids.filter(a => a.alive && (a.depth ?? 3) === 3);
     const asteroidsClear = collideAsteroids.length === 0;
-    const setPiece = arena ? undefined : WAVE_SET_PIECES[s.wave];
+    const setPiece = arena || deathmatch ? undefined : WAVE_SET_PIECES[s.wave];
     // Set-piece waves can override the clear condition (e.g. bullet curtain
     // clears on UFO kill count, not on empty asteroid array). Falls back to
     // the standard asteroidsClear check.
@@ -4247,11 +4417,14 @@ function respawnShip(s: GameState, p: PlayerState, deadline: number): boolean {
   //      both ships shared (WORLD_W/2, WORLD_H/2) and the renderer drew
   //      what looked like a single ship for the rest of the run)
   //   3. World centre, single-player default
-  const wavePiece = arenaActive() ? undefined : WAVE_SET_PIECES[s.wave]?.playerSpawn;
+  const wavePiece = arenaActive() || deathmatchActive() ? undefined : WAVE_SET_PIECES[s.wave]?.playerSpawn;
   const slot = s.players.indexOf(p);
   const twoPlayer = s.players.length === 2;
   let px: number, py: number, prot: number;
-  if (wavePiece) {
+  if (deathmatchActive()) {
+    const spawn = deathmatchSpawnPoint(Math.max(0, slot), s.players.length);
+    px = spawn.x; py = spawn.y; prot = spawn.rot;
+  } else if (wavePiece) {
     px = wavePiece.x;
     py = wavePiece.y;
     prot = wavePiece.rot ?? -Math.PI / 2;

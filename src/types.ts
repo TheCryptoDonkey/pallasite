@@ -491,6 +491,9 @@ export interface PlayerState {
   thrustOverride: boolean;
   /** Resolved input key state for this player. */
   keys: Record<string, boolean>;
+  /** Prototype local bot control. Used by deathmatch until network slots
+   *  become dynamic; human/local players leave this unset. */
+  ai?: boolean;
 
   score: number;
   /** In-game sats counter (mirrors backend credit). Multiplayer never pays out. */

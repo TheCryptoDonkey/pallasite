@@ -13,6 +13,7 @@ import { render, preloadBackground, setRenderMode, getRenderModeKind, drawAsciiH
 import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderDuelLobby, renderDuelConnecting, simulateStart } from './ui.js';
 import { postHeartbeat } from './faucet.js';
 import { currentMode, setStoredMode, getStoredMode, isStoredDefenderMode } from './mode.js';
+import { deathmatchActive } from './deathmatch.js';
 import {
   startStreamSession,
   publishStreamFrame,
@@ -49,6 +50,12 @@ const canvas = document.getElementById('game') as HTMLCanvasElement;
 // main canvas via fit() below.
 const overlay3d = document.getElementById('game3d') as HTMLCanvasElement | null;
 const state: GameState = makeInitialState();
+
+function modeUsesWaveStart(): boolean {
+  const mode = currentMode();
+  return getFlavour() !== '600bn' && mode !== 'arena' && mode !== 'deathmatch';
+}
+
 // Test hook: the headless E2E runner reads live sim state (frame, phase,
 // players) here without scraping the DOM. Production code never references it.
 (window as unknown as { __pallasiteState?: GameState }).__pallasiteState = state;
@@ -489,7 +496,7 @@ bindActions({
     // Only force wavestart for the standard campaign — startGame on the
     // 600bn flavour sets phase='sanctum' and doesn't want the warp/wave
     // pipeline kicking in over the top.
-    if (getFlavour() !== '600bn') state.phase = 'wavestart';
+    if (modeUsesWaveStart()) state.phase = 'wavestart';
     // Couch mode forces retro in fit(); re-run fit now that players[] is updated.
     if (couchMode) (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
     clearOverlay();
@@ -688,7 +695,7 @@ window.addEventListener('keydown', e => {
     gateBehindOnboarding(() => {
       setDailySeed(getStoredDailyPref() ? todayUTC() : null);
       startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: (couchMode || peer || spectator) ? 2 : 1, defender: defenderMode });
-      if (getFlavour() !== '600bn') state.phase = 'wavestart';
+      if (modeUsesWaveStart()) state.phase = 'wavestart';
       if (couchMode) (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
       clearOverlay();
     });
@@ -702,7 +709,7 @@ window.addEventListener('keydown', e => {
     lockInDifficulty(getStoredDifficulty());
     setDailySeed(getStoredDailyPref() ? todayUTC() : null);
     startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: (couchMode || peer || spectator) ? 2 : 1, defender: defenderMode });
-    if (getFlavour() !== '600bn') state.phase = 'wavestart';
+    if (modeUsesWaveStart()) state.phase = 'wavestart';
     if (couchMode) (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
     clearOverlay();
   }
@@ -1339,7 +1346,8 @@ async function boot(): Promise<void> {
       // (not currentMode) so the camera engages from the FIRST frame after
       // the player picks DEFENDER, not only after IGNITE runs lockInMode.
       const defenderActive = defenderMode || isStoredDefenderMode();
-      const follow = (vh > vw) || defenderActive;
+      const deathmatchFollow = deathmatchActive() || getStoredMode() === 'deathmatch';
+      const follow = (vh > vw) || defenderActive || deathmatchFollow;
       const scale = Math.min(vw / WORLD_W, vh / WORLD_H);
       const tx = (vw - WORLD_W * scale) / 2;
       const ty = (vh - WORLD_H * scale) / 2;
@@ -1352,7 +1360,7 @@ async function boot(): Promise<void> {
       }
       // Couch mode forces retro so the full world is visible and both ships
       // stay on screen — the portrait follow camera tracks only one ship.
-      if (state.players.length >= 2) {
+      if (state.players.length >= 2 && !deathmatchFollow) {
         // Fall through to retro branch below.
       } else {
         setRenderMode({ kind: 'modern', vw, vh, dpr, scale, tx, ty, insets, follow, defender: defenderActive, localSlot: mpSlot });
