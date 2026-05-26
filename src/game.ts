@@ -511,7 +511,7 @@ function spawnDecorativeAsteroids(s: GameState, wave: number): void {
   }
 }
 
-export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?: Vec2, type?: AsteroidType, opts?: { vein?: boolean; councilMember?: import('./types.js').CouncilMemberRef; depth?: number }): Asteroid {
+export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?: Vec2, type?: AsteroidType, opts?: { vein?: boolean; councilMember?: import('./types.js').CouncilMemberRef; depth?: number; terrain?: boolean; gravity?: number }): Asteroid {
   const mods = currentMods();
   const isVein = opts?.vein === true;
   // Parallax depth band — 3 by default (gameplay plane, full collision).
@@ -611,6 +611,8 @@ export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?
     hue: Math.random() * 60 - 30,
     isVein,
     depth,
+    ...(opts?.terrain ? { terrain: true } : {}),
+    ...(opts?.gravity != null ? { gravity: opts.gravity } : {}),
     ...(opts?.councilMember ? { councilMember: opts.councilMember } : {}),
   };
 }
@@ -1038,10 +1040,10 @@ function spawnDeathmatchTerrain(s: GameState): void {
     { x: ww * 0.50, y: wh * 0.50, r: 190, type: 'pallasite' as AsteroidType },
   ];
   for (const f of fields) {
-    const a = spawnAsteroid('large', 20, { x: f.x, y: f.y }, { x: 0, y: 0 }, f.type);
+    const a = spawnAsteroid('large', 20, { x: f.x, y: f.y }, { x: 0, y: 0 }, f.type, { terrain: true, gravity: 58 });
     a.radius = f.r;
-    a.hp = 9999;
-    a.hpMax = 9999;
+    a.hp = Number.POSITIVE_INFINITY;
+    a.hpMax = Number.POSITIVE_INFINITY;
     a.vel.x = 0;
     a.vel.y = 0;
     a.rotVel *= 0.12;
@@ -1313,6 +1315,23 @@ function updateDeathmatchAi(s: GameState): void {
     const dist = Math.sqrt(bestSq);
     p.keys.ArrowUp = dist > 340 || Math.abs(delta) > 0.75;
     p.keys.Space = dist < 980 && Math.abs(delta) < 0.32;
+  }
+}
+
+function applyDeathmatchGravity(s: GameState, pos: Vec2, vel: Vec2, radius: number, dt: number): void {
+  if (!deathmatchActive()) return;
+  for (const well of s.asteroids) {
+    if (!well.alive || !well.gravity) continue;
+    const dx = well.pos.x - pos.x;
+    const dy = well.pos.y - pos.y;
+    const range = well.radius * 5.5;
+    const distSq = dx * dx + dy * dy;
+    if (distSq <= 1 || distSq > range * range) continue;
+    const dist = Math.sqrt(distSq);
+    if (dist < well.radius + radius + 8) continue;
+    const pull = well.gravity * (1 - dist / range);
+    vel.x += (dx / dist) * pull * dt;
+    vel.y += (dy / dist) * pull * dt;
   }
 }
 
@@ -2718,8 +2737,11 @@ function updateDisplaySats(s: GameState, dt: number): void {
   s.players[0].displaySats = Math.min(s.players[0].sats, s.players[0].displaySats + step);
 }
 
-/** Schedule a deferred sim transition. A fresh schedule replaces any
- *  pending transition of the same kind, so it supersedes a stale one. */
+/** Schedule a deferred sim transition. A fresh schedule replaces a stale
+ *  transition for the same kind and same player slot. Global transitions
+ *  still replace by kind only; player-bound transitions such as respawn
+ *  must coexist in deathmatch so one pilot's death cannot cancel another's
+ *  pending respawn. */
 function scheduleSimTransition(
   s: GameState,
   kind: SimTransitionKind,
@@ -2728,7 +2750,9 @@ function scheduleSimTransition(
   arg = 0,
   playerIdx = -1,
 ): void {
-  const existing = s.pendingTransitions.findIndex((t) => t.kind === kind);
+  const existing = s.pendingTransitions.findIndex((t) =>
+    t.kind === kind && (playerIdx >= 0 ? t.playerIdx === playerIdx : t.playerIdx < 0),
+  );
   if (existing >= 0) s.pendingTransitions.splice(existing, 1);
   s.pendingTransitions.push({ kind, due, epoch, arg, playerIdx });
 }
@@ -3007,6 +3031,7 @@ export function updateGame(s: GameState): void {
       } else {
         audio.thrustOff();
       }
+      if (deathmatch) applyDeathmatchGravity(s, p.ship.pos, p.ship.vel, p.ship.radius, dt);
 
       // Drag
       const dragK = Math.exp(-SHIP_DRAG * dt);
@@ -3156,6 +3181,11 @@ export function updateGame(s: GameState): void {
         a.vel.x += tx * LURK_NUDGE_ACCEL * strength * dt;
         a.vel.y += ty * LURK_NUDGE_ACCEL * strength * dt;
       }
+    }
+    if (deathmatch && !a.terrain) applyDeathmatchGravity(s, a.pos, a.vel, a.radius, dt);
+    if (a.terrain) {
+      a.vel.x = 0;
+      a.vel.y = 0;
     }
     a.pos.x += a.vel.x * dt;
     a.pos.y += a.vel.y * dt;
@@ -3569,13 +3599,13 @@ export function updateGame(s: GameState): void {
   // Wave clear — two-stage: a grab-everything grace window (when there are
   // loose coins / power-ups and the run isn't cheated), then the warp /
   // bonus / completion transition.
-  if (s.phase === 'playing') {
+  if (s.phase === 'playing' && !deathmatch) {
     // Decoratives (parallax depth 1-2, 4-5) are visual dressing only —
     // they shouldn't block a clear. Without this filter the wave is
     // gated on the player tracking down tiny background dust rocks that
     // can't even hit them.
     const collideAsteroids = s.asteroids.filter(a => a.alive && (a.depth ?? 3) === 3);
-    const asteroidsClear = collideAsteroids.length === 0;
+    const asteroidsClear = collideAsteroids.every(a => a.terrain);
     const setPiece = arena || deathmatch ? undefined : WAVE_SET_PIECES[s.wave];
     // Set-piece waves can override the clear condition (e.g. bullet curtain
     // clears on UFO kill count, not on empty asteroid array). Falls back to
@@ -3778,6 +3808,7 @@ function computeRiskBonus(s: GameState): { mul: number; tier: 'risk' | 'close' |
  *  contributions on the vein effectively zero while the other rock
  *  bounces off naturally. */
 function asteroidMass(a: Asteroid): number {
+  if (a.terrain) return 1e9;
   if (a.isVein) return 1e6;
   const sizeFactor = a.size === 'large' ? 4 : a.size === 'medium' ? 2 : 1;
   const typeFactor =
@@ -3856,6 +3887,13 @@ function runAsteroidCollisions(s: GameState): void {
  */
 function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; isWrap?: boolean; bulletVel?: Vec2; bulletPos?: Vec2; p?: PlayerState }): void {
   const p = opts?.p ?? s.players[0];
+  if (a.terrain) {
+    a.hitFlash = 0.45;
+    const cfg = ASTEROID_TYPE_CONFIG[a.type];
+    spawnParticles(s, opts?.bulletPos?.x ?? a.pos.x, opts?.bulletPos?.y ?? a.pos.y, 5, cfg.glow, 90, 260);
+    audio.hit();
+    return;
+  }
   a.hp -= 1;
   a.hitFlash = 1;
   // Tiny momentum transfer on the non-fatal hit — even iron-large surviving

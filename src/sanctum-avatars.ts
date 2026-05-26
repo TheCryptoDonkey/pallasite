@@ -148,6 +148,7 @@ export function getCouncil(): readonly ReadonlyMember[] {
  *  if available, falls back to the raw HTMLImageElement, finally null
  *  if the image hasn't decoded yet. */
 export function getMemberImage(name: string): HTMLCanvasElement | HTMLImageElement | null {
+  kickImageLoads();
   for (const m of cached) {
     if (m.name === name) {
       if (!m.ready) return null;
