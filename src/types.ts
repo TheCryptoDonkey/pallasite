@@ -133,6 +133,12 @@ export interface Asteroid extends Entity {
    *  UFO swarm a moment after appearing. Vapourises clean on break (no
    *  fragments) with a jackpot drop. The unique Lightning-arcade moment. */
   isVein: boolean;
+  /** Permanent terrain: collides as cover but does not take damage, split,
+   *  score, or count as wave-clear material. Used by deathmatch cover rocks. */
+  terrain?: boolean;
+  /** Mild gravity-well acceleration in px/s^2 near this asteroid. Undefined
+   *  for ordinary rocks. */
+  gravity?: number;
 }
 
 export interface AsteroidTypeConfig {

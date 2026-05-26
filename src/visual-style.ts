@@ -228,6 +228,10 @@ export interface WebGLOverlayCall {
   scale: number;
   tx: number;
   ty: number;
+  /** World dimensions represented by the camera projection. Defaults to
+   *  the classic 1280x720 playfield; deathmatch passes its larger arena. */
+  worldW?: number;
+  worldH?: number;
   /** World-X seam offsets for the portrait follow camera. The overlay
    *  renders the scene once per entry so mesh entities wrap at the world
    *  edge. Absent (treated as [0]) outside portrait-follow. */

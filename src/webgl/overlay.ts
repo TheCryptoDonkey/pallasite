@@ -8,10 +8,12 @@
  * user actually flips a category to MESH.
  *
  * Coordinate system:
- *   World is 1280×720 with Y down (screen convention). The
+ *   World is Y down (screen convention). The default campaign world is
+ *   1280×720; modes with larger worlds pass their dimensions at render time.
+ *   The
  *   OrthographicCamera uses three.js's standard Y-up frustum
- *   (top=720, bottom=0); mesh positions invert Y at the boundary
- *   (mesh.position.y = WORLD_H - a.pos.y), and rotation is negated
+ *   (top=worldH, bottom=0); mesh positions invert Y at the boundary
+ *   (mesh.position.y = worldH - a.pos.y), and rotation is negated
  *   so the apparent spin direction matches the 2D path.
  *
  *   The Y-flipped projection alternative looked correct mathematically
@@ -69,6 +71,8 @@ interface OverlayHandle {
    *  dt for the chunk physics tick (renderOverlay doesn't take a dt
    *  argument from callers). */
   lastFrameMs: number;
+  worldW: number;
+  worldH: number;
 }
 
 interface ShipChunk {
@@ -566,6 +570,8 @@ export function ensureWebGLOverlay(): Promise<OverlayHandle> {
       lastSizeKey: 0,
       shipChunks: [],
       lastFrameMs: 0,
+      worldW: WORLD_W,
+      worldH: WORLD_H,
     };
     canvas.classList.add('is-active');
     return handle;
@@ -1600,12 +1606,12 @@ export function spawnShipMeshExplosion(pos: { x: number; y: number }, shipVel: {
     const mesh = new THREE.Mesh(geometry, material);
     mesh.frustumCulled = false;
     // Rotate the local-space anchor into world space, place mesh.
-    // Y in mesh-world is inverted vs game-world (mesh y = 720 - game y).
+    // Y in mesh-world is inverted vs game-world.
     const localX = spec.offsetX;
     const localY = spec.offsetY;
     const worldDX = localX * cosR - localY * sinR;
     const worldDY = localX * sinR + localY * cosR;
-    mesh.position.set(pos.x + worldDX, 720 - (pos.y + worldDY), spec.offsetZ);
+    mesh.position.set(pos.x + worldDX, handle.worldH - (pos.y + worldDY), spec.offsetZ);
     mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
     // Outward direction in world space. Anchor's distance from ship
     // origin sets the kick magnitude — peripheral parts fly faster.
@@ -1849,6 +1855,8 @@ export function renderOverlay(opts: {
   scale: number;
   tx: number;
   ty: number;
+  worldW?: number;
+  worldH?: number;
   /** World-X seam offsets for the portrait follow camera; one render pass
    *  per entry so mesh entities wrap. Absent / [0] off the follow camera. */
   wrapXs?: number[];
@@ -1862,10 +1870,22 @@ export function renderOverlay(opts: {
     handle.lastSizeKey = sizeKey;
     renderer.setSize(canvas.width, canvas.height, false);
   }
+  const worldW = opts.worldW ?? WORLD_W;
+  const worldH = opts.worldH ?? WORLD_H;
+  if (handle.worldW !== worldW || handle.worldH !== worldH) {
+    handle.worldW = worldW;
+    handle.worldH = worldH;
+    camera.left = 0;
+    camera.right = worldW;
+    camera.top = worldH;
+    camera.bottom = 0;
+    camera.updateProjectionMatrix();
+  }
+
   // Viewport matches the 2D ctx.setTransform so meshes pixel-align
   // with HUD/coins/etc. WebGL viewport y is bottom-up.
-  const vpW = WORLD_W * opts.scale * opts.dpr;
-  const vpH = WORLD_H * opts.scale * opts.dpr;
+  const vpW = worldW * opts.scale * opts.dpr;
+  const vpH = worldH * opts.scale * opts.dpr;
   const vpX = opts.tx * opts.dpr;
   const vpYTopDown = opts.ty * opts.dpr;
   const vpY = canvas.height - vpYTopDown - vpH;
@@ -1912,7 +1932,7 @@ export function renderOverlay(opts: {
     // 1 sits at z=-80 (behind everything), depth 5 at z=+80 (in front).
     const depthCfg = DEPTH_CONFIGS[a.depth ?? 3];
     const zOffset = depthCfg?.meshZ ?? 0;
-    entry.mesh.position.set(a.pos.x, 720 - a.pos.y, zOffset);
+    entry.mesh.position.set(a.pos.x, worldH - a.pos.y, zOffset);
     // Per-band alpha — backgrounds fade into the void, gameplay plane
     // + foregrounds stay opaque (foregrounds must occlude what's
     // behind them, not see through). Always-set opacity so a rock that
@@ -1965,7 +1985,7 @@ export function renderOverlay(opts: {
       handle.ufoMeshes.set(u.id, entry);
     }
     entry.lastSeenFrame = frameCounter;
-    entry.mesh.position.set(u.pos.x, 720 - u.pos.y, 0);
+    entry.mesh.position.set(u.pos.x, worldH - u.pos.y, 0);
     if (getFlavour() === '600bn') {
       // Proper zero-g tumble. Y is the fast face-revealing spin (the
       // cylinder is built upright so Y shows face → edge → back); X
@@ -2092,7 +2112,7 @@ export function renderOverlay(opts: {
     }
     entry.lastSeenFrame = frameCounter;
     const bob = Math.sin(frameCounter * 0.05 + p.id) * 2;
-    entry.mesh.position.set(p.pos.x, 720 - p.pos.y + bob, 0);
+    entry.mesh.position.set(p.pos.x, worldH - p.pos.y + bob, 0);
     // Three-axis tumble at incommensurate frequencies — the glyph
     // travels around the sphere in 3D rather than just spinning on Y.
     // Per-powerup phase (p.id) so the same powerup type at different
@@ -2126,7 +2146,7 @@ export function renderOverlay(opts: {
         handle.shipThrusts[slot] = thrust;
       }
       group.visible = true;
-      group.position.set(ship.pos.x, 720 - ship.pos.y, 0);
+      group.position.set(ship.pos.x, worldH - ship.pos.y, 0);
       group.rotation.set(0, 0, -ship.rot);
       if (thrust) {
         thrust.visible = !!ship.thrusting;
@@ -2174,7 +2194,7 @@ export function renderOverlay(opts: {
         handle.shieldEdgeMats[slot] = edgeMat;
       }
       shield.visible = true;
-      shield.position.set(ship.pos.x, 720 - ship.pos.y, 0);
+      shield.position.set(ship.pos.x, worldH - ship.pos.y, 0);
       // Slow drift rotation — gives the dome a living-energy feel without
       // chasing ship rotation (so the player reads it as a field, not armour).
       shield.rotation.x += 0.004;

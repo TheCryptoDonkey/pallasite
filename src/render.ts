@@ -598,6 +598,8 @@ function drawDeathmatchBackground(ctx: CanvasRenderingContext2D, now: number): v
     ctx.restore();
   }
 
+  drawDeathmatchSolarScenery(ctx, rw, rh, now);
+
   ctx.fillStyle = 'rgba(230, 245, 255, 0.9)';
   for (let i = 0; i < 360; i++) {
     const x = ((i * 977 + 271) % 4096) / 4096 * rw;
@@ -610,6 +612,194 @@ function drawDeathmatchBackground(ctx: CanvasRenderingContext2D, now: number): v
     ctx.fill();
   }
   ctx.globalAlpha = 1;
+}
+
+function normalise2(dx: number, dy: number): { x: number; y: number } {
+  const d = Math.hypot(dx, dy) || 1;
+  return { x: dx / d, y: dy / d };
+}
+
+function applyTerminator(ctx: CanvasRenderingContext2D, r: number, light: { x: number; y: number }, opacity: number): void {
+  ctx.save();
+  ctx.globalCompositeOperation = 'multiply';
+  const shade = ctx.createRadialGradient(light.x * r * 0.42, light.y * r * 0.42, r * 0.1, -light.x * r * 0.62, -light.y * r * 0.62, r * 1.25);
+  shade.addColorStop(0, 'rgba(255,255,255,1)');
+  shade.addColorStop(0.48, 'rgba(190,190,190,0.96)');
+  shade.addColorStop(1, `rgba(0,0,0,${opacity})`);
+  ctx.fillStyle = shade;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawOrbit(ctx: CanvasRenderingContext2D, sx: number, sy: number, rx: number, ry: number): void {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(150, 180, 220, 0.10)';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.ellipse(sx, sy, rx, ry, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawSol(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, now: number): void {
+  ctx.save();
+  ctx.translate(x, y);
+  const pulse = 1 + Math.sin(now * 0.0012) * 0.025;
+  const corona = ctx.createRadialGradient(0, 0, r * 0.15, 0, 0, r * 6.5 * pulse);
+  corona.addColorStop(0, 'rgba(255, 244, 180, 0.85)');
+  corona.addColorStop(0.08, 'rgba(255, 196, 92, 0.40)');
+  corona.addColorStop(0.33, 'rgba(255, 120, 64, 0.10)');
+  corona.addColorStop(1, 'rgba(255, 120, 64, 0)');
+  ctx.fillStyle = corona;
+  ctx.beginPath();
+  ctx.arc(0, 0, r * 6.5 * pulse, 0, Math.PI * 2);
+  ctx.fill();
+  const disc = ctx.createRadialGradient(-r * 0.25, -r * 0.28, r * 0.1, 0, 0, r);
+  disc.addColorStop(0, '#fffbe0');
+  disc.addColorStop(0.5, '#ffd36a');
+  disc.addColorStop(1, '#ff7a30');
+  ctx.fillStyle = disc;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawShadedMoon(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, base: string, light: { x: number; y: number }, phase: number): void {
+  ctx.save();
+  ctx.translate(x, y);
+  const grad = ctx.createRadialGradient(light.x * r * 0.35, light.y * r * 0.35, r * 0.08, 0, 0, r);
+  grad.addColorStop(0, 'rgba(255,255,245,0.95)');
+  grad.addColorStop(0.34, base);
+  grad.addColorStop(1, 'rgba(18,22,34,0.98)');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+  applyTerminator(ctx, r, light, 0.72);
+  ctx.globalCompositeOperation = 'screen';
+  ctx.globalAlpha = 0.22;
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(light.x * r * 0.28, light.y * r * 0.26, r * (0.20 + Math.sin(phase) * 0.025), 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawEarth(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, light: { x: number; y: number }, now: number): void {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.clip();
+  const ocean = ctx.createRadialGradient(light.x * r * 0.3, light.y * r * 0.3, r * 0.1, 0, 0, r);
+  ocean.addColorStop(0, '#9ce8ff');
+  ocean.addColorStop(0.42, '#2479b8');
+  ocean.addColorStop(1, '#07122e');
+  ctx.fillStyle = ocean;
+  ctx.fillRect(-r, -r, r * 2, r * 2);
+  const spin = now * 0.00018;
+  ctx.fillStyle = 'rgba(68, 164, 92, 0.92)';
+  for (let i = 0; i < 5; i++) {
+    const lon = (((i * 0.43 + spin) % 1) * 2 - 1) * r * 1.25;
+    const lat = Math.sin(i * 1.9) * r * 0.38;
+    ctx.beginPath();
+    ctx.ellipse(lon, lat, r * (0.24 + (i % 2) * 0.08), r * (0.11 + (i % 3) * 0.035), i * 0.7, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,0.36)';
+  ctx.lineWidth = Math.max(1, r * 0.035);
+  for (let i = 0; i < 4; i++) {
+    const yy = (-0.45 + i * 0.3) * r;
+    ctx.beginPath();
+    ctx.ellipse(Math.sin(spin * 3 + i) * r * 0.08, yy, r * 0.9, r * 0.08, Math.sin(i) * 0.18, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  applyTerminator(ctx, r, light, 0.66);
+  ctx.restore();
+}
+
+function drawGasGiantSystem(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, light: { x: number; y: number }, now: number): void {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(-0.16);
+  ctx.globalAlpha = 0.82;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.clip();
+  const base = ctx.createRadialGradient(-r * 0.34, -r * 0.38, r * 0.1, 0, 0, r);
+  base.addColorStop(0, '#fff2cf');
+  base.addColorStop(0.36, '#d99d63');
+  base.addColorStop(0.72, '#8d5b48');
+  base.addColorStop(1, '#201629');
+  ctx.fillStyle = base;
+  ctx.fillRect(-r, -r, r * 2, r * 2);
+  const bands = [
+    ['rgba(255, 235, 190, 0.72)', -0.64, 0.13],
+    ['rgba(140, 72, 52, 0.58)', -0.42, 0.11],
+    ['rgba(245, 178, 106, 0.66)', -0.23, 0.15],
+    ['rgba(82, 48, 66, 0.42)', -0.04, 0.10],
+    ['rgba(255, 220, 154, 0.52)', 0.16, 0.14],
+    ['rgba(120, 66, 54, 0.55)', 0.38, 0.13],
+    ['rgba(246, 204, 132, 0.52)', 0.58, 0.12],
+  ] as const;
+  for (let i = 0; i < bands.length; i++) {
+    const [colour, yy, hh] = bands[i];
+    ctx.fillStyle = colour;
+    ctx.beginPath();
+    const top = yy * r;
+    const amp = r * (0.018 + i * 0.002);
+    ctx.moveTo(-r, top);
+    for (let px = -r; px <= r; px += 48) {
+      const wobble = Math.sin(px * 0.008 + now * 0.00008 + i * 1.7) * amp;
+      ctx.lineTo(px, top + wobble);
+    }
+    ctx.lineTo(r, top + hh * r);
+    for (let px = r; px >= -r; px -= 48) {
+      const wobble = Math.sin(px * 0.008 + now * 0.00008 + i * 1.7) * amp;
+      ctx.lineTo(px, top + hh * r + wobble);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.fillStyle = 'rgba(180, 72, 48, 0.58)';
+  ctx.beginPath();
+  ctx.ellipse(r * 0.22, r * 0.14, r * 0.16, r * 0.055, -0.08, 0, Math.PI * 2);
+  ctx.fill();
+  applyTerminator(ctx, r, light, 0.50);
+  ctx.restore();
+
+  ctx.save();
+  ctx.globalAlpha = 0.92;
+  drawShadedMoon(ctx, x - r * 0.92, y - r * 0.52, 42, '#a9b7c8', light, now * 0.0004);
+  drawShadedMoon(ctx, x + r * 0.66, y + r * 0.28, 28, '#d4c3a0', light, now * 0.0005 + 1.5);
+  drawShadedMoon(ctx, x - r * 0.18, y + r * 0.70, 22, '#8da0b0', light, now * 0.0006 + 2.2);
+  ctx.restore();
+}
+
+function drawDeathmatchSolarScenery(ctx: CanvasRenderingContext2D, rw: number, rh: number, now: number): void {
+  const solX = rw * 0.15;
+  const solY = rh * 0.14;
+  drawOrbit(ctx, solX, solY, 1050, 620);
+  drawOrbit(ctx, solX, solY, 2320, 1320);
+  drawSol(ctx, solX, solY, 58, now);
+
+  const earthAngle = 0.15 + now * 0.000012;
+  const earthX = solX + Math.cos(earthAngle) * 1050;
+  const earthY = solY + Math.sin(earthAngle) * 620;
+  const earthLight = normalise2(solX - earthX, solY - earthY);
+  const moonAngle = 1.2 + now * 0.00008;
+  const moonX = earthX + Math.cos(moonAngle) * 132;
+  const moonY = earthY + Math.sin(moonAngle) * 92;
+  drawEarth(ctx, earthX, earthY, 58, earthLight, now);
+  drawShadedMoon(ctx, moonX, moonY, 17, '#b9c0c8', normalise2(solX - moonX, solY - moonY), moonAngle);
+
+  const gasAngle = 0.55 + now * 0.000004;
+  const gasX = solX + Math.cos(gasAngle) * 2320;
+  const gasY = solY + Math.sin(gasAngle) * 1320;
+  drawGasGiantSystem(ctx, gasX, gasY, 520, normalise2(solX - gasX, solY - gasY), now);
 }
 
 function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: number): void {
@@ -761,7 +951,7 @@ function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapse
   const shipTier = getVisualStyle('ship');
   // MESH ship draws on the WebGL overlay; skip the 2D path entirely
   // once the overlay's loaded so the player sees the 3D mesh alone.
-  if (shipTier === 'mesh' && isWebGLOverlayReady() && !deathmatchActive()) return;
+  if (shipTier === 'mesh' && isWebGLOverlayReady()) return;
   // MESH falls back to SHADED rendering while the overlay is loading,
   // and SHADED itself is the lit gradient hull.
   const shipShaded = shipTier !== 'vector';
@@ -1305,7 +1495,7 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   // "massive" than the 2D gold-halo vector circle that used to leak
   // through underneath. The bespoke gold halo is sacrificed in mesh tier;
   // shaded/vector tiers still get the original treatment below.
-  if (asteroidTier === 'mesh' && isWebGLOverlayReady() && !deathmatchActive()) return;
+  if (asteroidTier === 'mesh' && isWebGLOverlayReady() && !a.councilMember) return;
   // SHADED-tier asteroids get the "tumbling through space" treatment:
   // drop shadow under, camera-fixed rim light + terminator shading on
   // top, neutral outline (no per-type tint). Council members carry
@@ -3851,11 +4041,20 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
   ctx.setTransform(renderMode.dpr, 0, 0, renderMode.dpr, 0, 0);
 
   const insets = renderMode.insets;
-  const x0 = 24 + insets.left;
-  const w = renderMode.vw - 48 - insets.left - insets.right;
+  let x0 = 24 + insets.left;
+  let w = renderMode.vw - 48 - insets.left - insets.right;
   // Below the HUD top block — the SCORE / SATS stack reaches roughly topY+110.
-  const y0 = 16 + insets.top + 120;
-  const h = 76;
+  let y0 = 16 + insets.top + 120;
+  let h = 76;
+  if (radarDeathmatch) {
+    const maxW = renderMode.vw - 48 - insets.left - insets.right;
+    const maxH = renderMode.vh - 128 - insets.top - insets.bottom;
+    const size = Math.round(Math.max(124, Math.min(184, maxW, maxH * 0.34)));
+    x0 = 24 + insets.left;
+    y0 = 92 + insets.top;
+    w = size;
+    h = size;
+  }
   if (w < 80) { ctx.restore(); return; }  // too cramped to be useful
 
   // ── Phase 1: render the radar contents into the offscreen canvas at 1:1.
@@ -3926,6 +4125,12 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
   oc.fillStyle = grad;
   oc.fillRect(0, 0, w, h);
   oc.restore();
+
+  if (radarDeathmatch) {
+    ctx.drawImage(off, x0, y0);
+    ctx.restore();
+    return;
+  }
 
   // ── Phase 2: composite back with a per-scanline trapezoid warp.
   // Tilt intensity is player-controlled; 'off' draws flat (single
@@ -4284,10 +4489,10 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     // slot. The overlay caches a mesh per slot so both ships render
     // with the full 3D look in duel / couch (was: slot 1 dropped out).
     callWebGLOverlay({
-      asteroids: !holding && asteroidTier === 'mesh' && !deathmatchRun ? state.asteroids : [],
+      asteroids: !holding && asteroidTier === 'mesh' ? state.asteroids.filter((a) => !a.councilMember) : [],
       ufos: !holding && ufosMesh ? state.ufos : [],
       powerups: !holding && particleTier === 'mesh' ? state.powerups : [],
-      ships: !holding && shipTier === 'mesh' && !deathmatchRun ? state.players.map((pl) => pl.ship) : [],
+      ships: !holding && shipTier === 'mesh' ? state.players.map((pl) => pl.ship) : [],
       elapsed: state.elapsed,
       dpr: renderMode.dpr,
       // Camera-adjusted transform so mesh-tier entities track the follow
@@ -4295,6 +4500,8 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       scale,
       tx,
       ty,
+      worldW: rw,
+      worldH: rh,
       // Seam-wrap copies for the follow camera, so mesh entities wrap at the
       // world edge like the 2D layer. Just [0] outside portrait-follow.
       wrapXs: followXs,
