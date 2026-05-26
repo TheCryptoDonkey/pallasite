@@ -1216,18 +1216,7 @@ function loop(now: number): void {
     state.toast = null;  // consume
   }
 
-  // In peer mode, schedule the next tick via setTimeout(0) instead of
-  // requestAnimationFrame. rAF callbacks run back-to-back inside the
-  // rendering pipeline, which can starve the macrotask queue — and the
-  // worker→main postMessages that deliver the partner's input frames
-  // are macrotasks. A 0-delay setTimeout yields to the event loop so
-  // those messages drain BEFORE the next loop iteration tries to read
-  // them. Solo / spectator stay on rAF for vsync-clean rendering.
-  if (isPeerActive()) {
-    setTimeout(() => loop(performance.now()), 0);
-  } else {
-    requestAnimationFrame(loop);
-  }
+  requestAnimationFrame(loop);
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
