@@ -427,9 +427,17 @@ export class WebSocketPeer implements Peer {
   disconnect(): void {
     if (this.worker) {
       try { this.worker.postMessage({ kind: 'disconnect' }); } catch { /* worker may already be gone */ }
-      this.worker.removeEventListener('message', this.onWorkerMessage);
-      this.worker.terminate();
+      // Wait one macrotask so the worker can fire its last counters tick
+      // back to us BEFORE we terminate. Without this, the mirrored
+      // wsRecvFrameCount in getWireCounters() is whatever was current
+      // at the LAST periodic tick (250ms ago at worst), which can be
+      // very stale when diagnosing.
+      const w = this.worker;
       this.worker = null;
+      setTimeout(() => {
+        try { w.removeEventListener('message', this.onWorkerMessage); } catch { /* ignore */ }
+        try { w.terminate(); } catch { /* ignore */ }
+      }, 50);
     }
     this.connected = false;
   }
@@ -553,6 +561,9 @@ function buildPeerWorkerSource(): string {
         localSlot = msg.localSlot;
         openSocket();
       } else if (msg.kind === 'disconnect') {
+        // Final counters post so main has a fresh snapshot before terminate.
+        post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: ws ? ws.readyState : -1, wsRecvFrameCount: wsRecvFrameCount, wsSentFrameCount: wsSentFrameCount });
+        console.log('[peer-worker] disconnect requested slot=' + localSlot + ' final wsSent=' + wsSentFrameCount + ' wsRecv=' + wsRecvFrameCount + ' sendAttempts=' + sendFrameAttempts + ' sendRejected=' + sendFrameRejected);
         if (ws && connected) {
           try { ws.send(JSON.stringify({ type: 'bye', slot: localSlot })); } catch (e) {}
         }
