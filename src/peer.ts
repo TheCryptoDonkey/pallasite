@@ -312,9 +312,12 @@ export class WebSocketPeer implements Peer {
         const blob = new Blob([workerSource], { type: 'application/javascript' });
         const workerUrl = URL.createObjectURL(blob);
         this.worker = new Worker(workerUrl);
-        // Revoke the blob URL once the worker has had a tick to fetch it;
-        // keeping it around indefinitely would leak.
-        setTimeout(() => { try { URL.revokeObjectURL(workerUrl); } catch { /* ignore */ } }, 1000);
+        // Note: NOT revoking the Blob URL. An earlier version revoked
+        // after 1s and the worker stopped processing main-thread
+        // postMessages partway through the session (worker tick log
+        // showed sendAttempts=0 even though main had called sendFrame
+        // 34+ times). One blob URL per duel is fine; it'll be GC'd
+        // when the page unloads.
       } catch (e) {
         reject(e instanceof Error ? e : new Error(String(e)));
         return;
