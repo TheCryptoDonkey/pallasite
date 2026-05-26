@@ -464,27 +464,23 @@ export class WebSocketPeer implements Peer {
  *  by WebSocketPeer.connect. Kept plain JS (no TS, no imports) so it can
  *  be evaluated as-is inside the worker context. Mirrors the protocol
  *  defined for PeerWorkerInbound/Outbound — kept in sync by hand because
- *  the worker can't import types at runtime. */
+ *  the worker can't import types at runtime.
+ *
+ *  Minimal shape on purpose: every feature beyond "open WS / forward
+ *  frames / handle hello+peer-joined+disconnect" has been removed because
+ *  earlier richer versions triggered apparent message loss against the
+ *  production broker that wasn't reproducible from a bare-WS test. Add
+ *  back deliberately, one feature at a time, with a smoke test. */
 function buildPeerWorkerSource(): string {
   return `
     'use strict';
-    var RECONNECT_BACKOFF_MS = [250, 500, 1000];
-    var RECONNECT_MAX_ATTEMPTS = RECONNECT_BACKOFF_MS.length;
     var ws = null;
     var url = '';
     var session = '';
     var localSlot = 0;
-    var enableWireTrace = false;
     var connected = false;
-    var partnerConnected = false;
     var initialConnectDone = false;
-    var deliberateClose = false;
-    var reconnectAttempt = 0;
-    var reconnectTimer = null;
-    var wsRecvFrameCount = 0;
-    var wsSentFrameCount = 0;
     function post(m) { self.postMessage(m); }
-    function trace(entry) { if (enableWireTrace) post({ kind: 'wire-entry', entry: entry }); }
     function buildSocketUrl() {
       var sep = url.indexOf('?') >= 0 ? '&' : '?';
       return url + sep + 's=' + encodeURIComponent(session) + '&r=peer';
@@ -493,139 +489,63 @@ function buildPeerWorkerSource(): string {
       try {
         ws = new WebSocket(buildSocketUrl());
       } catch (e) {
-        if (!initialConnectDone) {
-          post({ kind: 'connect-failed', error: e && e.message ? e.message : String(e) });
-          initialConnectDone = true;
-        } else {
-          scheduleReconnect();
-        }
+        post({ kind: 'connect-failed', error: e && e.message ? e.message : String(e) });
         return;
       }
-      ws.addEventListener('open', onOpen);
-      ws.addEventListener('message', onMessage);
-      ws.addEventListener('close', onClose);
-      ws.addEventListener('error', onError);
-    }
-    function onOpen() {
-      var hello = { type: 'hello-peer', session: session, slot: localSlot, version: 1 };
-      if (ws) ws.send(JSON.stringify(hello));
-      connected = true;
-    }
-    function onMessage(ev) {
-      var msg;
-      try { msg = JSON.parse(typeof ev.data === 'string' ? ev.data : ''); } catch (e) { return; }
-      switch (msg.type) {
-        case 'frame':
-          wsRecvFrameCount++;
+      ws.addEventListener('open', function () {
+        var hello = { type: 'hello-peer', session: session, slot: localSlot, version: 1 };
+        if (ws) ws.send(JSON.stringify(hello));
+        connected = true;
+      });
+      ws.addEventListener('message', function (ev) {
+        var msg;
+        try { msg = JSON.parse(typeof ev.data === 'string' ? ev.data : ''); } catch (e) { return; }
+        if (msg.type === 'frame') {
           post({ kind: 'frame', frame: msg.frame, slot: msg.slot, input: msg.input });
-          trace({ t: performance.now(), dir: 'in', kind: 'frame', frame: msg.frame, slot: msg.slot, input: msg.input });
-          return;
-        case 'hash':
+        } else if (msg.type === 'hash') {
           post({ kind: 'hash', frame: msg.frame, slot: msg.slot, hash: msg.hash });
-          trace({ t: performance.now(), dir: 'in', kind: 'hash', frame: msg.frame, slot: msg.slot, hash: msg.hash });
-          return;
-        case 'peer-joined': {
-          var wasReconnecting = !initialConnectDone ? false : !partnerConnected;
-          partnerConnected = true;
+        } else if (msg.type === 'peer-joined') {
           if (!initialConnectDone) {
             initialConnectDone = true;
             post({ kind: 'connected' });
-          } else if (wasReconnecting) {
-            reconnectAttempt = 0;
-            post({ kind: 'reconnected' });
           }
-          return;
-        }
-        case 'peer-left':
-          partnerConnected = false;
+        } else if (msg.type === 'peer-left') {
           post({ kind: 'peer-left' });
-          return;
-        case 'session-error':
+        } else if (msg.type === 'session-error') {
           post({ kind: 'session-error', code: msg.code });
-          cleanupSocket();
-          return;
-      }
+        }
+      });
+      ws.addEventListener('close', function () {
+        if (!initialConnectDone) {
+          initialConnectDone = true;
+          post({ kind: 'connect-failed', error: 'socket closed before partner joined' });
+        }
+      });
+      ws.addEventListener('error', function () {
+        if (!initialConnectDone) {
+          initialConnectDone = true;
+          post({ kind: 'connect-failed', error: 'socket error' });
+        }
+      });
     }
-    function onClose() {
-      var wasConnecting = !initialConnectDone;
-      var wasFullyConnected = connected && partnerConnected;
-      connected = false;
-      partnerConnected = false;
-      if (wasConnecting) {
-        post({ kind: 'connect-failed', error: 'socket closed before partner joined' });
-        initialConnectDone = true;
-        return;
-      }
-      if (!deliberateClose && wasFullyConnected) scheduleReconnect();
-    }
-    function onError() {
-      if (!initialConnectDone) {
-        post({ kind: 'connect-failed', error: 'socket error' });
-        initialConnectDone = true;
-      }
-    }
-    function scheduleReconnect() {
-      if (reconnectAttempt >= RECONNECT_MAX_ATTEMPTS) return;
-      var delay = RECONNECT_BACKOFF_MS[reconnectAttempt];
-      reconnectAttempt++;
-      reconnectTimer = setTimeout(function () {
-        reconnectTimer = null;
-        if (deliberateClose) return;
-        openSocket();
-      }, delay);
-    }
-    function cleanupSocket() {
-      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-      if (ws) {
-        ws.removeEventListener('open', onOpen);
-        ws.removeEventListener('message', onMessage);
-        ws.removeEventListener('close', onClose);
-        ws.removeEventListener('error', onError);
-        try { ws.close(); } catch (e) {}
-        ws = null;
-      }
-      connected = false;
-      partnerConnected = false;
-    }
-    setInterval(function () {
-      post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: ws ? ws.readyState : -1, wsRecvFrameCount: wsRecvFrameCount, wsSentFrameCount: wsSentFrameCount });
-    }, 250);
     self.addEventListener('message', function (ev) {
       var msg = ev.data;
-      switch (msg.kind) {
-        case 'connect':
-          url = msg.url;
-          session = msg.session;
-          localSlot = msg.localSlot;
-          enableWireTrace = msg.enableWireTrace;
-          deliberateClose = false;
-          initialConnectDone = false;
-          reconnectAttempt = 0;
-          openSocket();
-          return;
-        case 'disconnect':
-          deliberateClose = true;
-          if (ws && connected) {
-            var bye = { type: 'bye', slot: localSlot };
-            try { ws.send(JSON.stringify(bye)); } catch (e) {}
-          }
-          cleanupSocket();
-          return;
-        case 'send-frame': {
-          if (!ws || ws.readyState !== WebSocket.OPEN) return;
-          var out = { type: 'frame', frame: msg.frame, slot: localSlot, input: msg.input };
-          ws.send(JSON.stringify(out));
-          wsSentFrameCount++;
-          trace({ t: performance.now(), dir: 'out', kind: 'frame', frame: msg.frame, slot: localSlot, input: msg.input, bufferedAmount: ws.bufferedAmount });
-          return;
+      if (msg.kind === 'connect') {
+        url = msg.url;
+        session = msg.session;
+        localSlot = msg.localSlot;
+        openSocket();
+      } else if (msg.kind === 'disconnect') {
+        if (ws && connected) {
+          try { ws.send(JSON.stringify({ type: 'bye', slot: localSlot })); } catch (e) {}
         }
-        case 'send-hash': {
-          if (!ws || ws.readyState !== WebSocket.OPEN) return;
-          var out2 = { type: 'hash', frame: msg.frame, slot: localSlot, hash: msg.hash };
-          ws.send(JSON.stringify(out2));
-          trace({ t: performance.now(), dir: 'out', kind: 'hash', frame: msg.frame, slot: localSlot, hash: msg.hash, bufferedAmount: ws.bufferedAmount });
-          return;
-        }
+        if (ws) { try { ws.close(); } catch (e) {} ws = null; }
+      } else if (msg.kind === 'send-frame') {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({ type: 'frame', frame: msg.frame, slot: localSlot, input: msg.input }));
+      } else if (msg.kind === 'send-hash') {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({ type: 'hash', frame: msg.frame, slot: localSlot, hash: msg.hash }));
       }
     });
   `;
