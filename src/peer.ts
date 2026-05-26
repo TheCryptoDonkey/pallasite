@@ -295,12 +295,26 @@ export class WebSocketPeer implements Peer {
         }
       } catch { /* SSR or sandboxed — no window */ }
       try {
-        // Classic worker (no { type: 'module' }) — module workers in Vite's
-        // production IIFE wrapping had a bug where the WebSocket inside the
-        // worker only dispatched the first message event (peer-joined) and
-        // then stopped firing. Classic worker works fine; the worker code
-        // has no runtime imports so it doesn't need module semantics.
-        this.worker = new Worker(new URL('./peer-worker.ts', import.meta.url));
+        // Inline-source Worker via Blob URL.
+        //
+        // Why: a separate peer-worker.ts bundled by Vite produced a worker
+        // whose WebSocket dispatched its first 'message' event (peer-joined)
+        // and then never fired again, even though server-side broker logs
+        // confirmed it was sending many subsequent frames. A bare-worker
+        // test using Blob URL with the same WebSocket logic got 100%
+        // delivery. The asset-URL/Vite worker path was the culprit; this
+        // Blob-URL inline path matches the working test shape exactly.
+        //
+        // The worker source is a plain string so this file stays
+        // self-contained — no separate worker chunk, no module loader,
+        // no Vite asset URL.
+        const workerSource = buildPeerWorkerSource();
+        const blob = new Blob([workerSource], { type: 'application/javascript' });
+        const workerUrl = URL.createObjectURL(blob);
+        this.worker = new Worker(workerUrl);
+        // Revoke the blob URL once the worker has had a tick to fetch it;
+        // keeping it around indefinitely would leak.
+        setTimeout(() => { try { URL.revokeObjectURL(workerUrl); } catch { /* ignore */ } }, 1000);
       } catch (e) {
         reject(e instanceof Error ? e : new Error(String(e)));
         return;
@@ -444,6 +458,177 @@ export class WebSocketPeer implements Peer {
 
   isConnected(): boolean { return this.connected; }
   lastReceivedFrame(): number { return this.highestRemoteFrame; }
+}
+
+/** Inline worker source. Compiled to a JS string and loaded via Blob URL
+ *  by WebSocketPeer.connect. Kept plain JS (no TS, no imports) so it can
+ *  be evaluated as-is inside the worker context. Mirrors the protocol
+ *  defined for PeerWorkerInbound/Outbound — kept in sync by hand because
+ *  the worker can't import types at runtime. */
+function buildPeerWorkerSource(): string {
+  return `
+    'use strict';
+    var RECONNECT_BACKOFF_MS = [250, 500, 1000];
+    var RECONNECT_MAX_ATTEMPTS = RECONNECT_BACKOFF_MS.length;
+    var ws = null;
+    var url = '';
+    var session = '';
+    var localSlot = 0;
+    var enableWireTrace = false;
+    var connected = false;
+    var partnerConnected = false;
+    var initialConnectDone = false;
+    var deliberateClose = false;
+    var reconnectAttempt = 0;
+    var reconnectTimer = null;
+    var wsRecvFrameCount = 0;
+    var wsSentFrameCount = 0;
+    function post(m) { self.postMessage(m); }
+    function trace(entry) { if (enableWireTrace) post({ kind: 'wire-entry', entry: entry }); }
+    function buildSocketUrl() {
+      var sep = url.indexOf('?') >= 0 ? '&' : '?';
+      return url + sep + 's=' + encodeURIComponent(session) + '&r=peer';
+    }
+    function openSocket() {
+      try {
+        ws = new WebSocket(buildSocketUrl());
+      } catch (e) {
+        if (!initialConnectDone) {
+          post({ kind: 'connect-failed', error: e && e.message ? e.message : String(e) });
+          initialConnectDone = true;
+        } else {
+          scheduleReconnect();
+        }
+        return;
+      }
+      ws.addEventListener('open', onOpen);
+      ws.addEventListener('message', onMessage);
+      ws.addEventListener('close', onClose);
+      ws.addEventListener('error', onError);
+    }
+    function onOpen() {
+      var hello = { type: 'hello-peer', session: session, slot: localSlot, version: 1 };
+      if (ws) ws.send(JSON.stringify(hello));
+      connected = true;
+    }
+    function onMessage(ev) {
+      var msg;
+      try { msg = JSON.parse(typeof ev.data === 'string' ? ev.data : ''); } catch (e) { return; }
+      switch (msg.type) {
+        case 'frame':
+          wsRecvFrameCount++;
+          post({ kind: 'frame', frame: msg.frame, slot: msg.slot, input: msg.input });
+          trace({ t: performance.now(), dir: 'in', kind: 'frame', frame: msg.frame, slot: msg.slot, input: msg.input });
+          return;
+        case 'hash':
+          post({ kind: 'hash', frame: msg.frame, slot: msg.slot, hash: msg.hash });
+          trace({ t: performance.now(), dir: 'in', kind: 'hash', frame: msg.frame, slot: msg.slot, hash: msg.hash });
+          return;
+        case 'peer-joined': {
+          var wasReconnecting = !initialConnectDone ? false : !partnerConnected;
+          partnerConnected = true;
+          if (!initialConnectDone) {
+            initialConnectDone = true;
+            post({ kind: 'connected' });
+          } else if (wasReconnecting) {
+            reconnectAttempt = 0;
+            post({ kind: 'reconnected' });
+          }
+          return;
+        }
+        case 'peer-left':
+          partnerConnected = false;
+          post({ kind: 'peer-left' });
+          return;
+        case 'session-error':
+          post({ kind: 'session-error', code: msg.code });
+          cleanupSocket();
+          return;
+      }
+    }
+    function onClose() {
+      var wasConnecting = !initialConnectDone;
+      var wasFullyConnected = connected && partnerConnected;
+      connected = false;
+      partnerConnected = false;
+      if (wasConnecting) {
+        post({ kind: 'connect-failed', error: 'socket closed before partner joined' });
+        initialConnectDone = true;
+        return;
+      }
+      if (!deliberateClose && wasFullyConnected) scheduleReconnect();
+    }
+    function onError() {
+      if (!initialConnectDone) {
+        post({ kind: 'connect-failed', error: 'socket error' });
+        initialConnectDone = true;
+      }
+    }
+    function scheduleReconnect() {
+      if (reconnectAttempt >= RECONNECT_MAX_ATTEMPTS) return;
+      var delay = RECONNECT_BACKOFF_MS[reconnectAttempt];
+      reconnectAttempt++;
+      reconnectTimer = setTimeout(function () {
+        reconnectTimer = null;
+        if (deliberateClose) return;
+        openSocket();
+      }, delay);
+    }
+    function cleanupSocket() {
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      if (ws) {
+        ws.removeEventListener('open', onOpen);
+        ws.removeEventListener('message', onMessage);
+        ws.removeEventListener('close', onClose);
+        ws.removeEventListener('error', onError);
+        try { ws.close(); } catch (e) {}
+        ws = null;
+      }
+      connected = false;
+      partnerConnected = false;
+    }
+    setInterval(function () {
+      post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: ws ? ws.readyState : -1, wsRecvFrameCount: wsRecvFrameCount, wsSentFrameCount: wsSentFrameCount });
+    }, 250);
+    self.addEventListener('message', function (ev) {
+      var msg = ev.data;
+      switch (msg.kind) {
+        case 'connect':
+          url = msg.url;
+          session = msg.session;
+          localSlot = msg.localSlot;
+          enableWireTrace = msg.enableWireTrace;
+          deliberateClose = false;
+          initialConnectDone = false;
+          reconnectAttempt = 0;
+          openSocket();
+          return;
+        case 'disconnect':
+          deliberateClose = true;
+          if (ws && connected) {
+            var bye = { type: 'bye', slot: localSlot };
+            try { ws.send(JSON.stringify(bye)); } catch (e) {}
+          }
+          cleanupSocket();
+          return;
+        case 'send-frame': {
+          if (!ws || ws.readyState !== WebSocket.OPEN) return;
+          var out = { type: 'frame', frame: msg.frame, slot: localSlot, input: msg.input };
+          ws.send(JSON.stringify(out));
+          wsSentFrameCount++;
+          trace({ t: performance.now(), dir: 'out', kind: 'frame', frame: msg.frame, slot: localSlot, input: msg.input, bufferedAmount: ws.bufferedAmount });
+          return;
+        }
+        case 'send-hash': {
+          if (!ws || ws.readyState !== WebSocket.OPEN) return;
+          var out2 = { type: 'hash', frame: msg.frame, slot: localSlot, hash: msg.hash };
+          ws.send(JSON.stringify(out2));
+          trace({ t: performance.now(), dir: 'out', kind: 'hash', frame: msg.frame, slot: localSlot, hash: msg.hash, bufferedAmount: ws.bufferedAmount });
+          return;
+        }
+      }
+    });
+  `;
 }
 
 // ── SpectatorPeer ────────────────────────────────────────────────────────────
