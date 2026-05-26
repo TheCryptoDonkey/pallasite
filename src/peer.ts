@@ -282,7 +282,6 @@ export class WebSocketPeer implements Peer {
    *  layer itself). */
   private wsRecvFrameCount = 0;
   private wsSentFrameCount = 0;
-  private pingIntervalId: ReturnType<typeof setInterval> | null = null;
 
   connect(opts: PeerConnectOpts): Promise<void> {
     return new Promise<void>((resolve, reject) => {
@@ -331,18 +330,6 @@ export class WebSocketPeer implements Peer {
         localSlot: opts.localSlot,
         enableWireTrace,
       });
-      // Keep the worker's event loop continuously active. Production
-      // diagnostics showed that when the worker was idle (no main→worker
-      // postMessages for a while), WS message dispatch stalled — broker
-      // forwards 14 messages, worker's ws.onmessage fires only 9 times,
-      // and the missing 5 never arrive. A 10ms ping forces the worker
-      // to stay warm; it ignores the message but the task queue activity
-      // appears to be what triggers WS dispatch.
-      const pingInterval = setInterval(() => {
-        if (!this.worker) { clearInterval(pingInterval); return; }
-        try { this.worker.postMessage({ kind: 'ping' }); } catch { /* worker gone */ }
-      }, 10);
-      this.pingIntervalId = pingInterval;
     });
   }
 
@@ -438,10 +425,6 @@ export class WebSocketPeer implements Peer {
   }
 
   disconnect(): void {
-    if (this.pingIntervalId !== null) {
-      clearInterval(this.pingIntervalId);
-      this.pingIntervalId = null;
-    }
     if (this.worker) {
       // Tell the worker to close the WS but do NOT terminate the worker
       // immediately. Calling worker.terminate() drops any pending TCP
@@ -586,10 +569,6 @@ function buildPeerWorkerSource(): string {
         session = msg.session;
         localSlot = msg.localSlot;
         openSocket();
-      } else if (msg.kind === 'ping') {
-        // No-op. Main pings every 10ms to keep the worker event loop warm;
-        // empirically WS dispatch stalls on idle workers in production
-        // chromium and a constant trickle of macrotask activity revives it.
       } else if (msg.kind === 'disconnect') {
         // Final counters post so main has a fresh snapshot before terminate.
         post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: ws ? ws.readyState : -1, wsRecvFrameCount: wsRecvFrameCount, wsSentFrameCount: wsSentFrameCount });

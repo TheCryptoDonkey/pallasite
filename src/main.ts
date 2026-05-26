@@ -985,19 +985,17 @@ function loop(now: number): void {
           ? [mpSlot]
           : (state.players.length >= 2 ? [0, 1] : [0]);
       for (const i of localSampleSlots) {
-        // Idempotent per state.frame: if we've already sampled+sent for
-        // THIS state.frame on a previous (stalled) rAF iteration, skip.
-        // Without this guard, a stall would re-sample the same frame on
-        // every macrotask tick (~250Hz at chromium-headless setTimeout(0)
-        // clamp), flooding our TCP send buffer faster than the network
-        // can drain it. When the watchdog later terminates the worker,
-        // anything still in flight is dropped — and we'd lose the frames
-        // the partner is waiting on, perpetuating the stall.
-        if (inputLog.get(state.frame, i) >= 0) continue;
+        // Re-sample + re-send EVERY rAF iter when at the same state.frame.
+        // Reasoning: in production chromium, an idle WebSocket worker
+        // (no recent send/recv activity) lets incoming forwards stall in
+        // the dispatch layer — onmessage stops firing. The continuous
+        // 60Hz trickle of (re-)sends keeps the worker busy and WS
+        // dispatch alive, AND it's the redundancy backstop for any
+        // forward the partner missed. The wire cost is trivial (a few
+        // dozen bytes per send) compared to the cost of a stuck duel.
         // Peer mode reads from the localKeys + localHeading + localThrust
         // mirrors so apply's delayed overwrite of `players[i]` cannot
-        // clobber the live joystick / keyboard input. Solo and couch
-        // pass undefined for every override and read directly off `p`.
+        // clobber the live joystick / keyboard input.
         const keysOverride = peer ? localKeys[i] : undefined;
         const thrustOverrideOverride = peer ? localThrust[i] : undefined;
         const headingOverride = peer ? localHeading[i] : undefined;
