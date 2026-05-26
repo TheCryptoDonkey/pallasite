@@ -495,6 +495,10 @@ function buildPeerWorkerSource(): string {
     var wsSentFrameCount = 0;
     var sendFrameAttempts = 0;
     var sendFrameRejected = 0;
+    // Generic counter: every ws.onmessage fire, regardless of type. If this
+    // is much higher than wsRecvFrameCount, the parse/switch is dropping
+    // messages. If it's the same low number, the WS layer isn't dispatching.
+    var wsMessageEventCount = 0;
     function post(m) { self.postMessage(m); }
     function buildSocketUrl() {
       var sep = url.indexOf('?') >= 0 ? '&' : '?';
@@ -514,6 +518,11 @@ function buildPeerWorkerSource(): string {
         console.log('[peer-worker] ws open slot=' + localSlot + ' readyState=' + ws.readyState);
       });
       ws.addEventListener('message', function (ev) {
+        wsMessageEventCount++;
+        if (wsMessageEventCount <= 3 || wsMessageEventCount % 50 === 0) {
+          var preview = typeof ev.data === 'string' ? ev.data.slice(0, 60) : '[bin]';
+          console.log('[peer-worker] ws.onmessage #' + wsMessageEventCount + ' slot=' + localSlot + ' preview=' + preview);
+        }
         var msg;
         try { msg = JSON.parse(typeof ev.data === 'string' ? ev.data : ''); } catch (e) { return; }
         if (msg.type === 'frame') {
@@ -562,7 +571,7 @@ function buildPeerWorkerSource(): string {
       } else if (msg.kind === 'disconnect') {
         // Final counters post so main has a fresh snapshot before terminate.
         post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: ws ? ws.readyState : -1, wsRecvFrameCount: wsRecvFrameCount, wsSentFrameCount: wsSentFrameCount });
-        console.log('[peer-worker] disconnect requested slot=' + localSlot + ' final wsSent=' + wsSentFrameCount + ' wsRecv=' + wsRecvFrameCount + ' sendAttempts=' + sendFrameAttempts + ' sendRejected=' + sendFrameRejected);
+        console.log('[peer-worker] disconnect requested slot=' + localSlot + ' final wsSent=' + wsSentFrameCount + ' wsRecv=' + wsRecvFrameCount + ' wsMessageEvents=' + wsMessageEventCount + ' sendAttempts=' + sendFrameAttempts + ' sendRejected=' + sendFrameRejected);
         if (ws && connected) {
           try { ws.send(JSON.stringify({ type: 'bye', slot: localSlot })); } catch (e) {}
         }
