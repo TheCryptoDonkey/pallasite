@@ -1,0 +1,44 @@
+name: Release Static
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+# Shares the original Deploy workflow's lock so a resumed old workflow and
+# this fallback cannot rsync the same host at the same time.
+concurrency:
+  group: deploy-pallasite
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck + build
+        run: pnpm build
+
+      - name: Deploy to Hetzner
+        env:
+          HETZNER_SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$HETZNER_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H 95.217.39.110 >> ~/.ssh/known_hosts
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            dist/ deploy@95.217.39.110:/opt/pallasite/
