@@ -44,6 +44,7 @@ export function fnv1a32(str: string): number {
 export function serializeForCanary(s: GameState, appliedInputs?: ReadonlyArray<number>): string {
   const players = s.players.map((p: PlayerState) => [
     p.score, p.lives, p.sats, p.combo,
+    p.deathmatchKills, p.deathmatchDeaths, p.deathmatchStreak,
     p.ship.pos.x, p.ship.pos.y, p.ship.vel.x, p.ship.vel.y, p.ship.rot,
     p.ship.alive, p.ship.shieldUp, p.ship.shieldExpiresAt,
     p.ship.invulnerableUntil, p.ship.hyperspaceReadyAt, p.ship.hyperspaceCloakMs,

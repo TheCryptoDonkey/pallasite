@@ -736,7 +736,7 @@ function drawTransitShadow(ctx: CanvasRenderingContext2D, r: number, light: { x:
   ctx.restore();
 }
 
-function drawVenus(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, light: { x: number; y: number }, now: number): void {
+function drawVenus(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, light: { x: number; y: number }, now: number, rotation = now * 0.00007): void {
   ctx.save();
   ctx.translate(x, y);
   ctx.beginPath();
@@ -753,14 +753,14 @@ function drawVenus(ctx: CanvasRenderingContext2D, x: number, y: number, r: numbe
   for (let i = 0; i < 8; i++) {
     const yy = (-0.68 + i * 0.2) * r;
     ctx.beginPath();
-    ctx.ellipse(Math.sin(now * 0.00007 + i) * r * 0.12, yy, r * 1.1, r * 0.10, -0.18, 0, Math.PI * 2);
+    ctx.ellipse(Math.sin(rotation + i) * r * 0.12, yy, r * 1.1, r * 0.10, -0.18, 0, Math.PI * 2);
     ctx.stroke();
   }
   applyTerminator(ctx, r, light, 0.67);
   ctx.restore();
 }
 
-function drawEarth(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, light: { x: number; y: number }, now: number): void {
+function drawEarth(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, light: { x: number; y: number }, now: number, rotation = now * 0.00018): void {
   ctx.save();
   ctx.translate(x, y);
   ctx.beginPath();
@@ -772,7 +772,7 @@ function drawEarth(ctx: CanvasRenderingContext2D, x: number, y: number, r: numbe
   ocean.addColorStop(1, '#07122e');
   ctx.fillStyle = ocean;
   ctx.fillRect(-r, -r, r * 2, r * 2);
-  const spin = now * 0.00018;
+  const spin = rotation;
   ctx.fillStyle = 'rgba(68, 164, 92, 0.92)';
   for (let i = 0; i < 5; i++) {
     const lon = (((i * 0.43 + spin) % 1) * 2 - 1) * r * 1.25;
@@ -793,7 +793,7 @@ function drawEarth(ctx: CanvasRenderingContext2D, x: number, y: number, r: numbe
   ctx.restore();
 }
 
-function drawMars(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, light: { x: number; y: number }, now: number): void {
+function drawMars(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, light: { x: number; y: number }, now: number, rotation = now * 0.00005): void {
   ctx.save();
   ctx.translate(x, y);
   ctx.beginPath();
@@ -807,7 +807,7 @@ function drawMars(ctx: CanvasRenderingContext2D, x: number, y: number, r: number
   ctx.fillRect(-r, -r, r * 2, r * 2);
   ctx.fillStyle = 'rgba(80, 38, 26, 0.45)';
   for (let i = 0; i < 9; i++) {
-    const a = i * 2.399 + now * 0.00005;
+    const a = i * 2.399 + rotation * 0.35;
     ctx.beginPath();
     ctx.ellipse(Math.cos(a) * r * 0.46, Math.sin(a * 0.7) * r * 0.34, r * 0.16, r * 0.055, a * 0.4, 0, Math.PI * 2);
     ctx.fill();
@@ -820,7 +820,84 @@ function drawMars(ctx: CanvasRenderingContext2D, x: number, y: number, r: number
   ctx.restore();
 }
 
-function drawGasGiantSystem(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, light: { x: number; y: number }, now: number): void {
+const SOLAR_DAYS_PER_MS = 0.0012;
+
+type SolarMoonSpec = {
+  orbit: number;
+  flatten: number;
+  tilt: number;
+  periodDays: number;
+  epoch: number;
+  size: number;
+  colour: string;
+  shadowScale: number;
+};
+
+type SolarMoonState = SolarMoonSpec & {
+  x: number;
+  y: number;
+  dir: { x: number; y: number };
+  radius: number;
+};
+
+const JUPITER_MOONS: SolarMoonSpec[] = [
+  { orbit: 0.86, flatten: 0.24, tilt: -0.12, periodDays: 1.769, epoch: 0.2, size: 0.060, colour: '#e2bd82', shadowScale: 0.040 },
+  { orbit: 1.05, flatten: 0.24, tilt: -0.12, periodDays: 3.551, epoch: 1.4, size: 0.048, colour: '#d7d2c7', shadowScale: 0.034 },
+  { orbit: 1.30, flatten: 0.24, tilt: -0.12, periodDays: 7.155, epoch: 2.6, size: 0.070, colour: '#a9b7c8', shadowScale: 0.048 },
+  { orbit: 1.62, flatten: 0.24, tilt: -0.12, periodDays: 16.689, epoch: 3.8, size: 0.055, colour: '#8da0b0', shadowScale: 0.038 },
+];
+
+const SATURN_MOONS: SolarMoonSpec[] = [
+  { orbit: 2.25, flatten: 0.20, tilt: 0, periodDays: 15.945, epoch: 0.8, size: 0.080, colour: '#d8b27a', shadowScale: 0.052 },
+  { orbit: 2.70, flatten: 0.20, tilt: 0, periodDays: 4.518, epoch: 2.1, size: 0.046, colour: '#c5c8c8', shadowScale: 0.030 },
+  { orbit: 3.05, flatten: 0.20, tilt: 0, periodDays: 2.737, epoch: 4.4, size: 0.040, colour: '#9f9588', shadowScale: 0.026 },
+];
+
+function solarAngle(now: number, periodDays: number, epoch: number): number {
+  return epoch + ((now * SOLAR_DAYS_PER_MS) / periodDays) * Math.PI * 2;
+}
+
+function resolveMoonStates(x: number, y: number, r: number, moons: readonly SolarMoonSpec[], now: number): SolarMoonState[] {
+  return moons.map((m) => {
+    const phase = solarAngle(now, m.periodDays, m.epoch);
+    const orbit = r * m.orbit;
+    const ox = Math.cos(phase) * orbit;
+    const oy = Math.sin(phase) * orbit * m.flatten;
+    const ct = Math.cos(m.tilt);
+    const st = Math.sin(m.tilt);
+    const wx = x + ox * ct - oy * st;
+    const wy = y + ox * st + oy * ct;
+    return { ...m, x: wx, y: wy, dir: normalise2(wx - x, wy - y), radius: r * m.size };
+  });
+}
+
+function drawMoonOrbits(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, moons: readonly SolarMoonSpec[]): void {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(190, 210, 255, 0.08)';
+  ctx.lineWidth = 1;
+  for (const m of moons) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(m.tilt);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r * m.orbit, r * m.orbit * m.flatten, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function drawSolarMoons(ctx: CanvasRenderingContext2D, states: readonly SolarMoonState[], sun: { x: number; y: number }, now: number): void {
+  ctx.save();
+  ctx.globalAlpha = 0.94;
+  for (const m of [...states].sort((a, b) => a.y - b.y)) {
+    drawShadedMoon(ctx, m.x, m.y, m.radius, m.colour, normalise2(sun.x - m.x, sun.y - m.y), now * 0.0001 + m.epoch);
+  }
+  ctx.restore();
+}
+
+function drawGasGiantSystem(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, light: { x: number; y: number }, now: number, sun: { x: number; y: number }): void {
+  const moons = resolveMoonStates(x, y, r, JUPITER_MOONS, now);
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(-0.16);
@@ -868,32 +945,15 @@ function drawGasGiantSystem(ctx: CanvasRenderingContext2D, x: number, y: number,
   ctx.ellipse(r * 0.22, r * 0.14, r * 0.16, r * 0.055, -0.08, 0, Math.PI * 2);
   ctx.fill();
   applyTerminator(ctx, r, light, 0.50);
+  for (const m of moons) drawTransitShadow(ctx, r, light, m.dir, m.shadowScale);
   ctx.restore();
 
-  ctx.save();
-  ctx.globalAlpha = 0.92;
-  const moons = [
-    { orbit: r * 0.86, phase: now * 0.00018 + 0.2, size: r * 0.060, colour: '#e2bd82' },
-    { orbit: r * 1.05, phase: now * 0.00013 + 1.4, size: r * 0.048, colour: '#d7d2c7' },
-    { orbit: r * 1.30, phase: now * 0.00010 + 2.6, size: r * 0.070, colour: '#a9b7c8' },
-    { orbit: r * 1.62, phase: now * 0.000075 + 3.8, size: r * 0.055, colour: '#8da0b0' },
-  ];
-  ctx.strokeStyle = 'rgba(190, 210, 255, 0.08)';
-  ctx.lineWidth = 1;
-  for (const m of moons) {
-    ctx.beginPath();
-    ctx.ellipse(x, y, m.orbit, m.orbit * 0.24, -0.12, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-  for (const m of moons) {
-    const mx = x + Math.cos(m.phase) * m.orbit;
-    const my = y + Math.sin(m.phase) * m.orbit * 0.24;
-    drawShadedMoon(ctx, mx, my, m.size, m.colour, normalise2(x - mx, y - my), m.phase);
-  }
-  ctx.restore();
+  drawMoonOrbits(ctx, x, y, r, JUPITER_MOONS);
+  drawSolarMoons(ctx, moons, sun, now);
 }
 
-function drawSaturnSystem(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, light: { x: number; y: number }, now: number): void {
+function drawSaturnSystem(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, light: { x: number; y: number }, now: number, sun: { x: number; y: number }): void {
+  const moons = resolveMoonStates(x, y, r, SATURN_MOONS, now);
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(-0.28);
@@ -923,6 +983,7 @@ function drawSaturnSystem(ctx: CanvasRenderingContext2D, x: number, y: number, r
     ctx.fillRect(-r, yy + Math.sin(now * 0.00006 + i) * r * 0.015, r * 2, r * 0.045);
   }
   applyTerminator(ctx, r, light, 0.58);
+  for (const m of moons) drawTransitShadow(ctx, r, light, m.dir, m.shadowScale);
   ctx.restore();
 
   ctx.save();
@@ -943,16 +1004,8 @@ function drawSaturnSystem(ctx: CanvasRenderingContext2D, x: number, y: number, r
   }
   ctx.restore();
 
-  const moons = [
-    { orbit: r * 2.25, phase: now * 0.000095 + 0.8, size: r * 0.080, colour: '#d8b27a' },
-    { orbit: r * 2.70, phase: now * 0.000070 + 2.1, size: r * 0.046, colour: '#c5c8c8' },
-    { orbit: r * 3.05, phase: now * 0.000052 + 4.4, size: r * 0.040, colour: '#9f9588' },
-  ];
-  for (const m of moons) {
-    const mx = x + Math.cos(m.phase) * m.orbit;
-    const my = y + Math.sin(m.phase) * m.orbit * 0.20;
-    drawShadedMoon(ctx, mx, my, m.size, m.colour, normalise2(x - mx, y - my), m.phase);
-  }
+  drawMoonOrbits(ctx, x, y, r, SATURN_MOONS);
+  drawSolarMoons(ctx, moons, sun, now);
 }
 
 function drawSolarAsteroidBelt(ctx: CanvasRenderingContext2D, sx: number, sy: number, rx: number, ry: number, now: number): void {
@@ -973,66 +1026,99 @@ function drawSolarAsteroidBelt(ctx: CanvasRenderingContext2D, sx: number, sy: nu
   ctx.restore();
 }
 
-function drawDeathmatchSolarScenery(ctx: CanvasRenderingContext2D, rw: number, rh: number, now: number): void {
-  const solX = rw * 0.13;
-  const solY = rh * 0.16;
-  const days = now * 0.0012;
-  const angleForPeriod = (periodDays: number, epoch: number): number =>
-    epoch + (days / periodDays) * Math.PI * 2;
-  const orbitPos = (rx: number, ry: number, periodDays: number, epoch: number): { x: number; y: number; a: number } => {
-    const a = angleForPeriod(periodDays, epoch);
-    return { x: solX + Math.cos(a) * rx, y: solY + Math.sin(a) * ry, a };
+type SolarPlanetKind = 'venus' | 'earth' | 'mars' | 'jupiter' | 'saturn';
+type SolarPlanetSpec = {
+  kind: SolarPlanetKind;
+  orbitRx: number;
+  orbitRy: number;
+  periodDays: number;
+  epoch: number;
+  radius: number;
+  rotationDays: number;
+};
+
+const DEATHMATCH_SOLAR_PLANETS: readonly SolarPlanetSpec[] = [
+  { kind: 'venus', orbitRx: 560, orbitRy: 330, periodDays: 224.701, epoch: 1.70, radius: 42, rotationDays: -243.025 },
+  { kind: 'earth', orbitRx: 870, orbitRy: 520, periodDays: 365.256, epoch: 0.35, radius: 58, rotationDays: 0.997 },
+  { kind: 'mars', orbitRx: 1180, orbitRy: 705, periodDays: 686.980, epoch: 2.25, radius: 34, rotationDays: 1.026 },
+  { kind: 'jupiter', orbitRx: 1990, orbitRy: 1190, periodDays: 4332.590, epoch: 0.62, radius: 185, rotationDays: 0.414 },
+  { kind: 'saturn', orbitRx: 2760, orbitRy: 1640, periodDays: 10759.220, epoch: 1.14, radius: 118, rotationDays: 0.444 },
+];
+
+const EARTH_MOON: SolarMoonSpec = {
+  orbit: 132,
+  flatten: 92 / 132,
+  tilt: 0,
+  periodDays: 27.321661,
+  epoch: 1.2,
+  size: 17,
+  colour: '#b9c0c8',
+  shadowScale: 0.13,
+};
+
+function solarOrbitPosition(sun: { x: number; y: number }, p: SolarPlanetSpec, now: number): { x: number; y: number; angle: number } {
+  const angle = solarAngle(now, p.periodDays, p.epoch);
+  return {
+    x: sun.x + Math.cos(angle) * p.orbitRx,
+    y: sun.y + Math.sin(angle) * p.orbitRy,
+    angle,
   };
+}
 
-  const venus = orbitPos(560, 330, 224.701, 1.7);
-  const earth = orbitPos(870, 520, 365.256, 0.35);
-  const mars = orbitPos(1180, 705, 686.98, 2.25);
-  const jupiter = orbitPos(1990, 1190, 4332.59, 0.62);
-  const saturn = orbitPos(2760, 1640, 10759.22, 1.14);
+function solarRotation(now: number, rotationDays: number, epoch = 0): number {
+  return epoch + ((now * SOLAR_DAYS_PER_MS) / rotationDays) * Math.PI * 2;
+}
 
-  drawOrbit(ctx, solX, solY, 560, 330);
-  drawOrbit(ctx, solX, solY, 870, 520);
-  drawOrbit(ctx, solX, solY, 1180, 705);
-  drawOrbit(ctx, solX, solY, 1460, 875);
-  drawOrbit(ctx, solX, solY, 1990, 1190);
-  drawOrbit(ctx, solX, solY, 2760, 1640);
-  drawSolarAsteroidBelt(ctx, solX, solY, 1460, 875, now);
+function drawDeathmatchSolarScenery(ctx: CanvasRenderingContext2D, rw: number, rh: number, now: number): void {
+  const sun = { x: rw * 0.13, y: rh * 0.16 };
+  for (const planet of DEATHMATCH_SOLAR_PLANETS) drawOrbit(ctx, sun.x, sun.y, planet.orbitRx, planet.orbitRy);
+  drawOrbit(ctx, sun.x, sun.y, 1460, 875);
+  drawSolarAsteroidBelt(ctx, sun.x, sun.y, 1460, 875, now);
 
-  drawSaturnSystem(ctx, saturn.x, saturn.y, 118, normalise2(solX - saturn.x, solY - saturn.y), now);
-  drawGasGiantSystem(ctx, jupiter.x, jupiter.y, 185, normalise2(solX - jupiter.x, solY - jupiter.y), now);
-  drawMars(ctx, mars.x, mars.y, 34, normalise2(solX - mars.x, solY - mars.y), now);
-  drawVenus(ctx, venus.x, venus.y, 42, normalise2(solX - venus.x, solY - venus.y), now);
+  const bodies = DEATHMATCH_SOLAR_PLANETS
+    .map((spec) => ({ spec, ...solarOrbitPosition(sun, spec, now) }))
+    .sort((a, b) => a.y - b.y);
 
-  const earthLight = normalise2(solX - earth.x, solY - earth.y);
-  const moonAngle = angleForPeriod(27.321661, 1.2);
-  const moonOrbitX = 132;
-  const moonOrbitY = 92;
-  const moonX = earth.x + Math.cos(moonAngle) * moonOrbitX;
-  const moonY = earth.y + Math.sin(moonAngle) * moonOrbitY;
-  const moonDir = normalise2(moonX - earth.x, moonY - earth.y);
-  drawEarth(ctx, earth.x, earth.y, 58, earthLight, now);
-  ctx.save();
-  ctx.translate(earth.x, earth.y);
-  ctx.beginPath();
-  ctx.arc(0, 0, 58, 0, Math.PI * 2);
-  ctx.clip();
-  drawTransitShadow(ctx, 58, earthLight, moonDir, 0.13);
-  ctx.restore();
-  const moonLight = normalise2(solX - moonX, solY - moonY);
-  const moonFacingEarth = moonDir.x * earthLight.x + moonDir.y * earthLight.y;
-  drawShadedMoon(ctx, moonX, moonY, 17, '#b9c0c8', moonLight, moonAngle);
-  if (moonFacingEarth < -0.965) {
-    ctx.save();
-    ctx.globalCompositeOperation = 'multiply';
-    ctx.globalAlpha = Math.min(0.58, (-moonFacingEarth - 0.965) / 0.035 * 0.48);
-    ctx.fillStyle = 'rgba(18, 9, 7, 0.86)';
-    ctx.beginPath();
-    ctx.arc(moonX, moonY, 19, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
+  for (const body of bodies) {
+    const light = normalise2(sun.x - body.x, sun.y - body.y);
+    const spin = solarRotation(now, body.spec.rotationDays, body.spec.epoch);
+    if (body.spec.kind === 'saturn') {
+      drawSaturnSystem(ctx, body.x, body.y, body.spec.radius, light, now, sun);
+    } else if (body.spec.kind === 'jupiter') {
+      drawGasGiantSystem(ctx, body.x, body.y, body.spec.radius, light, now, sun);
+    } else if (body.spec.kind === 'mars') {
+      drawMars(ctx, body.x, body.y, body.spec.radius, light, now, spin);
+    } else if (body.spec.kind === 'venus') {
+      drawVenus(ctx, body.x, body.y, body.spec.radius, light, now, spin);
+    } else {
+      const moonAngle = solarAngle(now, EARTH_MOON.periodDays, EARTH_MOON.epoch);
+      const moonX = body.x + Math.cos(moonAngle) * EARTH_MOON.orbit;
+      const moonY = body.y + Math.sin(moonAngle) * EARTH_MOON.orbit * EARTH_MOON.flatten;
+      const moonDir = normalise2(moonX - body.x, moonY - body.y);
+      drawEarth(ctx, body.x, body.y, body.spec.radius, light, now, spin);
+      ctx.save();
+      ctx.translate(body.x, body.y);
+      ctx.beginPath();
+      ctx.arc(0, 0, body.spec.radius, 0, Math.PI * 2);
+      ctx.clip();
+      drawTransitShadow(ctx, body.spec.radius, light, moonDir, EARTH_MOON.shadowScale);
+      ctx.restore();
+      drawShadedMoon(ctx, moonX, moonY, EARTH_MOON.size, EARTH_MOON.colour, normalise2(sun.x - moonX, sun.y - moonY), moonAngle);
+      const moonFacingEarth = moonDir.x * light.x + moonDir.y * light.y;
+      if (moonFacingEarth < -0.965) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'multiply';
+        ctx.globalAlpha = Math.min(0.58, (-moonFacingEarth - 0.965) / 0.035 * 0.48);
+        ctx.fillStyle = 'rgba(18, 9, 7, 0.86)';
+        ctx.beginPath();
+        ctx.arc(moonX, moonY, EARTH_MOON.size + 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
   }
 
-  drawSol(ctx, solX, solY, 68, now);
+  drawSol(ctx, sun.x, sun.y, 68, now);
 }
 
 function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: number): void {
@@ -3111,6 +3197,71 @@ function pad(n: number, len: number): string {
   return n.toString().padStart(len, '0');
 }
 
+function drawDeathmatchHudExtras(ctx: CanvasRenderingContext2D, s: GameState, w: number, topY: number, rightX: number): void {
+  const rows = s.players
+    .map((p, slot) => ({ slot, kills: p.deathmatchKills, deaths: p.deathmatchDeaths, streak: p.deathmatchStreak, score: p.score }))
+    .sort((a, b) => b.kills - a.kills || b.score - a.score || a.deaths - b.deaths || a.slot - b.slot);
+  const maxRows = Math.min(rows.length, w < 760 ? 3 : 5);
+  const panelW = Math.min(w < 760 ? 172 : 236, Math.max(156, w * 0.26));
+  const panelX = Math.round(w / 2 - panelW / 2);
+  const panelY = topY + 88;
+  const rowH = 16;
+  const panelH = 24 + maxRows * rowH;
+  ctx.save();
+  ctx.fillStyle = 'rgba(4, 8, 18, 0.72)';
+  ctx.strokeStyle = 'rgba(120, 150, 255, 0.34)';
+  ctx.lineWidth = 1;
+  ctx.fillRect(panelX, panelY, panelW, panelH);
+  ctx.strokeRect(panelX + 0.5, panelY + 0.5, panelW - 1, panelH - 1);
+  ctx.font = 'bold 10px ui-monospace, monospace';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = '#ffd84a';
+  ctx.fillText('LEADERBOARD', panelX + 10, panelY + 7);
+  ctx.font = '12px ui-monospace, monospace';
+  for (let i = 0; i < maxRows; i++) {
+    const r = rows[i];
+    const y = panelY + 23 + i * rowH;
+    ctx.fillStyle = i === 0 ? '#58ff58' : 'rgba(230, 238, 255, 0.88)';
+    ctx.fillText(`P${r.slot + 1}`, panelX + 10, y);
+    ctx.textAlign = 'right';
+    const streak = r.streak >= 3 ? ` x${r.streak}` : '';
+    ctx.fillText(`${r.kills}/${r.deaths}${streak}`, panelX + panelW - 72, y);
+    ctx.fillText(String(r.score), panelX + panelW - 10, y);
+    ctx.textAlign = 'left';
+  }
+  ctx.restore();
+
+  const feed = s.deathmatchFeed.filter(e => s.elapsed - e.t <= 6_000).slice(-4).reverse();
+  if (!feed.length || w < 620) return;
+  const feedW = Math.min(250, Math.max(190, w * 0.22));
+  const feedX = Math.max(24 + renderMode.insets.left, rightX - feedW);
+  const feedY = topY + 62;
+  ctx.save();
+  ctx.fillStyle = 'rgba(4, 8, 18, 0.64)';
+  ctx.strokeStyle = 'rgba(255, 216, 74, 0.26)';
+  ctx.lineWidth = 1;
+  ctx.fillRect(feedX, feedY, feedW, 20 + feed.length * 17);
+  ctx.strokeRect(feedX + 0.5, feedY + 0.5, feedW - 1, 19 + feed.length * 17);
+  ctx.font = 'bold 10px ui-monospace, monospace';
+  ctx.fillStyle = '#ffd84a';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText('KILL FEED', feedX + 9, feedY + 6);
+  ctx.font = '12px ui-monospace, monospace';
+  for (let i = 0; i < feed.length; i++) {
+    const e = feed[i];
+    const age = Math.max(0, Math.min(1, 1 - (s.elapsed - e.t) / 6_000));
+    ctx.globalAlpha = 0.42 + age * 0.58;
+    ctx.fillStyle = e.attackerSlot == null ? '#d8c27a' : '#fff5d8';
+    const text = e.attackerSlot == null
+      ? `P${e.victimSlot + 1} LOST`
+      : `P${e.attackerSlot + 1} > P${e.victimSlot + 1} +${e.points}${e.streak >= 3 ? ` x${e.streak}` : ''}`;
+    ctx.fillText(text, feedX + 9, feedY + 21 + i * 17);
+  }
+  ctx.restore();
+}
+
 function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   const p0 = s.players[0];
   ctx.save();
@@ -3198,6 +3349,7 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   if (isDeathmatch) {
     ctx.fillText('RESPAWNS', rightX, topY);
     ctx.fillText(pad(p0.lives, 2), rightX, topY + 26);
+    drawDeathmatchHudExtras(ctx, s, w, topY, rightX);
   } else {
     ctx.fillText('LIVES', rightX, topY);
     for (let i = 0; i < p0.lives; i++) {
@@ -4300,7 +4452,7 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
   if (radarDeathmatch) {
     const maxW = renderMode.vw - 48 - insets.left - insets.right;
     const maxH = renderMode.vh - 128 - insets.top - insets.bottom;
-    const size = Math.round(Math.max(124, Math.min(184, maxW, maxH * 0.34)));
+    const size = Math.round(Math.max(144, Math.min(228, maxW, maxH * 0.38)));
     x0 = 24 + insets.left;
     y0 = 92 + insets.top;
     w = size;
@@ -4320,6 +4472,20 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
   oc.lineWidth = 1;
   oc.strokeStyle = 'rgba(120, 150, 255, 0.32)';
   oc.strokeRect(0.5, 0.5, w - 1, h - 1);
+  if (radarDeathmatch) {
+    oc.strokeStyle = 'rgba(100, 132, 190, 0.18)';
+    oc.lineWidth = 1;
+    for (let i = 1; i < 4; i++) {
+      const gx = (i / 4) * w;
+      const gy = (i / 4) * h;
+      oc.beginPath();
+      oc.moveTo(gx, 1);
+      oc.lineTo(gx, h - 1);
+      oc.moveTo(1, gy);
+      oc.lineTo(w - 1, gy);
+      oc.stroke();
+    }
+  }
   oc.save();
   oc.beginPath();
   oc.rect(0, 0, w, h);
@@ -4329,27 +4495,67 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
   // inside the offscreen canvas; the warp on the way out positions it.
   const radarWorldW = renderWorldW();
   const radarWorldH = renderWorldH();
-  const blip = (wx: number, wy: number, r: number, fill: string): void => {
+  const mapRadar = (wx: number, wy: number): { x: number; y: number } => ({
+    x: radarDeathmatch ? (wx / radarWorldW) * w : (wrapInto(wx) / WORLD_W) * w,
+    y: (wy / radarWorldH) * h,
+  });
+  const blip = (wx: number, wy: number, r: number, fill: string, stroke?: string): void => {
+    const p = mapRadar(wx, wy);
     oc.fillStyle = fill;
     oc.beginPath();
-    const bx = radarDeathmatch ? (wx / radarWorldW) * w : (wrapInto(wx) / WORLD_W) * w;
-    const by = (wy / radarWorldH) * h;
-    oc.arc(bx, by, r, 0, Math.PI * 2);
+    oc.arc(p.x, p.y, r, 0, Math.PI * 2);
     oc.fill();
+    if (stroke) {
+      oc.strokeStyle = stroke;
+      oc.lineWidth = 1;
+      oc.stroke();
+    }
+  };
+  const playerColours = ['#58ff58', '#ff6b6b', '#5be8ff', '#ffd84a', '#ff8a3a', '#d77aff', '#8cffb8', '#ff9ec7'];
+  const terrainBlip = (wx: number, wy: number, r: number): void => {
+    const p = mapRadar(wx, wy);
+    oc.fillStyle = 'rgba(216, 194, 122, 0.54)';
+    oc.strokeStyle = 'rgba(255, 230, 150, 0.82)';
+    oc.lineWidth = 1;
+    oc.beginPath();
+    oc.arc(p.x, p.y, r, 0, Math.PI * 2);
+    oc.fill();
+    oc.stroke();
   };
   for (const a of s.asteroids) {
-    const colour = radarDeathmatch && a.terrain ? '#d8c27a' : '#9aa6c8';
-    blip(a.pos.x, a.pos.y, Math.max(1.4, Math.min(5.5, a.radius * 0.082 + 0.85)), colour);
+    if (radarDeathmatch && a.terrain) {
+      terrainBlip(a.pos.x, a.pos.y, Math.max(4, Math.min(15, a.radius * 0.045 + 1)));
+      continue;
+    }
+    const colour = radarDeathmatch ? 'rgba(154, 166, 200, 0.72)' : '#9aa6c8';
+    blip(a.pos.x, a.pos.y, Math.max(1.3, Math.min(4.8, a.radius * 0.058 + 0.75)), colour);
   }
   for (const b of s.enemyBullets) blip(b.pos.x, b.pos.y, 1.8, '#ff8a1e');
-  for (const p of s.powerups) blip(p.pos.x, p.pos.y, 3.4, '#5be8ff');
-  for (const m of s.mines) blip(m.pos.x, m.pos.y, 3, '#ff5a4a');
-  for (const u of s.ufos) blip(u.pos.x, u.pos.y, 3.6, '#ff4af0');
+  for (const p of s.powerups) blip(p.pos.x, p.pos.y, 3.4, '#5be8ff', 'rgba(210,250,255,0.86)');
+  for (const m of s.mines) blip(m.pos.x, m.pos.y, 3, '#ff5a4a', 'rgba(255,210,190,0.72)');
+  for (const u of s.ufos) blip(u.pos.x, u.pos.y, 3.6, '#ff4af0', 'rgba(255,210,255,0.75)');
   const localSlot = renderMode.localSlot ?? 0;
-  const playerBlip = s.players.length > 16 ? 3.2 : 4.5;
+  const playerBlip = s.players.length > 16 ? 3.2 : 4.6;
   for (let i = 0; i < s.players.length; i++) {
     const pl = s.players[i];
-    if (pl.ship.alive) blip(pl.ship.pos.x, pl.ship.pos.y, i === localSlot ? playerBlip + 1.2 : playerBlip, i === localSlot ? '#58ff58' : '#ff6b6b');
+    if (!pl.ship.alive) continue;
+    const p = mapRadar(pl.ship.pos.x, pl.ship.pos.y);
+    const local = i === localSlot;
+    const colour = local ? '#58ff58' : playerColours[i % playerColours.length];
+    oc.fillStyle = colour;
+    oc.strokeStyle = local ? 'rgba(232,255,232,0.95)' : 'rgba(255,255,255,0.58)';
+    oc.lineWidth = local ? 1.8 : 1;
+    oc.beginPath();
+    oc.arc(p.x, p.y, local ? playerBlip + 1.2 : playerBlip, 0, Math.PI * 2);
+    oc.fill();
+    oc.stroke();
+    if (radarDeathmatch && s.players.length <= 8) {
+      oc.font = 'bold 8px ui-monospace, monospace';
+      oc.textAlign = 'center';
+      oc.textBaseline = 'middle';
+      oc.fillStyle = '#031008';
+      oc.fillText(String(i + 1), p.x, p.y + 0.2);
+    }
   }
 
   // Visible-strip box — the slice the follow camera currently shows.

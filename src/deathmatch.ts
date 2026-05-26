@@ -24,18 +24,27 @@ export function deathmatchWorldH(): number {
   return deathmatchActive() ? DEATHMATCH_WORLD_H : 720;
 }
 
-export function deathmatchSpawnPoint(slot: number, total: number): { x: number; y: number; rot: number } {
+function clampSpawn(v: number, max: number): number {
+  const margin = 340;
+  return Math.max(margin, Math.min(max - margin, v));
+}
+
+export function deathmatchSpawnPoint(slot: number, total: number, variant = 0): { x: number; y: number; rot: number } {
   const cx = DEATHMATCH_WORLD_W / 2;
   const cy = DEATHMATCH_WORLD_H / 2;
-  const ringCount = total <= 12 ? 1 : total <= 32 ? 2 : total <= 48 ? 3 : 4;
+  const ringCount = total <= 8 ? 1 : total <= 24 ? 2 : total <= 48 ? 3 : 4;
   const ring = slot % ringCount;
   const ordinal = Math.floor(slot / ringCount);
   const inRing = Math.ceil((Math.max(1, total) - ring) / ringCount);
-  const radiusFactor = ringCount === 1 ? 0.38 : 0.22 + (0.25 * ring) / (ringCount - 1);
+  const radiusFactor = ringCount === 1 ? 0.40 : 0.23 + (0.25 * ring) / (ringCount - 1);
   const radius = Math.min(DEATHMATCH_WORLD_W, DEATHMATCH_WORLD_H) * radiusFactor;
-  const angle = (ordinal / Math.max(1, inRing)) * Math.PI * 2 - Math.PI / 2 + ring * 0.37;
-  const x = cx + Math.cos(angle) * radius;
-  const y = cy + Math.sin(angle) * radius;
+  const alternate = variant > 0 ? Math.floor((variant + 1) / 2) : 0;
+  const side = variant % 2 === 0 ? -1 : 1;
+  const angleOffset = variant === 0 ? 0 : side * (0.22 + alternate * 0.11);
+  const radiusScale = variant === 0 ? 1 : 1 - Math.min(0.20, alternate * 0.045);
+  const angle = (ordinal / Math.max(1, inRing)) * Math.PI * 2 - Math.PI / 2 + ring * 0.37 + angleOffset;
+  const x = clampSpawn(cx + Math.cos(angle) * radius * radiusScale, DEATHMATCH_WORLD_W);
+  const y = clampSpawn(cy + Math.sin(angle) * radius * radiusScale, DEATHMATCH_WORLD_H);
   return { x, y, rot: Math.atan2(cy - y, cx - x) };
 }
 

@@ -15,7 +15,7 @@
 //      direct key mutation + direct tryHyperspace / tryActivateShield calls
 //      must produce the identical hash sequence when routed through the
 //      input log (sample -> encode -> decode -> apply, edges dispatched from
-//      the decoded edge bits). Final hash must match 528212306.
+//      the decoded edge bits). Final hash must match 3855560985.
 //
 //   2) Log path at delay 10 is deterministic across runs. Three runs at
 //      delay 10 with the same seed and scripted input log must produce
@@ -34,7 +34,7 @@ import { InputLog, encodePlayerInput, decodePlayerInput, applyPlayerInput, EMPTY
 
 const STEPS = 6000;            // ~100s of sim at 60Hz, same as determinism harness
 const SEED = 0x1234abcd;
-const BASELINE_HASH = 528212306;  // determinism harness's final hash for this seed + script
+const BASELINE_HASH = 3855560985;  // determinism harness's final hash for this seed + script
 const DELAY = 10;
 
 const RETRO_MODE = {
