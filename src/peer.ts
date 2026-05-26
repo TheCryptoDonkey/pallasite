@@ -480,6 +480,10 @@ function buildPeerWorkerSource(): string {
     var localSlot = 0;
     var connected = false;
     var initialConnectDone = false;
+    var wsRecvFrameCount = 0;
+    var wsSentFrameCount = 0;
+    var sendFrameAttempts = 0;
+    var sendFrameRejected = 0;
     function post(m) { self.postMessage(m); }
     function buildSocketUrl() {
       var sep = url.indexOf('?') >= 0 ? '&' : '?';
@@ -496,11 +500,13 @@ function buildPeerWorkerSource(): string {
         var hello = { type: 'hello-peer', session: session, slot: localSlot, version: 1 };
         if (ws) ws.send(JSON.stringify(hello));
         connected = true;
+        console.log('[peer-worker] ws open slot=' + localSlot + ' readyState=' + ws.readyState);
       });
       ws.addEventListener('message', function (ev) {
         var msg;
         try { msg = JSON.parse(typeof ev.data === 'string' ? ev.data : ''); } catch (e) { return; }
         if (msg.type === 'frame') {
+          wsRecvFrameCount++;
           post({ kind: 'frame', frame: msg.frame, slot: msg.slot, input: msg.input });
         } else if (msg.type === 'hash') {
           post({ kind: 'hash', frame: msg.frame, slot: msg.slot, hash: msg.hash });
@@ -515,19 +521,27 @@ function buildPeerWorkerSource(): string {
           post({ kind: 'session-error', code: msg.code });
         }
       });
-      ws.addEventListener('close', function () {
+      ws.addEventListener('close', function (ev) {
+        console.log('[peer-worker] ws close slot=' + localSlot + ' code=' + ev.code + ' wasClean=' + ev.wasClean + ' initialConnectDone=' + initialConnectDone);
         if (!initialConnectDone) {
           initialConnectDone = true;
           post({ kind: 'connect-failed', error: 'socket closed before partner joined' });
         }
       });
       ws.addEventListener('error', function () {
+        console.log('[peer-worker] ws error slot=' + localSlot);
         if (!initialConnectDone) {
           initialConnectDone = true;
           post({ kind: 'connect-failed', error: 'socket error' });
         }
       });
     }
+    setInterval(function () {
+      var state = ws ? ws.readyState : -1;
+      post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: state, wsRecvFrameCount: wsRecvFrameCount, wsSentFrameCount: wsSentFrameCount });
+      // Periodic console snapshot so we can correlate worker view vs broker view.
+      console.log('[peer-worker] tick slot=' + localSlot + ' readyState=' + state + ' wsSent=' + wsSentFrameCount + ' wsRecv=' + wsRecvFrameCount + ' sendAttempts=' + sendFrameAttempts + ' sendRejected=' + sendFrameRejected);
+    }, 1000);
     self.addEventListener('message', function (ev) {
       var msg = ev.data;
       if (msg.kind === 'connect') {
@@ -541,8 +555,16 @@ function buildPeerWorkerSource(): string {
         }
         if (ws) { try { ws.close(); } catch (e) {} ws = null; }
       } else if (msg.kind === 'send-frame') {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        sendFrameAttempts++;
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          sendFrameRejected++;
+          if (sendFrameRejected <= 3 || sendFrameRejected % 30 === 0) {
+            console.log('[peer-worker] send-frame REJECTED slot=' + localSlot + ' frame=' + msg.frame + ' ws=' + (ws ? 'set' : 'null') + ' readyState=' + (ws ? ws.readyState : 'n/a') + ' #' + sendFrameRejected);
+          }
+          return;
+        }
         ws.send(JSON.stringify({ type: 'frame', frame: msg.frame, slot: localSlot, input: msg.input }));
+        wsSentFrameCount++;
       } else if (msg.kind === 'send-hash') {
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
         ws.send(JSON.stringify({ type: 'hash', frame: msg.frame, slot: localSlot, hash: msg.hash }));
