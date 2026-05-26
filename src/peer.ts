@@ -547,10 +547,16 @@ function buildPeerWorkerSource(): string {
         }
       });
     }
+    // Fast internal tick (5ms) to keep the worker's event loop active.
+    // Hypothesis: chromium-headless may pause WS event dispatch on idle
+    // workers (when no scheduled macrotask is pending), letting incoming
+    // frames pile up unbounded. Forcing a constant macrotask drain rate
+    // closes that gap. This is a diagnostic on top of the 1Hz counters
+    // tick — if recv rate jumps with this in place, hypothesis confirmed.
+    setInterval(function () { /* idle pump */ }, 5);
     setInterval(function () {
       var state = ws ? ws.readyState : -1;
       post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: state, wsRecvFrameCount: wsRecvFrameCount, wsSentFrameCount: wsSentFrameCount });
-      // Periodic console snapshot so we can correlate worker view vs broker view.
       console.log('[peer-worker] tick slot=' + localSlot + ' readyState=' + state + ' wsSent=' + wsSentFrameCount + ' wsRecv=' + wsRecvFrameCount + ' sendAttempts=' + sendFrameAttempts + ' sendRejected=' + sendFrameRejected);
     }, 1000);
     self.addEventListener('message', function (ev) {
