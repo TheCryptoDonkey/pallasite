@@ -56,6 +56,27 @@ function modeUsesWaveStart(): boolean {
   return getFlavour() !== '600bn' && mode !== 'arena' && mode !== 'deathmatch';
 }
 
+function requestedDeathmatchPlayers(defaultCount: number): number {
+  if (getStoredMode() !== 'deathmatch') return defaultCount;
+  const raw = new URLSearchParams(window.location.search).get('deathmatchPlayers');
+  if (raw === null) return defaultCount;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return defaultCount;
+  return Math.max(4, Math.min(64, Math.floor(n)));
+}
+
+function requestedStartPlayers(): number {
+  return requestedDeathmatchPlayers((couchMode || peer || spectator) ? 2 : 1);
+}
+
+function applyDeathmatchHarnessOptions(): void {
+  if (getStoredMode() !== 'deathmatch') return;
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('deathmatchAi') === 'all') {
+    for (const p of state.players) p.ai = true;
+  }
+}
+
 // Test hook: the headless E2E runner reads live sim state (frame, phase,
 // players) here without scraping the DOM. Production code never references it.
 (window as unknown as { __pallasiteState?: GameState }).__pallasiteState = state;
@@ -492,7 +513,8 @@ bindActions({
     } else {
       setDailySeed(getStoredDailyPref() ? todayUTC() : null);
     }
-    startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: (couchMode || peer || spectator) ? 2 : 1, defender: defenderMode });
+    startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: requestedStartPlayers(), defender: defenderMode });
+    applyDeathmatchHarnessOptions();
     // Only force wavestart for the standard campaign — startGame on the
     // 600bn flavour sets phase='sanctum' and doesn't want the warp/wave
     // pipeline kicking in over the top.
@@ -694,7 +716,8 @@ window.addEventListener('keydown', e => {
     lockInDifficulty(getStoredDifficulty());
     gateBehindOnboarding(() => {
       setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-      startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: (couchMode || peer || spectator) ? 2 : 1, defender: defenderMode });
+      startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: requestedStartPlayers(), defender: defenderMode });
+      applyDeathmatchHarnessOptions();
       if (modeUsesWaveStart()) state.phase = 'wavestart';
       if (couchMode) (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
       clearOverlay();
@@ -708,7 +731,8 @@ window.addEventListener('keydown', e => {
     void audio.unlockAudio();
     lockInDifficulty(getStoredDifficulty());
     setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-    startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: (couchMode || peer || spectator) ? 2 : 1, defender: defenderMode });
+    startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: requestedStartPlayers(), defender: defenderMode });
+    applyDeathmatchHarnessOptions();
     if (modeUsesWaveStart()) state.phase = 'wavestart';
     if (couchMode) (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
     clearOverlay();
