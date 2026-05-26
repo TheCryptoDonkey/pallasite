@@ -194,8 +194,11 @@ const PEER_INPUT_DELAY = 5;
  *  surfaces. ~100ms tolerates ordinary network jitter without flicker. */
 const PEER_STALL_OVERLAY_FRAMES = 6;
 /** Consecutive stalled sim frames before we declare the partner gone and
- *  end the run. ~2s at 60Hz. */
-const PEER_STALL_DISCONNECT_FRAMES = 120;
+ *  end the run. ~10s at 60Hz. Generous because chromium's WS dispatch can
+ *  briefly stall on an idle worker and the retry-every-rAF backstop needs
+ *  a few real-time seconds to refill the gap; tearing down at 2s killed
+ *  recoverable duels in production. */
+const PEER_STALL_DISCONNECT_FRAMES = 600;
 /** Count of consecutive frames the lockstep loop has been unable to
  *  advance (remote input missing). Reset every time a frame ticks. Only
  *  meaningful while a peer is active. */
