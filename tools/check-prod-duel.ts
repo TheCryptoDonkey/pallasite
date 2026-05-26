@@ -64,6 +64,13 @@ async function main(): Promise<void> {
     // already have the SW controlling and skip this dance.
     const ctxA = await browser.newContext({ viewport: { width: 1280, height: 720 }, serviceWorkers: 'block' });
     const ctxB = await browser.newContext({ viewport: { width: 1280, height: 720 }, serviceWorkers: 'block' });
+    // Lightweight visual style — disable the WebGL mesh overlay + CRT postFX
+    // so the test isolates netcode behaviour from rendering cost. Real users
+    // still get the CRT theme; this is purely to remove a confound when
+    // diagnosing the 2P duel desync.
+    const lightVisual = JSON.stringify({ asteroid: 'vector', ship: 'vector', bullet: 'vector', particle: 'vector', theme: 'none', asciiCols: 80, bitDepth: 8, bitColour: false });
+    await ctxA.addInitScript((v) => { try { localStorage.setItem('pallasite:visualStyle', v); } catch { /* ignore */ } }, lightVisual);
+    await ctxB.addInitScript((v) => { try { localStorage.setItem('pallasite:visualStyle', v); } catch { /* ignore */ } }, lightVisual);
     const pageA = await ctxA.newPage();
     const pageB = await ctxB.newPage();
     const interesting = (msg: import('playwright').ConsoleMessage): boolean => {
@@ -74,6 +81,10 @@ async function main(): Promise<void> {
     };
     pageA.on('console', (m) => { if (interesting(m)) process.stderr.write(`[A/${m.type()}] ${m.text()}\n`); });
     pageB.on('console', (m) => { if (interesting(m)) process.stderr.write(`[B/${m.type()}] ${m.text()}\n`); });
+    // Worker console messages fire on the worker, not the page, in newer
+    // Playwright. Attach to each worker as it spawns.
+    pageA.on('worker', (w) => w.on('console', (m) => process.stderr.write(`[A/worker/${m.type()}] ${m.text()}\n`)));
+    pageB.on('worker', (w) => w.on('console', (m) => process.stderr.write(`[B/worker/${m.type()}] ${m.text()}\n`)));
 
     // Bypass the duel lobby — go straight to the game with peer params,
     // same shape the e2e harnesses use. The lobby's only job is to
@@ -81,8 +92,8 @@ async function main(): Promise<void> {
     // identical.
     const broker = TARGET.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:').replace('pallasite.app', 'controller.pallasite.app');
     const peerEnc = encodeURIComponent(broker);
-    const urlA = `${TARGET}/?peer=${peerEnc}&session=${session}&slot=0&wiretrace=1`;
-    const urlB = `${TARGET}/?peer=${peerEnc}&session=${session}&slot=1&wiretrace=1`;
+    const urlA = `${TARGET}/?peer=${peerEnc}&session=${session}&slot=0`;
+    const urlB = `${TARGET}/?peer=${peerEnc}&session=${session}&slot=1`;
     await Promise.all([pageA.goto(urlA, { waitUntil: 'load' }), pageB.goto(urlB, { waitUntil: 'load' })]);
 
     const waitPlaying = (page: Page, tag: string): Promise<void> => page.waitForFunction(
@@ -92,18 +103,13 @@ async function main(): Promise<void> {
     ).then(() => process.stdout.write(`  ${tag} playing\n`));
     await Promise.all([waitPlaying(pageA, 'A'), waitPlaying(pageB, 'B')]);
     await wait(800);
+    const [baselineA, baselineB] = await Promise.all([pullProbe(pageA), pullProbe(pageB)]);
 
-    // Drive a bit of input on both so the ships should be MOVING.
-    const drive = async (page: Page): Promise<void> => {
-      for (let i = 0; i < 8; i++) {
-        await page.keyboard.down('ArrowUp');
-        await wait(150);
-        await page.keyboard.up('ArrowUp');
-        await wait(100);
-      }
-    };
-    const driveA = drive(pageA).catch(() => null);
-    const driveB = drive(pageB).catch(() => null);
+    // Hold thrust through the whole measurement window. Production relay
+    // stalls can make 2s of wall-clock pulses cover only a handful of sim
+    // frames; measuring from a pre-input baseline avoids false "stuck"
+    // verdicts when a ship moved before the first 1s sample.
+    await Promise.all([pageA.keyboard.down('ArrowUp'), pageB.keyboard.down('ArrowUp')]);
 
     // Sample state every second for the duration.
     const samples: Array<{ t: number; a: Probe; b: Probe }> = [];
@@ -114,12 +120,12 @@ async function main(): Promise<void> {
       samples.push({ t: Date.now() - start, a, b });
       process.stdout.write(`t=${(samples.at(-1)!.t / 1000).toFixed(1)}s  A:frame=${a.frame} peerActive=${a.peerActive} ship0@(${a.ship0?.x.toFixed(0)},${a.ship0?.y.toFixed(0)}) ship1@(${a.ship1?.x.toFixed(0)},${a.ship1?.y.toFixed(0)})  B:frame=${b.frame} peerActive=${b.peerActive} ship0@(${b.ship0?.x.toFixed(0)},${b.ship0?.y.toFixed(0)}) ship1@(${b.ship1?.x.toFixed(0)},${b.ship1?.y.toFixed(0)})\n`);
     }
-    await Promise.race([Promise.all([driveA, driveB]), wait(500)]);
+    await Promise.all([pageA.keyboard.up('ArrowUp'), pageB.keyboard.up('ArrowUp')]).catch(() => null);
 
     // Analysis: did EACH peer see BOTH ships' frames advance?
-    const aFirst = samples[0].a;
+    const aFirst = baselineA;
     const aLast = samples.at(-1)!.a;
-    const bFirst = samples[0].b;
+    const bFirst = baselineB;
     const bLast = samples.at(-1)!.b;
 
     // Pull wire trace from each peer to see what was actually on the wire.
