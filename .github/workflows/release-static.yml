@@ -2,8 +2,6 @@ name: Release Static
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 # Shares the original Deploy workflow's lock so a resumed old workflow and
 # this fallback cannot rsync the same host at the same time.
