@@ -1848,7 +1848,7 @@ export function renderOverlay(opts: {
   /** Every live ship to render. Array index == player slot, so per-slot
    *  mesh handles are kept stable across frames. Empty = no ships
    *  (e.g. during an intertitle hold). See WebGLOverlayCall jsdoc. */
-  ships: ReadonlyArray<Ship>;
+  ships: ReadonlyArray<Ship | null | undefined>;
   /** Sim clock (ms) — time base for the shield-dome expiry fade. */
   elapsed: number;
   dpr: number;

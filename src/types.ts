@@ -431,7 +431,7 @@ export interface ReplaySnapshot {
 
 export interface DeathReplay {
   snapshots: ReplaySnapshot[];
-  /** performance.now() at the moment playback (re-)started */
+  /** Sim-clock ms at the moment playback (re-)started. */
   startedAt: number;
   /** Captured game-time span, ms — last sample.t minus first sample.t.
    *  This is the SNAPSHOT span; the actual playback runs an additional

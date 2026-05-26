@@ -27,8 +27,13 @@ export function deathmatchWorldH(): number {
 export function deathmatchSpawnPoint(slot: number, total: number): { x: number; y: number; rot: number } {
   const cx = DEATHMATCH_WORLD_W / 2;
   const cy = DEATHMATCH_WORLD_H / 2;
-  const radius = Math.min(DEATHMATCH_WORLD_W, DEATHMATCH_WORLD_H) * 0.38;
-  const angle = (slot / Math.max(1, total)) * Math.PI * 2 - Math.PI / 2;
+  const ringCount = total <= 12 ? 1 : total <= 32 ? 2 : total <= 48 ? 3 : 4;
+  const ring = slot % ringCount;
+  const ordinal = Math.floor(slot / ringCount);
+  const inRing = Math.ceil((Math.max(1, total) - ring) / ringCount);
+  const radiusFactor = ringCount === 1 ? 0.38 : 0.22 + (0.25 * ring) / (ringCount - 1);
+  const radius = Math.min(DEATHMATCH_WORLD_W, DEATHMATCH_WORLD_H) * radiusFactor;
+  const angle = (ordinal / Math.max(1, inRing)) * Math.PI * 2 - Math.PI / 2 + ring * 0.37;
   const x = cx + Math.cos(angle) * radius;
   const y = cy + Math.sin(angle) * radius;
   return { x, y, rot: Math.atan2(cy - y, cx - x) };

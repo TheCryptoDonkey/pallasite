@@ -6,7 +6,7 @@
  */
 
 import type {
-  GameState, Ship, Asteroid, AsteroidSize, AsteroidType, Ufo, UfoType, Mine, Vec2,
+  GameState, Ship, Asteroid, AsteroidSize, AsteroidType, Ufo, UfoType, Mine, Bullet, Vec2,
   SimTransition, SimTransitionKind, PlayerState, RunStats,
 } from './types.js';
 import { recordStreamEvent } from './stream-session.js';
@@ -57,7 +57,7 @@ import type { PowerUp, PowerUpType } from './types.js';
 import * as audio from './audio.js';
 import { preloadBackground, invalidateBackgroundCache } from './render.js';
 import { currentMods, lockInDifficulty, getStoredDifficulty, currentDifficulty } from './difficulty.js';
-import { lockInMode, getStoredMode, currentMode, isEndlessMode, isSanctumMode, isDefenderMode } from './mode.js';
+import { lockInMode, getStoredMode, currentMode, isEndlessMode, isSanctumMode, isDefenderMode, type RunMode } from './mode.js';
 import { arenaActive, arenaCage, confineToArena, clampToArena, outsideArena } from './arena.js';
 import {
   deathmatchActive,
@@ -77,6 +77,7 @@ import {
   callWebGLShipExplosion,
   callWebGLClearShipChunks,
 } from './visual-style.js';
+import { SpatialHash, type SpatialCircle } from './spatial.js';
 
 // ── Initial state ─────────────────────────────────────────────────────────────
 
@@ -284,7 +285,7 @@ function makePlayerState(): PlayerState {
 const DEFENDER_RUN_MS = 90_000;
 export const DEFENDER_WIN_THRESHOLD = 6;
 
-export function startGame(s: GameState, forcedSeed?: number, opts?: { players?: number; defender?: boolean }): void {
+export function startGame(s: GameState, forcedSeed?: number, opts?: { players?: number; defender?: boolean; aiOpponents?: boolean; runMode?: RunMode }): void {
   // 600bn flavour now runs through the standard Pallasite startGame +
   // beginWave path. beginWave(s, 1) detects flavour=600bn and spawns
   // council-member-textured asteroids instead of the wave-1 default.
@@ -310,10 +311,11 @@ export function startGame(s: GameState, forcedSeed?: number, opts?: { players?: 
   // Lock in the run mode too — campaign vs drift changes the wave-25
   // completion path. Same re-lock rationale as difficulty: button paths
   // that bypass title need this to honour the picked mode.
-  lockInMode(getStoredMode());
+  lockInMode(opts?.runMode ?? getStoredMode());
   const mods = currentMods();
   const deathmatch = deathmatchActive();
-  const playerCount = deathmatch ? Math.max(4, opts?.players ?? 4) : (opts?.players ?? 1);
+  const playerCount = deathmatch ? Math.max(2, opts?.players ?? 4) : (opts?.players ?? 1);
+  const deathmatchAiOpponents = deathmatch && (opts?.aiOpponents ?? true);
   // Defender bonus wave — protect the Council variant. Drives the
   // wave-1 council-spawn check below + win/lose timer in updateGame.
   // Triggered by either the explicit opts.defender (URL flag still
@@ -345,7 +347,7 @@ export function startGame(s: GameState, forcedSeed?: number, opts?: { players?: 
       s.players[i].ship.pos.x = spawn.x;
       s.players[i].ship.pos.y = spawn.y;
       s.players[i].ship.rot = spawn.rot;
-      if (i > 0) s.players[i].ai = true;
+      if (deathmatchAiOpponents && i > 0) s.players[i].ai = true;
     }
   } else if (playerCount === 2) {
     s.players[0].ship.pos.x = WORLD_W * 0.30;
@@ -985,6 +987,7 @@ const LODESTONE_PULL = 150;
  *  spawn point must be free of, and the cap on how long the respawn waits
  *  for that zone to clear before spawning anyway. */
 const RESPAWN_INVULN_MS = 2_000;
+const DEATHMATCH_RESPAWN_INVULN_MS = 3_000;
 const SAFE_SPAWN_RADIUS = 150;
 const RESPAWN_MAX_WAIT_MS = 2_500;
 
@@ -1040,13 +1043,29 @@ function spawnDeathmatchTerrain(s: GameState): void {
     { x: ww * 0.50, y: wh * 0.50, r: 190, type: 'pallasite' as AsteroidType },
   ];
   for (const f of fields) {
-    const a = spawnAsteroid('large', 20, { x: f.x, y: f.y }, { x: 0, y: 0 }, f.type, { terrain: true, gravity: 58 });
+    const a = spawnAsteroid('large', 20, { x: f.x, y: f.y }, { x: 0, y: 0 }, f.type, { terrain: true, gravity: 36 });
     a.radius = f.r;
     a.hp = Number.POSITIVE_INFINITY;
     a.hpMax = Number.POSITIVE_INFINITY;
     a.vel.x = 0;
     a.vel.y = 0;
     a.rotVel *= 0.12;
+    s.asteroids.push(a);
+  }
+  const extraCover = Math.min(12, Math.max(0, Math.floor(s.players.length / 8)));
+  for (let i = 0; i < extraCover; i++) {
+    const angle = (i / Math.max(1, extraCover)) * Math.PI * 2 + 0.28;
+    const dist = 920 + (i % 3) * 430;
+    const x = Math.max(240, Math.min(ww - 240, centre.x + Math.cos(angle) * dist));
+    const y = Math.max(240, Math.min(wh - 240, centre.y + Math.sin(angle) * dist));
+    const type = i % 4 === 0 ? 'iron' : i % 4 === 1 ? 'carbonaceous' : i % 4 === 2 ? 'mesosiderite' : 'ballast';
+    const a = spawnAsteroid('large', 20, { x, y }, { x: 0, y: 0 }, type, { terrain: true, gravity: 22 });
+    a.radius = 150 + (i % 4) * 28;
+    a.hp = Number.POSITIVE_INFINITY;
+    a.hpMax = Number.POSITIVE_INFINITY;
+    a.vel.x = 0;
+    a.vel.y = 0;
+    a.rotVel *= 0.08;
     s.asteroids.push(a);
   }
   for (let i = 0; i < 16; i++) {
@@ -1286,9 +1305,45 @@ function angleDelta(from: number, to: number): number {
 
 const DEATHMATCH_AI_KEEP_DISTANCE_SQ = 340 * 340;
 const DEATHMATCH_AI_FIRE_RANGE_SQ = 980 * 980;
+const DEATHMATCH_SPATIAL_CELL = 512;
+
+type PlayerCollider = SpatialCircle & { slot: number; player: PlayerState };
+type DeathmatchBroadphase = {
+  asteroids: SpatialHash<Asteroid>;
+  ufos: SpatialHash<Ufo>;
+  mines: SpatialHash<Mine>;
+  enemyBullets: SpatialHash<Bullet>;
+  ships: SpatialHash<PlayerCollider>;
+};
+
+function buildShipColliders(s: GameState): PlayerCollider[] {
+  const out: PlayerCollider[] = [];
+  for (let i = 0; i < s.players.length; i++) {
+    const p = s.players[i];
+    if (!p.ship.alive || p.ship.hyperspaceCloakMs > 0) continue;
+    out.push({ slot: i, player: p, pos: p.ship.pos, radius: p.ship.radius });
+  }
+  return out;
+}
+
+function buildDeathmatchBroadphase(s: GameState): DeathmatchBroadphase {
+  const asteroids = new SpatialHash<Asteroid>(DEATHMATCH_SPATIAL_CELL);
+  asteroids.rebuild(s.asteroids, a => a.alive);
+  const ufos = new SpatialHash<Ufo>(DEATHMATCH_SPATIAL_CELL);
+  ufos.rebuild(s.ufos, u => u.alive);
+  const mines = new SpatialHash<Mine>(DEATHMATCH_SPATIAL_CELL);
+  mines.rebuild(s.mines, m => m.alive);
+  const enemyBullets = new SpatialHash<Bullet>(DEATHMATCH_SPATIAL_CELL);
+  enemyBullets.rebuild(s.enemyBullets, b => b.alive);
+  const ships = new SpatialHash<PlayerCollider>(DEATHMATCH_SPATIAL_CELL);
+  ships.rebuild(buildShipColliders(s));
+  return { asteroids, ufos, mines, enemyBullets, ships };
+}
 
 function updateDeathmatchAi(s: GameState): void {
   if (!deathmatchActive()) return;
+  const shipGrid = s.players.length >= 16 ? new SpatialHash<PlayerCollider>(DEATHMATCH_SPATIAL_CELL) : null;
+  if (shipGrid) shipGrid.rebuild(buildShipColliders(s));
   for (let i = 0; i < s.players.length; i++) {
     const p = s.players[i];
     if (!p.ai) continue;
@@ -1301,8 +1356,12 @@ function updateDeathmatchAi(s: GameState): void {
     if (!p.ship.alive || p.ship.hyperspaceCloakMs > 0) continue;
     let target: PlayerState | null = null;
     let bestSq = Infinity;
-    for (const other of s.players) {
-      if (other === p || !other.ship.alive) continue;
+    const candidates = shipGrid
+      ? shipGrid.queryCircle(p.ship.pos, 1500).map(c => c.player)
+      : s.players;
+    const targetPool = candidates.length > 1 ? candidates : s.players;
+    for (const other of targetPool) {
+      if (other === p || !other.ship.alive || other.ship.hyperspaceCloakMs > 0) continue;
       const dx = other.ship.pos.x - p.ship.pos.x;
       const dy = other.ship.pos.y - p.ship.pos.y;
       const dSq = dx * dx + dy * dy;
@@ -2391,18 +2450,18 @@ export function shieldStatus(s: GameState, now: number): 'up' | 'cooling' | 'rea
   return 'ready';
 }
 
-function dropShield(s: GameState, now: number): void {
-  if (!s.players[0].ship.shieldUp) return;
-  s.players[0].ship.shieldUp = false;
+function dropShield(s: GameState, now: number, p: PlayerState = s.players[0]): void {
+  if (!p.ship.shieldUp) return;
+  p.ship.shieldUp = false;
   // shieldReadyAt was already pre-set when activated; keep it.
   audio.shieldDown();
   void now;
 }
 
 /** Cancel an in-flight shield (e.g. on hyperspace). Cooldown still applies. */
-export function cancelShield(s: GameState): void {
-  if (!s.players[0].ship.shieldUp) return;
-  s.players[0].ship.shieldUp = false;
+export function cancelShield(s: GameState, p: PlayerState = s.players[0]): void {
+  if (!p.ship.shieldUp) return;
+  p.ship.shieldUp = false;
 }
 
 export function tryHyperspace(s: GameState, now: number, p: PlayerState): void {
@@ -2410,7 +2469,7 @@ export function tryHyperspace(s: GameState, now: number, p: PlayerState): void {
   if (p.ship.hyperspaceCloakMs > 0) return;
   if (now < p.ship.hyperspaceReadyAt) return;
   const mods = currentMods();
-  cancelShield(s);
+  cancelShield(s, p);
   p.ship.hyperspaceReadyAt = now + HYPERSPACE_COOLDOWN_MS * mods.hyperspaceCooldownMul;
   p.ship.hyperspaceCloakMs = HYPERSPACE_CLOAK_MS;
   // Capture the departure point before zeroing velocity — through-mine
@@ -2566,7 +2625,7 @@ let lastGhostPoseRunMs = -1;
  *  moment frame into the buffer (the regular recorder runs at frame start,
  *  before collision). */
 function pushReplayImpactFrame(s: GameState): void {
-  s.replayBuffer.push(buildReplaySnapshot(s, performance.now()));
+  s.replayBuffer.push(buildReplaySnapshot(s, s.elapsed));
   if (s.replayBuffer.length > REPLAY_BUFFER_FRAMES) s.replayBuffer.shift();
 }
 
@@ -2651,6 +2710,7 @@ export function startDeathReplay(s: GameState): void {
   s.deathReplay.explosionSpawned = false;
   s.particles = [];
   s.debris = [];
+  s.shockwaveRings = [];
   s.phase = 'deathreplay';
   s.phaseStart = s.deathReplay.startedAt;
   audio.thrustOff();
@@ -2923,6 +2983,8 @@ export function updateGame(s: GameState): void {
         spawnParticles(s, dr.explosionAt.x, dr.explosionAt.y, 42, '#58ff58', 280, 1100);
         spawnParticles(s, dr.explosionAt.x, dr.explosionAt.y, 22, '#ffd84a', 200,  700);
         spawnParticles(s, dr.explosionAt.x, dr.explosionAt.y, 18, '#ffffff', 380,  450);
+        spawnShockwave(s, dr.explosionAt.x, dr.explosionAt.y, 48, '#58ff58');
+        spawnShockwave(s, dr.explosionAt.x, dr.explosionAt.y, 78, '#ffd84a');
         const fauxShip: Ship = {
           pos: dr.explosionShip.pos,
           vel: dr.explosionShip.vel,
@@ -2943,11 +3005,10 @@ export function updateGame(s: GameState): void {
           shieldHitFlash: 0,
           lastHyperspaceAt: 0,
         };
-        if (getVisualStyle('ship') === 'mesh' && isWebGLOverlayReady()) {
-          callWebGLShipExplosion(dr.explosionAt, dr.explosionShip.vel, dr.explosionShip.rot);
-        } else {
-          spawnShipDebris(s, fauxShip);
-        }
+        // Death replay is a canvas snapshot playback and returns before the
+        // WebGL overlay render pass, so replay debris must be 2D even when
+        // live gameplay uses mesh ships.
+        spawnShipDebris(s, fauxShip);
       }
     }
     // Particles + debris physics tick (so the explosion animates regardless
@@ -3282,7 +3343,7 @@ export function updateGame(s: GameState): void {
   // ── Shield expiry ──
   for (const p of s.players) {
     if (p.ship.shieldUp && now >= p.ship.shieldExpiresAt) {
-      dropShield(s, now);
+      dropShield(s, now, p);
     }
   }
 
@@ -3350,10 +3411,13 @@ export function updateGame(s: GameState): void {
   }
   s.coins = s.coins.filter(c => c.alive && !c.collected);
 
+  const deathmatchBroadphase = deathmatch ? buildDeathmatchBroadphase(s) : null;
+
   // ── Collisions: bullets × asteroids ──
   for (const b of s.bullets) {
     if (!b.alive) continue;
-    for (const a of s.asteroids) {
+    const asteroids = deathmatchBroadphase ? deathmatchBroadphase.asteroids.queryCircle(b.pos, b.radius) : s.asteroids;
+    for (const a of asteroids) {
       if (!a.alive) continue;
       if (circlesHit(b, a)) {
         // Carom: a bullet that has already broken one asteroid earns the
@@ -3382,7 +3446,8 @@ export function updateGame(s: GameState): void {
   // ── Collisions: bullets × UFOs ──
   for (const b of s.bullets) {
     if (!b.alive) continue;
-    for (const u of s.ufos) {
+    const ufos = deathmatchBroadphase ? deathmatchBroadphase.ufos.queryCircle(b.pos, b.radius) : s.ufos;
+    for (const u of ufos) {
       if (!u.alive) continue;
       if (circlesHit(b, u)) {
         b.alive = false;
@@ -3396,7 +3461,8 @@ export function updateGame(s: GameState): void {
   // ── Collisions: bullets × mines ──
   for (const b of s.bullets) {
     if (!b.alive) continue;
-    for (const m of s.mines) {
+    const mines = deathmatchBroadphase ? deathmatchBroadphase.mines.queryCircle(b.pos, b.radius) : s.mines;
+    for (const m of mines) {
       if (!m.alive) continue;
       if (circlesHit(b, m)) {
         b.alive = false;
@@ -3411,9 +3477,10 @@ export function updateGame(s: GameState): void {
   if (deathmatch) {
     for (const b of s.bullets) {
       if (!b.alive) continue;
-      for (let i = 0; i < s.players.length; i++) {
-        if (i === b.owner) continue;
-        const target = s.players[i];
+      const ships = deathmatchBroadphase ? deathmatchBroadphase.ships.queryCircle(b.pos, b.radius) : [];
+      for (const ship of ships) {
+        if (ship.slot === b.owner) continue;
+        const target = ship.player;
         if (!target.ship.alive || target.ship.hyperspaceCloakMs > 0 || now <= target.ship.invulnerableUntil) continue;
         if (circlesHit(b, target.ship)) {
           b.alive = false;
@@ -3423,6 +3490,9 @@ export function updateGame(s: GameState): void {
             attacker.score += 1000;
             attacker.combo = Math.min(COMBO_MAX, attacker.combo + 1);
             attacker.comboExpiresAt = s.elapsed + COMBO_WINDOW_MS;
+            if (!attacker.ai || !target.ai) {
+              toastNow(s, `P${b.owner + 1} +1000 · P${ship.slot + 1} DOWN`);
+            }
           }
           killShip(s, target);
           break;
@@ -3438,7 +3508,8 @@ export function updateGame(s: GameState): void {
   // contact reads on screen.
   for (const p of s.players) {
     if (p.ship.alive && p.ship.shieldUp) {
-      for (const m of s.mines) {
+      const mines = deathmatchBroadphase ? deathmatchBroadphase.mines.queryCircle(p.ship.pos, p.ship.radius) : s.mines;
+      for (const m of mines) {
         if (!m.alive) continue;
         if (circlesHit(p.ship, m)) {
           spawnParticles(s, m.pos.x, m.pos.y, 8, '#5b9dff', 180, 320);
@@ -3450,7 +3521,8 @@ export function updateGame(s: GameState): void {
 
     // ── Shield deflection (runs before damage check) ──
     if (p.ship.alive && p.ship.shieldUp) {
-      for (const a of s.asteroids) {
+      const asteroids = deathmatchBroadphase ? deathmatchBroadphase.asteroids.queryCircle(p.ship.pos, p.ship.radius) : s.asteroids;
+      for (const a of asteroids) {
         // Backgrounds (depth 1, 2) read as distant + faded, so they
         // pass through. Gameplay plane (3) and foregrounds (4, 5) are
         // fully opaque and visually "in your face" — they hit / deflect.
@@ -3490,7 +3562,8 @@ export function updateGame(s: GameState): void {
           }
         }
       }
-      for (const b of s.enemyBullets) {
+      const enemyBullets = deathmatchBroadphase ? deathmatchBroadphase.enemyBullets.queryCircle(p.ship.pos, p.ship.radius) : s.enemyBullets;
+      for (const b of enemyBullets) {
         if (!b.alive) continue;
         if (circlesHit(p.ship, b)) {
           b.alive = false;
@@ -3505,7 +3578,8 @@ export function updateGame(s: GameState): void {
   // ── Collisions: ship × asteroids / UFOs / enemy bullets ──
   for (const p of s.players) {
     if (p.ship.alive && !p.ship.shieldUp && p.ship.hyperspaceCloakMs <= 0 && now > p.ship.invulnerableUntil) {
-      for (const a of s.asteroids) {
+      const asteroids = deathmatchBroadphase ? deathmatchBroadphase.asteroids.queryCircle(p.ship.pos, p.ship.radius) : s.asteroids;
+      for (const a of asteroids) {
         // Backgrounds (depth 1, 2) are faded + distant-reading and pass
         // through the ship. Gameplay plane (3) AND foregrounds (4, 5) are
         // fully opaque, large, and visually "in your face" — letting one
@@ -3516,14 +3590,16 @@ export function updateGame(s: GameState): void {
           break;
         }
       }
-      for (const u of s.ufos) {
+      const ufos = deathmatchBroadphase ? deathmatchBroadphase.ufos.queryCircle(p.ship.pos, p.ship.radius) : s.ufos;
+      for (const u of ufos) {
         if (p.ship.alive && u.alive && circlesHit(p.ship, u)) {
           destroyUfo(s, u, p);  // ramming kills the UFO too
           killShip(s, p);
           break;
         }
       }
-      for (const b of s.enemyBullets) {
+      const enemyBullets = deathmatchBroadphase ? deathmatchBroadphase.enemyBullets.queryCircle(p.ship.pos, p.ship.radius) : s.enemyBullets;
+      for (const b of enemyBullets) {
         if (p.ship.alive && b.alive && circlesHit(p.ship, b)) {
           if (p.lurking) {
             // Lurk-mode UFO immunity: the 1979 saucer-aim bug had a centre blind
@@ -3539,7 +3615,8 @@ export function updateGame(s: GameState): void {
           break;
         }
       }
-      for (const m of s.mines) {
+      const mines = deathmatchBroadphase ? deathmatchBroadphase.mines.queryCircle(p.ship.pos, p.ship.radius) : s.mines;
+      for (const m of mines) {
         if (p.ship.alive && m.alive && circlesHit(p.ship, m)) {
           destroyMine(s, m, p);
           killShip(s, p);
@@ -4493,7 +4570,7 @@ function respawnShip(s: GameState, p: PlayerState, deadline: number): boolean {
   p.ship.pos.x = px;
   p.ship.pos.y = py;
   p.ship.rot = prot;
-  p.ship.invulnerableUntil = s.elapsed + RESPAWN_INVULN_MS;
+  p.ship.invulnerableUntil = s.elapsed + (deathmatchActive() ? DEATHMATCH_RESPAWN_INVULN_MS : RESPAWN_INVULN_MS);
   toastNow(s, '');
   return true;
 }

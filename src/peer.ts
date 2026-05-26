@@ -1,7 +1,7 @@
 /**
- * Lockstep peer transport for shared-arena 2-player multiplayer (M3).
+ * Lockstep peer transport for shared-arena multiplayer (M3).
  *
- * Two clients on one shared session exchange one input bitfield per sim step
+ * Clients on one shared session exchange one input bitfield per sim step
  * via the controller-ws broker (in the `joystick` repo), kept in lockstep by
  * the deterministic sim foundation built in M1 / M2. This module is the
  * client side of the wire protocol; the broker change lives in the joystick
@@ -22,12 +22,12 @@
 
 // ── Wire format ──────────────────────────────────────────────────────────────
 
-/** Slot index: 0 = host, 1 = guest. Set when the client joins a session. */
-export type PeerSlot = 0 | 1;
+/** Slot index in a lockstep session. Set when the client joins a session. */
+export type PeerSlot = number;
 
 /** Messages this client sends to the broker. */
 export type PeerMsgOut =
-  | { type: 'hello-peer'; session: string; slot: PeerSlot; version: 1 }
+  | { type: 'hello-peer'; session: string; slot: PeerSlot; version: 1; players?: number }
   | { type: 'frame'; frame: number; slot: PeerSlot; input: number }
   | { type: 'hash'; frame: number; slot: PeerSlot; hash: number }
   | { type: 'bye'; slot: PeerSlot };
@@ -40,13 +40,14 @@ export type PeerMsgIn =
   | { type: 'hash'; frame: number; slot: PeerSlot; hash: number }
   | { type: 'peer-joined'; slot: PeerSlot }
   | { type: 'peer-left'; slot: PeerSlot; reason: string }
+  | { type: 'peerwatch-ready'; players?: number }
   | { type: 'session-error'; code: string };
 
 /** Per-frame inbox entry, drained by the lockstep loop into the InputLog. */
-export interface FrameDelivery { frame: number; input: number; }
+export interface FrameDelivery { frame: number; slot: PeerSlot; input: number; }
 
 /** Per-frame hash inbox entry, drained for desync detection. */
-export interface HashDelivery { frame: number; hash: number; }
+export interface HashDelivery { frame: number; slot: PeerSlot; hash: number; }
 
 /** Options for opening a peer connection. */
 export interface PeerConnectOpts {
@@ -54,8 +55,10 @@ export interface PeerConnectOpts {
   url: string;
   /** Shared session ID. Both peers must use the same string. */
   session: string;
-  /** This client's slot. Host picks 0; guest picks 1. */
+  /** This client's slot. */
   localSlot: PeerSlot;
+  /** Expected player count for the session. Defaults to the legacy duel size. */
+  players?: number;
 }
 
 // ── Peer interface ───────────────────────────────────────────────────────────
@@ -115,6 +118,7 @@ export class LoopbackPeer implements Peer {
   private pendingHashes: Array<{ availableAt: number; delivery: HashDelivery }> = [];
   private connected = false;
   private highestRemoteFrame = -1;
+  private localSlot: PeerSlot = 0;
 
   constructor(oneWayDelayFrames = 3) {
     this.oneWayDelayFrames = oneWayDelayFrames;
@@ -153,7 +157,8 @@ export class LoopbackPeer implements Peer {
     this.pendingHashes.push({ availableAt: this.localFrame + this.oneWayDelayFrames, delivery: d });
   }
 
-  connect(_opts: PeerConnectOpts): Promise<void> {
+  connect(opts: PeerConnectOpts): Promise<void> {
+    this.localSlot = opts.localSlot;
     this.connected = true;
     return Promise.resolve();
   }
@@ -163,11 +168,11 @@ export class LoopbackPeer implements Peer {
   }
 
   sendFrame(frame: number, encoded: number): void {
-    if (this.partner) this.partner.receiveFromPartner({ frame, input: encoded });
+    if (this.partner) this.partner.receiveFromPartner({ frame, slot: this.localSlot, input: encoded });
   }
 
   sendHash(frame: number, hash: number): void {
-    if (this.partner) this.partner.receiveHashFromPartner({ frame, hash });
+    if (this.partner) this.partner.receiveHashFromPartner({ frame, slot: this.localSlot, hash });
   }
 
   drainFrames(): FrameDelivery[] {
@@ -328,6 +333,7 @@ export class WebSocketPeer implements Peer {
         url: opts.url,
         session: opts.session,
         localSlot: opts.localSlot,
+        players: opts.players ?? 2,
         enableWireTrace,
       });
     });
@@ -366,13 +372,13 @@ export class WebSocketPeer implements Peer {
         this.disconnect();
         return;
       case 'frame':
-        this.frameInbox.push({ frame: m.frame, input: m.input });
+        this.frameInbox.push({ frame: m.frame, slot: m.slot, input: m.input });
         if (m.frame > this.highestRemoteFrame) this.highestRemoteFrame = m.frame;
         this.recvFrameCount++;
         this.lastRecvFrame = m.frame;
         return;
       case 'hash':
-        this.hashInbox.push({ frame: m.frame, hash: m.hash });
+        this.hashInbox.push({ frame: m.frame, slot: m.slot, hash: m.hash });
         this.recvHashCount++;
         return;
       case 'wire-entry':
@@ -490,14 +496,35 @@ function buildPeerWorkerSource(): string {
     var url = '';
     var session = '';
     var localSlot = 0;
+    var expectedPlayers = 2;
     var connected = false;
     var initialConnectDone = false;
+    var joinedSlots = {};
     var wsRecvFrameCount = 0;
     var wsSentFrameCount = 0;
     function post(m) { self.postMessage(m); }
     function buildSocketUrl() {
       var sep = url.indexOf('?') >= 0 ? '&' : '?';
       return url + sep + 's=' + encodeURIComponent(session) + '&r=peer';
+    }
+    function markJoined(slot) {
+      if (typeof slot !== 'number' || slot < 0 || slot >= expectedPlayers) return;
+      joinedSlots[slot] = true;
+    }
+    function allExpectedJoined() {
+      for (var i = 0; i < expectedPlayers; i++) {
+        if (!joinedSlots[i]) return false;
+      }
+      return true;
+    }
+    function maybeSignalConnected() {
+      if (!allExpectedJoined()) return;
+      if (!initialConnectDone) {
+        initialConnectDone = true;
+        post({ kind: 'connected' });
+      } else {
+        post({ kind: 'reconnected' });
+      }
     }
     function openSocket() {
       try {
@@ -507,7 +534,9 @@ function buildPeerWorkerSource(): string {
         return;
       }
       ws.addEventListener('open', function () {
-        var hello = { type: 'hello-peer', session: session, slot: localSlot, version: 1 };
+        joinedSlots = {};
+        markJoined(localSlot);
+        var hello = { type: 'hello-peer', session: session, slot: localSlot, version: 1, players: expectedPlayers };
         if (ws) ws.send(JSON.stringify(hello));
         connected = true;
       });
@@ -520,11 +549,11 @@ function buildPeerWorkerSource(): string {
         } else if (msg.type === 'hash') {
           post({ kind: 'hash', frame: msg.frame, slot: msg.slot, hash: msg.hash });
         } else if (msg.type === 'peer-joined') {
-          if (!initialConnectDone) {
-            initialConnectDone = true;
-            post({ kind: 'connected' });
-          }
+          markJoined(msg.slot);
+          maybeSignalConnected();
         } else if (msg.type === 'peer-left') {
+          if (typeof msg.slot === 'number') delete joinedSlots[msg.slot];
+          connected = false;
           post({ kind: 'peer-left' });
         } else if (msg.type === 'session-error') {
           post({ kind: 'session-error', code: msg.code });
@@ -552,6 +581,7 @@ function buildPeerWorkerSource(): string {
         url = msg.url;
         session = msg.session;
         localSlot = msg.localSlot;
+        expectedPlayers = Math.max(2, Math.min(64, Math.floor(Number(msg.players) || 2)));
         openSocket();
       } else if (msg.kind === 'disconnect') {
         post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: ws ? ws.readyState : -1, wsRecvFrameCount: wsRecvFrameCount, wsSentFrameCount: wsSentFrameCount });
@@ -592,14 +622,17 @@ export interface SpectatorHashDelivery { frame: number; slot: PeerSlot; hash: nu
 export class SpectatorPeer {
   private ws: WebSocket | null = null;
   private connected = false;
-  private slotsBound: [boolean, boolean] = [false, false];
+  private slotsBound: boolean[] = [false, false];
+  private expectedPlayers = 2;
   private frameInbox: SpectatorFrameDelivery[] = [];
   private hashInbox: SpectatorHashDelivery[] = [];
   private resolveConnect: (() => void) | null = null;
   private rejectConnect: ((e: Error) => void) | null = null;
 
-  connect(opts: { url: string; session: string }): Promise<void> {
+  connect(opts: { url: string; session: string; players?: number }): Promise<void> {
     void opts.session;  // session is encoded into opts.url by the caller
+    this.expectedPlayers = Math.max(2, Math.min(64, Math.floor(opts.players ?? 2)));
+    this.slotsBound = new Array(this.expectedPlayers).fill(false);
     return new Promise<void>((resolve, reject) => {
       this.resolveConnect = resolve;
       this.rejectConnect = reject;
@@ -613,8 +646,8 @@ export class SpectatorPeer {
       this.ws.addEventListener('message', (ev: MessageEvent) => this.onMessage(ev));
       this.ws.addEventListener('close', () => {
         this.connected = false;
-        this.slotsBound = [false, false];
-        if (this.rejectConnect) { this.rejectConnect(new Error('socket closed before both peers joined')); this.resolveConnect = null; this.rejectConnect = null; }
+        this.slotsBound = new Array(this.expectedPlayers).fill(false);
+        if (this.rejectConnect) { this.rejectConnect(new Error('socket closed before all peers joined')); this.resolveConnect = null; this.rejectConnect = null; }
       });
       this.ws.addEventListener('error', () => {
         if (this.rejectConnect) { this.rejectConnect(new Error('socket error')); this.resolveConnect = null; this.rejectConnect = null; }
@@ -626,7 +659,7 @@ export class SpectatorPeer {
     if (this.ws) this.ws.close();
     this.ws = null;
     this.connected = false;
-    this.slotsBound = [false, false];
+    this.slotsBound = new Array(this.expectedPlayers).fill(false);
   }
 
   drainFrames(): SpectatorFrameDelivery[] {
@@ -642,16 +675,26 @@ export class SpectatorPeer {
   }
 
   isConnected(): boolean { return this.connected; }
-  bothPeersBound(): boolean { return this.slotsBound[0] && this.slotsBound[1]; }
+  bothPeersBound(): boolean { return this.slotsBound.slice(0, this.expectedPlayers).every(Boolean); }
 
   private onMessage(ev: MessageEvent): void {
-    let msg: PeerMsgIn | { type: 'peerwatch-ready' };
+    let msg: PeerMsgIn;
     try {
-      msg = JSON.parse(typeof ev.data === 'string' ? ev.data : '') as PeerMsgIn | { type: 'peerwatch-ready' };
+      msg = JSON.parse(typeof ev.data === 'string' ? ev.data : '') as PeerMsgIn;
     } catch { return; }
     switch (msg.type) {
       case 'peerwatch-ready':
-        // Ack only; we still wait for both peer-joined slots before resolving.
+        if (msg.players !== undefined) {
+          this.expectedPlayers = Math.max(2, Math.min(64, Math.floor(msg.players)));
+          const next = new Array(this.expectedPlayers).fill(false);
+          for (let i = 0; i < Math.min(next.length, this.slotsBound.length); i++) next[i] = this.slotsBound[i];
+          this.slotsBound = next;
+        }
+        if (this.bothPeersBound() && this.resolveConnect) {
+          this.resolveConnect();
+          this.resolveConnect = null;
+          this.rejectConnect = null;
+        }
         return;
       case 'peer-joined':
         this.slotsBound[msg.slot] = true;
