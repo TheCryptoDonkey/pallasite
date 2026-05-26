@@ -1284,12 +1284,18 @@ function angleDelta(from: number, to: number): number {
   return d;
 }
 
+const DEATHMATCH_AI_KEEP_DISTANCE_SQ = 340 * 340;
+const DEATHMATCH_AI_FIRE_RANGE_SQ = 980 * 980;
+
 function updateDeathmatchAi(s: GameState): void {
   if (!deathmatchActive()) return;
   for (let i = 0; i < s.players.length; i++) {
     const p = s.players[i];
     if (!p.ai) continue;
-    p.keys = {};
+    p.keys.ArrowLeft = false;
+    p.keys.ArrowRight = false;
+    p.keys.ArrowUp = false;
+    p.keys.Space = false;
     p.targetHeading = null;
     p.thrustOverride = false;
     if (!p.ship.alive || p.ship.hyperspaceCloakMs > 0) continue;
@@ -1312,16 +1318,15 @@ function updateDeathmatchAi(s: GameState): void {
     const delta = angleDelta(p.ship.rot, aim);
     if (delta < -0.08) p.keys.ArrowLeft = true;
     if (delta > 0.08) p.keys.ArrowRight = true;
-    const dist = Math.sqrt(bestSq);
-    p.keys.ArrowUp = dist > 340 || Math.abs(delta) > 0.75;
-    p.keys.Space = dist < 980 && Math.abs(delta) < 0.32;
+    p.keys.ArrowUp = bestSq > DEATHMATCH_AI_KEEP_DISTANCE_SQ || Math.abs(delta) > 0.75;
+    p.keys.Space = bestSq < DEATHMATCH_AI_FIRE_RANGE_SQ && Math.abs(delta) < 0.32;
   }
 }
 
-function applyDeathmatchGravity(s: GameState, pos: Vec2, vel: Vec2, radius: number, dt: number): void {
-  if (!deathmatchActive()) return;
-  for (const well of s.asteroids) {
-    if (!well.alive || !well.gravity) continue;
+function applyDeathmatchGravity(wells: readonly Asteroid[], pos: Vec2, vel: Vec2, radius: number, dt: number): void {
+  for (const well of wells) {
+    const gravity = well.gravity;
+    if (gravity === undefined) continue;
     const dx = well.pos.x - pos.x;
     const dy = well.pos.y - pos.y;
     const range = well.radius * 5.5;
@@ -1329,7 +1334,7 @@ function applyDeathmatchGravity(s: GameState, pos: Vec2, vel: Vec2, radius: numb
     if (distSq <= 1 || distSq > range * range) continue;
     const dist = Math.sqrt(distSq);
     if (dist < well.radius + radius + 8) continue;
-    const pull = well.gravity * (1 - dist / range);
+    const pull = gravity * (1 - dist / range);
     vel.x += (dx / dist) * pull * dt;
     vel.y += (dy / dist) * pull * dt;
   }
@@ -2863,6 +2868,9 @@ export function updateGame(s: GameState): void {
   const arena = arenaActive();
   const deathmatch = deathmatchActive();
   const cage = arenaCage(s.runTimeMs);
+  const deathmatchGravityWells = deathmatch
+    ? s.asteroids.filter(a => a.alive && a.gravity !== undefined)
+    : [];
 
   // HUD ticker eases toward s.players[0].sats every frame regardless of phase, so the
   // counter still finishes its run-up under gameover / wavestart overlays.
@@ -3031,7 +3039,7 @@ export function updateGame(s: GameState): void {
       } else {
         audio.thrustOff();
       }
-      if (deathmatch) applyDeathmatchGravity(s, p.ship.pos, p.ship.vel, p.ship.radius, dt);
+      if (deathmatch) applyDeathmatchGravity(deathmatchGravityWells, p.ship.pos, p.ship.vel, p.ship.radius, dt);
 
       // Drag
       const dragK = Math.exp(-SHIP_DRAG * dt);
@@ -3182,7 +3190,7 @@ export function updateGame(s: GameState): void {
         a.vel.y += ty * LURK_NUDGE_ACCEL * strength * dt;
       }
     }
-    if (deathmatch && !a.terrain) applyDeathmatchGravity(s, a.pos, a.vel, a.radius, dt);
+    if (deathmatch && !a.terrain) applyDeathmatchGravity(deathmatchGravityWells, a.pos, a.vel, a.radius, dt);
     if (a.terrain) {
       a.vel.x = 0;
       a.vel.y = 0;
@@ -4342,12 +4350,13 @@ function spawnShipDebris(s: GameState, ship: Ship): void {
 }
 
 function killShip(s: GameState, p: PlayerState): void {
+  const deathmatch = deathmatchActive();
   // Capture the impact-frame snapshot BEFORE flipping ship.alive — the
   // standard recordReplaySnapshot at frame start was taken at the ship's
   // pre-collision position, so without this the replay would end one frame
   // before the actual hit. Synthesising it here puts the visible final
   // frame on the impact moment.
-  pushReplayImpactFrame(s);
+  if (!deathmatch) pushReplayImpactFrame(s);
 
   const deathPos: Vec2 = { x: p.ship.pos.x, y: p.ship.pos.y };
   p.ship.alive = false;
@@ -4356,22 +4365,24 @@ function killShip(s: GameState, p: PlayerState): void {
   recordStreamEvent('sh', deathPos.x, deathPos.y);
   audio.thrustOff();
   // Maximum trauma + deepest duck + rumble — death is the loudest impact.
-  bumpTrauma(s, 1.0);
-  hitStop(s, 140);
-  audio.pulseDuck(0.35, 360);
+  bumpTrauma(s, deathmatch ? 0.22 : 1.0);
+  if (!deathmatch) hitStop(s, 140);
+  audio.pulseDuck(deathmatch ? 0.65 : 0.35, deathmatch ? 140 : 360);
   haptic('rumble');
   // Layered explosion: ship-green burst + yellow flash + white sparks +
   // line-segment debris. Bigger and more cinematic than the old 30-particle
   // single-colour puff. When the ship style is MESH and the WebGL overlay
   // is ready, shatter into 3D chunk meshes instead of the 2D line fan —
   // the chunks live in the overlay scene and tumble themselves.
-  spawnParticles(s, deathPos.x, deathPos.y, 42, '#58ff58', 280, 1100);
-  spawnParticles(s, deathPos.x, deathPos.y, 22, '#ffd84a', 200,  700);
-  spawnParticles(s, deathPos.x, deathPos.y, 18, '#ffffff', 380,  450);
-  if (getVisualStyle('ship') === 'mesh' && isWebGLOverlayReady()) {
-    callWebGLShipExplosion(deathPos, p.ship.vel, p.ship.rot);
-  } else {
-    spawnShipDebris(s, p.ship);
+  spawnParticles(s, deathPos.x, deathPos.y, deathmatch ? 16 : 42, '#58ff58', 280, 1100);
+  spawnParticles(s, deathPos.x, deathPos.y, deathmatch ? 8 : 22, '#ffd84a', 200,  700);
+  spawnParticles(s, deathPos.x, deathPos.y, deathmatch ? 6 : 18, '#ffffff', 380,  450);
+  if (!deathmatch || !p.ai) {
+    if (getVisualStyle('ship') === 'mesh' && isWebGLOverlayReady()) {
+      callWebGLShipExplosion(deathPos, p.ship.vel, p.ship.rot);
+    } else {
+      spawnShipDebris(s, p.ship);
+    }
   }
   p.lives -= 1;
   p.runStats.livesLost += 1;
@@ -4384,7 +4395,7 @@ function killShip(s: GameState, p: PlayerState): void {
       // Final death — capture the buffer for the replay, then route through
       // 'deathreplay' (provided we have something worth showing). The post-replay
       // transition stops the ambient bed; hull-breached music carries the moment.
-      if (s.replayBuffer.length >= 8) {
+      if (!deathmatch && s.replayBuffer.length >= 8) {
         s.deathReplay = {
           snapshots: s.replayBuffer.slice(),
           startedAt: performance.now(),

@@ -72,6 +72,38 @@ function getScratch(w: number, h: number): HTMLCanvasElement {
   return scratch;
 }
 
+let crtBloomSource: HTMLCanvasElement | null = null;
+let crtBloom: HTMLCanvasElement | null = null;
+let crtVignette: { w: number; h: number; canvas: HTMLCanvasElement } | null = null;
+
+function getCrtScratch(ref: 'source' | 'bloom', w: number, h: number): HTMLCanvasElement {
+  const current = ref === 'source' ? crtBloomSource : crtBloom;
+  let next = current;
+  if (!next) next = document.createElement('canvas');
+  if (next.width !== w) next.width = w;
+  if (next.height !== h) next.height = h;
+  if (ref === 'source') crtBloomSource = next;
+  else crtBloom = next;
+  return next;
+}
+
+function getCrtVignette(w: number, h: number): HTMLCanvasElement {
+  if (crtVignette && crtVignette.w === w && crtVignette.h === h) return crtVignette.canvas;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    const grad = ctx.createRadialGradient(w / 2, h / 2, h * 0.36, w / 2, h / 2, h * 0.78);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.55)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+  }
+  crtVignette = { w, h, canvas };
+  return canvas;
+}
+
 /** Apply the active theme's post-process pass to a finished frame, in place. */
 export function applyPostFx(canvas: HTMLCanvasElement, theme: ThemeId, nowMs: number, opts?: PostFxOptions): void {
   if (theme === 'none') return;
@@ -102,39 +134,48 @@ function applyCrt(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, nowM
   const w = canvas.width;
   const h = canvas.height;
   if (w === 0 || h === 0) return;
-  // Blur radius scales with resolution so the bloom reads the same at any dpr.
   const k = w / 1280;
   const flicker = 0.985 + 0.015 * Math.sin(nowMs * 0.05);
+  const bloomScale = w >= 1200 ? 0.45 : 0.7;
+  const bw = Math.max(1, Math.round(w * bloomScale));
+  const bh = Math.max(1, Math.round(h * bloomScale));
+  const src = getCrtScratch('source', bw, bh);
+  const bloom = getCrtScratch('bloom', bw, bh);
+  const sx = src.getContext('2d');
+  const bx = bloom.getContext('2d');
+  if (!sx || !bx) return;
+  sx.setTransform(1, 0, 0, 1, 0, 0);
+  sx.filter = 'none';
+  sx.globalAlpha = 1;
+  sx.globalCompositeOperation = 'source-over';
+  sx.clearRect(0, 0, bw, bh);
+  sx.drawImage(canvas, 0, 0, bw, bh);
 
-  // Snapshot the clean frame so both blurred passes sample the original.
-  const sc = getScratch(w, h);
-  const scx = sc.getContext('2d');
-  if (!scx) return;
-  scx.setTransform(1, 0, 0, 1, 0, 0);
-  scx.clearRect(0, 0, w, h);
-  scx.drawImage(canvas, 0, 0);
+  bx.setTransform(1, 0, 0, 1, 0, 0);
+  bx.clearRect(0, 0, bw, bh);
+  bx.globalCompositeOperation = 'source-over';
+  bx.filter = `blur(${(1.3 * k).toFixed(2)}px)`;
+  bx.globalAlpha = 0.75;
+  bx.drawImage(src, 0, 0);
+  bx.globalCompositeOperation = 'lighter';
+  bx.filter = `blur(${(3.4 * k).toFixed(2)}px)`;
+  bx.globalAlpha = 0.45;
+  bx.drawImage(src, 0, 0);
+  bx.filter = 'none';
 
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-  // Additive bloom: a tight inner glow plus a wide halo.
   ctx.globalCompositeOperation = 'lighter';
-  ctx.filter = `blur(${(2.2 * k).toFixed(2)}px)`;
-  ctx.globalAlpha = 0.55 * flicker;
-  ctx.drawImage(sc, 0, 0);
-  ctx.filter = `blur(${(6.5 * k).toFixed(2)}px)`;
-  ctx.globalAlpha = 0.4 * flicker;
-  ctx.drawImage(sc, 0, 0);
+  ctx.filter = 'none';
+  ctx.globalAlpha = 0.78 * flicker;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(bloom, 0, 0, w, h);
 
   // Soft vignette darkening the tube edges.
-  ctx.filter = 'none';
   ctx.globalCompositeOperation = 'source-over';
   ctx.globalAlpha = 1;
-  const grad = ctx.createRadialGradient(w / 2, h / 2, h * 0.36, w / 2, h / 2, h * 0.78);
-  grad.addColorStop(0, 'rgba(0,0,0,0)');
-  grad.addColorStop(1, 'rgba(0,0,0,0.55)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(getCrtVignette(w, h), 0, 0);
 
   ctx.restore();
 }
