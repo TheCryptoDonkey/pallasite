@@ -128,7 +128,7 @@ export function simulateStart(): void {
  *  flight. The overlay is cleared by simulateStart()'s subsequent
  *  clearOverlay() call (via onStartCb → clearOverlay), so there's no
  *  flicker between this and the game's first render. */
-export function renderDuelConnecting(slot: 0 | 1): void {
+export function renderDuelConnecting(slot: number): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
@@ -11619,10 +11619,20 @@ function buildBrokerPeerUrl(session: string): string {
 
 /** Build the page URL the partner opens to join an existing session. Slot
  *  is the partner's slot (the OTHER slot from the inviter's). */
-function buildDuelInviteUrl(session: string, partnerSlot: 0 | 1): string {
+function buildDuelInviteUrl(session: string, partnerSlot: number, players = 2): string {
   const peer = buildBrokerPeerUrl(session);
   const origin = window.location.origin;
-  return `${origin}/?peer=${encodeURIComponent(peer)}&session=${encodeURIComponent(session)}&slot=${partnerSlot}`;
+  const params = new URLSearchParams({
+    peer,
+    session,
+    slot: String(partnerSlot),
+    players: String(players),
+  });
+  if (players > 2) {
+    params.set('mode', 'deathmatch');
+    params.set('deathmatchPlayers', String(players));
+  }
+  return `${origin}/?${params.toString()}`;
 }
 
 /** Build the spectator page URL. Anyone opening this connects via the
@@ -11632,11 +11642,20 @@ function buildDuelInviteUrl(session: string, partnerSlot: 0 | 1): string {
  *  SpectatorPeer.connect can open it directly; it must NOT reuse the
  *  duel peer URL (that one has `r=peer`, which the broker treats as a
  *  half-handshake peer and the spectator never resolves). */
-function buildSpectateUrl(session: string): string {
+function buildSpectateUrl(session: string, players = 2): string {
   const base = defaultBrokerWsUrl().replace(/\/$/, '');
   const peerWatchUrl = `${base}/?s=${encodeURIComponent(session)}&r=peerwatch`;
   const origin = window.location.origin;
-  return `${origin}/?spectate=${encodeURIComponent(session)}&peer=${encodeURIComponent(peerWatchUrl)}`;
+  const params = new URLSearchParams({
+    spectate: session,
+    peer: peerWatchUrl,
+    players: String(players),
+  });
+  if (players > 2) {
+    params.set('mode', 'deathmatch');
+    params.set('deathmatchPlayers', String(players));
+  }
+  return `${origin}/?${params.toString()}`;
 }
 
 /** 8-char crockford-base32-ish session id. Short enough to type, long
@@ -11714,10 +11733,19 @@ export function renderDuelLobby(): void {
 
 function renderHostPanel(parent: HTMLElement): (() => void) {
   const session = generateSessionId();
-  // Inviter is slot 0; the partner who scans/pastes lands on slot 1.
-  const partnerUrl = buildDuelInviteUrl(session, 1);
-  const inviterUrl = buildDuelInviteUrl(session, 0);
-  const spectateUrl = buildSpectateUrl(session);
+  let playerCount = 2;
+  const joinedSlots = new Set<number>();
+  const partnerUrl = (): string => buildDuelInviteUrl(session, 1, playerCount);
+  const inviterUrl = (): string => buildDuelInviteUrl(session, 0, playerCount);
+  const spectateUrl = (): string => buildSpectateUrl(session, playerCount);
+  const inviteBundle = (): string => {
+    if (playerCount <= 2) return partnerUrl();
+    const lines: string[] = [];
+    for (let slot = 1; slot < playerCount; slot++) {
+      lines.push(`P${slot + 1}: ${buildDuelInviteUrl(session, slot, playerCount)}`);
+    }
+    return lines.join('\n');
+  };
 
   // ── Partner-status badge ──────────────────────────────────────────────
   // Live indicator that flips the moment slot 1 binds at the broker. The
@@ -11753,6 +11781,25 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
     }
   };
 
+  const renderSessionStatus = (): void => {
+    if (playerCount === 2) {
+      setPartnerStatus(joinedSlots.has(1));
+      return;
+    }
+    const connected = Array.from(joinedSlots).filter(slot => slot > 0 && slot < playerCount).length;
+    const missing = Math.max(0, playerCount - 1 - connected);
+    const allConnected = missing === 0;
+    statusDot.style.background = allConnected ? '#8cffb4' : '#ffd84a';
+    statusDot.style.boxShadow = allConnected ? '0 0 14px rgba(140,255,180,0.9)' : '0 0 12px rgba(255,216,74,0.85)';
+    statusDot.style.animation = allConnected ? 'none' : 'pallasiteWaitPulse 1.4s ease-in-out infinite';
+    statusText.textContent = allConnected
+      ? 'ALL PILOTS CONNECTED ✓'
+      : `WAITING FOR ${missing} PILOT${missing === 1 ? '' : 'S'}…`;
+    statusText.style.color = allConnected ? '#8cffb4' : '#ffd84a';
+    status.style.borderColor = allConnected ? 'rgba(140,255,180,0.55)' : 'rgba(255,216,74,0.45)';
+    status.style.background = allConnected ? 'rgba(140,255,180,0.1)' : 'rgba(255,216,74,0.08)';
+  };
+
   // Open the peerwatch socket. Best-effort: if the broker is down we just
   // leave the badge in WAITING and let READY work as before. The watch is
   // a purely informational channel — nothing about the duel flow depends
@@ -11766,8 +11813,13 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
         const msg = JSON.parse(typeof ev.data === 'string' ? ev.data : '') as { type: string; slot?: number };
         // Only slot 1 binding/leaving matters — slot 0 is the host, which
         // doesn't bind until READY anyway.
-        if (msg.type === 'peer-joined' && msg.slot === 1) setPartnerStatus(true);
-        else if (msg.type === 'peer-left' && msg.slot === 1) setPartnerStatus(false);
+        if (msg.type === 'peer-joined' && typeof msg.slot === 'number') {
+          joinedSlots.add(msg.slot);
+          renderSessionStatus();
+        } else if (msg.type === 'peer-left' && typeof msg.slot === 'number') {
+          joinedSlots.delete(msg.slot);
+          renderSessionStatus();
+        }
       } catch { /* malformed — ignore */ }
     });
     // Silent failures are OK; the badge just stays in WAITING.
@@ -11779,14 +11831,33 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
   // copy) rather than three loose rows stacked on top of each other.
   const inviteCard = lobbyCard(parent, 'INVITE YOUR OPPONENT');
 
+  const sizeRow = el('div', { className: 'menu-row', parent: inviteCard });
+  sizeRow.style.cssText = 'gap:8px;flex-wrap:wrap;margin:-2px 0 2px;';
+  const sizeButtons = new Map<number, HTMLButtonElement>();
+  const updateInviteViews = (): void => {
+    for (const [count, btn] of sizeButtons) btn.className = `menu-btn${count === playerCount ? '' : ' secondary'}`;
+    copyBtn.textContent = playerCount === 2 ? 'COPY INVITE LINK' : 'COPY INVITE LINKS';
+    watchBtn.textContent = 'COPY SPECTATE LINK';
+    void QRCode.toCanvas(qrCanvas, partnerUrl(), { width: 220, margin: 1 })
+      .catch((err: unknown) => { console.warn('[duel] QR render failed:', err); });
+    renderSessionStatus();
+  };
+  for (const count of [2, 4, 8]) {
+    const btn = el('button', { className: `menu-btn${count === playerCount ? '' : ' secondary'}`, parent: sizeRow, text: `${count}P` });
+    sizeButtons.set(count, btn);
+    btn.addEventListener('click', () => {
+      playerCount = count;
+      for (const slot of Array.from(joinedSlots)) if (slot >= playerCount) joinedSlots.delete(slot);
+      updateInviteViews();
+    });
+  }
+
   const info = el('p', { parent: inviteCard });
   info.style.cssText = 'margin:0;font-size:0.85rem;color:rgba(220,210,255,0.78);line-height:1.45;text-align:center;max-width:420px;';
   info.textContent = 'Send the link or have them scan the code.';
 
   const qrCanvas = el('canvas', { parent: inviteCard });
   qrCanvas.style.cssText = 'background:#fff;padding:10px;border-radius:8px;max-width:220px;width:100%;height:auto;';
-  void QRCode.toCanvas(qrCanvas, partnerUrl, { width: 220, margin: 1 })
-    .catch((err: unknown) => { console.warn('[duel] QR render failed:', err); });
 
   const sessionRow = el('div', { parent: inviteCard });
   sessionRow.style.cssText = 'display:flex;align-items:center;gap:8px;font-family:ui-monospace,monospace;font-size:0.85rem;color:rgba(220,210,255,0.85);';
@@ -11794,7 +11865,12 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
   el('span', { parent: sessionRow, text: session.toUpperCase() }).style.cssText = 'letter-spacing:0.08em;color:#ffd84a;';
 
   const copyBtn = el('button', { className: 'menu-btn secondary', parent: inviteCard, text: 'COPY INVITE LINK' });
-  attachCopyButton(copyBtn, partnerUrl, 'COPY INVITE LINK');
+  copyBtn.addEventListener('click', () => {
+    const original = playerCount === 2 ? 'COPY INVITE LINK' : 'COPY INVITE LINKS';
+    void navigator.clipboard.writeText(inviteBundle())
+      .then(() => { copyBtn.textContent = 'COPIED ✓'; setTimeout(() => { copyBtn.textContent = original; }, 1500); })
+      .catch(() => { copyBtn.textContent = 'COPY FAILED'; setTimeout(() => { copyBtn.textContent = original; }, 1500); });
+  });
 
   // ── SPECTATE block ────────────────────────────────────────────────────
   // Coequal section, not a buried footer. Anyone with the spectate link
@@ -11808,7 +11884,11 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
   watchInfo.textContent = 'Anyone with this link can watch the duel live, no account needed.';
 
   const watchBtn = el('button', { className: 'menu-btn secondary', parent: watchCard, text: 'COPY SPECTATE LINK' });
-  attachCopyButton(watchBtn, spectateUrl, 'COPY SPECTATE LINK');
+  watchBtn.addEventListener('click', () => {
+    void navigator.clipboard.writeText(spectateUrl())
+      .then(() => { watchBtn.textContent = 'COPIED ✓'; setTimeout(() => { watchBtn.textContent = 'COPY SPECTATE LINK'; }, 1500); })
+      .catch(() => { watchBtn.textContent = 'COPY FAILED'; setTimeout(() => { watchBtn.textContent = 'COPY SPECTATE LINK'; }, 1500); });
+  });
 
   // ── READY ─────────────────────────────────────────────────────────────
   // Promoted out of the copy row to its own full-width block so it reads
@@ -11820,7 +11900,7 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
   readyRow.style.cssText = 'margin-top:6px;';
   const readyBtn = el('button', { className: 'menu-btn', parent: readyRow, text: 'READY · ENTER THE ARENA ⚔' });
   readyBtn.style.cssText = 'font-size:1.05rem;padding:12px 28px;letter-spacing:0.2em;';
-  readyBtn.addEventListener('click', () => { window.location.assign(inviterUrl); });
+  readyBtn.addEventListener('click', () => { window.location.assign(inviterUrl()); });
 
   // ── While-you-wait ────────────────────────────────────────────────────
   // The host might sit here for tens of seconds waiting for the partner
@@ -11829,6 +11909,7 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
   // dead in the meantime.
   const tipStripTeardown = lobbyTipStrip(parent);
   renderDailyLeaderChip(parent);
+  updateInviteViews();
 
   // Teardown — close the peerwatch socket when the panel is swapped out
   // (tab toggle or back to title). Without this the socket lingers until
@@ -11917,17 +11998,6 @@ function lobbyCard(parent: HTMLElement, label: string): HTMLDivElement {
   return card;
 }
 
-/** Wire a button to copy `text` to the clipboard with success/failure
- *  feedback. Restores the original label after 1.5s. Used by both the
- *  invite-link and spectate-link buttons. */
-function attachCopyButton(btn: HTMLButtonElement, text: string, originalLabel: string): void {
-  btn.addEventListener('click', () => {
-    void navigator.clipboard.writeText(text)
-      .then(() => { btn.textContent = 'COPIED ✓'; setTimeout(() => { btn.textContent = originalLabel; }, 1500); })
-      .catch(() => { btn.textContent = 'COPY FAILED'; setTimeout(() => { btn.textContent = originalLabel; }, 1500); });
-  });
-}
-
 function renderJoinPanel(parent: HTMLElement): (() => void) {
   const info = el('p', { parent });
   info.style.cssText = 'margin:0;font-size:0.88rem;color:rgba(220,210,255,0.8);line-height:1.5;text-align:center;max-width:480px;';
@@ -11951,7 +12021,10 @@ function renderJoinPanel(parent: HTMLElement): (() => void) {
     const peer = parsed.searchParams.get('peer');
     const session = parsed.searchParams.get('session');
     const slot = parsed.searchParams.get('slot');
-    if (!peer || !session || (slot !== '0' && slot !== '1')) {
+    const slotNum = slot === null ? NaN : Number(slot);
+    const players = Number(parsed.searchParams.get('players') ?? parsed.searchParams.get('deathmatchPlayers') ?? '2');
+    const maxPlayers = Number.isFinite(players) ? Math.max(2, Math.min(64, Math.floor(players))) : 2;
+    if (!peer || !session || !Number.isInteger(slotNum) || slotNum < 0 || slotNum >= maxPlayers) {
       setError('URL is missing the peer / session / slot params.');
       return null;
     }

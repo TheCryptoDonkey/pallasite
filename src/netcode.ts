@@ -74,14 +74,19 @@ export interface EdgeFlags {
 }
 
 /** Process-global edge buffer raised by the local input sources (keyboard,
- *  touch, controller PWA) and drained by the per-step sample. Two slots, one
- *  per local player; couch 2-player uses both, solo uses index 0 only. Lives
- *  in this module so every input source (main.ts, controller-host.ts, touch
- *  callbacks) raises a flag without taking a dependency on main.ts. */
+ *  touch, controller PWA) and drained by the per-step sample. It starts with
+ *  two slots for the classic solo/couch/duel paths and grows when a larger
+ *  lockstep session binds. Lives in this module so every input source
+ *  (main.ts, controller-host.ts, touch callbacks) raises a flag without
+ *  taking a dependency on main.ts. */
 export const localEdges: EdgeFlags[] = [
   { hyperspace: false, shield: false },
   { hyperspace: false, shield: false },
 ];
+
+export function ensureLocalEdges(count: number): void {
+  while (localEdges.length < count) localEdges.push({ hyperspace: false, shield: false });
+}
 
 /** Process-global lockstep-active flag. True only once the duel peer is
  *  connected; false in solo, in couch, and before the peer hello completes.

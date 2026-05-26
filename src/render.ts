@@ -263,10 +263,9 @@ export interface RenderModeInfo {
    *  radar is forced on regardless of the user's landscape preference. */
   defender?: boolean;
   /** Which players[] slot the follow camera should track. Defaults to 0
-   *  (solo / couch / spectate / portrait-follow-as-P1). Set to 1 by the
-   *  slot-1 client in duel mode so the camera frames the LOCAL ship,
-   *  not the partner's. */
-  localSlot?: 0 | 1;
+   *  (solo / couch / spectate / portrait-follow-as-P1). In multiplayer
+   *  this is the local peer slot so the camera frames the local ship. */
+  localSlot?: number;
 }
 let renderMode: RenderModeInfo = { kind: 'retro', vw: WORLD_W, vh: WORLD_H, dpr: 1, scale: 1, tx: 0, ty: 0, insets: ZERO_INSETS };
 export function setRenderMode(info: RenderModeInfo): void { renderMode = info; }
@@ -490,6 +489,28 @@ function loadDefenderTile(): HTMLImageElement | null {
   return null;
 }
 
+let deathmatchDeepSpace: HTMLImageElement | 'pending' | 'failed' | null = null;
+function loadDeathmatchDeepSpace(): HTMLImageElement | null {
+  if (deathmatchDeepSpace === 'failed') return null;
+  if (deathmatchDeepSpace === 'pending') return null;
+  if (deathmatchDeepSpace) return deathmatchDeepSpace;
+  deathmatchDeepSpace = 'pending';
+  const img = new Image();
+  img.onload = () => { deathmatchDeepSpace = img; };
+  img.onerror = () => { deathmatchDeepSpace = 'failed'; };
+  img.src = '/backgrounds/deathmatch-deep-space.png';
+  return null;
+}
+
+function drawCoverImage(ctx: CanvasRenderingContext2D, img: HTMLImageElement, x: number, y: number, w: number, h: number): void {
+  const scale = Math.max(w / img.width, h / img.height);
+  const sw = w / scale;
+  const sh = h / scale;
+  const sx = (img.width - sw) / 2;
+  const sy = (img.height - sh) / 2;
+  ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
+}
+
 /** Two lazy-built starfield layers for the Defender preview. The base
  *  tile (defenderTile, ~3:1 ultra-wide image) is the "very distant"
  *  layer; these two add mid-distance and near-field depth on top. */
@@ -557,16 +578,23 @@ function drawDefenderBackground(ctx: CanvasRenderingContext2D): void {
   ctx.restore();
 }
 
-function drawDeathmatchBackground(ctx: CanvasRenderingContext2D, now: number): void {
+function drawDeathmatchBackground(ctx: CanvasRenderingContext2D, now: number, orbitMs: number): void {
   const rw = deathmatchWorldW();
   const rh = deathmatchWorldH();
   ctx.fillStyle = '#02050c';
   ctx.fillRect(0, 0, rw, rh);
 
+  const deepSpace = loadDeathmatchDeepSpace();
+  if (deepSpace && deepSpace.width > 0) {
+    drawCoverImage(ctx, deepSpace, 0, 0, rw, rh);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.36)';
+    ctx.fillRect(0, 0, rw, rh);
+  }
+
   const nebulae = [
-    { x: rw * 0.18, y: rh * 0.22, r: 720, c0: 'rgba(70, 120, 210, 0.24)', c1: 'rgba(70, 120, 210, 0)' },
-    { x: rw * 0.76, y: rh * 0.34, r: 860, c0: 'rgba(190, 80, 120, 0.18)', c1: 'rgba(190, 80, 120, 0)' },
-    { x: rw * 0.54, y: rh * 0.78, r: 940, c0: 'rgba(70, 210, 180, 0.13)', c1: 'rgba(70, 210, 180, 0)' },
+    { x: rw * 0.18, y: rh * 0.22, r: 720, c0: 'rgba(70, 120, 210, 0.13)', c1: 'rgba(70, 120, 210, 0)' },
+    { x: rw * 0.76, y: rh * 0.34, r: 860, c0: 'rgba(190, 80, 120, 0.10)', c1: 'rgba(190, 80, 120, 0)' },
+    { x: rw * 0.54, y: rh * 0.78, r: 940, c0: 'rgba(70, 210, 180, 0.08)', c1: 'rgba(70, 210, 180, 0)' },
   ];
   for (const n of nebulae) {
     const g = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r);
@@ -578,11 +606,11 @@ function drawDeathmatchBackground(ctx: CanvasRenderingContext2D, now: number): v
     ctx.fill();
   }
 
-  const galaxies = [
+  const fallbackGalaxies = deepSpace ? [] : [
     { x: rw * 0.34, y: rh * 0.16, rx: 260, ry: 70, rot: -0.35 },
     { x: rw * 0.82, y: rh * 0.72, rx: 320, ry: 84, rot: 0.42 },
   ];
-  for (const g of galaxies) {
+  for (const g of fallbackGalaxies) {
     ctx.save();
     ctx.translate(g.x, g.y);
     ctx.rotate(g.rot + Math.sin(now * 0.00004) * 0.02);
@@ -598,7 +626,7 @@ function drawDeathmatchBackground(ctx: CanvasRenderingContext2D, now: number): v
     ctx.restore();
   }
 
-  drawDeathmatchSolarScenery(ctx, rw, rh, now);
+  drawDeathmatchSolarScenery(ctx, rw, rh, orbitMs);
 
   ctx.fillStyle = 'rgba(230, 245, 255, 0.9)';
   for (let i = 0; i < 360; i++) {
@@ -688,6 +716,50 @@ function drawShadedMoon(ctx: CanvasRenderingContext2D, x: number, y: number, r: 
   ctx.restore();
 }
 
+function drawTransitShadow(ctx: CanvasRenderingContext2D, r: number, light: { x: number; y: number }, moonDir: { x: number; y: number }, moonScale: number): void {
+  const alignment = light.x * moonDir.x + light.y * moonDir.y;
+  if (alignment < 0.94) return;
+  ctx.save();
+  ctx.globalCompositeOperation = 'multiply';
+  ctx.globalAlpha = Math.min(0.55, (alignment - 0.94) / 0.06 * 0.45);
+  const shadowR = Math.max(2.5, r * moonScale);
+  const sx = moonDir.x * r * 0.42;
+  const sy = moonDir.y * r * 0.42;
+  const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, shadowR);
+  g.addColorStop(0, 'rgba(0,0,0,0.92)');
+  g.addColorStop(0.58, 'rgba(0,0,0,0.52)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(sx, sy, shadowR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawVenus(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, light: { x: number; y: number }, now: number): void {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.clip();
+  const base = ctx.createRadialGradient(light.x * r * 0.28, light.y * r * 0.28, r * 0.08, 0, 0, r);
+  base.addColorStop(0, '#fff3c2');
+  base.addColorStop(0.48, '#c9984f');
+  base.addColorStop(1, '#211521');
+  ctx.fillStyle = base;
+  ctx.fillRect(-r, -r, r * 2, r * 2);
+  ctx.strokeStyle = 'rgba(255, 235, 168, 0.34)';
+  ctx.lineWidth = Math.max(1, r * 0.08);
+  for (let i = 0; i < 8; i++) {
+    const yy = (-0.68 + i * 0.2) * r;
+    ctx.beginPath();
+    ctx.ellipse(Math.sin(now * 0.00007 + i) * r * 0.12, yy, r * 1.1, r * 0.10, -0.18, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  applyTerminator(ctx, r, light, 0.67);
+  ctx.restore();
+}
+
 function drawEarth(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, light: { x: number; y: number }, now: number): void {
   ctx.save();
   ctx.translate(x, y);
@@ -718,6 +790,33 @@ function drawEarth(ctx: CanvasRenderingContext2D, x: number, y: number, r: numbe
     ctx.stroke();
   }
   applyTerminator(ctx, r, light, 0.66);
+  ctx.restore();
+}
+
+function drawMars(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, light: { x: number; y: number }, now: number): void {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.clip();
+  const base = ctx.createRadialGradient(light.x * r * 0.3, light.y * r * 0.3, r * 0.08, 0, 0, r);
+  base.addColorStop(0, '#ffc199');
+  base.addColorStop(0.44, '#b95f36');
+  base.addColorStop(1, '#21101b');
+  ctx.fillStyle = base;
+  ctx.fillRect(-r, -r, r * 2, r * 2);
+  ctx.fillStyle = 'rgba(80, 38, 26, 0.45)';
+  for (let i = 0; i < 9; i++) {
+    const a = i * 2.399 + now * 0.00005;
+    ctx.beginPath();
+    ctx.ellipse(Math.cos(a) * r * 0.46, Math.sin(a * 0.7) * r * 0.34, r * 0.16, r * 0.055, a * 0.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = 'rgba(255, 238, 218, 0.72)';
+  ctx.beginPath();
+  ctx.ellipse(-r * 0.12, -r * 0.72, r * 0.24, r * 0.065, 0.08, 0, Math.PI * 2);
+  ctx.fill();
+  applyTerminator(ctx, r, light, 0.68);
   ctx.restore();
 }
 
@@ -773,33 +872,167 @@ function drawGasGiantSystem(ctx: CanvasRenderingContext2D, x: number, y: number,
 
   ctx.save();
   ctx.globalAlpha = 0.92;
-  drawShadedMoon(ctx, x - r * 0.92, y - r * 0.52, 42, '#a9b7c8', light, now * 0.0004);
-  drawShadedMoon(ctx, x + r * 0.66, y + r * 0.28, 28, '#d4c3a0', light, now * 0.0005 + 1.5);
-  drawShadedMoon(ctx, x - r * 0.18, y + r * 0.70, 22, '#8da0b0', light, now * 0.0006 + 2.2);
+  const moons = [
+    { orbit: r * 0.86, phase: now * 0.00018 + 0.2, size: r * 0.060, colour: '#e2bd82' },
+    { orbit: r * 1.05, phase: now * 0.00013 + 1.4, size: r * 0.048, colour: '#d7d2c7' },
+    { orbit: r * 1.30, phase: now * 0.00010 + 2.6, size: r * 0.070, colour: '#a9b7c8' },
+    { orbit: r * 1.62, phase: now * 0.000075 + 3.8, size: r * 0.055, colour: '#8da0b0' },
+  ];
+  ctx.strokeStyle = 'rgba(190, 210, 255, 0.08)';
+  ctx.lineWidth = 1;
+  for (const m of moons) {
+    ctx.beginPath();
+    ctx.ellipse(x, y, m.orbit, m.orbit * 0.24, -0.12, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  for (const m of moons) {
+    const mx = x + Math.cos(m.phase) * m.orbit;
+    const my = y + Math.sin(m.phase) * m.orbit * 0.24;
+    drawShadedMoon(ctx, mx, my, m.size, m.colour, normalise2(x - mx, y - my), m.phase);
+  }
+  ctx.restore();
+}
+
+function drawSaturnSystem(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, light: { x: number; y: number }, now: number): void {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(-0.28);
+  ctx.globalAlpha = 0.88;
+  ctx.strokeStyle = 'rgba(226, 198, 142, 0.34)';
+  ctx.lineWidth = r * 0.12;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, r * 1.75, r * 0.42, 0, Math.PI, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(-0.06);
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.clip();
+  const base = ctx.createRadialGradient(light.x * r * 0.28, light.y * r * 0.28, r * 0.1, 0, 0, r);
+  base.addColorStop(0, '#fff0bf');
+  base.addColorStop(0.52, '#c7a168');
+  base.addColorStop(1, '#1b1724');
+  ctx.fillStyle = base;
+  ctx.fillRect(-r, -r, r * 2, r * 2);
+  ctx.fillStyle = 'rgba(255, 226, 168, 0.22)';
+  for (let i = 0; i < 7; i++) {
+    const yy = (-0.65 + i * 0.2) * r;
+    ctx.fillRect(-r, yy + Math.sin(now * 0.00006 + i) * r * 0.015, r * 2, r * 0.045);
+  }
+  applyTerminator(ctx, r, light, 0.58);
+  ctx.restore();
+
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(-0.28);
+  ctx.globalAlpha = 0.96;
+  const ringBands = [
+    { rx: 1.48, ry: 0.34, width: 0.035, colour: 'rgba(255, 236, 190, 0.48)' },
+    { rx: 1.72, ry: 0.41, width: 0.045, colour: 'rgba(190, 160, 120, 0.46)' },
+    { rx: 1.96, ry: 0.48, width: 0.026, colour: 'rgba(235, 220, 188, 0.36)' },
+  ];
+  for (const band of ringBands) {
+    ctx.strokeStyle = band.colour;
+    ctx.lineWidth = r * band.width;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r * band.rx, r * band.ry, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  const moons = [
+    { orbit: r * 2.25, phase: now * 0.000095 + 0.8, size: r * 0.080, colour: '#d8b27a' },
+    { orbit: r * 2.70, phase: now * 0.000070 + 2.1, size: r * 0.046, colour: '#c5c8c8' },
+    { orbit: r * 3.05, phase: now * 0.000052 + 4.4, size: r * 0.040, colour: '#9f9588' },
+  ];
+  for (const m of moons) {
+    const mx = x + Math.cos(m.phase) * m.orbit;
+    const my = y + Math.sin(m.phase) * m.orbit * 0.20;
+    drawShadedMoon(ctx, mx, my, m.size, m.colour, normalise2(x - mx, y - my), m.phase);
+  }
+}
+
+function drawSolarAsteroidBelt(ctx: CanvasRenderingContext2D, sx: number, sy: number, rx: number, ry: number, now: number): void {
+  ctx.save();
+  ctx.globalAlpha = 0.62;
+  for (let i = 0; i < 260; i++) {
+    const jitter = (((i * 16807) % 997) / 997 - 0.5);
+    const angle = i * 2.399963 + now * (0.000000018 + (i % 7) * 0.000000002);
+    const band = 0.86 + (((i * 48271) % 541) / 541) * 0.32;
+    const x = sx + Math.cos(angle) * rx * band;
+    const y = sy + Math.sin(angle) * ry * band + jitter * 36;
+    const size = i % 31 === 0 ? 3.2 : i % 11 === 0 ? 2.1 : 1.15;
+    ctx.fillStyle = i % 5 === 0 ? 'rgba(210, 180, 140, 0.72)' : 'rgba(150, 165, 185, 0.58)';
+    ctx.beginPath();
+    ctx.arc(x, y, size, 0, Math.PI * 2);
+    ctx.fill();
+  }
   ctx.restore();
 }
 
 function drawDeathmatchSolarScenery(ctx: CanvasRenderingContext2D, rw: number, rh: number, now: number): void {
-  const solX = rw * 0.15;
-  const solY = rh * 0.14;
-  drawOrbit(ctx, solX, solY, 1050, 620);
-  drawOrbit(ctx, solX, solY, 2320, 1320);
-  drawSol(ctx, solX, solY, 58, now);
+  const solX = rw * 0.13;
+  const solY = rh * 0.16;
+  const days = now * 0.0012;
+  const angleForPeriod = (periodDays: number, epoch: number): number =>
+    epoch + (days / periodDays) * Math.PI * 2;
+  const orbitPos = (rx: number, ry: number, periodDays: number, epoch: number): { x: number; y: number; a: number } => {
+    const a = angleForPeriod(periodDays, epoch);
+    return { x: solX + Math.cos(a) * rx, y: solY + Math.sin(a) * ry, a };
+  };
 
-  const earthAngle = 0.15 + now * 0.000012;
-  const earthX = solX + Math.cos(earthAngle) * 1050;
-  const earthY = solY + Math.sin(earthAngle) * 620;
-  const earthLight = normalise2(solX - earthX, solY - earthY);
-  const moonAngle = 1.2 + now * 0.00008;
-  const moonX = earthX + Math.cos(moonAngle) * 132;
-  const moonY = earthY + Math.sin(moonAngle) * 92;
-  drawEarth(ctx, earthX, earthY, 58, earthLight, now);
-  drawShadedMoon(ctx, moonX, moonY, 17, '#b9c0c8', normalise2(solX - moonX, solY - moonY), moonAngle);
+  const venus = orbitPos(560, 330, 224.701, 1.7);
+  const earth = orbitPos(870, 520, 365.256, 0.35);
+  const mars = orbitPos(1180, 705, 686.98, 2.25);
+  const jupiter = orbitPos(1990, 1190, 4332.59, 0.62);
+  const saturn = orbitPos(2760, 1640, 10759.22, 1.14);
 
-  const gasAngle = 0.55 + now * 0.000004;
-  const gasX = solX + Math.cos(gasAngle) * 2320;
-  const gasY = solY + Math.sin(gasAngle) * 1320;
-  drawGasGiantSystem(ctx, gasX, gasY, 520, normalise2(solX - gasX, solY - gasY), now);
+  drawOrbit(ctx, solX, solY, 560, 330);
+  drawOrbit(ctx, solX, solY, 870, 520);
+  drawOrbit(ctx, solX, solY, 1180, 705);
+  drawOrbit(ctx, solX, solY, 1460, 875);
+  drawOrbit(ctx, solX, solY, 1990, 1190);
+  drawOrbit(ctx, solX, solY, 2760, 1640);
+  drawSolarAsteroidBelt(ctx, solX, solY, 1460, 875, now);
+
+  drawSaturnSystem(ctx, saturn.x, saturn.y, 118, normalise2(solX - saturn.x, solY - saturn.y), now);
+  drawGasGiantSystem(ctx, jupiter.x, jupiter.y, 185, normalise2(solX - jupiter.x, solY - jupiter.y), now);
+  drawMars(ctx, mars.x, mars.y, 34, normalise2(solX - mars.x, solY - mars.y), now);
+  drawVenus(ctx, venus.x, venus.y, 42, normalise2(solX - venus.x, solY - venus.y), now);
+
+  const earthLight = normalise2(solX - earth.x, solY - earth.y);
+  const moonAngle = angleForPeriod(27.321661, 1.2);
+  const moonOrbitX = 132;
+  const moonOrbitY = 92;
+  const moonX = earth.x + Math.cos(moonAngle) * moonOrbitX;
+  const moonY = earth.y + Math.sin(moonAngle) * moonOrbitY;
+  const moonDir = normalise2(moonX - earth.x, moonY - earth.y);
+  drawEarth(ctx, earth.x, earth.y, 58, earthLight, now);
+  ctx.save();
+  ctx.translate(earth.x, earth.y);
+  ctx.beginPath();
+  ctx.arc(0, 0, 58, 0, Math.PI * 2);
+  ctx.clip();
+  drawTransitShadow(ctx, 58, earthLight, moonDir, 0.13);
+  ctx.restore();
+  const moonLight = normalise2(solX - moonX, solY - moonY);
+  const moonFacingEarth = moonDir.x * earthLight.x + moonDir.y * earthLight.y;
+  drawShadedMoon(ctx, moonX, moonY, 17, '#b9c0c8', moonLight, moonAngle);
+  if (moonFacingEarth < -0.965) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.globalAlpha = Math.min(0.58, (-moonFacingEarth - 0.965) / 0.035 * 0.48);
+    ctx.fillStyle = 'rgba(18, 9, 7, 0.86)';
+    ctx.beginPath();
+    ctx.arc(moonX, moonY, 19, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  drawSol(ctx, solX, solY, 68, now);
 }
 
 function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: number): void {
@@ -811,7 +1044,7 @@ function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: nu
     return;
   }
   if (deathmatchActive() && state.phase !== 'title') {
-    drawDeathmatchBackground(ctx, now);
+    drawDeathmatchBackground(ctx, now, state.elapsed);
     return;
   }
   // Arena replaces the wave backdrop with a flat containment void; the grid
@@ -934,7 +1167,7 @@ function drawShield(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elap
   ctx.restore();
 }
 
-function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapsed: number, idleSway = false): void {
+function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapsed: number, idleSway = false, forceCanvas = false): void {
   if (!ship.alive) return;
   // Hide ship entirely during hyperspace cloak — except when the warp is
   // malfunctioning, in which case render a red distortion at the departure
@@ -951,7 +1184,7 @@ function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapse
   const shipTier = getVisualStyle('ship');
   // MESH ship draws on the WebGL overlay; skip the 2D path entirely
   // once the overlay's loaded so the player sees the 3D mesh alone.
-  if (shipTier === 'mesh' && isWebGLOverlayReady()) return;
+  if (!forceCanvas && shipTier === 'mesh' && isWebGLOverlayReady()) return;
   // MESH falls back to SHADED rendering while the overlay is loading,
   // and SHADED itself is the lit gradient hull.
   const shipShaded = shipTier !== 'vector';
@@ -3762,6 +3995,23 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
   const dr = state.deathReplay;
   if (!dr || dr.snapshots.length === 0) return;
 
+  if (isWebGLOverlayReady()) {
+    callWebGLOverlay({
+      asteroids: [],
+      ufos: [],
+      powerups: [],
+      ships: [],
+      elapsed: state.elapsed,
+      dpr: renderMode.dpr,
+      scale: renderMode.scale,
+      tx: renderMode.tx,
+      ty: renderMode.ty,
+      worldW: WORLD_W,
+      worldH: WORLD_H,
+      wrapXs: [0],
+    });
+  }
+
   drawBackground(ctx, state, now);
   drawStars(ctx, now);
 
@@ -3795,7 +4045,7 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
       shieldUp: false, shieldExpiresAt: 0, shieldReadyAt: 0, recoilOffset: 0,
       shieldHitFlash: 0, lastHyperspaceAt: 0,
     };
-    drawShip(ctx, fauxShip, now, 0);
+    drawShip(ctx, fauxShip, now, 0, false, true);
   }
 
   // Real death-explosion: particles + ship debris that updateGame re-spawns
@@ -3804,6 +4054,7 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
   // overlay is gone — particles + debris carry the moment.
   drawParticles(ctx, state.particles);
   drawDebris(ctx, state.debris);
+  drawShockwaves(ctx, state.shockwaveRings, now);
   ctx.restore();  // release the world-rect clip before the device-space vignette
 
   // Red vignette: clear at the centre, deepening to red at the edges. Drawn
@@ -4087,14 +4338,18 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
     oc.fill();
   };
   for (const a of s.asteroids) {
-    blip(a.pos.x, a.pos.y, Math.max(1.4, Math.min(5.5, a.radius * 0.082 + 0.85)), '#9aa6c8');
+    const colour = radarDeathmatch && a.terrain ? '#d8c27a' : '#9aa6c8';
+    blip(a.pos.x, a.pos.y, Math.max(1.4, Math.min(5.5, a.radius * 0.082 + 0.85)), colour);
   }
   for (const b of s.enemyBullets) blip(b.pos.x, b.pos.y, 1.8, '#ff8a1e');
   for (const p of s.powerups) blip(p.pos.x, p.pos.y, 3.4, '#5be8ff');
   for (const m of s.mines) blip(m.pos.x, m.pos.y, 3, '#ff5a4a');
   for (const u of s.ufos) blip(u.pos.x, u.pos.y, 3.6, '#ff4af0');
-  for (const pl of s.players) {
-    if (pl.ship.alive) blip(pl.ship.pos.x, pl.ship.pos.y, 4.5, '#58ff58');
+  const localSlot = renderMode.localSlot ?? 0;
+  const playerBlip = s.players.length > 16 ? 3.2 : 4.5;
+  for (let i = 0; i < s.players.length; i++) {
+    const pl = s.players[i];
+    if (pl.ship.alive) blip(pl.ship.pos.x, pl.ship.pos.y, i === localSlot ? playerBlip + 1.2 : playerBlip, i === localSlot ? '#58ff58' : '#ff6b6b');
   }
 
   // Visible-strip box — the slice the follow camera currently shows.
@@ -4158,6 +4413,7 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
  *  banners, and the intertitle. The intertitle draws last so its black
  *  card can cover the readouts during act-boundary intros. */
 function drawHudLayer(ctx: CanvasRenderingContext2D, state: GameState): void {
+  if (state.phase === 'title') return;
   drawHud(ctx, state);
   drawRadar(ctx, state);
   drawWaveBanner(ctx, state);
@@ -4484,15 +4740,36 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     const ufosMesh = shipTier === 'mesh' || asteroidTier === 'mesh';
     // While an act-boundary intertitle holds the screen black, feed the
     // overlay empty lists so its canvas stays clear of the story card.
-    const holding = isIntertitleHolding(state);
+    const holding = isIntertitleHolding(state) || state.phase === 'title';
+    const meshMargin = 260;
+    const meshVisible = (x: number, y: number, r = 0): boolean => {
+      if (!followActive || !deathmatchRun) return true;
+      const left = camX - camStrip / 2 - meshMargin;
+      const right = camX + camStrip / 2 + meshMargin;
+      const top = camY - camStripY / 2 - meshMargin;
+      const bottom = camY + camStripY / 2 + meshMargin;
+      return x + r >= left && x - r <= right && y + r >= top && y - r <= bottom;
+    };
+    const meshAsteroids = !holding && asteroidTier === 'mesh'
+      ? state.asteroids.filter((a) => !a.councilMember && meshVisible(a.pos.x, a.pos.y, a.radius))
+      : [];
+    const meshUfos = !holding && ufosMesh
+      ? state.ufos.filter((u) => meshVisible(u.pos.x, u.pos.y, u.radius))
+      : [];
+    const meshPowerups = !holding && particleTier === 'mesh'
+      ? state.powerups.filter((p) => meshVisible(p.pos.x, p.pos.y, p.radius + 30))
+      : [];
+    const meshShips = !holding && shipTier === 'mesh'
+      ? state.players.map((pl) => meshVisible(pl.ship.pos.x, pl.ship.pos.y, pl.ship.radius + 80) ? pl.ship : null)
+      : [];
     // Mesh path now supports multi-ship: feed every player's ship by
     // slot. The overlay caches a mesh per slot so both ships render
     // with the full 3D look in duel / couch (was: slot 1 dropped out).
     callWebGLOverlay({
-      asteroids: !holding && asteroidTier === 'mesh' ? state.asteroids.filter((a) => !a.councilMember) : [],
-      ufos: !holding && ufosMesh ? state.ufos : [],
-      powerups: !holding && particleTier === 'mesh' ? state.powerups : [],
-      ships: !holding && shipTier === 'mesh' ? state.players.map((pl) => pl.ship) : [],
+      asteroids: meshAsteroids,
+      ufos: meshUfos,
+      powerups: meshPowerups,
+      ships: meshShips,
       elapsed: state.elapsed,
       dpr: renderMode.dpr,
       // Camera-adjusted transform so mesh-tier entities track the follow

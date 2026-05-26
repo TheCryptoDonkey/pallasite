@@ -28,13 +28,13 @@ import { randomBytes } from 'node:crypto';
 import { setTimeout as wait } from 'node:timers/promises';
 import { chromium, type Browser, type Page } from 'playwright';
 
-const VITE_PORT = 5180;
-const BROKER_PORT = 8788;
+const VITE_PORT = 5197;
+const BROKER_PORT = 8797;
 const VITE_BASE = `http://localhost:${VITE_PORT}`;
 const BROKER_URL = `ws://localhost:${BROKER_PORT}`;
 const VITE_READY_TIMEOUT_MS = 30_000;
 const BROKER_READY_TIMEOUT_MS = 10_000;
-const REACH_PLAYING_TIMEOUT_MS = 25_000;
+const REACH_PLAYING_TIMEOUT_MS = 30_000;
 /** The mesh-tier early-return in drawShip is gated on isWebGLOverlayReady().
  *  The overlay is dynamic-imported, so on a fresh page it isn't ready for
  *  the first ~second after load. If we sample before then, drawShip falls
@@ -75,7 +75,11 @@ const PIXEL_MIN_CHANNEL_THRESHOLD = 130;
 const SHIP_PIXEL_MIN_COUNT = 10;
 
 async function startVite(): Promise<ChildProcess> {
-  const vite = spawn('pnpm', ['exec', 'vite', '--force'], { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+  const vite = spawn('pnpm', ['exec', 'vite', '--force', '--host', '127.0.0.1', '--port', String(VITE_PORT), '--strictPort'], { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+  vite.stdout?.on('data', (chunk: Buffer) => {
+    const s = chunk.toString();
+    if (s.trim()) process.stderr.write(`[vite] ${s}`);
+  });
   vite.stderr?.on('data', (chunk: Buffer) => {
     const s = chunk.toString();
     if (s.trim()) process.stderr.write(`[vite] ${s}`);
@@ -88,6 +92,10 @@ async function startBroker(): Promise<ChildProcess> {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, PORT: String(BROKER_PORT), HOST: '127.0.0.1' },
     detached: true,
+  });
+  broker.stdout?.on('data', (chunk: Buffer) => {
+    const s = chunk.toString();
+    if (s.trim()) process.stderr.write(`[broker] ${s}`);
   });
   broker.stderr?.on('data', (chunk: Buffer) => {
     const s = chunk.toString();
@@ -236,6 +244,31 @@ async function countBrightPixels(page: Page, worldX: number, worldY: number, rad
   }, [worldX, worldY, radius, threshold]);
 }
 
+async function renderProbe(page: Page): Promise<{
+  phase: string;
+  frame: number;
+  peerActive: boolean;
+  playerCount: number;
+  bodyStall: string | null;
+  bodyDesync: string | null;
+  counters: unknown;
+}> {
+  return page.evaluate(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const w = window as any;
+    const s = w.__pallasiteState;
+    return {
+      phase: s?.phase ?? 'missing',
+      frame: s?.frame ?? -1,
+      peerActive: !!w.__pallasitePeerActive,
+      playerCount: Array.isArray(s?.players) ? s.players.length : 0,
+      bodyStall: document.body.getAttribute('data-peer-stall'),
+      bodyDesync: document.body.getAttribute('data-peer-desync'),
+      counters: w.__pallasitePeerCounters?.() ?? null,
+    };
+  });
+}
+
 interface CheckRow { name: string; ok: boolean; detail: string }
 function reportCheck(rows: CheckRow[], name: string, ok: boolean, detail: string): void {
   rows.push({ name, ok, detail });
@@ -267,8 +300,8 @@ async function main(): Promise<void> {
     // generation change makes this seed kill a spawn.
     const session = 'rendere2e';
     const peerEnc = encodeURIComponent(BROKER_URL);
-    const urlA = `${VITE_BASE}/?peer=${peerEnc}&session=${session}&slot=0`;
-    const urlB = `${VITE_BASE}/?peer=${peerEnc}&session=${session}&slot=1`;
+    const urlA = `${VITE_BASE}/?peer=${peerEnc}&session=${session}&slot=0&players=2`;
+    const urlB = `${VITE_BASE}/?peer=${peerEnc}&session=${session}&slot=1&players=2`;
 
     const browser: Browser = await chromium.launch();
     try {
@@ -283,41 +316,49 @@ async function main(): Promise<void> {
       pageB.on('pageerror', (e: Error) => process.stderr.write(`[B pageerror] ${e.message}\n`));
 
       await Promise.all([pageA.goto(urlA, { waitUntil: 'load' }), pageB.goto(urlB, { waitUntil: 'load' })]);
-      // Wait for the FIRST ship-rendering phase to land — wavestart works
-      // and is preferable to "playing" because ships are at spawn,
-      // invulnerable, and no asteroids have moved into them yet. A few
-      // randomly-seeded arenas killed slot 0 within a couple seconds of
-      // phase=playing in pre-fix testing; sampling during wavestart
-      // avoids that flake.
-      const waitDrawing = (page: Page): Promise<void> => page.waitForFunction(
+      const waitStartable = (page: Page): Promise<void> => page.waitForFunction(
         () => {
-          const s = (window as unknown as { __pallasiteState?: { phase: string } }).__pallasiteState;
-          return s?.phase === 'wavestart' || s?.phase === 'playing';
+          const w = window as unknown as { __pallasitePeerActive?: boolean; __pallasiteState?: { phase: string; players?: unknown[]; elapsed: number; phaseStart: number } };
+          const s = w.__pallasiteState;
+          return !!w.__pallasitePeerActive
+            && s?.players?.length === 2
+            && (s.phase === 'playing' || (s.phase === 'wavestart' && s.elapsed - s.phaseStart > 1000));
         },
         undefined,
         { timeout: REACH_PLAYING_TIMEOUT_MS },
       ).then(() => undefined);
-      await Promise.all([waitDrawing(pageA), waitDrawing(pageB)]);
+      // Skip the campaign intertitle before sampling. The intertitle
+      // deliberately blacks the playfield, so sampling there would prove
+      // only that the story card rendered.
+      const waitDrawing = (page: Page): Promise<void> => page.waitForFunction(
+        () => {
+          const s = (window as unknown as { __pallasiteState?: { phase: string; players?: unknown[] } }).__pallasiteState;
+          return s?.players?.length === 2 && s.phase === 'playing';
+        },
+        undefined,
+        { timeout: REACH_PLAYING_TIMEOUT_MS },
+      ).then(() => undefined);
+      try {
+        await Promise.all([waitStartable(pageA), waitStartable(pageB)]);
+        await Promise.all([pageA.keyboard.press('Enter'), pageB.keyboard.press('Enter')]);
+        await Promise.all([waitDrawing(pageA), waitDrawing(pageB)]);
+      } catch (e) {
+        const [probeA, probeB] = await Promise.all([renderProbe(pageA), renderProbe(pageB)]);
+        process.stderr.write(`startup A: ${JSON.stringify(probeA)}\n`);
+        process.stderr.write(`startup B: ${JSON.stringify(probeB)}\n`);
+        await pageA.screenshot({ path: '/tmp/render-e2e-startup-A.png', fullPage: false }).catch(() => undefined);
+        await pageB.screenshot({ path: '/tmp/render-e2e-startup-B.png', fullPage: false }).catch(() => undefined);
+        throw e;
+      }
       // Wait for the WebGL overlay to start rendering — without this the
       // 2D drawShip path stays active for everything and the renderer-
-      // skips-slot-1 bug wouldn't trigger. Detect by polling the
-      // #game3d canvas's draw buffer for non-zero content.
+      // skips-slot-1 bug wouldn't trigger. Use the renderer's probe rather
+      // than sampling a fixed pixel; the overlay can be ready while the
+      // centre of the duel arena is legitimately empty space.
       const webglReady = await pageA.waitForFunction(
         () => {
-          const c = document.getElementById('game3d') as HTMLCanvasElement | null;
-          if (!c || c.width === 0 || c.height === 0) return false;
-          const gl = c.getContext('webgl2') ?? c.getContext('webgl');
-          if (!gl) return false;
-          // Read a tiny region; any non-zero pixel means the overlay
-          // has drawn at least one frame.
-          const buf = new Uint8Array(4);
-          gl.readPixels(c.width / 2, c.height / 2, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-          if (buf[0] || buf[1] || buf[2] || buf[3]) return true;
-          // Center may be empty space; sample a few more points around
-          // ship spawn coords. Spawn world coords (640, 360) ≈ canvas
-          // (canvas.width/2, canvas.height/2). Slot 1 at (896, 360).
-          gl.readPixels(Math.round(c.width * 0.7), Math.round(c.height * 0.5), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-          return buf[0] + buf[1] + buf[2] + buf[3] > 0;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return !!(window as any).__pallasiteRenderProbe?.().webglOverlayReady;
         },
         undefined,
         { timeout: WEBGL_READY_TIMEOUT_MS },
@@ -358,7 +399,7 @@ async function main(): Promise<void> {
       }) as { phase: string; frame: number; playerCount: number; players: { alive: boolean; x: number; y: number; invulnUntil: number }[] };
       process.stdout.write(`state: ${JSON.stringify(state)}\n`);
 
-      reportCheck(checks, 'phase = wavestart|playing', state.phase === 'wavestart' || state.phase === 'playing', `phase=${state.phase}`);
+      reportCheck(checks, 'phase = playing', state.phase === 'playing', `phase=${state.phase}`);
       reportCheck(checks, 'playerCount = 2', state.playerCount === 2, `playerCount=${state.playerCount}`);
       reportCheck(checks, 'P0 alive', state.players[0]?.alive === true, `alive=${state.players[0]?.alive}`);
       reportCheck(checks, 'P1 alive', state.players[1]?.alive === true, `alive=${state.players[1]?.alive}`);

@@ -15,7 +15,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { setTimeout as wait } from 'node:timers/promises';
 import { chromium, type Browser, type Page } from 'playwright';
 
-const VITE_PORT = 5180;
+const VITE_PORT = 5198;
 const VITE_BASE = `http://localhost:${VITE_PORT}`;
 const VITE_READY_TIMEOUT_MS = 30_000;
 const REACH_PLAYING_TIMEOUT_MS = 20_000;
@@ -94,7 +94,11 @@ function parseTheme(): string {
 }
 
 async function startVite(): Promise<ChildProcess> {
-  const vite = spawn('pnpm', ['exec', 'vite', '--force'], { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+  const vite = spawn('pnpm', ['exec', 'vite', '--force', '--host', '127.0.0.1', '--port', String(VITE_PORT), '--strictPort'], { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+  vite.stdout?.on('data', (chunk: Buffer) => {
+    const s = chunk.toString();
+    if (s.trim()) process.stderr.write(`[vite] ${s}`);
+  });
   vite.stderr?.on('data', (chunk: Buffer) => {
     const s = chunk.toString();
     if (s.trim()) process.stderr.write(`[vite] ${s}`);

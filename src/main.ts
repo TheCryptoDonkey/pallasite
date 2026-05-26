@@ -12,7 +12,7 @@ import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './see
 import { render, preloadBackground, setRenderMode, getRenderModeKind, drawAsciiHud } from './render.js';
 import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderDuelLobby, renderDuelConnecting, simulateStart } from './ui.js';
 import { postHeartbeat } from './faucet.js';
-import { currentMode, setStoredMode, getStoredMode, isStoredDefenderMode } from './mode.js';
+import { currentMode, getStoredMode, isStoredDefenderMode } from './mode.js';
 import { deathmatchActive } from './deathmatch.js';
 import {
   startStreamSession,
@@ -36,7 +36,7 @@ import { getDisplayMode, applyDisplayMode } from './display.js';
 import { warmWebGLIfPreviouslyEnabled, getTheme, getAsciiCols, getBitDepth, getBitColour } from './visual-style.js';
 import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
-import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges, EMPTY_INPUT, isPeerActive, setPeerActive } from './netcode.js';
+import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges, ensureLocalEdges, EMPTY_INPUT, isPeerActive, setPeerActive } from './netcode.js';
 import { hashState, PEER_HASH_PERIOD, serializeForCanary } from './peer-canary.js';
 import { WebSocketPeer, SpectatorPeer, type Peer, type PeerSlot } from './peer.js';
 import type { GameState } from './types.js';
@@ -56,21 +56,28 @@ function modeUsesWaveStart(): boolean {
   return getFlavour() !== '600bn' && mode !== 'arena' && mode !== 'deathmatch';
 }
 
-function requestedDeathmatchPlayers(defaultCount: number): number {
-  if (getStoredMode() !== 'deathmatch') return defaultCount;
-  const raw = new URLSearchParams(window.location.search).get('deathmatchPlayers');
-  if (raw === null) return defaultCount;
+function boundedPlayerCount(raw: string | null, fallback: number, min = 2, max = 64): number {
+  if (raw === null) return fallback;
   const n = Number(raw);
-  if (!Number.isFinite(n)) return defaultCount;
-  return Math.max(4, Math.min(64, Math.floor(n)));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
+function requestedDeathmatchPlayers(defaultCount: number): number {
+  if (!urlDeathmatchMode && getStoredMode() !== 'deathmatch') return defaultCount;
+  const params = new URLSearchParams(window.location.search);
+  return boundedPlayerCount(params.get('deathmatchPlayers') ?? params.get('players'), defaultCount, 4, 64);
 }
 
 function requestedStartPlayers(): number {
-  return requestedDeathmatchPlayers((couchMode || peer || spectator) ? 2 : 1);
+  if ((peer || spectator) && (urlDeathmatchMode || getStoredMode() === 'deathmatch')) {
+    return boundedPlayerCount(mpParams.get('deathmatchPlayers') ?? mpParams.get('players'), requestedPeerPlayers, 2, 64);
+  }
+  return requestedDeathmatchPlayers((peer || spectator) ? requestedPeerPlayers : (couchMode ? 2 : 1));
 }
 
 function applyDeathmatchHarnessOptions(): void {
-  if (getStoredMode() !== 'deathmatch') return;
+  if (!urlDeathmatchMode && getStoredMode() !== 'deathmatch') return;
   const params = new URLSearchParams(window.location.search);
   if (params.get('deathmatchAi') === 'all') {
     for (const p of state.players) p.ai = true;
@@ -177,11 +184,15 @@ const couchMode = new URLSearchParams(window.location.search).has('couch');
 // the game forces 2-player mode and the lockstep loop drives slot 1 from
 // the peer's input log rather than the local keyboard.
 const mpParams = new URLSearchParams(window.location.search);
+const urlMode = mpParams.get('mode');
 const mpUrl = mpParams.get('peer');
 const mpSession = mpParams.get('session');
+const requestedPeerPlayers = boundedPlayerCount(mpParams.get('players') ?? mpParams.get('deathmatchPlayers'), 2, 2, 64);
 const mpSlotRaw = mpParams.get('slot');
-const mpSlot: PeerSlot = (mpSlotRaw === '1') ? 1 : 0;
-const mpMode = !!(mpUrl && mpSession && (mpSlotRaw === '0' || mpSlotRaw === '1'));
+const parsedMpSlot = mpSlotRaw === null ? NaN : Number(mpSlotRaw);
+const mpSlotValid = Number.isInteger(parsedMpSlot) && parsedMpSlot >= 0 && parsedMpSlot < requestedPeerPlayers;
+const mpSlot: PeerSlot = mpSlotValid ? parsedMpSlot : 0;
+const mpMode = !!(mpUrl && mpSession && mpSlotValid);
 // Spectator mode (M5). `?spectate=<session>&peer=<broker-url>` opens a
 // peerwatch socket and runs the lockstep loop in read-only mode with no
 // local input sampling. Mutually exclusive with duel mode (mpMode) — if
@@ -189,6 +200,7 @@ const mpMode = !!(mpUrl && mpSession && (mpSlotRaw === '0' || mpSlotRaw === '1')
 // slot to play with.
 const spectateSession = mpParams.get('spectate');
 const spectateMode = !mpMode && !!(spectateSession && mpUrl);
+const urlDeathmatchMode = urlMode === 'deathmatch' || ((mpMode || spectateMode) && requestedPeerPlayers > 2);
 /** Defender preview mode (`?defender=1`). Enables the landscape follow
  *  camera + parallax starfield bg + forced radar; first-cut demo of the
  *  600bn Defender bonus wave. No Council protectees or win condition
@@ -215,9 +227,13 @@ const spectateSeed = spectateMode && spectateSession ? sessionSeed(spectateSessi
 let peer: Peer | null = null;
 /** The spectator transport for watch-mode. Null in solo / couch / duel. */
 let spectator: SpectatorPeer | null = null;
-/** Input-delay in sim frames when a peer is wired. Sized to comfortably
- *  cover the broker round trip on a typical near-relay path. */
-const PEER_INPUT_DELAY = 20;
+/** Input-delay in sim frames when a peer is wired. Session-sized so larger
+ *  deathmatches have more jitter budget while the legacy duel stays snappy. */
+function peerInputDelayFrames(players: number): number {
+  const configured = boundedPlayerCount(mpParams.get('inputDelay'), NaN, 0, 60);
+  if (Number.isFinite(configured)) return configured;
+  return Math.min(36, 14 + Math.ceil(Math.log2(Math.max(2, players))) * 3);
+}
 /** Consecutive stalled sim frames before the "waiting for OPPONENT" overlay
  *  surfaces. ~100ms tolerates ordinary network jitter without flicker. */
 const PEER_STALL_OVERLAY_FRAMES = 6;
@@ -272,6 +288,15 @@ __testHooks.localKeysRef = localKeys;
 const localHeading: (number | null)[] = [null, null];
 const localThrust: boolean[] = [false, false];
 
+function ensureLocalInputSlots(count: number): void {
+  ensureLocalEdges(count);
+  while (localKeys.length < count) localKeys.push({});
+  while (localHeading.length < count) localHeading.push(null);
+  while (localThrust.length < count) localThrust.push(false);
+}
+
+ensureLocalInputSlots(Math.max(2, requestedPeerPlayers));
+
 // Lockstep input log. Re-created whenever the player count changes so each
 // run starts with a clean ring. Sample writes to the current frame; decode
 // reads from `frame - inputDelay`, which is the wedge that lets a future
@@ -287,6 +312,15 @@ void inputDelay;  // exporters / wiring in M2 step 7
 // source (keyboard here, touch via callback, controller PWA via direct
 // import) can raise without a dependency back to main.ts.
 const edgeFlags = localEdges;
+
+function currentStartOptions(): { players: number; defender: boolean; aiOpponents: boolean; runMode?: 'campaign' | 'deathmatch' } {
+  return {
+    players: requestedStartPlayers(),
+    defender: defenderMode,
+    aiOpponents: !(peer || spectator),
+    runMode: urlDeathmatchMode ? 'deathmatch' : (peer || spectator) ? 'campaign' : undefined,
+  };
+}
 
 function resendRecentPeerInputs(throughFrame: number, now: number): void {
   if (!peer || !inputLog || throughFrame < 0) return;
@@ -508,19 +542,18 @@ bindActions({
     // mode also feed into the deterministic spawn pipeline.
     if (peer || spectator) {
       setStoredDifficulty('normal');
-      setStoredMode('campaign');
       setDailySeed(null);
     } else {
       setDailySeed(getStoredDailyPref() ? todayUTC() : null);
     }
-    startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: requestedStartPlayers(), defender: defenderMode });
+    startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, currentStartOptions());
     applyDeathmatchHarnessOptions();
     // Only force wavestart for the standard campaign — startGame on the
     // 600bn flavour sets phase='sanctum' and doesn't want the warp/wave
     // pipeline kicking in over the top.
     if (modeUsesWaveStart()) state.phase = 'wavestart';
     // Couch mode forces retro in fit(); re-run fit now that players[] is updated.
-    if (couchMode) (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
+    if (couchMode || currentMode() === 'deathmatch') (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
     clearOverlay();
     audio.setMusicDuck(1);
     musicSetTrackForState(state);
@@ -621,8 +654,9 @@ window.addEventListener('keydown', e => {
   }
   // P1 input — in couch mode only arrow/space go to players[0]; in solo mode all keys do (game.ts
   // aliases KeyA/D/W/S to ArrowLeft/Right/Up/Down for P1 via the keys record directly).
-  if (!couchMode || !['KeyA', 'KeyD', 'KeyW', 'KeyS', 'ShiftLeft', 'KeyU', 'KeyI'].includes(e.code)) {
-    state.players[mpSlot].keys[e.code] = true;
+  const localPlayer = state.players[mpSlot];
+  if (localPlayer && (!couchMode || !['KeyA', 'KeyD', 'KeyW', 'KeyS', 'ShiftLeft', 'KeyU', 'KeyI'].includes(e.code))) {
+    localPlayer.keys[e.code] = true;
     localKeys[mpSlot][e.code] = true;
   }
   // Prevent arrows from scrolling
@@ -633,9 +667,9 @@ window.addEventListener('keydown', e => {
   // peer mode raises the edge flag and the per-step decode dispatches from
   // the input log.
   if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyH') && state.phase === 'playing') {
-    if (!couchMode || e.code !== 'ShiftLeft') {
+    if (localPlayer && (!couchMode || e.code !== 'ShiftLeft')) {
       edgeFlags[mpSlot].hyperspace = true;
-      if (!isPeerActive()) tryHyperspace(state, state.elapsed, state.players[mpSlot]);
+      if (!isPeerActive()) tryHyperspace(state, state.elapsed, localPlayer);
     }
   }
   // Down-arrow: shield on first press, hyperspace on double-tap (P1)
@@ -644,11 +678,11 @@ window.addEventListener('keydown', e => {
     const sinceLast = now - lastDownArrowAt;
     if (lastDownArrowAt > 0 && sinceLast < DOWN_DOUBLE_TAP_WINDOW_MS) {
       edgeFlags[mpSlot].hyperspace = true;
-      if (!isPeerActive()) tryHyperspace(state, state.elapsed, state.players[mpSlot]);
+      if (localPlayer && !isPeerActive()) tryHyperspace(state, state.elapsed, localPlayer);
       lastDownArrowAt = 0;  // consume — prevent triple-tap chain
     } else {
       edgeFlags[mpSlot].shield = true;
-      if (!isPeerActive()) tryActivateShield(state, state.elapsed, state.players[mpSlot]);
+      if (localPlayer && !isPeerActive()) tryActivateShield(state, state.elapsed, localPlayer);
       lastDownArrowAt = now;
     }
   }
@@ -716,10 +750,10 @@ window.addEventListener('keydown', e => {
     lockInDifficulty(getStoredDifficulty());
     gateBehindOnboarding(() => {
       setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-      startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: requestedStartPlayers(), defender: defenderMode });
+      startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, currentStartOptions());
       applyDeathmatchHarnessOptions();
       if (modeUsesWaveStart()) state.phase = 'wavestart';
-      if (couchMode) (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
+      if (couchMode || currentMode() === 'deathmatch') (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
       clearOverlay();
     });
   }
@@ -731,10 +765,10 @@ window.addEventListener('keydown', e => {
     void audio.unlockAudio();
     lockInDifficulty(getStoredDifficulty());
     setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-    startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, { players: requestedStartPlayers(), defender: defenderMode });
+    startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, currentStartOptions());
     applyDeathmatchHarnessOptions();
     if (modeUsesWaveStart()) state.phase = 'wavestart';
-    if (couchMode) (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
+    if (couchMode || currentMode() === 'deathmatch') (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
     clearOverlay();
   }
 });
@@ -751,13 +785,14 @@ window.addEventListener('keyup', e => {
       if (logical === 'Space') state.players[1].keys.Space = false;
     }
   }
-  if (!couchMode || !['KeyA', 'KeyD', 'KeyW', 'KeyS', 'ShiftLeft'].includes(e.code)) {
-    state.players[mpSlot].keys[e.code] = false;
+  const localPlayer = state.players[mpSlot];
+  if (localPlayer && (!couchMode || !['KeyA', 'KeyD', 'KeyW', 'KeyS', 'ShiftLeft'].includes(e.code))) {
+    localPlayer.keys[e.code] = false;
     localKeys[mpSlot][e.code] = false;
   }
   if (e.code === 'Space') {
     // Allow rapid re-fire on tap by clearing the held state
-    state.players[mpSlot].keys.Space = false;
+    if (localPlayer) localPlayer.keys.Space = false;
     localKeys[mpSlot]['Space'] = false;
   }
 });
@@ -961,7 +996,9 @@ function loop(now: number): void {
   // on solo or duel (`spectator` is null), so the hot path stays
   // identical for non-spectate sessions.
   if (spectator && inputLog) {
-    const latest = Math.min(inputLog.latest(0), inputLog.latest(1));
+    let latest = Infinity;
+    for (let i = 0; i < inputLog.players; i++) latest = Math.min(latest, inputLog.latest(i));
+    if (latest === Infinity) latest = -1;
     const behind = latest - state.frame;
     if (behind > 30) {
       // Up to 4 extra sim steps per rAF — 5× live rate. 540 frames of
@@ -991,7 +1028,7 @@ function loop(now: number): void {
     // same value so a frozen frame does not re-sample over the same log
     // slot and stomp the canonical input for that frame.
     const peerActive = isPeerActive();
-    const activeDelay = peerActive ? PEER_INPUT_DELAY : inputDelay;
+    const activeDelay = peerActive ? peerInputDelayFrames(state.players.length || requestedPeerPlayers) : inputDelay;
     // Encoded inputs the apply step fed into this sim tick. Captured here
     // so the desync hunter's canary serialiser (further down) can include
     // them — answers "did the peers apply different inputs at this frame,
@@ -1065,9 +1102,8 @@ function loop(now: number): void {
         for (const d of drained) inputLog.record(d.frame, d.slot, d.input);
         if (duelDebugMode && drained.length > 0) try { window.dispatchEvent(new CustomEvent('pallasite:peer-frame-drain', { detail: { count: drained.length } })); } catch { /* ignore */ }
       } else if (peer) {
-        const remoteSlot = (1 - mpSlot) as 0 | 1;
         const drained = peer.drainFrames();
-        for (const d of drained) inputLog.record(d.frame, remoteSlot, d.input);
+        for (const d of drained) inputLog.record(d.frame, d.slot, d.input);
         if (duelDebugMode && drained.length > 0) try { window.dispatchEvent(new CustomEvent('pallasite:peer-frame-drain', { detail: { count: drained.length } })); } catch { /* ignore */ }
       }
       // 3) Stall check in any peer-driven mode: every slot's input for
@@ -1370,7 +1406,7 @@ async function boot(): Promise<void> {
       // (not currentMode) so the camera engages from the FIRST frame after
       // the player picks DEFENDER, not only after IGNITE runs lockInMode.
       const defenderActive = defenderMode || isStoredDefenderMode();
-      const deathmatchFollow = deathmatchActive() || getStoredMode() === 'deathmatch';
+      const deathmatchFollow = deathmatchActive() || urlDeathmatchMode;
       const follow = (vh > vw) || defenderActive || deathmatchFollow;
       const scale = Math.min(vw / WORLD_W, vh / WORLD_H);
       const tx = (vw - WORLD_W * scale) / 2;
@@ -1487,7 +1523,7 @@ async function boot(): Promise<void> {
     // simulateStart's clearOverlay() removes this once peer-joined fires.
     renderDuelConnecting(mpSlot);
     try {
-      await peer.connect({ url: mpUrl, session: mpSession, localSlot: mpSlot });
+      await peer.connect({ url: mpUrl, session: mpSession, localSlot: mpSlot, players: requestedPeerPlayers });
       setPeerActive(true);
       // Replay hook: after a successful reconnect (NOT the initial connect),
       // re-send our local slot's most recent input frames so the partner
@@ -1530,7 +1566,7 @@ async function boot(): Promise<void> {
     spectator = new SpectatorPeer();
     renderDuelConnecting(0);
     try {
-      await spectator.connect({ url: mpUrl, session: spectateSession });
+      await spectator.connect({ url: mpUrl, session: spectateSession, players: requestedPeerPlayers });
       setPeerActive(true);
       // eslint-disable-next-line no-console
       console.log('[spectate] watching', spectateSession, 'via', mpUrl);
@@ -1595,8 +1631,8 @@ async function boot(): Promise<void> {
   // tryHyperspace / tryActivateShield from the input log.
   setupTouchControls(
     state,
-    (s, now) => { edgeFlags[mpSlot].hyperspace = true; if (!isPeerActive()) tryHyperspace(s, now, s.players[mpSlot]); },
-    (s, now) => { edgeFlags[mpSlot].shield = true;     if (!isPeerActive()) tryActivateShield(s, now, s.players[mpSlot]); },
+    (s, now) => { const p = s.players[mpSlot]; if (!p) return; edgeFlags[mpSlot].hyperspace = true; if (!isPeerActive()) tryHyperspace(s, now, p); },
+    (s, now) => { const p = s.players[mpSlot]; if (!p) return; edgeFlags[mpSlot].shield = true;     if (!isPeerActive()) tryActivateShield(s, now, p); },
     () => mpSlot,
     {
       setHeading: (slot, h) => { localHeading[slot] = h; },
@@ -2151,13 +2187,19 @@ function setupDuelDebugOverlay(): void {
   });
   const render = (): void => {
     const localLatest = inputLog ? inputLog.latest(mpSlot) : -1;
-    const remoteSlotIdx = (1 - mpSlot) as 0 | 1;
-    const remoteLatest = inputLog ? inputLog.latest(remoteSlotIdx) : -1;
+    let remoteLatest = -1;
+    if (inputLog) {
+      remoteLatest = Infinity;
+      for (let i = 0; i < inputLog.players; i++) {
+        if (i !== mpSlot) remoteLatest = Math.min(remoteLatest, inputLog.latest(i));
+      }
+      if (remoteLatest === Infinity) remoteLatest = -1;
+    }
     const peerLast = peer ? peer.lastReceivedFrame() : (spectator ? -2 : -3);
     const peerConn = peer ? peer.isConnected() : (spectator ? spectator.isConnected() : false);
     panel.textContent = [
-      `frame:${state.frame}  slot:${mpSlot}  conn:${peerConn ? 'Y' : 'N'}`,
-      `local#:${localLatest} remote#:${remoteLatest}`,
+      `frame:${state.frame}  slot:${mpSlot}/${requestedPeerPlayers}  conn:${peerConn ? 'Y' : 'N'}`,
+      `local#:${localLatest} peersMin#:${remoteLatest}`,
       `peer.lastRx:${peerLast}  drain/s:${lastDrainCount}  total:${totalRecv}`,
       `stall:${peerStallFrames}f  desync:${peerDesyncFrame < 0 ? '-' : peerDesyncFrame}`,
       `phase:${state.phase}  wave:${state.wave}  seed:${state.seed?.toString(16) ?? '-'}`,

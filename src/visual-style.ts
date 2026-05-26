@@ -219,7 +219,7 @@ export interface WebGLOverlayCall {
    *  player slot — the overlay caches per-slot mesh handles, so a slot
    *  that disappears from this array gets its mesh hidden, and a new
    *  slot rebuilds. */
-  ships: ReadonlyArray<Ship>;
+  ships: ReadonlyArray<Ship | null | undefined>;
   /** Sim clock (ms) for time-based overlay effects such as the shield
    *  dome's expiry fade. Wall-clock would mismatch the sim-clock deadlines
    *  the gameplay state now carries (B3 determinism). */

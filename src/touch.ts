@@ -61,9 +61,9 @@ interface ButtonSpec {
  *  pass `null` for `mirror` — the writes then only go to PlayerState as
  *  they did pre-multiplayer. */
 export interface TouchInputMirror {
-  setHeading(slot: 0 | 1, heading: number | null): void;
-  setThrust(slot: 0 | 1, thrust: boolean): void;
-  setKey(slot: 0 | 1, code: string, pressed: boolean): void;
+  setHeading(slot: number, heading: number | null): void;
+  setThrust(slot: number, thrust: boolean): void;
+  setKey(slot: number, code: string, pressed: boolean): void;
 }
 
 /** Wire touch controls. Both input modes are rendered side-by-side; CSS
@@ -81,7 +81,7 @@ export function setupTouchControls(
   state: GameState,
   hyperspace: (s: GameState, now: number) => void,
   activateShield: (s: GameState, now: number) => void,
-  getLocalSlot: () => 0 | 1 = () => 0,
+  getLocalSlot: () => number = () => 0,
   mirror: TouchInputMirror | null = null,
 ): void {
   const root = document.getElementById(ROOT_ID);
@@ -142,7 +142,7 @@ function createCluster(modifier: string): HTMLElement {
   return div;
 }
 
-function attachButton(parent: HTMLElement, spec: ButtonSpec, state: GameState, getLocalSlot: () => 0 | 1, mirror: TouchInputMirror | null): void {
+function attachButton(parent: HTMLElement, spec: ButtonSpec, state: GameState, getLocalSlot: () => number, mirror: TouchInputMirror | null): void {
   const btn = document.createElement('button');
   btn.className = `touch-btn ${spec.cls}`;
   btn.textContent = spec.label;
@@ -188,7 +188,7 @@ function attachButton(parent: HTMLElement, spec: ButtonSpec, state: GameState, g
  *     bullet from the left thumb without affecting heading.
  *   - Release: clears both state hooks so keyboard/no-input resumes.
  */
-function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, getLocalSlot: () => 0 | 1, mirror: TouchInputMirror | null): void {
+function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, getLocalSlot: () => number, mirror: TouchInputMirror | null): void {
   const MAX_RADIUS       = 70;    // px — knob travel; bumped from 60 for finger comfort
   const HEADING_DEADZONE = 0.18;  // ignore micro-drift before steering kicks in
   const THRUST_THRESHOLD = 0.45;  // half-push or more = engage thrust

@@ -153,8 +153,7 @@ function stepSim(s, log, peer, localSlot, step) {
     const localEncoded = encodePlayerInput(localInput);
     log.record(s.frame, localSlot, localEncoded);
     peer.sendFrame(s.frame, localEncoded);
-    const remoteSlot = (1 - localSlot);
-    for (const d of peer.drainFrames()) log.record(d.frame, remoteSlot, d.input);
+    for (const d of peer.drainFrames()) log.record(d.frame, d.slot, d.input);
     const readFrame = s.frame - INPUT_DELAY;
     for (let i = 0; i < 2; i++) {
       const encoded = readFrame >= 0 ? log.get(readFrame, i) : -1;
