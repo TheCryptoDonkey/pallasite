@@ -985,6 +985,15 @@ function loop(now: number): void {
           ? [mpSlot]
           : (state.players.length >= 2 ? [0, 1] : [0]);
       for (const i of localSampleSlots) {
+        // Idempotent per state.frame: if we've already sampled+sent for
+        // THIS state.frame on a previous (stalled) rAF iteration, skip.
+        // Without this guard, a stall would re-sample the same frame on
+        // every macrotask tick (~250Hz at chromium-headless setTimeout(0)
+        // clamp), flooding our TCP send buffer faster than the network
+        // can drain it. When the watchdog later terminates the worker,
+        // anything still in flight is dropped — and we'd lose the frames
+        // the partner is waiting on, perpetuating the stall.
+        if (inputLog.get(state.frame, i) >= 0) continue;
         // Peer mode reads from the localKeys + localHeading + localThrust
         // mirrors so apply's delayed overwrite of `players[i]` cannot
         // clobber the live joystick / keyboard input. Solo and couch
