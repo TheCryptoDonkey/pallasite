@@ -1,0 +1,463 @@
+/**
+ * N-player deathmatch multiplayer soak.
+ *
+ * Covers two different risks:
+ *  - real browser lockstep + late spectator under deterministic relay jitter;
+ *  - broker transport fan-out at larger N without paying for 64 Chromium tabs.
+ *
+ * Defaults keep the browser side quick (4P) while still probing 16P/64P at
+ * the WebSocket relay layer. Use `--browser=4,8` for the heavier local pass.
+ */
+
+import { spawn, type ChildProcess } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { setTimeout as wait } from 'node:timers/promises';
+import { chromium, type Browser, type Page } from 'playwright';
+
+const VITE_PORT = 5191;
+const BROKER_PORT = 8799;
+const VITE_BASE = `http://localhost:${VITE_PORT}`;
+const BROKER_URL = `ws://localhost:${BROKER_PORT}`;
+
+function argValue(name: string): string | null {
+  const prefix = `--${name}=`;
+  const hit = process.argv.slice(2).find((a) => a.startsWith(prefix));
+  return hit ? hit.slice(prefix.length) : null;
+}
+
+function intArg(name: string, fallback: number, min: number, max: number): number {
+  const raw = argValue(name);
+  if (raw === null) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
+function parseCounts(name: string, fallback: number[]): number[] {
+  const raw = argValue(name);
+  if (!raw) return fallback;
+  const out = raw.split(',')
+    .map((v) => Number(v.trim()))
+    .filter((v) => Number.isFinite(v))
+    .map((v) => Math.max(2, Math.min(64, Math.floor(v))));
+  return Array.from(new Set(out)).sort((a, b) => a - b);
+}
+
+const BROWSER_COUNTS = parseCounts('browser', [4]);
+const BROKER_COUNTS = parseCounts('broker', [16, 64]);
+const BROWSER_DURATION_MS = intArg('browserDuration', 4_500, 1_500, 30_000);
+const BROKER_DURATION_MS = intArg('brokerDuration', 2_000, 1_000, 20_000);
+const BROKER_RATE_HZ = intArg('brokerRate', 12, 5, 60);
+const FORWARD_DELAY_MS = intArg('delay', 60, 0, 1_000);
+const FORWARD_JITTER_MS = intArg('jitter', 120, 0, 2_000);
+const INPUT_DELAY_FRAMES = intArg('inputDelay', 36, 0, 60);
+
+function startVite(): ChildProcess {
+  const p = spawn('pnpm', ['exec', 'vite', '--force', '--host', '127.0.0.1', '--port', String(VITE_PORT), '--strictPort'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
+  });
+  p.stdout?.on('data', (chunk: Buffer) => { const s = chunk.toString(); if (s.trim()) process.stderr.write(`[vite] ${s}`); });
+  p.stderr?.on('data', (chunk: Buffer) => { const s = chunk.toString(); if (s.trim()) process.stderr.write(`[vite] ${s}`); });
+  return p;
+}
+
+function startBroker(): ChildProcess {
+  const p = spawn('node', ['controller-ws/server.js'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
+    env: {
+      ...process.env,
+      PORT: String(BROKER_PORT),
+      HOST: '127.0.0.1',
+      PEER_FORWARD_DELAY_MS: String(FORWARD_DELAY_MS),
+      PEER_FORWARD_JITTER_MS: String(FORWARD_JITTER_MS),
+    },
+  });
+  p.stdout?.on('data', (chunk: Buffer) => { const s = chunk.toString(); if (s.trim()) process.stderr.write(`[broker] ${s}`); });
+  p.stderr?.on('data', (chunk: Buffer) => { const s = chunk.toString(); if (s.trim()) process.stderr.write(`[broker] ${s}`); });
+  return p;
+}
+
+function killGroup(p: ChildProcess): void {
+  if (p.pid === undefined || p.killed) return;
+  try { process.kill(-p.pid, 'SIGTERM'); } catch { try { p.kill('SIGTERM'); } catch { /* ignore */ } }
+}
+
+async function waitForHttp(url: string, ok: (status: number) => boolean, timeoutMs: number): Promise<void> {
+  const start = Date.now();
+  let lastErr: unknown;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const r = await fetch(url);
+      if (ok(r.status)) return;
+    } catch (e) {
+      lastErr = e;
+    }
+    await wait(150);
+  }
+  throw new Error(`${url} not ready: ${String(lastErr)}`);
+}
+
+async function primeContext(browser: Browser): Promise<import('playwright').BrowserContext> {
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
+  await ctx.addInitScript(() => {
+    localStorage.setItem('pallasite:onboarded', '1');
+    localStorage.setItem('pallasite:daily', '0');
+    localStorage.setItem('pallasite:mode', 'deathmatch');
+    localStorage.setItem('pallasite:displayMode', 'modern');
+    localStorage.setItem('pallasite:visualStyle', JSON.stringify({
+      asteroid: 'vector',
+      ship: 'vector',
+      bullet: 'vector',
+      particle: 'vector',
+      theme: 'none',
+      asciiCols: 96,
+      bitDepth: 4,
+      bitColour: false,
+    }));
+  });
+  return ctx;
+}
+
+interface BrowserProbe {
+  frame: number;
+  phase: string;
+  peerActive: boolean;
+  desync: boolean;
+  stall: string | null;
+  players: number;
+  aiPlayers: number;
+  inputCounts: number[];
+}
+
+async function probeBrowser(page: Page, players: number): Promise<BrowserProbe> {
+  return page.evaluate((expectedPlayers) => {
+    const s = (window as any).__pallasiteState;
+    const probeLog = (window as any).__pallasiteInputLogProbe as ((from: number, to: number) => Array<[number, number, number]> | null) | undefined;
+    const counts = new Array(expectedPlayers).fill(0);
+    const frame = Number(s?.frame ?? -1);
+    const to = Math.max(0, Math.min(600, frame));
+    const rows = probeLog ? probeLog(0, to) : null;
+    if (rows) {
+      for (const [, slot, encoded] of rows) {
+        if (slot >= 0 && slot < expectedPlayers && encoded >= 0) counts[slot]++;
+      }
+    }
+    return {
+      frame,
+      phase: s?.phase ?? 'unknown',
+      peerActive: !!(window as any).__pallasitePeerActive,
+      desync: document.body.hasAttribute('data-peer-desync'),
+      stall: document.body.getAttribute('data-peer-stall'),
+      players: Array.isArray(s?.players) ? s.players.length : 0,
+      aiPlayers: Array.isArray(s?.players) ? s.players.filter((p: any) => p?.ai === true).length : -1,
+      inputCounts: counts,
+    };
+  }, players);
+}
+
+function deathmatchParams(session: string, players: number, slot?: number, spectate = false): string {
+  const params = new URLSearchParams({
+    players: String(players),
+    deathmatchPlayers: String(players),
+    mode: 'deathmatch',
+    inputDelay: String(INPUT_DELAY_FRAMES),
+    deathmatchTime: '300',
+    deathmatchKills: '250',
+    deathmatchRespawns: '99',
+    wiretrace: '1',
+  });
+  if (spectate) {
+    params.set('spectate', session);
+    params.set('peer', `${BROKER_URL}/?s=${encodeURIComponent(session)}&r=peerwatch`);
+  } else {
+    params.set('peer', BROKER_URL);
+    params.set('session', session);
+    params.set('slot', String(slot ?? 0));
+  }
+  return `${VITE_BASE}/?${params.toString()}`;
+}
+
+async function driveBrowserInputs(pages: Page[], durationMs: number): Promise<void> {
+  const keys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'Space'];
+  await Promise.all(pages.map((page, i) => page.keyboard.down(keys[i % keys.length])));
+  await wait(durationMs);
+  await Promise.all(pages.map((page, i) => page.keyboard.up(keys[i % keys.length]).catch(() => undefined)));
+}
+
+async function runBrowserCase(browser: Browser, players: number): Promise<void> {
+  const session = `dm${players}-${randomBytes(4).toString('hex')}`;
+  const pages: Page[] = [];
+  const contexts: import('playwright').BrowserContext[] = [];
+  process.stdout.write(`\n[browser ${players}P] session=${session} delay=${FORWARD_DELAY_MS}+${FORWARD_JITTER_MS}ms inputDelay=${INPUT_DELAY_FRAMES}f\n`);
+
+  for (let slot = 0; slot < players; slot++) {
+    const ctx = await primeContext(browser);
+    contexts.push(ctx);
+    const page = await ctx.newPage();
+    page.on('pageerror', (e) => process.stderr.write(`[B${players}/P${slot + 1}] ${e.message}\n`));
+    page.on('console', (msg) => {
+      const text = msg.text();
+      if (text.includes('[duel]') || text.includes('[peer]') || text.includes('session-error')) {
+        process.stderr.write(`[B${players}/P${slot + 1} ${msg.type()}] ${text}\n`);
+      }
+    });
+    pages.push(page);
+  }
+  await Promise.all(pages.map((page, slot) => page.goto(deathmatchParams(session, players, slot), { waitUntil: 'load' })));
+
+  await Promise.all(pages.map((page) => page.waitForFunction(
+    (expectedPlayers) => {
+      const s = (window as any).__pallasiteState;
+      return !!(window as any).__pallasitePeerActive && s?.phase === 'playing' && s?.players?.length === expectedPlayers;
+    },
+    players,
+    { timeout: 45_000 },
+  )));
+
+  const inputPromise = driveBrowserInputs(pages, Math.max(1_500, Math.floor(BROWSER_DURATION_MS * 0.7))).catch(() => undefined);
+  await wait(1_500);
+
+  const spectatorCtx = await primeContext(browser);
+  contexts.push(spectatorCtx);
+  const spectator = await spectatorCtx.newPage();
+  spectator.on('pageerror', (e) => process.stderr.write(`[B${players}/S] ${e.message}\n`));
+  spectator.on('console', (msg) => {
+    const text = msg.text();
+    if (text.includes('[spectate]') || text.includes('[peer]')) {
+      process.stderr.write(`[B${players}/S ${msg.type()}] ${text}\n`);
+    }
+  });
+  await spectator.goto(deathmatchParams(session, players, undefined, true), { waitUntil: 'load' });
+  try {
+    await spectator.waitForFunction(
+      (expectedPlayers) => {
+        const s = (window as any).__pallasiteState;
+        return !!(window as any).__pallasitePeerActive && s?.phase === 'playing' && s?.players?.length === expectedPlayers;
+      },
+      players,
+      { timeout: 45_000 },
+    );
+  } catch (e) {
+    const peerProbes = await Promise.all(pages.map((page) => probeBrowser(page, players).catch((err) => ({ error: String(err) }))));
+    const specProbe = await probeBrowser(spectator, players).catch((err) => ({ error: String(err) }));
+    process.stderr.write(`[browser ${players}P] spectator startup failed\n`);
+    process.stderr.write(`  peers=${JSON.stringify(peerProbes)}\n`);
+    process.stderr.write(`  spectator=${JSON.stringify(specProbe)}\n`);
+    throw e;
+  }
+
+  await wait(BROWSER_DURATION_MS);
+  await inputPromise;
+  await wait(Math.max(800, FORWARD_DELAY_MS + FORWARD_JITTER_MS + 400));
+
+  const probes = await Promise.all(pages.map((page) => probeBrowser(page, players)));
+  const spectatorProbe = await probeBrowser(spectator, players);
+  const frames = probes.map((p) => p.frame);
+  const minFrame = Math.min(...frames);
+  const maxFrame = Math.max(...frames);
+
+  for (let i = 0; i < probes.length; i++) {
+    const p = probes[i];
+    process.stdout.write(`  P${i + 1}: frame=${p.frame} phase=${p.phase} stall=${p.stall ?? '-'} desync=${p.desync} inputs=${p.inputCounts.join('/')}\n`);
+    if (!p.peerActive) throw new Error(`${players}P P${i + 1} peer inactive`);
+    if (p.phase !== 'playing') throw new Error(`${players}P P${i + 1} phase=${p.phase}`);
+    if (p.players !== players) throw new Error(`${players}P P${i + 1} player count=${p.players}`);
+    if (p.aiPlayers !== 0) throw new Error(`${players}P P${i + 1} has AI slots`);
+    if (p.stall) throw new Error(`${players}P P${i + 1} stalled`);
+    if (p.desync) throw new Error(`${players}P P${i + 1} desynced`);
+    if (p.frame < 120) throw new Error(`${players}P P${i + 1} did not advance enough`);
+    if (p.inputCounts.some((count) => count < 80)) throw new Error(`${players}P P${i + 1} sparse input log: ${p.inputCounts.join('/')}`);
+  }
+  process.stdout.write(`  S:  frame=${spectatorProbe.frame} phase=${spectatorProbe.phase} stall=${spectatorProbe.stall ?? '-'} inputs=${spectatorProbe.inputCounts.join('/')}\n`);
+  if (!spectatorProbe.peerActive) throw new Error(`${players}P spectator peer inactive`);
+  if (spectatorProbe.phase !== 'playing') throw new Error(`${players}P spectator phase=${spectatorProbe.phase}`);
+  if (spectatorProbe.players !== players) throw new Error(`${players}P spectator player count=${spectatorProbe.players}`);
+  if (spectatorProbe.stall) throw new Error(`${players}P spectator stalled`);
+  if (spectatorProbe.frame < 100) throw new Error(`${players}P spectator did not catch up`);
+  if (minFrame - spectatorProbe.frame > 360) throw new Error(`${players}P spectator lag too high: ${minFrame - spectatorProbe.frame}`);
+  if (maxFrame - minFrame > 180) throw new Error(`${players}P peer frame spread too high: ${minFrame}..${maxFrame}`);
+
+  for (const ctx of contexts) await ctx.close().catch(() => undefined);
+  process.stdout.write(`[browser ${players}P] PASS frameSpread=${maxFrame - minFrame} spectatorLag=${minFrame - spectatorProbe.frame}\n`);
+}
+
+interface SoakPeer {
+  ws: WebSocket;
+  slot: number;
+  joined: Set<number>;
+  recvBySlot: number[];
+  lastFrameBySlot: number[];
+}
+
+function openSoakPeer(session: string, slot: number, players: number): Promise<SoakPeer> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`${BROKER_URL}/?s=${session}&r=peer`);
+    const peer: SoakPeer = {
+      ws,
+      slot,
+      joined: new Set([slot]),
+      recvBySlot: new Array(players).fill(0),
+      lastFrameBySlot: new Array(players).fill(-1),
+    };
+    const timeout = setTimeout(() => reject(new Error(`broker ${players}P slot ${slot} join timeout`)), 10_000);
+    const maybeReady = () => {
+      if (peer.joined.size >= players) {
+        clearTimeout(timeout);
+        resolve(peer);
+      }
+    };
+    ws.addEventListener('open', () => {
+      ws.send(JSON.stringify({ type: 'hello-peer', session, slot, version: 1, players }));
+      maybeReady();
+    });
+    ws.addEventListener('message', (ev: MessageEvent) => {
+      const text = typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data as ArrayBuffer);
+      let msg: { type?: string; slot?: number; frame?: number; code?: string };
+      try { msg = JSON.parse(text); } catch { return; }
+      if (msg.type === 'peer-joined' && typeof msg.slot === 'number') {
+        peer.joined.add(msg.slot);
+        maybeReady();
+      } else if (msg.type === 'frame' && typeof msg.slot === 'number' && typeof msg.frame === 'number') {
+        if (msg.slot >= 0 && msg.slot < players) {
+          peer.recvBySlot[msg.slot]++;
+          peer.lastFrameBySlot[msg.slot] = Math.max(peer.lastFrameBySlot[msg.slot], msg.frame);
+        }
+      } else if (msg.type === 'session-error') {
+        reject(new Error(`broker ${players}P slot ${slot} session-error ${msg.code ?? ''}`));
+      }
+    });
+    ws.addEventListener('error', () => reject(new Error(`broker ${players}P slot ${slot} ws error`)));
+  });
+}
+
+interface SoakWatcher {
+  ws: WebSocket;
+  readyPlayers: number;
+  joined: Set<number>;
+  recvBySlot: number[];
+  lastFrameBySlot: number[];
+}
+
+function openSoakWatcher(session: string, players: number): Promise<SoakWatcher> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`${BROKER_URL}/?s=${session}&r=peerwatch`);
+    const watcher: SoakWatcher = {
+      ws,
+      readyPlayers: 0,
+      joined: new Set(),
+      recvBySlot: new Array(players).fill(0),
+      lastFrameBySlot: new Array(players).fill(-1),
+    };
+    const timeout = setTimeout(() => reject(new Error(`broker ${players}P watcher timeout`)), 10_000);
+    const maybeReady = () => {
+      if (watcher.readyPlayers === players && watcher.joined.size >= players) {
+        clearTimeout(timeout);
+        resolve(watcher);
+      }
+    };
+    ws.addEventListener('message', (ev: MessageEvent) => {
+      const text = typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data as ArrayBuffer);
+      let msg: { type?: string; players?: number; slot?: number; frame?: number };
+      try { msg = JSON.parse(text); } catch { return; }
+      if (msg.type === 'peerwatch-ready') {
+        watcher.readyPlayers = Math.max(2, Math.min(64, Math.floor(Number(msg.players) || 2)));
+        maybeReady();
+      } else if (msg.type === 'peer-joined' && typeof msg.slot === 'number') {
+        watcher.joined.add(msg.slot);
+        maybeReady();
+      } else if (msg.type === 'frame' && typeof msg.slot === 'number' && typeof msg.frame === 'number') {
+        if (msg.slot >= 0 && msg.slot < players) {
+          watcher.recvBySlot[msg.slot]++;
+          watcher.lastFrameBySlot[msg.slot] = Math.max(watcher.lastFrameBySlot[msg.slot], msg.frame);
+        }
+      }
+    });
+    ws.addEventListener('error', () => reject(new Error(`broker ${players}P watcher ws error`)));
+  });
+}
+
+async function runBrokerCase(players: number): Promise<void> {
+  const session = `wire${players}-${randomBytes(4).toString('hex')}`;
+  const frameIntervalMs = Math.round(1000 / BROKER_RATE_HZ);
+  process.stdout.write(`\n[broker ${players}P] session=${session} rate=${BROKER_RATE_HZ}Hz delay=${FORWARD_DELAY_MS}+${FORWARD_JITTER_MS}ms\n`);
+  const peers = await Promise.all(Array.from({ length: players }, (_, slot) => openSoakPeer(session, slot, players)));
+
+  let frame = 0;
+  let sentFrames = 0;
+  const timer = setInterval(() => {
+    for (const p of peers) {
+      if (p.ws.readyState === WebSocket.OPEN) {
+        p.ws.send(JSON.stringify({ type: 'frame', frame, slot: p.slot, input: p.slot + 1 }));
+      }
+    }
+    frame++;
+    sentFrames++;
+  }, frameIntervalMs);
+
+  await wait(Math.min(1_000, Math.max(350, Math.floor(BROKER_DURATION_MS / 3))));
+  const watcher = await openSoakWatcher(session, players);
+  await wait(BROKER_DURATION_MS);
+  clearInterval(timer);
+  await wait(Math.max(800, FORWARD_DELAY_MS + FORWARD_JITTER_MS + 500));
+
+  const minExpected = Math.max(1, Math.floor(sentFrames * 0.72));
+  for (const p of peers) {
+    for (let slot = 0; slot < players; slot++) {
+      if (slot === p.slot) continue;
+      const got = p.recvBySlot[slot];
+      if (got < minExpected) {
+        throw new Error(`broker ${players}P peer ${p.slot} saw sparse slot ${slot}: got ${got}, expected >=${minExpected} of ${sentFrames}`);
+      }
+    }
+  }
+  const watcherMin = Math.max(1, Math.floor(sentFrames * 0.60));
+  for (let slot = 0; slot < players; slot++) {
+    const got = watcher.recvBySlot[slot];
+    if (got < watcherMin) {
+      throw new Error(`broker ${players}P watcher saw sparse slot ${slot}: got ${got}, expected >=${watcherMin} of ${sentFrames}`);
+    }
+  }
+
+  for (const p of peers) p.ws.close();
+  watcher.ws.close();
+  const peerTotals = peers.map((p) => p.recvBySlot.reduce((sum, n, slot) => sum + (slot === p.slot ? 0 : n), 0));
+  const watcherTotal = watcher.recvBySlot.reduce((sum, n) => sum + n, 0);
+  process.stdout.write(`[broker ${players}P] PASS sentFrames=${sentFrames} peerRecv=${Math.min(...peerTotals)}..${Math.max(...peerTotals)} watcherRecv=${watcherTotal}\n`);
+}
+
+async function main(): Promise<void> {
+  process.stdout.write(
+    `deathmatch soak: browser=${BROWSER_COUNTS.join(',') || '-'} broker=${BROKER_COUNTS.join(',') || '-'} `
+    + `delay=${FORWARD_DELAY_MS} jitter=${FORWARD_JITTER_MS} inputDelay=${INPUT_DELAY_FRAMES}\n`,
+  );
+  const vite = startVite();
+  const broker = startBroker();
+  const cleanup = () => { killGroup(vite); killGroup(broker); };
+  process.on('SIGINT', () => { cleanup(); process.exit(130); });
+  process.on('SIGTERM', () => { cleanup(); process.exit(143); });
+
+  let browser: Browser | null = null;
+  try {
+    await Promise.all([
+      waitForHttp(`${VITE_BASE}/`, (s) => s < 500, 30_000),
+      waitForHttp(`http://localhost:${BROKER_PORT}/`, (s) => s === 404, 10_000),
+    ]);
+    await fetch(`${VITE_BASE}/src/main.ts`).catch(() => undefined);
+    await wait(750);
+
+    browser = await chromium.launch();
+    for (const count of BROWSER_COUNTS) await runBrowserCase(browser, count);
+    for (const count of BROKER_COUNTS) await runBrokerCase(count);
+    process.stdout.write('\nDeathmatch multiplayer soak PASS\n');
+  } finally {
+    if (browser) await browser.close().catch(() => undefined);
+    cleanup();
+  }
+}
+
+main().catch((e) => {
+  process.stderr.write(`deathmatch soak failed: ${e instanceof Error ? e.stack ?? e.message : String(e)}\n`);
+  process.exit(1);
+});
