@@ -11727,6 +11727,7 @@ function appendDeathmatchUrlParams(params: URLSearchParams, players: number, rul
   if (players <= 2) return;
   params.set('mode', 'deathmatch');
   params.set('deathmatchPlayers', String(players));
+  params.set('peerBatch', '1');
   const resolved = makeDeathmatchRules(players, rules);
   params.set('deathmatchTime', String(Math.round(resolved.timeLimitMs / 1000)));
   params.set('deathmatchKills', String(resolved.killLimit));

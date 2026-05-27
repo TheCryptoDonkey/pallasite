@@ -6,7 +6,8 @@
  *  - broker transport fan-out at larger N without paying for 64 Chromium tabs.
  *
  * Defaults keep the browser side quick (4P) while still probing 16P/64P at
- * the WebSocket relay layer. Use `--browser=4,8` for the heavier local pass.
+ * 60Hz logical input over batched WebSocket payloads. Use `--browser=4,8`
+ * for the heavier local pass.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -47,7 +48,8 @@ const BROWSER_COUNTS = parseCounts('browser', [4]);
 const BROKER_COUNTS = parseCounts('broker', [16, 64]);
 const BROWSER_DURATION_MS = intArg('browserDuration', 4_500, 1_500, 30_000);
 const BROKER_DURATION_MS = intArg('brokerDuration', 2_000, 1_000, 20_000);
-const BROKER_RATE_HZ = intArg('brokerRate', 12, 5, 60);
+const BROKER_RATE_HZ = intArg('brokerRate', 60, 5, 60);
+const BROKER_BATCH_SIZE = intArg('brokerBatch', 4, 1, 16);
 const FORWARD_DELAY_MS = intArg('delay', 60, 0, 1_000);
 const FORWARD_JITTER_MS = intArg('jitter', 120, 0, 2_000);
 const INPUT_DELAY_FRAMES = intArg('inputDelay', 36, 0, 60);
@@ -129,12 +131,23 @@ interface BrowserProbe {
   players: number;
   aiPlayers: number;
   inputCounts: number[];
+  wireCounters: {
+    sentFrameCount: number;
+    recvFrameCount: number;
+    wsSentFrameCount: number;
+    wsRecvFrameCount: number;
+    wsSentFramePayloadCount: number;
+    wsRecvFramePayloadCount: number;
+    bufferedAmount: number;
+    readyState: number;
+  } | null;
 }
 
 async function probeBrowser(page: Page, players: number): Promise<BrowserProbe> {
   return page.evaluate((expectedPlayers) => {
     const s = (window as any).__pallasiteState;
     const probeLog = (window as any).__pallasiteInputLogProbe as ((from: number, to: number) => Array<[number, number, number]> | null) | undefined;
+    const peerRef = (window as any).__pallasiteTestHooks?.peerRef;
     const counts = new Array(expectedPlayers).fill(0);
     const frame = Number(s?.frame ?? -1);
     const to = Math.max(0, Math.min(600, frame));
@@ -143,6 +156,24 @@ async function probeBrowser(page: Page, players: number): Promise<BrowserProbe> 
       for (const [, slot, encoded] of rows) {
         if (slot >= 0 && slot < expectedPlayers && encoded >= 0) counts[slot]++;
       }
+    }
+    let wireCounters = null;
+    try {
+      const raw = peerRef?.getWireCounters ? peerRef.getWireCounters() : null;
+      if (raw && typeof raw === 'object') {
+        wireCounters = {
+          sentFrameCount: Number(raw.sentFrameCount ?? 0),
+          recvFrameCount: Number(raw.recvFrameCount ?? 0),
+          wsSentFrameCount: Number(raw.wsSentFrameCount ?? 0),
+          wsRecvFrameCount: Number(raw.wsRecvFrameCount ?? 0),
+          wsSentFramePayloadCount: Number(raw.wsSentFramePayloadCount ?? 0),
+          wsRecvFramePayloadCount: Number(raw.wsRecvFramePayloadCount ?? 0),
+          bufferedAmount: Number(raw.bufferedAmount ?? -1),
+          readyState: Number(raw.readyState ?? -1),
+        };
+      }
+    } catch {
+      wireCounters = null;
     }
     return {
       frame,
@@ -153,6 +184,7 @@ async function probeBrowser(page: Page, players: number): Promise<BrowserProbe> 
       players: Array.isArray(s?.players) ? s.players.length : 0,
       aiPlayers: Array.isArray(s?.players) ? s.players.filter((p: any) => p?.ai === true).length : -1,
       inputCounts: counts,
+      wireCounters,
     };
   }, players);
 }
@@ -167,6 +199,7 @@ function deathmatchParams(session: string, players: number, slot?: number, spect
     deathmatchKills: '250',
     deathmatchRespawns: '99',
     wiretrace: '1',
+    peerBatch: '1',
   });
   if (spectate) {
     params.set('spectate', session);
@@ -260,7 +293,11 @@ async function runBrowserCase(browser: Browser, players: number): Promise<void> 
 
   for (let i = 0; i < probes.length; i++) {
     const p = probes[i];
-    process.stdout.write(`  P${i + 1}: frame=${p.frame} phase=${p.phase} stall=${p.stall ?? '-'} desync=${p.desync} inputs=${p.inputCounts.join('/')}\n`);
+    const c = p.wireCounters;
+    const wire = c
+      ? ` wire=${c.wsSentFrameCount}/${c.wsSentFramePayloadCount} recv=${c.wsRecvFrameCount}/${c.wsRecvFramePayloadCount} buf=${c.bufferedAmount}`
+      : ' wire=-';
+    process.stdout.write(`  P${i + 1}: frame=${p.frame} phase=${p.phase} stall=${p.stall ?? '-'} desync=${p.desync} inputs=${p.inputCounts.join('/')}${wire}\n`);
     if (!p.peerActive) throw new Error(`${players}P P${i + 1} peer inactive`);
     if (p.phase !== 'playing') throw new Error(`${players}P P${i + 1} phase=${p.phase}`);
     if (p.players !== players) throw new Error(`${players}P P${i + 1} player count=${p.players}`);
@@ -269,6 +306,15 @@ async function runBrowserCase(browser: Browser, players: number): Promise<void> 
     if (p.desync) throw new Error(`${players}P P${i + 1} desynced`);
     if (p.frame < 120) throw new Error(`${players}P P${i + 1} did not advance enough`);
     if (p.inputCounts.some((count) => count < 80)) throw new Error(`${players}P P${i + 1} sparse input log: ${p.inputCounts.join('/')}`);
+    if (players > 2) {
+      if (!c) throw new Error(`${players}P P${i + 1} missing wire counters`);
+      if (c.wsSentFrameCount < 120) throw new Error(`${players}P P${i + 1} sent too few logical frames: ${c.wsSentFrameCount}`);
+      if (c.wsSentFramePayloadCount <= 0) throw new Error(`${players}P P${i + 1} sent no frame payloads`);
+      if (c.wsSentFramePayloadCount >= Math.floor(c.wsSentFrameCount * 0.85)) {
+        throw new Error(`${players}P P${i + 1} batching ineffective: frames=${c.wsSentFrameCount} payloads=${c.wsSentFramePayloadCount}`);
+      }
+      if (c.bufferedAmount > 32768) throw new Error(`${players}P P${i + 1} socket backlog too high: ${c.bufferedAmount}`);
+    }
   }
   process.stdout.write(`  S:  frame=${spectatorProbe.frame} phase=${spectatorProbe.phase} stall=${spectatorProbe.stall ?? '-'} inputs=${spectatorProbe.inputCounts.join('/')}\n`);
   if (!spectatorProbe.peerActive) throw new Error(`${players}P spectator peer inactive`);
@@ -289,6 +335,32 @@ interface SoakPeer {
   joined: Set<number>;
   recvBySlot: number[];
   lastFrameBySlot: number[];
+}
+
+interface BrokerWireMsg {
+  type?: string;
+  players?: number;
+  slot?: number;
+  frame?: number;
+  base?: number;
+  input?: number;
+  inputs?: unknown;
+  code?: string;
+}
+
+function recordBrokerFrames(recvBySlot: number[], lastFrameBySlot: number[], players: number, msg: BrokerWireMsg): void {
+  if (typeof msg.slot !== 'number' || msg.slot < 0 || msg.slot >= players) return;
+  if (msg.type === 'frame' && typeof msg.frame === 'number') {
+    recvBySlot[msg.slot]++;
+    lastFrameBySlot[msg.slot] = Math.max(lastFrameBySlot[msg.slot], msg.frame);
+    return;
+  }
+  if (msg.type === 'frames' && typeof msg.base === 'number' && Array.isArray(msg.inputs)) {
+    const count = msg.inputs.length;
+    if (count <= 0) return;
+    recvBySlot[msg.slot] += count;
+    lastFrameBySlot[msg.slot] = Math.max(lastFrameBySlot[msg.slot], msg.base + count - 1);
+  }
 }
 
 function openSoakPeer(session: string, slot: number, players: number): Promise<SoakPeer> {
@@ -314,16 +386,13 @@ function openSoakPeer(session: string, slot: number, players: number): Promise<S
     });
     ws.addEventListener('message', (ev: MessageEvent) => {
       const text = typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data as ArrayBuffer);
-      let msg: { type?: string; slot?: number; frame?: number; code?: string };
+      let msg: BrokerWireMsg;
       try { msg = JSON.parse(text); } catch { return; }
       if (msg.type === 'peer-joined' && typeof msg.slot === 'number') {
         peer.joined.add(msg.slot);
         maybeReady();
-      } else if (msg.type === 'frame' && typeof msg.slot === 'number' && typeof msg.frame === 'number') {
-        if (msg.slot >= 0 && msg.slot < players) {
-          peer.recvBySlot[msg.slot]++;
-          peer.lastFrameBySlot[msg.slot] = Math.max(peer.lastFrameBySlot[msg.slot], msg.frame);
-        }
+      } else if (msg.type === 'frame' || msg.type === 'frames') {
+        recordBrokerFrames(peer.recvBySlot, peer.lastFrameBySlot, players, msg);
       } else if (msg.type === 'session-error') {
         reject(new Error(`broker ${players}P slot ${slot} session-error ${msg.code ?? ''}`));
       }
@@ -359,7 +428,7 @@ function openSoakWatcher(session: string, players: number): Promise<SoakWatcher>
     };
     ws.addEventListener('message', (ev: MessageEvent) => {
       const text = typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data as ArrayBuffer);
-      let msg: { type?: string; players?: number; slot?: number; frame?: number };
+      let msg: BrokerWireMsg;
       try { msg = JSON.parse(text); } catch { return; }
       if (msg.type === 'peerwatch-ready') {
         watcher.readyPlayers = Math.max(2, Math.min(64, Math.floor(Number(msg.players) || 2)));
@@ -367,11 +436,8 @@ function openSoakWatcher(session: string, players: number): Promise<SoakWatcher>
       } else if (msg.type === 'peer-joined' && typeof msg.slot === 'number') {
         watcher.joined.add(msg.slot);
         maybeReady();
-      } else if (msg.type === 'frame' && typeof msg.slot === 'number' && typeof msg.frame === 'number') {
-        if (msg.slot >= 0 && msg.slot < players) {
-          watcher.recvBySlot[msg.slot]++;
-          watcher.lastFrameBySlot[msg.slot] = Math.max(watcher.lastFrameBySlot[msg.slot], msg.frame);
-        }
+      } else if (msg.type === 'frame' || msg.type === 'frames') {
+        recordBrokerFrames(watcher.recvBySlot, watcher.lastFrameBySlot, players, msg);
       }
     });
     ws.addEventListener('error', () => reject(new Error(`broker ${players}P watcher ws error`)));
@@ -380,21 +446,29 @@ function openSoakWatcher(session: string, players: number): Promise<SoakWatcher>
 
 async function runBrokerCase(players: number): Promise<void> {
   const session = `wire${players}-${randomBytes(4).toString('hex')}`;
-  const frameIntervalMs = Math.round(1000 / BROKER_RATE_HZ);
-  process.stdout.write(`\n[broker ${players}P] session=${session} rate=${BROKER_RATE_HZ}Hz delay=${FORWARD_DELAY_MS}+${FORWARD_JITTER_MS}ms\n`);
+  const payloadIntervalMs = Math.max(1, Math.round((1000 * BROKER_BATCH_SIZE) / BROKER_RATE_HZ));
+  process.stdout.write(`\n[broker ${players}P] session=${session} rate=${BROKER_RATE_HZ}Hz batch=${BROKER_BATCH_SIZE} payloadEvery=${payloadIntervalMs}ms delay=${FORWARD_DELAY_MS}+${FORWARD_JITTER_MS}ms\n`);
   const peers = await Promise.all(Array.from({ length: players }, (_, slot) => openSoakPeer(session, slot, players)));
 
   let frame = 0;
   let sentFrames = 0;
+  let sentPayloads = 0;
   const timer = setInterval(() => {
+    const base = frame;
     for (const p of peers) {
       if (p.ws.readyState === WebSocket.OPEN) {
-        p.ws.send(JSON.stringify({ type: 'frame', frame, slot: p.slot, input: p.slot + 1 }));
+        if (BROKER_BATCH_SIZE === 1) {
+          p.ws.send(JSON.stringify({ type: 'frame', frame: base, slot: p.slot, input: p.slot + 1 }));
+        } else {
+          const inputs = Array.from({ length: BROKER_BATCH_SIZE }, (_, i) => ((p.slot + 1) << 8) | ((base + i) & 255));
+          p.ws.send(JSON.stringify({ type: 'frames', slot: p.slot, base, inputs }));
+        }
       }
     }
-    frame++;
-    sentFrames++;
-  }, frameIntervalMs);
+    frame += BROKER_BATCH_SIZE;
+    sentFrames += BROKER_BATCH_SIZE;
+    sentPayloads++;
+  }, payloadIntervalMs);
 
   await wait(Math.min(1_000, Math.max(350, Math.floor(BROKER_DURATION_MS / 3))));
   const watcher = await openSoakWatcher(session, players);
@@ -424,13 +498,16 @@ async function runBrokerCase(players: number): Promise<void> {
   watcher.ws.close();
   const peerTotals = peers.map((p) => p.recvBySlot.reduce((sum, n, slot) => sum + (slot === p.slot ? 0 : n), 0));
   const watcherTotal = watcher.recvBySlot.reduce((sum, n) => sum + n, 0);
-  process.stdout.write(`[broker ${players}P] PASS sentFrames=${sentFrames} peerRecv=${Math.min(...peerTotals)}..${Math.max(...peerTotals)} watcherRecv=${watcherTotal}\n`);
+  if (BROKER_BATCH_SIZE > 1 && sentPayloads >= sentFrames) {
+    throw new Error(`broker ${players}P batching ineffective: frames=${sentFrames} payloads=${sentPayloads}`);
+  }
+  process.stdout.write(`[broker ${players}P] PASS sentFrames=${sentFrames} sentPayloads=${sentPayloads} peerRecv=${Math.min(...peerTotals)}..${Math.max(...peerTotals)} watcherRecv=${watcherTotal}\n`);
 }
 
 async function main(): Promise<void> {
   process.stdout.write(
     `deathmatch soak: browser=${BROWSER_COUNTS.join(',') || '-'} broker=${BROKER_COUNTS.join(',') || '-'} `
-    + `delay=${FORWARD_DELAY_MS} jitter=${FORWARD_JITTER_MS} inputDelay=${INPUT_DELAY_FRAMES}\n`,
+    + `brokerRate=${BROKER_RATE_HZ}Hz brokerBatch=${BROKER_BATCH_SIZE} delay=${FORWARD_DELAY_MS} jitter=${FORWARD_JITTER_MS} inputDelay=${INPUT_DELAY_FRAMES}\n`,
   );
   const vite = startVite();
   const broker = startBroker();

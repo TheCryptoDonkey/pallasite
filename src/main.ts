@@ -224,6 +224,7 @@ const mpMode = !!(mpUrl && mpSession && mpSlotValid);
 const spectateSession = mpParams.get('spectate');
 const spectateMode = !mpMode && !!(spectateSession && mpUrl);
 const urlDeathmatchMode = urlMode === 'deathmatch' || ((mpMode || spectateMode) && requestedPeerPlayers > 2);
+const peerBatchFrames = mpParams.get('peerBatch') === '1' || mpParams.get('batchFrames') === '1';
 /** Defender preview mode (`?defender=1`). Enables the landscape follow
  *  camera + parallax starfield bg + forced radar; first-cut demo of the
  *  600bn Defender bonus wave. No Council protectees or win condition
@@ -1547,7 +1548,7 @@ async function boot(): Promise<void> {
     // simulateStart's clearOverlay() removes this once peer-joined fires.
     renderDuelConnecting(mpSlot, requestedPeerPlayers, false);
     try {
-      await peer.connect({ url: mpUrl, session: mpSession, localSlot: mpSlot, players: requestedPeerPlayers });
+      await peer.connect({ url: mpUrl, session: mpSession, localSlot: mpSlot, players: requestedPeerPlayers, batchFrames: peerBatchFrames });
       setPeerActive(true);
       // Replay hook: after a successful reconnect (NOT the initial connect),
       // re-send our local slot's most recent input frames so the partner
