@@ -29,6 +29,7 @@ export type PeerSlot = number;
 export type PeerMsgOut =
   | { type: 'hello-peer'; session: string; slot: PeerSlot; version: 1; players?: number }
   | { type: 'frame'; frame: number; slot: PeerSlot; input: number }
+  | { type: 'frames'; slot: PeerSlot; base: number; inputs: number[] }
   | { type: 'hash'; frame: number; slot: PeerSlot; hash: number }
   | { type: 'bye'; slot: PeerSlot };
 
@@ -37,6 +38,7 @@ export type PeerMsgOut =
  *  broker-originated lifecycle events; `session-error` is fatal. */
 export type PeerMsgIn =
   | { type: 'frame'; frame: number; slot: PeerSlot; input: number }
+  | { type: 'frames'; slot: PeerSlot; base: number; inputs: number[] }
   | { type: 'hash'; frame: number; slot: PeerSlot; hash: number }
   | { type: 'peer-joined'; slot: PeerSlot }
   | { type: 'peer-left'; slot: PeerSlot; reason: string }
@@ -59,6 +61,8 @@ export interface PeerConnectOpts {
   localSlot: PeerSlot;
   /** Expected player count for the session. Defaults to the legacy duel size. */
   players?: number;
+  /** Enable batched frame windows. Requires a broker that understands `frames`. */
+  batchFrames?: boolean;
 }
 
 // ── Peer interface ───────────────────────────────────────────────────────────
@@ -237,7 +241,7 @@ export function loopbackPair(oneWayDelayFrames = 3): [LoopbackPeer, LoopbackPeer
 export interface WireTraceEntry {
   t: number;      // performance.now()
   dir: 'out' | 'in';
-  kind: 'frame' | 'hash' | 'hello-peer' | 'peer-joined' | 'peer-left' | 'session-error' | 'bye' | 'unknown';
+  kind: 'frame' | 'frames' | 'hash' | 'hello-peer' | 'peer-joined' | 'peer-left' | 'session-error' | 'bye' | 'unknown';
   frame?: number;
   slot?: number;
   input?: number;
@@ -287,6 +291,8 @@ export class WebSocketPeer implements Peer {
    *  layer itself). */
   private wsRecvFrameCount = 0;
   private wsSentFrameCount = 0;
+  private wsRecvFramePayloadCount = 0;
+  private wsSentFramePayloadCount = 0;
 
   connect(opts: PeerConnectOpts): Promise<void> {
     return new Promise<void>((resolve, reject) => {
@@ -334,6 +340,7 @@ export class WebSocketPeer implements Peer {
         session: opts.session,
         localSlot: opts.localSlot,
         players: opts.players ?? 2,
+        batchFrames: opts.batchFrames === true,
         enableWireTrace,
       });
     });
@@ -349,9 +356,10 @@ export class WebSocketPeer implements Peer {
       | { kind: 'peer-left' }
       | { kind: 'session-error'; code: string }
       | { kind: 'frame'; frame: number; slot: PeerSlot; input: number }
+      | { kind: 'frames'; slot: PeerSlot; base: number; inputs: number[] }
       | { kind: 'hash'; frame: number; slot: PeerSlot; hash: number }
       | { kind: 'wire-entry'; entry: WireTraceEntry }
-      | { kind: 'counters'; bufferedAmount: number; readyState: number; wsRecvFrameCount: number; wsSentFrameCount: number };
+      | { kind: 'counters'; bufferedAmount: number; readyState: number; wsRecvFrameCount: number; wsSentFrameCount: number; wsRecvFramePayloadCount: number; wsSentFramePayloadCount: number };
     switch (m.kind) {
       case 'connected':
         this.connected = true;
@@ -377,6 +385,15 @@ export class WebSocketPeer implements Peer {
         this.recvFrameCount++;
         this.lastRecvFrame = m.frame;
         return;
+      case 'frames':
+        for (let i = 0; i < m.inputs.length; i++) {
+          const frame = m.base + i;
+          this.frameInbox.push({ frame, slot: m.slot, input: m.inputs[i] >>> 0 });
+          if (frame > this.highestRemoteFrame) this.highestRemoteFrame = frame;
+        }
+        this.recvFrameCount += m.inputs.length;
+        this.lastRecvFrame = Math.max(this.lastRecvFrame, m.base + m.inputs.length - 1);
+        return;
       case 'hash':
         this.hashInbox.push({ frame: m.frame, slot: m.slot, hash: m.hash });
         this.recvHashCount++;
@@ -392,6 +409,8 @@ export class WebSocketPeer implements Peer {
         this.latestReadyState = m.readyState;
         this.wsRecvFrameCount = m.wsRecvFrameCount;
         this.wsSentFrameCount = m.wsSentFrameCount;
+        this.wsRecvFramePayloadCount = m.wsRecvFramePayloadCount;
+        this.wsSentFramePayloadCount = m.wsSentFramePayloadCount;
         return;
     }
   };
@@ -409,7 +428,7 @@ export class WebSocketPeer implements Peer {
   }
 
   /** Return lightweight cumulative counters (always available). */
-  getWireCounters(): { sentFrameCount: number; sentHashCount: number; recvFrameCount: number; recvHashCount: number; lastSendFrame: number; lastRecvFrame: number; bufferedAmount: number; readyState: number; wsRecvFrameCount: number; wsSentFrameCount: number } {
+  getWireCounters(): { sentFrameCount: number; sentHashCount: number; recvFrameCount: number; recvHashCount: number; lastSendFrame: number; lastRecvFrame: number; bufferedAmount: number; readyState: number; wsRecvFrameCount: number; wsSentFrameCount: number; wsRecvFramePayloadCount: number; wsSentFramePayloadCount: number } {
     return {
       sentFrameCount: this.sentFrameCount,
       sentHashCount: this.sentHashCount,
@@ -421,6 +440,8 @@ export class WebSocketPeer implements Peer {
       readyState: this.latestReadyState,
       wsRecvFrameCount: this.wsRecvFrameCount,
       wsSentFrameCount: this.wsSentFrameCount,
+      wsRecvFramePayloadCount: this.wsRecvFramePayloadCount,
+      wsSentFramePayloadCount: this.wsSentFramePayloadCount,
     };
   }
 
@@ -500,9 +521,23 @@ function buildPeerWorkerSource(): string {
     var connected = false;
     var initialConnectDone = false;
     var joinedSlots = {};
+    var batchFrames = false;
+    var frameBatchMs = 12;
+    var frameBatchMax = 2;
+    var pendingFrames = {};
+    var pendingFrameCount = 0;
+    var frameFlushTimer = null;
     var wsRecvFrameCount = 0;
     var wsSentFrameCount = 0;
+    var wsRecvFramePayloadCount = 0;
+    var wsSentFramePayloadCount = 0;
     function post(m) { self.postMessage(m); }
+    function frameBatchConfig(players) {
+      if (players >= 16) return { ms: 50, max: 8 };
+      if (players >= 8) return { ms: 33, max: 6 };
+      if (players >= 4) return { ms: 24, max: 4 };
+      return { ms: 12, max: 2 };
+    }
     function buildSocketUrl() {
       var sep = url.indexOf('?') >= 0 ? '&' : '?';
       return url + sep + 's=' + encodeURIComponent(session) + '&r=peer';
@@ -526,6 +561,77 @@ function buildPeerWorkerSource(): string {
         post({ kind: 'reconnected' });
       }
     }
+    function sendPayload(obj) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      try {
+        ws.send(JSON.stringify(obj));
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+    function sendFrameGroup(base, inputs) {
+      if (inputs.length <= 0) return;
+      if (inputs.length === 1) {
+        if (sendPayload({ type: 'frame', frame: base, slot: localSlot, input: inputs[0] })) {
+          wsSentFrameCount++;
+          wsSentFramePayloadCount++;
+        }
+        return;
+      }
+      if (sendPayload({ type: 'frames', slot: localSlot, base: base, inputs: inputs })) {
+        wsSentFrameCount += inputs.length;
+        wsSentFramePayloadCount++;
+      }
+    }
+    function flushFrameBatch() {
+      if (frameFlushTimer !== null) {
+        clearTimeout(frameFlushTimer);
+        frameFlushTimer = null;
+      }
+      if (pendingFrameCount <= 0) return;
+      var frames = Object.keys(pendingFrames).map(function (k) { return Number(k); }).filter(Number.isFinite).sort(function (a, b) { return a - b; });
+      var values = pendingFrames;
+      pendingFrames = {};
+      pendingFrameCount = 0;
+      var base = -1;
+      var inputs = [];
+      var last = -1;
+      for (var i = 0; i < frames.length; i++) {
+        var f = frames[i];
+        var input = values[String(f)] >>> 0;
+        if (base < 0) {
+          base = f;
+          last = f;
+          inputs = [input];
+        } else if (f === last + 1 && inputs.length < frameBatchMax) {
+          inputs.push(input);
+          last = f;
+        } else {
+          sendFrameGroup(base, inputs);
+          base = f;
+          last = f;
+          inputs = [input];
+        }
+      }
+      sendFrameGroup(base, inputs);
+    }
+    function queueFrame(frame, input) {
+      if (!batchFrames) {
+        sendFrameGroup(frame, [input >>> 0]);
+        return;
+      }
+      var key = String(frame);
+      if (pendingFrames[key] === undefined) pendingFrameCount++;
+      pendingFrames[key] = input >>> 0;
+      if (pendingFrameCount >= frameBatchMax) {
+        flushFrameBatch();
+        return;
+      }
+      if (frameFlushTimer === null) {
+        frameFlushTimer = setTimeout(flushFrameBatch, frameBatchMs);
+      }
+    }
     function openSocket() {
       try {
         ws = new WebSocket(buildSocketUrl());
@@ -545,7 +651,13 @@ function buildPeerWorkerSource(): string {
         try { msg = JSON.parse(typeof ev.data === 'string' ? ev.data : ''); } catch (e) { return; }
         if (msg.type === 'frame') {
           wsRecvFrameCount++;
+          wsRecvFramePayloadCount++;
           post({ kind: 'frame', frame: msg.frame, slot: msg.slot, input: msg.input });
+        } else if (msg.type === 'frames') {
+          var inputs = Array.isArray(msg.inputs) ? msg.inputs : [];
+          wsRecvFrameCount += inputs.length;
+          wsRecvFramePayloadCount++;
+          post({ kind: 'frames', slot: msg.slot, base: msg.base, inputs: inputs });
         } else if (msg.type === 'hash') {
           post({ kind: 'hash', frame: msg.frame, slot: msg.slot, hash: msg.hash });
         } else if (msg.type === 'peer-joined') {
@@ -573,7 +685,7 @@ function buildPeerWorkerSource(): string {
       });
     }
     setInterval(function () {
-      post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: ws ? ws.readyState : -1, wsRecvFrameCount: wsRecvFrameCount, wsSentFrameCount: wsSentFrameCount });
+      post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: ws ? ws.readyState : -1, wsRecvFrameCount: wsRecvFrameCount, wsSentFrameCount: wsSentFrameCount, wsRecvFramePayloadCount: wsRecvFramePayloadCount, wsSentFramePayloadCount: wsSentFramePayloadCount });
     }, 1000);
     self.addEventListener('message', function (ev) {
       var msg = ev.data;
@@ -582,18 +694,23 @@ function buildPeerWorkerSource(): string {
         session = msg.session;
         localSlot = msg.localSlot;
         expectedPlayers = Math.max(2, Math.min(64, Math.floor(Number(msg.players) || 2)));
+        batchFrames = msg.batchFrames === true;
+        var cfg = frameBatchConfig(expectedPlayers);
+        frameBatchMs = cfg.ms;
+        frameBatchMax = cfg.max;
         openSocket();
       } else if (msg.kind === 'disconnect') {
-        post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: ws ? ws.readyState : -1, wsRecvFrameCount: wsRecvFrameCount, wsSentFrameCount: wsSentFrameCount });
+        flushFrameBatch();
+        post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: ws ? ws.readyState : -1, wsRecvFrameCount: wsRecvFrameCount, wsSentFrameCount: wsSentFrameCount, wsRecvFramePayloadCount: wsRecvFramePayloadCount, wsSentFramePayloadCount: wsSentFramePayloadCount });
         if (ws && connected) {
           try { ws.send(JSON.stringify({ type: 'bye', slot: localSlot })); } catch (e) {}
         }
         if (ws) { try { ws.close(); } catch (e) {} ws = null; }
       } else if (msg.kind === 'send-frame') {
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        ws.send(JSON.stringify({ type: 'frame', frame: msg.frame, slot: localSlot, input: msg.input }));
-        wsSentFrameCount++;
+        queueFrame(msg.frame, msg.input);
       } else if (msg.kind === 'send-hash') {
+        flushFrameBatch();
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
         ws.send(JSON.stringify({ type: 'hash', frame: msg.frame, slot: localSlot, hash: msg.hash }));
       }
@@ -709,6 +826,13 @@ export class SpectatorPeer {
         return;
       case 'frame':
         this.frameInbox.push({ frame: msg.frame, slot: msg.slot, input: msg.input });
+        return;
+      case 'frames':
+        if (Array.isArray(msg.inputs)) {
+          for (let i = 0; i < msg.inputs.length; i++) {
+            this.frameInbox.push({ frame: msg.base + i, slot: msg.slot, input: msg.inputs[i] >>> 0 });
+          }
+        }
         return;
       case 'hash':
         this.hashInbox.push({ frame: msg.frame, slot: msg.slot, hash: msg.hash });

@@ -38,8 +38,10 @@
  *   - When a peer binds, every other peer gets
  *     `{type:'peer-joined', slot:<joined>}`; the new peer gets one for
  *     every already-bound slot.
- *   - `{type:'frame'|'hash', frame, slot, ...}` from one peer is fanned
- *     verbatim to every OTHER peer (never echoed back). Every such
+ *   - `{type:'frame'|'frames'|'hash', ...}` from one peer is fanned
+ *     verbatim to every OTHER peer (never echoed back). `frames` is a
+ *     consecutive input window: `{type:'frames', slot, base, inputs}`.
+ *     Every such
  *     message is ALSO fanned out to every peerwatch socket on the
  *     session (see below).
  *   - On socket close, the surviving peers get
@@ -171,6 +173,7 @@ function attach(ws, session, role, wantsMulti) {
       // buffer must include frame 0 to be useful — purged only on
       // session orphan sweep / broker restart.
       recentFrames: [],
+      recentFrameCount: 0,
       createdAt: Date.now(),
     };
     sessions.set(session, slot);
@@ -323,8 +326,8 @@ function attachPeerWatcher(slot, session, ws) {
     // those inputs forever and its sim stalls at PEER_INPUT_DELAY.
     // Order preserved (buffer is a FIFO ring) so the deterministic
     // ordering the spectator's lockstep depends on stays intact.
-    for (const payload of slot.recentFrames) {
-      ws.send(payload);
+    for (const entry of slot.recentFrames) {
+      ws.send(typeof entry === 'string' ? entry : entry.payload);
     }
   } catch { /* socket may already be closed */ }
 
@@ -358,12 +361,29 @@ function fanOutToWatchers(slot, payload, msg = null, fromSlot = -1) {
 function peerForwardDelayMs(msg, fromSlot, toSlot) {
   if (PEER_FORWARD_DELAY_MS <= 0 && PEER_FORWARD_JITTER_MS <= 0) return 0;
   if (PEER_FORWARD_JITTER_MS <= 0) return PEER_FORWARD_DELAY_MS;
-  const rawFrame = msg && msg.frame;
+  const rawFrame = msg && (msg.frame ?? msg.base);
   const frame = Number.isFinite(Number(rawFrame)) ? Math.max(0, Math.floor(Number(rawFrame))) : 0;
   const from = Number.isFinite(Number(fromSlot)) ? Math.max(0, Math.floor(Number(fromSlot))) : 0;
   const to = Number.isFinite(Number(toSlot)) ? Math.max(0, Math.floor(Number(toSlot))) : 0;
   const h = (Math.imul(frame + 1, 1103515245) ^ Math.imul(from + 3, 2654435761) ^ Math.imul(to + 7, 1597334677)) >>> 0;
   return PEER_FORWARD_DELAY_MS + (h % (PEER_FORWARD_JITTER_MS + 1));
+}
+
+function peerFramePayloadCount(msg) {
+  if (msg && msg.type === 'frames' && Array.isArray(msg.inputs)) return Math.max(0, msg.inputs.length);
+  return 1;
+}
+
+function rememberPeerFramePayload(slot, payload, msg) {
+  const count = peerFramePayloadCount(msg);
+  if (count <= 0) return;
+  slot.recentFrames.push({ payload, count });
+  slot.recentFrameCount = (slot.recentFrameCount || 0) + count;
+  const frameBufferLimit = Math.max(1, (slot.peerCount || 2)) * PEER_FRAME_BUFFER_PER_PLAYER;
+  while (slot.recentFrameCount > frameBufferLimit && slot.recentFrames.length > 0) {
+    const dropped = slot.recentFrames.shift();
+    slot.recentFrameCount -= dropped && typeof dropped.count === 'number' ? dropped.count : 1;
+  }
 }
 
 function sendPeerPayload(target, payload, delayMs = 0) {
@@ -399,7 +419,7 @@ function attachPeer(slot, session, ws) {
     }
     if (ws._peerSlot < 0) return;
 
-    if (msg.type === 'frame' || msg.type === 'hash') {
+    if (msg.type === 'frame' || msg.type === 'frames' || msg.type === 'hash') {
       const payload = data.toString();
       for (let i = 0; i < (slot.peerCount || 2); i++) {
         if (i === ws._peerSlot) continue;
@@ -413,12 +433,8 @@ function attachPeer(slot, session, ws) {
       // joining after the buffer has wrapped won't see frames 0..N,
       // which means their lockstep sim is dead-on-arrival — same as
       // pre-buffer behaviour, but with a generous grace window.
-      if (msg.type === 'frame') {
-        slot.recentFrames.push(payload);
-        const frameBufferLimit = Math.max(1, (slot.peerCount || 2)) * PEER_FRAME_BUFFER_PER_PLAYER;
-        if (slot.recentFrames.length > frameBufferLimit) {
-          slot.recentFrames.shift();
-        }
+      if (msg.type === 'frame' || msg.type === 'frames') {
+        rememberPeerFramePayload(slot, payload, msg);
       }
       // Fan out the same payload to every peerwatch socket on this
       // session. Spectators see what each peer sent in the order it
@@ -470,9 +486,12 @@ function handlePeerHello(slot, ws, msg) {
     ? Math.max(2, Math.min(MAX_PEER_PLAYERS, Math.floor(requestedPlayers)))
     : (slot.peerCount || 2);
   if (!peersPresent(slot) && slot.recentFrames.length === 0) {
+    const peerCountChanged = desiredPeerCount !== (slot.peerCount || 2);
     slot.peerCount = desiredPeerCount;
     slot.peers.length = desiredPeerCount;
-    fanOutToWatchers(slot, JSON.stringify({ type: 'peerwatch-ready', players: slot.peerCount }));
+    if (peerCountChanged) {
+      fanOutToWatchers(slot, JSON.stringify({ type: 'peerwatch-ready', players: slot.peerCount }));
+    }
   } else if (desiredPeerCount !== (slot.peerCount || 2)) {
     try { ws.send(JSON.stringify({ type: 'session-error', code: 'player-count-mismatch' })); } catch {}
     try { ws.close(1008, 'player-count-mismatch'); } catch {}

@@ -121,7 +121,7 @@ async function main(): Promise<void> {
           process.stderr.write(`[P${slot + 1} ${msg.type()}] ${text}\n`);
         }
       });
-      const url = `${VITE_BASE}/?peer=${encodeURIComponent(BROKER_URL)}&session=${session}&slot=${slot}&players=${PLAYERS}&deathmatchPlayers=${PLAYERS}&mode=deathmatch&wiretrace=1`;
+      const url = `${VITE_BASE}/?peer=${encodeURIComponent(BROKER_URL)}&session=${session}&slot=${slot}&players=${PLAYERS}&deathmatchPlayers=${PLAYERS}&mode=deathmatch&wiretrace=1&peerBatch=1`;
       pages.push(page);
       gotos.push(page.goto(url, { waitUntil: 'load' }));
     }
