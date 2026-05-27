@@ -966,20 +966,33 @@ document.addEventListener('resume', hardResume);
 // time and spends it one whole step at a time. MAX_CATCHUP_STEPS caps a
 // single frame's catch-up so a backgrounded tab can't trigger a step storm.
 const MAX_CATCHUP_STEPS = 5;
+const FAST_CRT_PLAYER_THRESHOLD = 32;
 let lastFrame = performance.now();
 let stepAccumulator = 0;
 let lastPhase = state.phase;
 
-/** Apply the active presentation theme to the finished frame. With a theme
- *  on, the 3D mesh overlay is composited down into the 2D canvas first so
- *  the post-process covers it too, and the separate overlay is hidden; with
- *  no theme, the overlay stays the browser-composited layer it normally is. */
+function setFastCrtOverlay(active: boolean): void {
+  if (active) document.body.dataset.crtFast = '1';
+  else delete document.body.dataset.crtFast;
+}
+
+function shouldUseFastCrt(): boolean {
+  return Array.isArray(state.players) && state.players.length >= FAST_CRT_PLAYER_THRESHOLD;
+}
+
+/** Apply the active presentation theme to the finished frame. Most themes
+ *  composite the 3D mesh overlay down into the 2D canvas first so the
+ *  post-process covers it too. Large CRT deathmatch uses a CSS overlay
+ *  instead, keeping the mesh canvas compositor-backed. */
 function applyThemeFrame(target: HTMLCanvasElement, now: number): void {
   const theme = getTheme();
-  if (theme === 'none') {
+  const fastCrt = theme === 'crt' && shouldUseFastCrt();
+  if (theme === 'none' || fastCrt) {
+    setFastCrtOverlay(fastCrt);
     if (overlay3d && overlay3d.style.visibility === 'hidden') overlay3d.style.visibility = '';
     return;
   }
+  setFastCrtOverlay(false);
   if (overlay3d && overlay3d.width > 0) {
     const c = target.getContext('2d');
     if (c) {
