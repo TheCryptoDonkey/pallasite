@@ -3294,6 +3294,13 @@ function pad(n: number, len: number): string {
   return n.toString().padStart(len, '0');
 }
 
+function formatHudTime(ms: number): string {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const min = Math.floor(total / 60);
+  const sec = total % 60;
+  return `${min}:${sec.toString().padStart(2, '0')}`;
+}
+
 function drawDeathmatchHudExtras(ctx: CanvasRenderingContext2D, s: GameState, w: number, topY: number, rightX: number): void {
   const rows = s.players
     .map((p, slot) => ({ slot, kills: p.deathmatchKills, deaths: p.deathmatchDeaths, streak: p.deathmatchStreak, score: p.score }))
@@ -3454,8 +3461,24 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   ctx.fillStyle = '#fff5d8';
   ctx.letterSpacing = '0.18em' as unknown as string;
   if (!isArena) {
+    const deathmatchRules = s.deathmatchRules;
+    const deathmatchLeaderKills = isDeathmatch
+      ? s.players.reduce((best, p) => Math.max(best, p.deathmatchKills), 0)
+      : 0;
+    const deathmatchTimeLeft = deathmatchRules
+      ? Math.max(0, deathmatchRules.timeLimitMs - (s.elapsed - s.deathmatchStartedAt))
+      : 0;
+    const deathmatchKillText = deathmatchRules?.killLimit
+      ? `${deathmatchLeaderKills}/${deathmatchRules.killLimit}`
+      : 'NO CAP';
     ctx.fillText(
-      is600bn ? 'THE SIGNAL' : isDeathmatch ? `${s.players.length} PILOTS` : waveName(s.wave).toUpperCase(),
+      is600bn
+        ? 'THE SIGNAL'
+        : isDeathmatch && deathmatchRules
+        ? `${s.players.length}P · ${formatHudTime(deathmatchTimeLeft)} · ${deathmatchKillText}`
+        : isDeathmatch
+        ? `${s.players.length} PILOTS`
+        : waveName(s.wave).toUpperCase(),
       w / 2,
       is600bn ? topY + 14 : topY + 56,
     );
@@ -3469,7 +3492,8 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   ctx.textAlign = 'right';
   if (isDeathmatch) {
     ctx.fillText('RESPAWNS', rightX, topY);
-    ctx.fillText(pad(p0.lives, 2), rightX, topY + 26);
+    const respawnsLeft = Math.max(0, p0.lives - (p0.ship.alive ? 1 : 0));
+    ctx.fillText(pad(respawnsLeft, 2), rightX, topY + 26);
     drawDeathmatchHudExtras(ctx, s, w, topY, rightX);
   } else {
     ctx.fillText('LIVES', rightX, topY);

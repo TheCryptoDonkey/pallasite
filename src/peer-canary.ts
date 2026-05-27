@@ -52,6 +52,18 @@ export function serializeForCanary(s: GameState, appliedInputs?: ReadonlyArray<n
   return JSON.stringify({
     f: s.frame, ph: s.phase, w: s.wave, el: s.elapsed, hs: s.hitStopSteps,
     rng: s.rng,
+    dm: s.deathmatchRules
+      ? [
+          s.deathmatchRules.mode,
+          s.deathmatchRules.timeLimitMs,
+          s.deathmatchRules.killLimit,
+          s.deathmatchRules.respawns,
+          s.deathmatchRules.aiSkill,
+          s.deathmatchStartedAt,
+          s.deathmatchEndedReason,
+          s.deathmatchWinnerSlot,
+        ]
+      : null,
     inp: appliedInputs ?? null,
     players,
     ast: s.asteroids.map((a: Asteroid) => [a.pos.x, a.pos.y, a.vel.x, a.vel.y, a.radius, a.id, a.hp]),

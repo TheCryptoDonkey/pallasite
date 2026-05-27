@@ -7,10 +7,45 @@
  */
 
 import { currentMode } from './mode.js';
-import type { Vec2 } from './types.js';
+import type { DeathmatchRules, Vec2 } from './types.js';
 
 export const DEATHMATCH_WORLD_W = 4096;
 export const DEATHMATCH_WORLD_H = 4096;
+export const DEATHMATCH_DEFAULT_TIME_LIMIT_MS = 3 * 60 * 1000;
+
+function clampNumber(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
+}
+
+export function defaultDeathmatchKillLimit(players: number): number {
+  const count = Math.max(2, Math.min(64, Math.floor(players)));
+  return Math.min(100, Math.max(12, Math.ceil(count * 1.25)));
+}
+
+export function defaultDeathmatchRespawns(players: number): number {
+  const count = Math.max(2, Math.min(64, Math.floor(players)));
+  return Math.min(14, Math.max(5, Math.ceil(count / 8) + 4));
+}
+
+export function makeDeathmatchRules(players: number, overrides: Partial<DeathmatchRules> = {}): DeathmatchRules {
+  const timeLimitMs = Math.floor(clampNumber(
+    overrides.timeLimitMs ?? DEATHMATCH_DEFAULT_TIME_LIMIT_MS,
+    0,
+    30 * 60 * 1000,
+  ));
+  const killLimit = Math.floor(clampNumber(
+    overrides.killLimit ?? defaultDeathmatchKillLimit(players),
+    0,
+    250,
+  ));
+  const respawns = Math.floor(clampNumber(
+    overrides.respawns ?? defaultDeathmatchRespawns(players),
+    0,
+    99,
+  ));
+  const aiSkill = clampNumber(overrides.aiSkill ?? 1, 0.35, 2.0);
+  return { mode: 'ffa', timeLimitMs, killLimit, respawns, aiSkill };
+}
 
 export function deathmatchActive(): boolean {
   return currentMode() === 'deathmatch';

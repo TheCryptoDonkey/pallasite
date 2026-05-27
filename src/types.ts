@@ -551,6 +551,22 @@ export interface DeathmatchFeedEntry {
   streak: number;
 }
 
+export type DeathmatchMode = 'ffa';
+
+export type DeathmatchEndReason = 'time-limit' | 'kill-limit' | 'last-player-standing';
+
+export interface DeathmatchRules {
+  mode: DeathmatchMode;
+  /** Sim-clock duration cap. 0 disables the time limit. */
+  timeLimitMs: number;
+  /** Kills required by one pilot to end the round. 0 disables the kill cap. */
+  killLimit: number;
+  /** Extra ships after the current hull is destroyed. 0 makes it one-life elimination. */
+  respawns: number;
+  /** Bot tuning multiplier. Human network slots ignore this. */
+  aiSkill: number;
+}
+
 export interface GameState {
   phase: GamePhase;
   /** One PlayerState per ship. Length 1 is every solo mode (byte-identical
@@ -568,6 +584,11 @@ export interface GameState {
   debris: Debris[];
   /** Recent deathmatch kill/death events for the HUD kill feed. */
   deathmatchFeed: DeathmatchFeedEntry[];
+  /** Deathmatch round rules/result metadata. Null outside deathmatch. */
+  deathmatchRules: DeathmatchRules | null;
+  deathmatchStartedAt: number;
+  deathmatchEndedReason: DeathmatchEndReason | null;
+  deathmatchWinnerSlot: number | null;
 
   wave: number;
 

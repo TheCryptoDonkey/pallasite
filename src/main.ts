@@ -39,7 +39,7 @@ import { checkForUpdate, querySwVersion } from './version.js';
 import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges, ensureLocalEdges, EMPTY_INPUT, isPeerActive, setPeerActive } from './netcode.js';
 import { hashState, PEER_HASH_PERIOD, serializeForCanary } from './peer-canary.js';
 import { WebSocketPeer, SpectatorPeer, type Peer, type PeerSlot } from './peer.js';
-import type { GameState } from './types.js';
+import type { DeathmatchRules, GameState } from './types.js';
 import { DOWN_DOUBLE_TAP_WINDOW_MS, WORLD_W, WORLD_H } from './types.js';
 
 const PAUSE_DUCK = 0.3;
@@ -63,6 +63,14 @@ function boundedPlayerCount(raw: string | null, fallback: number, min = 2, max =
   return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
+function boundedNumber(raw: string | null, fallback: number, min: number, max: number, integer = false): number {
+  if (raw === null) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  const clamped = Math.max(min, Math.min(max, n));
+  return integer ? Math.floor(clamped) : clamped;
+}
+
 function requestedDeathmatchPlayers(defaultCount: number): number {
   if (!urlDeathmatchMode && getStoredMode() !== 'deathmatch') return defaultCount;
   const params = new URLSearchParams(window.location.search);
@@ -82,6 +90,21 @@ function applyDeathmatchHarnessOptions(): void {
   if (params.get('deathmatchAi') === 'all') {
     for (const p of state.players) p.ai = true;
   }
+}
+
+function requestedDeathmatchRules(): Partial<DeathmatchRules> | undefined {
+  if (!urlDeathmatchMode && getStoredMode() !== 'deathmatch') return undefined;
+  const params = new URLSearchParams(window.location.search);
+  const out: Partial<DeathmatchRules> = {};
+  const timeSec = boundedNumber(params.get('deathmatchTime') ?? params.get('dmTime'), NaN, 0, 30 * 60, true);
+  const killLimit = boundedNumber(params.get('deathmatchKills') ?? params.get('dmKills'), NaN, 0, 250, true);
+  const respawns = boundedNumber(params.get('deathmatchRespawns') ?? params.get('dmRespawns'), NaN, 0, 99, true);
+  const aiSkill = boundedNumber(params.get('deathmatchAiSkill') ?? params.get('dmAiSkill'), NaN, 0.35, 2.0);
+  if (Number.isFinite(timeSec)) out.timeLimitMs = timeSec * 1000;
+  if (Number.isFinite(killLimit)) out.killLimit = killLimit;
+  if (Number.isFinite(respawns)) out.respawns = respawns;
+  if (Number.isFinite(aiSkill)) out.aiSkill = aiSkill;
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 // Test hook: the headless E2E runner reads live sim state (frame, phase,
@@ -313,12 +336,13 @@ void inputDelay;  // exporters / wiring in M2 step 7
 // import) can raise without a dependency back to main.ts.
 const edgeFlags = localEdges;
 
-function currentStartOptions(): { players: number; defender: boolean; aiOpponents: boolean; runMode?: 'campaign' | 'deathmatch' } {
+function currentStartOptions(): { players: number; defender: boolean; aiOpponents: boolean; runMode?: 'campaign' | 'deathmatch'; deathmatchRules?: Partial<DeathmatchRules> } {
   return {
     players: requestedStartPlayers(),
     defender: defenderMode,
     aiOpponents: !(peer || spectator),
     runMode: urlDeathmatchMode ? 'deathmatch' : (peer || spectator) ? 'campaign' : undefined,
+    deathmatchRules: requestedDeathmatchRules(),
   };
 }
 

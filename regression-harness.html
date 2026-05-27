@@ -260,6 +260,53 @@ test('deathmatch respawn chooses a clear spawn variant', () => {
   assert(dist(dead.ship.pos, variant1) > 260, 'respawn avoided live-player-blocked variant');
 });
 
+test('deathmatch ends on kill limit', () => {
+  const s = makeInitialState();
+  startGame(s, 0x51a7, {
+    players: 4,
+    runMode: 'deathmatch',
+    deathmatchRules: { killLimit: 1, timeLimitMs: 60_000, respawns: 5 },
+  });
+  s.phase = 'playing';
+  s.players[2].deathmatchKills = 1;
+  updateGame(s);
+  assertEq(s.phase, 'gameover', 'phase after kill limit');
+  assertEq(s.deathmatchEndedReason, 'kill-limit', 'deathmatchEndedReason');
+  assertEq(s.deathmatchWinnerSlot, 2, 'deathmatchWinnerSlot');
+});
+
+test('deathmatch ends on time limit', () => {
+  const s = makeInitialState();
+  startGame(s, 0x51a7, {
+    players: 4,
+    runMode: 'deathmatch',
+    deathmatchRules: { killLimit: 99, timeLimitMs: 250, respawns: 5 },
+  });
+  s.phase = 'playing';
+  s.deathmatchStartedAt = 0;
+  for (let i = 0; i < 30; i++) updateGame(s);
+  assertEq(s.phase, 'gameover', 'phase after time limit');
+  assertEq(s.deathmatchEndedReason, 'time-limit', 'deathmatchEndedReason');
+});
+
+test('deathmatch ends on last player standing', () => {
+  const s = makeInitialState();
+  startGame(s, 0x51a7, {
+    players: 4,
+    runMode: 'deathmatch',
+    deathmatchRules: { killLimit: 99, timeLimitMs: 60_000, respawns: 0 },
+  });
+  s.phase = 'playing';
+  for (let i = 1; i < s.players.length; i++) {
+    s.players[i].ship.alive = false;
+    s.players[i].lives = 0;
+  }
+  updateGame(s);
+  assertEq(s.phase, 'gameover', 'phase after elimination');
+  assertEq(s.deathmatchEndedReason, 'last-player-standing', 'deathmatchEndedReason');
+  assertEq(s.deathmatchWinnerSlot, 0, 'deathmatchWinnerSlot');
+});
+
 // Death replay should produce the actual visual burst at impact time: green,
 // yellow and white particles plus line debris rendered near the death point.
 test('death replay explosion is visible at impact', () => {

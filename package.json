@@ -14,6 +14,7 @@
     "test:e2e": "tsx tools/run-e2e.ts",
     "test:lobby": "tsx tools/run-lobby-e2e.ts",
     "test:render": "tsx tools/run-render-e2e.ts",
+    "test:solar": "tsx tools/run-solar-visual-qa.ts",
     "test:install": "playwright install chromium",
     "record:duel": "tsx tools/record-duel.ts",
     "hunt:desync": "tsx tools/run-desync-hunter.ts",
