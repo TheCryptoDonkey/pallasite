@@ -7,7 +7,7 @@
 
 import type {
   GameState, Ship, Asteroid, AsteroidSize, AsteroidType, Ufo, UfoType, Mine, Bullet, Vec2,
-  SimTransition, SimTransitionKind, PlayerState, RunStats,
+  SimTransition, SimTransitionKind, PlayerState, RunStats, DeathmatchRules, DeathmatchEndReason,
 } from './types.js';
 import { recordStreamEvent } from './stream-session.js';
 import { getGameConfig } from './faucet.js';
@@ -66,6 +66,7 @@ import {
   deathmatchWorldW,
   confineToDeathmatch,
   outsideDeathmatch,
+  makeDeathmatchRules,
 } from './deathmatch.js';
 import { markAchievement, resetRunAchievements } from './achievements.js';
 import { gameRng, seedRun, getRngState } from './seed.js';
@@ -108,6 +109,10 @@ export function makeInitialState(): GameState {
     particles: [],
     debris: [],
     deathmatchFeed: [],
+    deathmatchRules: null,
+    deathmatchStartedAt: 0,
+    deathmatchEndedReason: null,
+    deathmatchWinnerSlot: null,
     shockwaveRings: [],
     hyperspaceEffects: [],
     waveClearAt: null,
@@ -289,7 +294,15 @@ function makePlayerState(): PlayerState {
 const DEFENDER_RUN_MS = 90_000;
 export const DEFENDER_WIN_THRESHOLD = 6;
 
-export function startGame(s: GameState, forcedSeed?: number, opts?: { players?: number; defender?: boolean; aiOpponents?: boolean; runMode?: RunMode }): void {
+export interface StartGameOptions {
+  players?: number;
+  defender?: boolean;
+  aiOpponents?: boolean;
+  runMode?: RunMode;
+  deathmatchRules?: Partial<DeathmatchRules>;
+}
+
+export function startGame(s: GameState, forcedSeed?: number, opts?: StartGameOptions): void {
   // 600bn flavour now runs through the standard Pallasite startGame +
   // beginWave path. beginWave(s, 1) detects flavour=600bn and spawns
   // council-member-textured asteroids instead of the wave-1 default.
@@ -320,6 +333,11 @@ export function startGame(s: GameState, forcedSeed?: number, opts?: { players?: 
   const deathmatch = deathmatchActive();
   const playerCount = deathmatch ? Math.max(2, opts?.players ?? 4) : (opts?.players ?? 1);
   const deathmatchAiOpponents = deathmatch && (opts?.aiOpponents ?? true);
+  const deathmatchRules = deathmatch ? makeDeathmatchRules(playerCount, opts?.deathmatchRules) : null;
+  s.deathmatchRules = deathmatchRules;
+  s.deathmatchStartedAt = 0;
+  s.deathmatchEndedReason = null;
+  s.deathmatchWinnerSlot = null;
   // Defender bonus wave — protect the Council variant. Drives the
   // wave-1 council-spawn check below + win/lose timer in updateGame.
   // Triggered by either the explicit opts.defender (URL flag still
@@ -334,7 +352,7 @@ export function startGame(s: GameState, forcedSeed?: number, opts?: { players?: 
   // Lives: admin override (starting_lives > 0) wins over the
   // difficulty default. 0 = inherit (the common case).
   const livesOverride = getGameConfig().starting_lives;
-  const startingLives = deathmatch ? 99 : (livesOverride > 0 ? livesOverride : mods.livesStart);
+  const startingLives = deathmatch ? (deathmatchRules?.respawns ?? 0) + 1 : (livesOverride > 0 ? livesOverride : mods.livesStart);
   for (const pl of s.players) {
     pl.lives = startingLives;
   }
@@ -1124,6 +1142,9 @@ function beginDeathmatch(s: GameState): void {
   s.mines = [];
   s.powerups = [];
   s.enemyBullets = [];
+  s.deathmatchStartedAt = s.elapsed;
+  s.deathmatchEndedReason = null;
+  s.deathmatchWinnerSlot = null;
   spawnDeathmatchTerrain(s);
   for (let i = 0; i < s.players.length; i++) {
     const spawn = deathmatchSpawnPoint(i, s.players.length);
@@ -1342,8 +1363,6 @@ function angleDelta(from: number, to: number): number {
   return d;
 }
 
-const DEATHMATCH_AI_KEEP_DISTANCE_SQ = 340 * 340;
-const DEATHMATCH_AI_FIRE_RANGE_SQ = 980 * 980;
 const DEATHMATCH_SPATIAL_CELL = 512;
 
 type PlayerCollider = SpatialCircle & { slot: number; player: PlayerState };
@@ -1412,12 +1431,20 @@ function updateDeathmatchAi(s: GameState): void {
     if (!target) continue;
     const dx = target.ship.pos.x - p.ship.pos.x;
     const dy = target.ship.pos.y - p.ship.pos.y;
+    const baseSkill = s.deathmatchRules?.aiSkill ?? 1;
+    const crowdScale = Math.max(0.70, 1 - Math.max(0, s.players.length - 4) * 0.005);
+    const slotVariance = 0.88 + (i % 5) * 0.06;
+    const skill = Math.max(0.45, Math.min(1.45, baseSkill * crowdScale * slotVariance));
+    const preferredDistance = 260 + skill * 110;
+    const fireRange = 620 + skill * 420;
+    const turnDeadzone = Math.max(0.045, 0.12 - skill * 0.035);
+    const fireCone = 0.22 + skill * 0.08;
     const aim = Math.atan2(dy, dx);
     const delta = angleDelta(p.ship.rot, aim);
-    if (delta < -0.08) p.keys.ArrowLeft = true;
-    if (delta > 0.08) p.keys.ArrowRight = true;
-    p.keys.ArrowUp = bestSq > DEATHMATCH_AI_KEEP_DISTANCE_SQ || Math.abs(delta) > 0.75;
-    p.keys.Space = bestSq < DEATHMATCH_AI_FIRE_RANGE_SQ && Math.abs(delta) < 0.32;
+    if (delta < -turnDeadzone) p.keys.ArrowLeft = true;
+    if (delta > turnDeadzone) p.keys.ArrowRight = true;
+    p.keys.ArrowUp = bestSq > preferredDistance * preferredDistance || Math.abs(delta) > 0.72;
+    p.keys.Space = bestSq < fireRange * fireRange && Math.abs(delta) < fireCone;
   }
 }
 
@@ -1469,6 +1496,70 @@ function recordDeathmatchDeath(s: GameState, victim: PlayerState, attacker: Play
   } else {
     pushDeathmatchFeed(s, null, victimSlot, 0, 0);
     if (!victim.ai) toastNow(s, `P${victimSlot + 1} LOST`);
+  }
+}
+
+function deathmatchRankRows(s: GameState): Array<{ slot: number; kills: number; score: number; deaths: number }> {
+  return s.players
+    .map((p, slot) => ({ slot, kills: p.deathmatchKills, score: p.score, deaths: p.deathmatchDeaths }))
+    .sort((a, b) => b.kills - a.kills || b.score - a.score || a.deaths - b.deaths || a.slot - b.slot);
+}
+
+function deathmatchActiveSlots(s: GameState): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < s.players.length; i++) {
+    const p = s.players[i];
+    if (p.ship.alive || p.lives > 0) out.push(i);
+  }
+  return out;
+}
+
+function resolveDeathmatchWinner(s: GameState, reason: DeathmatchEndReason): number | null {
+  const active = deathmatchActiveSlots(s);
+  if (reason === 'last-player-standing' && active.length === 1) return active[0];
+  const rows = deathmatchRankRows(s);
+  if (rows.length === 0) return null;
+  const first = rows[0];
+  const second = rows[1];
+  if (second && second.kills === first.kills && second.score === first.score && second.deaths === first.deaths) {
+    return null;
+  }
+  return first.slot;
+}
+
+function endDeathmatch(s: GameState, reason: DeathmatchEndReason): void {
+  if (!deathmatchActive() || s.phase === 'gameover' || s.phase === 'title') return;
+  s.deathmatchEndedReason = reason;
+  s.deathmatchWinnerSlot = resolveDeathmatchWinner(s, reason);
+  s.phase = 'gameover';
+  s.phaseStart = s.elapsed;
+  s.pendingTransitions = s.pendingTransitions.filter(t => t.kind !== 'respawn');
+  audio.ufoSirenStop();
+  stopGameplayAudio();
+  const label = reason === 'kill-limit'
+    ? 'KILL LIMIT'
+    : reason === 'time-limit'
+    ? 'TIME'
+    : 'LAST PILOT';
+  toastNow(s, s.deathmatchWinnerSlot === null ? `${label} · DRAW` : `${label} · P${s.deathmatchWinnerSlot + 1} WINS`);
+}
+
+function checkDeathmatchEnd(s: GameState): void {
+  if (!deathmatchActive() || s.phase !== 'playing' || !s.deathmatchRules) return;
+  if (s.deathmatchRules.killLimit > 0) {
+    for (const p of s.players) {
+      if (p.deathmatchKills >= s.deathmatchRules.killLimit) {
+        endDeathmatch(s, 'kill-limit');
+        return;
+      }
+    }
+  }
+  if (s.deathmatchRules.timeLimitMs > 0 && s.elapsed - s.deathmatchStartedAt >= s.deathmatchRules.timeLimitMs) {
+    endDeathmatch(s, 'time-limit');
+    return;
+  }
+  if (s.players.length > 1 && deathmatchActiveSlots(s).length <= 1) {
+    endDeathmatch(s, 'last-player-standing');
   }
 }
 
@@ -3775,6 +3866,8 @@ export function updateGame(s: GameState): void {
   // Sweep dead asteroids
   s.asteroids = s.asteroids.filter(a => a.alive);
 
+  checkDeathmatchEnd(s);
+
   // Wave clear — two-stage: a grab-everything grace window (when there are
   // loose coins / power-ups and the run isn't cheated), then the warp /
   // bonus / completion transition.
@@ -4558,6 +4651,14 @@ function killShip(s: GameState, p: PlayerState, attacker?: PlayerState | null): 
   }
   p.lives -= 1;
   p.runStats.livesLost += 1;
+  if (deathmatch) {
+    checkDeathmatchEnd(s);
+    if (s.phase === 'gameover') return;
+    if (p.lives > 0) {
+      scheduleSimTransition(s, 'respawn', s.elapsed + DEATHMATCH_RESPAWN_DELAY_MS, 0, s.elapsed + DEATHMATCH_RESPAWN_DELAY_MS + DEATHMATCH_RESPAWN_MAX_WAIT_MS, s.players.indexOf(p));
+    }
+    return;
+  }
   if (p.lives <= 0) {
     // p is out for good (ship.alive was already flipped to false above).
     // Fire the gameover sequence only when EVERY player is out — otherwise
@@ -4597,9 +4698,7 @@ function killShip(s: GameState, p: PlayerState, attacker?: PlayerState | null): 
       }
     }
   } else {
-    const delay = deathmatch ? DEATHMATCH_RESPAWN_DELAY_MS : 1500;
-    const maxWait = deathmatch ? DEATHMATCH_RESPAWN_MAX_WAIT_MS : RESPAWN_MAX_WAIT_MS;
-    scheduleSimTransition(s, 'respawn', s.elapsed + delay, 0, s.elapsed + delay + maxWait, s.players.indexOf(p));
+    scheduleSimTransition(s, 'respawn', s.elapsed + 1500, 0, s.elapsed + 1500 + RESPAWN_MAX_WAIT_MS, s.players.indexOf(p));
   }
 }
 

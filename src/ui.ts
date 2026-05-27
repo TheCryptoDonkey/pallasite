@@ -5,7 +5,7 @@
  * to handle clicks/inputs, and keeps the canvas pure-vector.
  */
 
-import type { GameState } from './types.js';
+import type { DeathmatchRules, GameState } from './types.js';
 import { WAVE_LORE, gameOverArcLine } from './types.js';
 import { getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRelay, removeRelay, resetRelays } from './relays.js';
 import { getTouchMode, setTouchMode, type TouchInputMode } from './touch.js';
@@ -70,6 +70,12 @@ import { type ParallaxTier, getParallaxTier, setParallaxTier } from './parallax.
 import { type BounceMode, getBounceMode, setBounceMode } from './bounce.js';
 import { getRadarVisible, setRadarVisible, getRadarLandscape, setRadarLandscape, getRadarTilt, setRadarTilt, type RadarTilt } from './radar.js';
 import { type KnockbackMode, getKnockbackMode, setKnockbackMode } from './knockback.js';
+import {
+  DEATHMATCH_DEFAULT_TIME_LIMIT_MS,
+  defaultDeathmatchKillLimit,
+  defaultDeathmatchRespawns,
+  makeDeathmatchRules,
+} from './deathmatch.js';
 import { followUser, shareCompletion, endorseSubject, rankFromWave } from './social.js';
 import { shareRunCard } from './sharecard.js';
 import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipient } from './zap.js';
@@ -9009,8 +9015,10 @@ function deathmatchRows(state: GameState): Array<{ slot: number; kills: number; 
 
 function renderDeathmatchSummary(parent: HTMLElement, state: GameState): void {
   const rows = deathmatchRows(state);
-  const winner = rows[0];
-  const tied = rows.length > 1 && rows[1].kills === winner.kills && rows[1].score === winner.score;
+  const winner = state.deathmatchWinnerSlot !== null
+    ? rows.find((r) => r.slot === state.deathmatchWinnerSlot) ?? rows[0]
+    : rows[0];
+  const tied = state.deathmatchWinnerSlot === null || (rows.length > 1 && rows[1].kills === winner.kills && rows[1].score === winner.score);
   const wrap = el('div', { parent });
   wrap.style.cssText = [
     'display:flex', 'flex-direction:column', 'align-items:center', 'gap:12px',
@@ -9024,7 +9032,18 @@ function renderDeathmatchSummary(parent: HTMLElement, state: GameState): void {
   const verdict = el('p', { parent: wrap, text: tied ? 'DRAW' : `WINNER · P${winner.slot + 1}` });
   verdict.style.cssText = 'margin:0;font-size:1.35rem;letter-spacing:0.24em;color:var(--hud-yellow);text-shadow:0 0 10px rgba(255,216,74,0.45);';
 
-  const meta = el('p', { parent: wrap, text: `${state.players.length} pilots · ${rows.reduce((sum, r) => sum + r.kills, 0)} confirmed kills · ${rows.filter(r => r.alive).length} still live` });
+  const reason = state.deathmatchEndedReason === 'kill-limit'
+    ? 'kill limit'
+    : state.deathmatchEndedReason === 'time-limit'
+    ? 'time limit'
+    : state.deathmatchEndedReason === 'last-player-standing'
+    ? 'last pilot standing'
+    : 'round ended';
+  const rules = state.deathmatchRules;
+  const rulesText = rules
+    ? `${Math.round(rules.timeLimitMs / 60_000)} min · ${rules.killLimit} kill cap · ${rules.respawns} respawns`
+    : `${state.players.length} pilots`;
+  const meta = el('p', { parent: wrap, text: `${reason} · ${rulesText} · ${rows.reduce((sum, r) => sum + r.kills, 0)} confirmed kills` });
   meta.style.cssText = 'margin:-4px 0 0;font:0.78rem ui-monospace,monospace;color:rgba(220,230,255,0.72);letter-spacing:0.12em;text-align:center;';
 
   const table = el('div', { parent: wrap });
@@ -11698,9 +11717,20 @@ function buildBrokerPeerUrl(session: string): string {
   return `${base}/?s=${encodeURIComponent(session)}&r=peer`;
 }
 
+function appendDeathmatchUrlParams(params: URLSearchParams, players: number, rules?: Partial<DeathmatchRules>): void {
+  if (players <= 2) return;
+  params.set('mode', 'deathmatch');
+  params.set('deathmatchPlayers', String(players));
+  const resolved = makeDeathmatchRules(players, rules);
+  params.set('deathmatchTime', String(Math.round(resolved.timeLimitMs / 1000)));
+  params.set('deathmatchKills', String(resolved.killLimit));
+  params.set('deathmatchRespawns', String(resolved.respawns));
+  params.set('deathmatchAiSkill', String(resolved.aiSkill));
+}
+
 /** Build the page URL the partner opens to join an existing session. Slot
  *  is the partner's slot (the OTHER slot from the inviter's). */
-function buildDuelInviteUrl(session: string, partnerSlot: number, players = 2): string {
+function buildDuelInviteUrl(session: string, partnerSlot: number, players = 2, rules?: Partial<DeathmatchRules>): string {
   const peer = buildBrokerPeerUrl(session);
   const origin = window.location.origin;
   const params = new URLSearchParams({
@@ -11709,10 +11739,7 @@ function buildDuelInviteUrl(session: string, partnerSlot: number, players = 2): 
     slot: String(partnerSlot),
     players: String(players),
   });
-  if (players > 2) {
-    params.set('mode', 'deathmatch');
-    params.set('deathmatchPlayers', String(players));
-  }
+  appendDeathmatchUrlParams(params, players, rules);
   return `${origin}/?${params.toString()}`;
 }
 
@@ -11723,7 +11750,7 @@ function buildDuelInviteUrl(session: string, partnerSlot: number, players = 2): 
  *  SpectatorPeer.connect can open it directly; it must NOT reuse the
  *  duel peer URL (that one has `r=peer`, which the broker treats as a
  *  half-handshake peer and the spectator never resolves). */
-function buildSpectateUrl(session: string, players = 2): string {
+function buildSpectateUrl(session: string, players = 2, rules?: Partial<DeathmatchRules>): string {
   const base = defaultBrokerWsUrl().replace(/\/$/, '');
   const peerWatchUrl = `${base}/?s=${encodeURIComponent(session)}&r=peerwatch`;
   const origin = window.location.origin;
@@ -11732,10 +11759,7 @@ function buildSpectateUrl(session: string, players = 2): string {
     peer: peerWatchUrl,
     players: String(players),
   });
-  if (players > 2) {
-    params.set('mode', 'deathmatch');
-    params.set('deathmatchPlayers', String(players));
-  }
+  appendDeathmatchUrlParams(params, players, rules);
   return `${origin}/?${params.toString()}`;
 }
 
@@ -11767,17 +11791,17 @@ export function renderDuelLobby(): void {
   (lobbyLogo as HTMLImageElement).decoding = 'async';
   lobbyLogo.style.cssText = 'max-width:min(360px, 70vw);width:auto;height:auto;';
 
-  const subtitle = el('p', { parent: overlay, text: '⚔ DUEL ⚔' });
+  const subtitle = el('p', { parent: overlay, text: 'DUEL / DEATHMATCH' });
   subtitle.style.cssText = 'font-size:1.2rem;color:var(--hud-yellow);letter-spacing:0.3em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:-8px 0 4px;';
 
-  const tag = el('p', { parent: overlay, text: 'TWO SHIPS · ONE SKY' });
+  const tag = el('p', { parent: overlay, text: '2 TO 64 PILOTS · ONE ARENA' });
   tag.style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.85);letter-spacing:0.22em;margin:0 0 14px;font-family:ui-monospace,monospace;';
 
   const rules = el('p', { parent: overlay });
   rules.style.cssText = 'margin:0 auto 18px;font-size:0.85rem;color:rgba(220,210,255,0.78);max-width:560px;line-height:1.55;text-align:center;';
   rules.innerHTML =
     'Shared arena, deterministic seed, frame-perfect lockstep. ' +
-    'Friendly fire off. No sats, no stakes — bragging rights only.';
+    'Deathmatch rounds use time, kill-cap, and elimination rules. No sats, no stakes — bragging rights only.';
 
   const tabRow = el('div', { className: 'menu-row', parent: overlay });
   const hostTab = el('button', { className: 'menu-btn', parent: tabRow, text: 'HOST' });
@@ -11815,15 +11839,16 @@ export function renderDuelLobby(): void {
 function renderHostPanel(parent: HTMLElement): (() => void) {
   const session = generateSessionId();
   let playerCount = 2;
+  let deathmatchRules = makeDeathmatchRules(playerCount);
   const joinedSlots = new Set<number>();
-  const partnerUrl = (): string => buildDuelInviteUrl(session, 1, playerCount);
-  const inviterUrl = (): string => buildDuelInviteUrl(session, 0, playerCount);
-  const spectateUrl = (): string => buildSpectateUrl(session, playerCount);
+  const partnerUrl = (): string => buildDuelInviteUrl(session, 1, playerCount, deathmatchRules);
+  const inviterUrl = (): string => buildDuelInviteUrl(session, 0, playerCount, deathmatchRules);
+  const spectateUrl = (): string => buildSpectateUrl(session, playerCount, deathmatchRules);
   const inviteBundle = (): string => {
     if (playerCount <= 2) return partnerUrl();
     const lines: string[] = [];
     for (let slot = 1; slot < playerCount; slot++) {
-      lines.push(`P${slot + 1}: ${buildDuelInviteUrl(session, slot, playerCount)}`);
+      lines.push(`P${slot + 1}: ${buildDuelInviteUrl(session, slot, playerCount, deathmatchRules)}`);
     }
     return lines.join('\n');
   };
@@ -11915,10 +11940,20 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
   const sizeRow = el('div', { className: 'menu-row', parent: inviteCard });
   sizeRow.style.cssText = 'gap:8px;flex-wrap:wrap;margin:-2px 0 2px;';
   const sizeButtons = new Map<number, HTMLButtonElement>();
+  const timeButtons = new Map<number, HTMLButtonElement>();
+  const killButtons = new Map<number, HTMLButtonElement>();
+  const respawnButtons = new Map<number, HTMLButtonElement>();
   const updateInviteViews = (): void => {
     for (const [count, btn] of sizeButtons) btn.className = `menu-btn${count === playerCount ? '' : ' secondary'}`;
+    for (const [seconds, btn] of timeButtons) btn.className = `menu-btn${deathmatchRules.timeLimitMs === seconds * 1000 ? '' : ' secondary'}`;
+    for (const [kills, btn] of killButtons) btn.className = `menu-btn${deathmatchRules.killLimit === kills ? '' : ' secondary'}`;
+    for (const [respawns, btn] of respawnButtons) btn.className = `menu-btn${deathmatchRules.respawns === respawns ? '' : ' secondary'}`;
     copyBtn.textContent = playerCount === 2 ? 'COPY INVITE LINK' : 'COPY INVITE LINKS';
     watchBtn.textContent = 'COPY WATCH LINK';
+    matchRules.style.display = playerCount > 2 ? 'flex' : 'none';
+    rulesSummary.textContent = playerCount > 2
+      ? `${Math.round(deathmatchRules.timeLimitMs / 60_000)} min · ${deathmatchRules.killLimit} kills · ${deathmatchRules.respawns} respawns · FFA`
+      : 'Classic two-player duel';
     watchInfo.textContent = playerCount === 2
       ? 'Anyone with this link can watch the duel live, no account needed.'
       : `Anyone with this link can watch all ${playerCount} pilots live, no account needed.`;
@@ -11930,7 +11965,7 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
         slotBtn.title = `Copy invite for player ${slot + 1}`;
         slotBtn.addEventListener('click', () => {
           const original = slotBtn.textContent ?? `P${slot + 1}`;
-          void navigator.clipboard.writeText(buildDuelInviteUrl(session, slot, playerCount))
+          void navigator.clipboard.writeText(buildDuelInviteUrl(session, slot, playerCount, deathmatchRules))
             .then(() => { slotBtn.textContent = 'OK'; setTimeout(() => { slotBtn.textContent = original; }, 900); })
             .catch(() => { slotBtn.textContent = 'ERR'; setTimeout(() => { slotBtn.textContent = original; }, 900); });
         });
@@ -11945,10 +11980,71 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
     sizeButtons.set(count, btn);
     btn.addEventListener('click', () => {
       playerCount = count;
+      deathmatchRules = makeDeathmatchRules(playerCount, { timeLimitMs: deathmatchRules.timeLimitMs, aiSkill: deathmatchRules.aiSkill });
       for (const slot of Array.from(joinedSlots)) if (slot >= playerCount) joinedSlots.delete(slot);
+      refreshRuleChoices();
       updateInviteViews();
     });
   }
+
+  const matchRules = el('div', { parent: inviteCard });
+  matchRules.style.cssText = 'display:none;flex-direction:column;align-items:center;gap:8px;width:100%;max-width:420px;padding:10px 0 2px;border-top:1px solid rgba(184,144,255,0.18);border-bottom:1px solid rgba(184,144,255,0.18);';
+  el('p', { parent: matchRules, text: 'MATCH RULES' }).style.cssText = 'margin:0;font-size:0.68rem;letter-spacing:0.22em;color:rgba(180,140,255,0.82);';
+  const rulesSummary = el('p', { parent: matchRules, text: 'Classic two-player duel' });
+  rulesSummary.style.cssText = 'margin:-2px 0 0;font:0.76rem ui-monospace,monospace;color:rgba(220,230,255,0.72);letter-spacing:0.08em;text-align:center;';
+  const makeRuleRow = (label: string): HTMLDivElement => {
+    const row = el('div', { parent: matchRules }) as HTMLDivElement;
+    row.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:6px;width:100%;';
+    el('div', { parent: row, text: label }).style.cssText = 'min-width:74px;text-align:right;font:0.68rem ui-monospace,monospace;letter-spacing:0.12em;color:rgba(180,140,255,0.72);';
+    return row;
+  };
+  const timeRow = makeRuleRow('TIME');
+  for (const seconds of [120, DEATHMATCH_DEFAULT_TIME_LIMIT_MS / 1000, 300]) {
+    const btn = el('button', { className: 'menu-btn secondary', parent: timeRow, text: `${Math.round(seconds / 60)}M` });
+    btn.style.cssText = 'padding:5px 9px;font-size:0.72rem;letter-spacing:0.08em;';
+    timeButtons.set(seconds, btn);
+    btn.addEventListener('click', () => {
+      deathmatchRules = makeDeathmatchRules(playerCount, { ...deathmatchRules, timeLimitMs: seconds * 1000 });
+      updateInviteViews();
+    });
+  }
+  const killRow = makeRuleRow('KILLS');
+  const renderKillChoices = (): void => {
+    killRow.querySelectorAll('button').forEach((button) => button.remove());
+    killButtons.clear();
+    const base = defaultDeathmatchKillLimit(playerCount);
+    const choices = Array.from(new Set([base, Math.max(base + 4, Math.round(base * 1.5)), Math.max(base + 8, Math.round(base * 2))]));
+    for (const kills of choices) {
+      const btn = el('button', { className: 'menu-btn secondary', parent: killRow, text: String(kills) });
+      btn.style.cssText = 'padding:5px 9px;font-size:0.72rem;letter-spacing:0.08em;';
+      killButtons.set(kills, btn);
+      btn.addEventListener('click', () => {
+        deathmatchRules = makeDeathmatchRules(playerCount, { ...deathmatchRules, killLimit: kills });
+        updateInviteViews();
+      });
+    }
+  };
+  const respawnRow = makeRuleRow('RESPAWNS');
+  const renderRespawnChoices = (): void => {
+    respawnRow.querySelectorAll('button').forEach((button) => button.remove());
+    respawnButtons.clear();
+    const base = defaultDeathmatchRespawns(playerCount);
+    const choices = Array.from(new Set([base, base + 2, base + 4]));
+    for (const respawns of choices) {
+      const btn = el('button', { className: 'menu-btn secondary', parent: respawnRow, text: String(respawns) });
+      btn.style.cssText = 'padding:5px 9px;font-size:0.72rem;letter-spacing:0.08em;';
+      respawnButtons.set(respawns, btn);
+      btn.addEventListener('click', () => {
+        deathmatchRules = makeDeathmatchRules(playerCount, { ...deathmatchRules, respawns });
+        updateInviteViews();
+      });
+    }
+  };
+  const refreshRuleChoices = (): void => {
+    renderKillChoices();
+    renderRespawnChoices();
+  };
+  refreshRuleChoices();
 
   const info = el('p', { parent: inviteCard });
   info.style.cssText = 'margin:0;font-size:0.85rem;color:rgba(220,210,255,0.78);line-height:1.45;text-align:center;max-width:420px;';
@@ -12040,13 +12136,13 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
  *  in renderDuelLobby calls it so we don't leak intervals across tabs. */
 function lobbyTipStrip(parent: HTMLElement): (() => void) {
   const TIPS: readonly string[] = [
-    'You enter as slot 0. Lockstep buffers your input until slot 1 joins, so READY is safe to press now.',
-    'Friendly fire is off — bullets pass through your opponent\'s ship.',
+    'You enter as slot 0. Lockstep buffers your input until the remote slots join, so READY is safe to press now.',
+    'Deathmatch is free-for-all: every other pilot is a valid target.',
     'No sats, no stakes. Bragging rights only.',
-    'Share the spectate link so anyone can watch the duel live.',
-    'The run ends when both ships are out. Higher score wins.',
+    'Share the spectate link so anyone can watch every pilot live.',
+    'Rounds end on the time cap, kill cap, or last pilot standing.',
     'Hyperspace doubles as a panic button. Shield burns a cooldown.',
-    'You and your opponent see the EXACT same arena — same seed, same rocks.',
+    'Every client sees the EXACT same arena: same seed, same rocks, same rules.',
   ];
 
   const tip = el('p', { parent });
