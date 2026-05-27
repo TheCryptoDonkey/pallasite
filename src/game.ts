@@ -57,7 +57,7 @@ import type { PowerUp, PowerUpType } from './types.js';
 import * as audio from './audio.js';
 import { preloadBackground, invalidateBackgroundCache } from './render.js';
 import { currentMods, lockInDifficulty, getStoredDifficulty, currentDifficulty } from './difficulty.js';
-import { lockInMode, getStoredMode, currentMode, isEndlessMode, isSanctumMode, isDefenderMode, type RunMode } from './mode.js';
+import { lockInMode, getStoredMode, currentMode, isEndlessMode, isSanctumMode, isDefenderMode, isCoopCampaignMode, type RunMode } from './mode.js';
 import { arenaActive, arenaCage, confineToArena, clampToArena, outsideArena } from './arena.js';
 import {
   deathmatchActive,
@@ -356,7 +356,7 @@ export function startGame(s: GameState, forcedSeed?: number, opts?: StartGameOpt
   for (const pl of s.players) {
     pl.lives = startingLives;
   }
-  // 2-player runs (couch + duel + spectate) spread the ships across the
+  // 2-player runs (couch + duel + co-op + spectate) spread the ships across the
   // playfield so they're visually distinct from the first frame. Both
   // ships face inward (toward each other) so the spawn pose reads as a
   // duel rather than two players blindly facing the same direction.
@@ -1196,7 +1196,23 @@ export function beginWave(s: GameState, wave: number): void {
   // spawn override get those coords so the player doesn't drop straight onto
   // a hand-placed hazard.
   const p0 = s.players[0];
-  if (p0.ship.alive) {
+  if (isCoopCampaignMode() && s.players.length >= 2) {
+    const spawn = WAVE_SET_PIECES[wave]?.playerSpawn;
+    const baseX = spawn?.x ?? WORLD_W / 2;
+    const baseY = spawn?.y ?? WORLD_H / 2;
+    const spacing = 68;
+    for (let i = 0; i < Math.min(2, s.players.length); i++) {
+      const p = s.players[i];
+      if (!p.ship.alive) continue;
+      p.ship.pos.x = baseX + (i === 0 ? -spacing : spacing);
+      p.ship.pos.y = baseY;
+      p.ship.vel.x = 0;
+      p.ship.vel.y = 0;
+      p.ship.rotVel = 0;
+      p.ship.rot = spawn?.rot ?? -Math.PI / 2;
+      p.ship.invulnerableUntil = s.elapsed + SHIP_INVULN_MS;
+    }
+  } else if (p0.ship.alive) {
     const spawn = WAVE_SET_PIECES[wave]?.playerSpawn;
     p0.ship.pos.x = spawn?.x ?? WORLD_W / 2;
     p0.ship.pos.y = spawn?.y ?? WORLD_H / 2;
@@ -1741,7 +1757,7 @@ function maybeDropPowerUp(s: GameState, x: number, y: number, force?: PowerUpTyp
     type = force;
   } else {
     if (gameRng() >= getGameConfig().powerup_drop_chance) return;
-    const pool = s.session ? POWERUP_TYPES_NOSTR : POWERUP_TYPES_GUEST;
+    const pool = s.session && !isCoopCampaignMode() ? POWERUP_TYPES_NOSTR : POWERUP_TYPES_GUEST;
     type = pool[Math.floor(gameRng() * pool.length)];
   }
   const angle = gameRng() * Math.PI * 2;
@@ -1835,7 +1851,7 @@ function clearStage(s: GameState, opts: { autoCollect: boolean }): void {
     let bankedScore = 0;
     for (const c of s.coins) {
       if (c.alive && !c.collected) {
-        if (c.kind === 'sat') bankedSats += Math.max(1, Math.round(c.value));
+        if (c.kind === 'sat' && !isCoopCampaignMode()) bankedSats += Math.max(1, Math.round(c.value));
         else bankedScore += Math.max(1, Math.round(c.value));
       }
       // Sparkle puff at each coin position — tinted by kind
@@ -2498,6 +2514,7 @@ function spawnParticles(s: GameState, x: number, y: number, count: number, colou
  */
 function rollPickupKind(s: GameState, asteroidType?: AsteroidType, size?: AsteroidSize): PickupKind {
   if (s.session === null) return 'dust';
+  if (isCoopCampaignMode()) return 'dust';
   // 600bn Sanctum (hostname-driven flavour or explicit Sanctum Mode) is a
   // ceremonial / lore run. Collecting sats would imply a monetary outcome
   // the experience deliberately doesn't deliver — dust shards still spawn
@@ -3819,7 +3836,7 @@ export function updateGame(s: GameState): void {
         if (!c.alive || c.collected) continue;
         if (circlesHit(p.ship, c)) {
           c.collected = true;
-          if (c.kind === 'sat') {
+          if (c.kind === 'sat' && !isCoopCampaignMode()) {
             const credit = Math.max(1, Math.round(c.value * satMul));
             // Lurking and cheating both forfeit sat credit. Score still ticks
             // via dust, but sats won't accumulate once the run is tainted.
@@ -4224,7 +4241,7 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
   // landed hit drops a helpful power-up (rapid / trident / satboost)
   // near the vein so the player has tools to sustain the long fight.
   if (a.isVein) {
-    if (s.session) {
+    if (s.session && !isCoopCampaignMode()) {
       p.sats += VEIN_SATS_PER_HIT;
     } else {
       p.score += VEIN_SCORE_PER_HIT;
@@ -4245,7 +4262,7 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
     // own milestones.
     const hitsLanded = a.hpMax - a.hp;
     if (hitsLanded > 0 && hitsLanded % VEIN_POWERUP_PER_N_HITS === 0) {
-      const pool: PowerUpType[] = s.session
+      const pool: PowerUpType[] = s.session && !isCoopCampaignMode()
         ? ['rapid', 'trident', 'satboost']
         : ['rapid', 'trident'];
       const pick = pool[Math.floor(gameRng() * pool.length)];
@@ -4349,7 +4366,7 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
   if (a.isVein) {
     p.runStats.veinsBroken += 1;
     markAchievement(s, 'first-vein');
-    if (s.session) p.sats += VEIN_JACKPOT_SATS;
+    if (s.session && !isCoopCampaignMode()) p.sats += VEIN_JACKPOT_SATS;
     p.score += VEIN_JACKPOT_SCORE;
     bumpTrauma(s, 0.55);
     hitStop(s, 220);
@@ -4362,7 +4379,7 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
     spawnParticles(s, a.pos.x, a.pos.y, 14, '#ff8ad6', 280, 600);
     audio.explosion(1.2);
     recordStreamEvent('vc', a.pos.x, a.pos.y);
-    if (s.session) toastNow(s, `VEIN COLLAPSED · +${VEIN_JACKPOT_SATS} sats`);
+    if (s.session && !isCoopCampaignMode()) toastNow(s, `VEIN COLLAPSED · +${VEIN_JACKPOT_SATS} sats`);
     else           toastNow(s, `VEIN COLLAPSED · +${VEIN_JACKPOT_SCORE}`);
     maybeExtraLife(s, p);
     return;

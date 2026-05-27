@@ -2,19 +2,22 @@
  * Score persistence and Nostr leaderboard reads.
  *
  * Local: top-10 in localStorage.
- * Nostr: read-only — `fetchGlobalHighScores` pulls kind 30762 events
- *        from relays. Publishing now happens server-side via the faucet's
- *        /api/claim flow (see src/faucet.ts), so this module no longer
- *        signs or sends events. Existing player-signed events from before
- *        the cutover still surface in the leaderboard during the migration
- *        window.
+ * Nostr: `fetchGlobalHighScores` pulls kind 30762 events from relays.
+ *        Sats-paying solo publishes happen server-side via the faucet's
+ *        /api/claim flow (see src/faucet.ts). Co-op campaign publishes a
+ *        player-signed no-payout score event here because it deliberately
+ *        does not touch the faucet.
  */
 
+import type { SignetSession, NostrEvent } from 'signet-login';
 import { GAME_ID } from './auth.js';
 import { getActiveRelays } from './relays.js';
 
 const HIGHSCORE_KEY = 'pallasite:highscores';
+const COOP_HIGHSCORE_KEY = 'pallasite:highscores:coop-campaign';
 const MAX_LOCAL = 10;
+
+export type ScoreBoardId = 'solo' | 'coop-campaign';
 
 export interface HighScoreEntry {
   /** Initials or display name */
@@ -30,9 +33,13 @@ export interface HighScoreEntry {
   eventId?: string;
 }
 
-export function getLocalHighScores(): HighScoreEntry[] {
+function keyForBoard(board: ScoreBoardId = 'solo'): string {
+  return board === 'coop-campaign' ? COOP_HIGHSCORE_KEY : HIGHSCORE_KEY;
+}
+
+export function getLocalHighScores(board: ScoreBoardId = 'solo'): HighScoreEntry[] {
   try {
-    const raw = localStorage.getItem(HIGHSCORE_KEY);
+    const raw = localStorage.getItem(keyForBoard(board));
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -46,21 +53,21 @@ export function getLocalHighScores(): HighScoreEntry[] {
   }
 }
 
-export function addLocalHighScore(entry: HighScoreEntry): HighScoreEntry[] {
-  const existing = getLocalHighScores();
+export function addLocalHighScore(entry: HighScoreEntry, board: ScoreBoardId = 'solo'): HighScoreEntry[] {
+  const existing = getLocalHighScores(board);
   existing.push(entry);
   existing.sort((a, b) => b.score - a.score);
   const trimmed = existing.slice(0, MAX_LOCAL);
   try {
-    localStorage.setItem(HIGHSCORE_KEY, JSON.stringify(trimmed));
+    localStorage.setItem(keyForBoard(board), JSON.stringify(trimmed));
   } catch {
     // localStorage unavailable
   }
   return trimmed;
 }
 
-export function isHighScore(score: number): boolean {
-  const list = getLocalHighScores();
+export function isHighScore(score: number, board: ScoreBoardId = 'solo'): boolean {
+  const list = getLocalHighScores(board);
   if (list.length < MAX_LOCAL) return score > 0;
   return score > list[list.length - 1].score;
 }
@@ -68,18 +75,18 @@ export function isHighScore(score: number): boolean {
 /** Wipe the local top-10 list. Doesn't touch profile cache, relays, or
  *  any Nostr-published scores — just the localStorage entry the title
  *  screen renders from. */
-export function clearLocalHighScores(): void {
-  try { localStorage.removeItem(HIGHSCORE_KEY); } catch { /* ignore */ }
+export function clearLocalHighScores(board: ScoreBoardId = 'solo'): void {
+  try { localStorage.removeItem(keyForBoard(board)); } catch { /* ignore */ }
 }
 
 /**
  * A score event we read off the wire. Same shape as NostrEvent but pinned to
  * kind 30762 so the global-leaderboard code doesn't have to keep re-asserting.
  *
- * Note: the frontend no longer publishes player-signed score events — the
- * faucet's /api/claim flow signs game-side via NIP-46 bunker. This module
- * is read-only; existing player-signed events still surface in the
- * leaderboard fallback during the migration window.
+ * Note: sats-paying solo scores publish through the faucet's /api/claim flow
+ * and are game-signed there. The only frontend score publish left here is the
+ * no-payout co-op campaign board. Existing legacy player-signed events still
+ * surface in the leaderboard during the migration window.
  */
 interface ScoreEvent {
   id: string;
@@ -131,7 +138,13 @@ export interface GlobalHighScore {
 }
 
 const GLOBAL_CACHE_TTL_MS = 30_000;
-let globalCache: { at: number; entries: GlobalHighScore[] } | null = null;
+const globalCaches = new Map<ScoreBoardId, { at: number; entries: GlobalHighScore[] }>();
+
+function scoreEventMatchesBoard(tags: string[][], board: ScoreBoardId): boolean {
+  const mode = tagValue(tags, 'mode') ?? tagValue(tags, 'run');
+  if (board === 'coop-campaign') return mode === 'coop-campaign';
+  return mode !== 'coop-campaign';
+}
 
 /**
  * Pull kind 30762 score events for this game from the active relays and
@@ -147,10 +160,12 @@ let globalCache: { at: number; entries: GlobalHighScore[] } | null = null;
  */
 export async function fetchGlobalHighScores(
   relays: readonly string[] = getActiveRelays(),
-  opts: { force?: boolean; timeoutMs?: number; limit?: number } = {},
+  opts: { force?: boolean; timeoutMs?: number; limit?: number; board?: ScoreBoardId } = {},
 ): Promise<GlobalHighScore[]> {
-  if (!opts.force && globalCache && Date.now() - globalCache.at < GLOBAL_CACHE_TTL_MS) {
-    return globalCache.entries;
+  const board = opts.board ?? 'solo';
+  const cached = globalCaches.get(board);
+  if (!opts.force && cached && Date.now() - cached.at < GLOBAL_CACHE_TTL_MS) {
+    return cached.entries;
   }
   if (relays.length === 0) return [];
 
@@ -169,7 +184,7 @@ export async function fetchGlobalHighScores(
       clearTimeout(timer);
       sockets.forEach(s => { try { s.close(); } catch { /* ignore */ } });
       const entries = Array.from(bestByPubkey.values()).sort((a, b) => b.score - a.score);
-      globalCache = { at: Date.now(), entries };
+      globalCaches.set(board, { at: Date.now(), entries });
       resolve(entries);
     };
 
@@ -177,6 +192,7 @@ export async function fetchGlobalHighScores(
 
     const consider = (event: ScoreEvent): void => {
       if (hasTagValue(event.tags, 'cheated', 'true')) return;
+      if (!scoreEventMatchesBoard(event.tags, board)) return;
       const scoreStr = tagValue(event.tags, 'score');
       const score = scoreStr ? parseInt(scoreStr, 10) : NaN;
       if (!Number.isFinite(score) || score <= 0) return;
@@ -267,10 +283,11 @@ export async function fetchGlobalHighScores(
  */
 export function subscribeGlobalHighScores(
   onUpdate: (entries: GlobalHighScore[]) => void,
-  opts: { relays?: readonly string[]; limit?: number } = {},
+  opts: { relays?: readonly string[]; limit?: number; board?: ScoreBoardId } = {},
 ): () => void {
   const relays = opts.relays ?? getActiveRelays();
   const limit = opts.limit ?? 200;
+  const board = opts.board ?? 'solo';
   if (relays.length === 0) {
     setTimeout(() => onUpdate([]), 0);
     return () => undefined;
@@ -288,13 +305,14 @@ export function subscribeGlobalHighScores(
       if (closed) return;
       const entries = Array.from(bestByPubkey.values()).sort((a, b) => b.score - a.score);
       // Keep the legacy fetch cache warm so any sync reader sees the same data.
-      globalCache = { at: Date.now(), entries };
+      globalCaches.set(board, { at: Date.now(), entries });
       onUpdate(entries);
     }, 200);
   };
 
   const consider = (event: ScoreEvent): boolean => {
     if (hasTagValue(event.tags, 'cheated', 'true')) return false;
+    if (!scoreEventMatchesBoard(event.tags, board)) return false;
     const scoreStr = tagValue(event.tags, 'score');
     const score = scoreStr ? parseInt(scoreStr, 10) : NaN;
     if (!Number.isFinite(score) || score <= 0) return false;
@@ -353,3 +371,93 @@ export function subscribeGlobalHighScores(
   };
 }
 
+export interface CoopCampaignScoreInput {
+  score: number;
+  wave: number;
+  durationMs: number;
+  players: number;
+  seed?: string | null;
+  cheated?: boolean;
+}
+
+export interface ScorePublishResult {
+  event: NostrEvent;
+  publishedTo: string[];
+  failed: string[];
+}
+
+function publishToRelay(url: string, event: NostrEvent, timeoutMs = 5000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(url);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    const timer = setTimeout(() => {
+      try { ws.close(); } catch { /* ignore */ }
+      reject(new Error('relay-timeout'));
+    }, timeoutMs);
+    ws.onopen = () => ws.send(JSON.stringify(['EVENT', event]));
+    ws.onmessage = ev => {
+      try {
+        const msg: unknown = JSON.parse(typeof ev.data === 'string' ? ev.data : '');
+        if (Array.isArray(msg) && msg[0] === 'OK' && msg[1] === event.id) {
+          clearTimeout(timer);
+          try { ws.close(); } catch { /* ignore */ }
+          if (msg[2] === true) resolve();
+          else reject(new Error(typeof msg[3] === 'string' ? msg[3] : 'rejected'));
+        }
+      } catch { /* ignore parse errors */ }
+    };
+    ws.onerror = () => { clearTimeout(timer); reject(new Error('relay-error')); };
+  });
+}
+
+export async function publishCoopCampaignScore(
+  session: SignetSession,
+  input: CoopCampaignScoreInput,
+  relays: readonly string[] = getActiveRelays(),
+): Promise<ScorePublishResult> {
+  const score = Math.max(0, Math.floor(input.score));
+  const wave = Math.max(0, Math.floor(input.wave));
+  const duration = Math.max(0, Math.floor(input.durationMs));
+  const players = Math.max(2, Math.floor(input.players));
+  const tags: string[][] = [
+    ['t', 'pallasite'],
+    ['t', 'coop-campaign'],
+    ['game', GAME_ID],
+    ['mode', 'coop-campaign'],
+    ['p', session.pubkey],
+    ['score', String(score)],
+    ['sats', '0'],
+    ['wave', String(wave)],
+    ['duration', String(duration)],
+    ['players', String(players)],
+  ];
+  if (input.seed) tags.push(['seed', input.seed]);
+  if (input.cheated) tags.push(['cheated', 'true']);
+
+  const signed = await session.signer.signEvent({
+    kind: 30762,
+    content: JSON.stringify({
+      game: GAME_ID,
+      mode: 'coop-campaign',
+      score,
+      sats: 0,
+      wave,
+      duration_ms: duration,
+      players,
+    }),
+    tags,
+  });
+
+  const publishedTo: string[] = [];
+  const failed: string[] = [];
+  await Promise.all(relays.map(url => publishToRelay(url, signed).then(
+    () => publishedTo.push(url),
+    () => failed.push(url),
+  )));
+  return { event: signed, publishedTo, failed };
+}

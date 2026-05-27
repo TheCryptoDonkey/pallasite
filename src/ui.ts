@@ -36,7 +36,7 @@ import {
 } from './a11y.js';
 import { getHapticsEnabled, setHapticsEnabled, hapticsSupported } from './haptics.js';
 import * as auth from './auth.js';
-import { addLocalHighScore, getLocalHighScores, isHighScore, subscribeGlobalHighScores, clearLocalHighScores, type GlobalHighScore } from './score.js';
+import { addLocalHighScore, getLocalHighScores, isHighScore, subscribeGlobalHighScores, clearLocalHighScores, publishCoopCampaignScore, type GlobalHighScore, type ScoreBoardId } from './score.js';
 import { submitClaim, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, fetchFlagged, requestDeleteFlag, requestLnurlWithdraw, pollLnurlWithdrawStatus, fetchAdminState, setAdminCaps, setAdminPause, applyAdminPreset, saveAdminSettings, fetchAdminPlayer, setAdminPlayerFlag, adjustAdminPlayerBalance, setAdminPlayerTier, isAdminSession, type PlayerTier, type FlaggedEntry, type AdminStateResult, type AdminPlayer } from './faucet.js';
 import {
   fetchReviewCases,
@@ -59,7 +59,7 @@ import { getMusicAnalyser } from './audio.js';
 import { fetchProfile, getCachedProfile, bestName } from './profile.js';
 import { type Difficulty, getStoredDifficulty, setStoredDifficulty, lockInDifficulty } from './difficulty.js';
 import { getStoredDailyPref, setStoredDailyPref, todayUTC, getActiveSeed } from './seed.js';
-import { getStoredMode, setStoredMode, currentMode, MODE_LIST, type RunMode } from './mode.js';
+import { getStoredMode, setStoredMode, currentMode, MODE_LIST, isCoopCampaignMode, type RunMode } from './mode.js';
 import { DEV } from './credits.js';
 import {
   isStandalone, isIosSafari, isMobileViewport, canInstallNow,
@@ -877,8 +877,13 @@ export function renderTitle(state: GameState): void {
   // IGNITE label and behaviour both pivot on the stored mode: DUEL routes to
   // the /duel lobby instead of starting a solo run, so the button reflects
   // that. Refreshes on every renderTitle (called whenever Mode changes).
-  const duelSelected = getStoredMode() === 'duel';
-  const startBtn = el('button', { className: 'menu-btn', parent: row, text: duelSelected ? 'ENTER LOBBY · PRESS ENTER' : 'IGNITE · PRESS ENTER' });
+  const storedMode = getStoredMode();
+  const startLabel = storedMode === 'coop-campaign'
+    ? 'CO-OP LOBBY · PRESS ENTER'
+    : storedMode === 'duel'
+      ? 'ENTER LOBBY · PRESS ENTER'
+      : 'IGNITE · PRESS ENTER';
+  const startBtn = el('button', { className: 'menu-btn', parent: row, text: startLabel });
   startBtn.addEventListener('click', () => {
     void (async () => {
       void audio.unlockAudio();
@@ -886,8 +891,9 @@ export function renderTitle(state: GameState): void {
       // path. The lobby reads the same broker the peer arena uses, so no
       // session needs to be created here — that happens inside the lobby
       // (HOST flow generates a session id; JOIN consumes one from the URL).
-      if (getStoredMode() === 'duel') {
-        window.location.assign('/duel');
+      const mode = getStoredMode();
+      if (mode === 'duel' || mode === 'coop-campaign') {
+        window.location.assign(mode === 'coop-campaign' ? '/duel?coop=1' : '/duel');
         return;
       }
       // Fallback path for IGNITE without first typing a name: rather
@@ -950,15 +956,16 @@ export function renderTitle(state: GameState): void {
   // Show local high scores under the start button if any exist. Local entries
   // sometimes carry an eventId (set when the player published this run via the
   // faucet); when they do, the row is clickable and replays in the theatre.
-  const list = getLocalHighScores();
+  const selectedBoard: ScoreBoardId = getStoredMode() === 'coop-campaign' ? 'coop-campaign' : 'solo';
+  const list = getLocalHighScores(selectedBoard);
   if (list.length > 0) {
-    renderLeaderboardBlock(overlay, list, '— LOCAL HIGH SCORES —', 5, () => renderTitle(state));
+    renderLeaderboardBlock(overlay, list, selectedBoard === 'coop-campaign' ? '— LOCAL CO-OP CAMPAIGN —' : '— LOCAL HIGH SCORES —', 5, () => renderTitle(state));
   }
 
   // Global leaderboard from kind 30762 events on relays. Rendered async so
   // the title screen never blocks on a network round-trip — show a placeholder
   // while it loads, swap in the real list when the relays answer.
-  renderGlobalLeaderboard(overlay, state);
+  renderGlobalLeaderboard(overlay, state, selectedBoard);
 
   renderLegalFooter(overlay);
 
@@ -1137,7 +1144,7 @@ export function renderAttract(state: GameState): void {
       // SCORES" the mission-select uses.
       const wrap = el('div', { parent: attractPanel });
       wrap.style.cssText = 'width:100%;max-width:560px;text-align:center;';
-      renderGlobalLeaderboard(wrap, state);
+      renderGlobalLeaderboard(wrap, state, 'solo');
     } else if (phase === 'replay') {
       // v1 placeholder — full live-frame autoplay of a top-zapped run
       // is the next commit. For now show a tasteful "highlight reel
@@ -1411,10 +1418,11 @@ function renderPoolChip(parent: HTMLElement): void {
   }, 60_000);
 }
 
-function renderGlobalLeaderboard(parent: HTMLElement, state: GameState): void {
+function renderGlobalLeaderboard(parent: HTMLElement, state: GameState, board: ScoreBoardId = 'solo'): void {
   const container = el('div', { parent });
   const block = el('div', { className: 'leaderboard-block', parent: container });
-  el('p', { className: 'leaderboard-title', parent: block, text: '— GLOBAL HIGH SCORES —' });
+  const titleText = board === 'coop-campaign' ? '— GLOBAL CO-OP CAMPAIGN —' : '— GLOBAL HIGH SCORES —';
+  el('p', { className: 'leaderboard-title', parent: block, text: titleText });
   const status = el('p', { parent: block, text: 'Listening to relays…' });
   status.style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.7);letter-spacing:0.06em;margin:0;';
 
@@ -1443,8 +1451,8 @@ function renderGlobalLeaderboard(parent: HTMLElement, state: GameState): void {
     const entries = await Promise.all(top.map(resolveDisplayName));
     if (!container.isConnected || myToken !== renderToken) return;
     container.innerHTML = '';
-    renderLeaderboardBlock(container, entries.map(globalToLocal), '— GLOBAL HIGH SCORES —', 5, () => renderTitle(state));
-  });
+    renderLeaderboardBlock(container, entries.map(globalToLocal), titleText, 5, () => renderTitle(state));
+  }, { board });
 
   // Backstop probe: if the title screen unmounts during a long quiet period
   // the onUpdate-side disconnection check won't fire. Probe every 30s.
@@ -1481,7 +1489,7 @@ function globalToLocal(entry: GlobalHighScore & { displayName: string }): Return
 }
 
 /**
- * Mode picker — campaign / drift / bossrush / arena. Shape of the run.
+ * Mode picker — campaign / co-op / drift / bossrush / arena. Shape of the run.
  * Selected mode highlights yellow; unfinished modes (bossrush, arena)
  * still render so the player knows they're coming, but tapping them
  * toasts COMING SOON and the selection reverts to the previous valid
@@ -1535,12 +1543,10 @@ function renderModeRow(parent: HTMLElement, state: GameState): void {
       // parallax bg + forced radar — without a refit those wouldn't
       // engage until the next browser resize event).
       try { (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.(); } catch { /* ignore */ }
-      // Toggling in/out of DUEL changes the IGNITE button's label and
-      // behaviour, so re-render the whole title rather than try to keep
-      // the start button in sync from here. Other mode swaps (e.g.,
-      // CAMPAIGN ↔ DRIFT) don't need a full re-render — refresh() is
-      // enough to restyle the picker buttons + hint.
-      if ((prev === 'duel') !== (info.id === 'duel')) {
+      // Toggling in/out of lobby-backed modes changes the IGNITE button
+      // label/behaviour and the leaderboard board, so re-render the title
+      // rather than keep those separate DOM islands in sync by hand.
+      if ((prev === 'duel') !== (info.id === 'duel') || (prev === 'coop-campaign') !== (info.id === 'coop-campaign')) {
         renderTitle(state);
       } else {
         refresh();
@@ -8795,10 +8801,11 @@ export function renderSettings(onBack: () => void): void {
     if (armTimer !== null) { clearTimeout(armTimer); armTimer = null; }
     arming = false;
     clearLocalHighScores();
+    clearLocalHighScores('coop-campaign');
     paintClear('cleared');
   });
 
-  const dataNote = el('p', { parent: dataPanel, text: "Removes the top-10 list shown on the title screen. Doesn't touch your relays, profile cache, or any Nostr-published scores." });
+  const dataNote = el('p', { parent: dataPanel, text: "Removes the local solo and co-op top-10 lists shown on the title screen. Doesn't touch your relays, profile cache, or any Nostr-published scores." });
   dataNote.style.cssText = 'font-size:0.7rem;color:rgba(180,140,255,0.6);letter-spacing:0.04em;margin:0;text-align:center;max-width:420px;';
 
   const row2 = el('div', { className: 'menu-row', parent: overlay });
@@ -8960,16 +8967,18 @@ export function renderGameOver(state: GameState): void {
   // identity churn. `initialsEnteredThisRun` is repurposed as "high
   // score for this run has been written" so REPLAY KILL re-renders
   // don't double-count.
-  const isNewHigh = currentMode() !== 'deathmatch' && isHighScore(state.players[0].score) && state.players[0].score > 0;
+  const board = activeScoreBoard();
+  const leaderboardScore = runLeaderboardScore(state);
+  const isNewHigh = currentMode() !== 'deathmatch' && isHighScore(leaderboardScore, board) && leaderboardScore > 0;
   if (isNewHigh && !state.initialsEnteredThisRun) {
     addLocalHighScore({
       name: scoreboardNameFor(state),
-      score: state.players[0].score,
-      sats: state.players[0].sats,
+      score: leaderboardScore,
+      sats: runLeaderboardSats(state),
       wave: state.wave,
       at: new Date().toISOString(),
       pubkey: state.session?.pubkey,
-    });
+    }, board);
     state.initialsEnteredThisRun = true;
   }
   renderGameOverRecap(state);
@@ -8994,6 +9003,20 @@ function scoreboardNameFor(state: GameState): string {
     ?? (state.profile ? bestName(state.profile, session.pubkey) : null)
     ?? shortPubkey(session.pubkey);
   return raw.toUpperCase().slice(0, 25);
+}
+
+function activeScoreBoard(): ScoreBoardId {
+  return isCoopCampaignMode() ? 'coop-campaign' : 'solo';
+}
+
+function runLeaderboardScore(state: GameState): number {
+  return isCoopCampaignMode()
+    ? state.players.reduce((sum, p) => sum + p.score, 0)
+    : state.players[0].score;
+}
+
+function runLeaderboardSats(state: GameState): number {
+  return isCoopCampaignMode() ? 0 : state.players[0].sats;
 }
 
 function renderGameOverRecap(state: GameState): void {
@@ -9161,11 +9184,63 @@ function claimErrorMessage(error: string, detail?: string): string {
   }
 }
 
+async function maybePublishCoopCampaignScore(
+  state: GameState,
+  parent: HTMLElement,
+): Promise<void> {
+  const status = el('p', { parent });
+  status.style.cssText = 'font-size:0.85rem;margin:8px 0 0 0;color:rgba(220,210,255,0.72);letter-spacing:0.04em;text-align:center;';
+  const score = runLeaderboardScore(state);
+  if (score <= 0) {
+    status.textContent = 'Co-op score was zero — nothing to publish.';
+    return;
+  }
+  if (!state.session) {
+    status.textContent = 'Co-op score saved locally. Sign in to publish to the co-op board.';
+    return;
+  }
+  if (!state.session.signer.capabilities.canSignEvents) {
+    status.textContent = 'Co-op score saved locally. This session cannot sign leaderboard events.';
+    return;
+  }
+  if (state.cheatedThisRun) {
+    status.style.color = '#ff8050';
+    status.textContent = 'Cheats were used — co-op score stayed local.';
+    return;
+  }
+  status.style.color = '#5b9dff';
+  status.textContent = 'Publishing co-op campaign score…';
+  try {
+    const result = await publishCoopCampaignScore(state.session, {
+      score,
+      wave: state.wave,
+      durationMs: Math.max(0, Math.floor(state.runTimeMs)),
+      players: state.players.length,
+      seed: getActiveSeed(),
+      cheated: state.cheatedThisRun,
+    });
+    if (result.publishedTo.length > 0) {
+      status.style.color = '#58ff58';
+      status.textContent = `✓ Co-op score published to ${result.publishedTo.length}/${result.publishedTo.length + result.failed.length} relays · no sats payout`;
+    } else {
+      status.style.color = '#ff8050';
+      status.textContent = 'Co-op score saved locally; relays rejected the publish.';
+    }
+  } catch (err) {
+    status.style.color = '#ff8050';
+    status.textContent = `Co-op publish failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
 async function maybePublishScore(
   state: GameState,
   parent: HTMLElement,
   setIdlePaused?: (paused: boolean) => void,
 ): Promise<void> {
+  if (isCoopCampaignMode()) {
+    await maybePublishCoopCampaignScore(state, parent);
+    return;
+  }
   if (!state.session) {
     const cta = el('p', { parent });
     cta.style.cssText = 'font-size:0.85rem;color:#5b9dff;margin:8px 0 0 0';
@@ -9839,6 +9914,31 @@ function renderSanctumGameOver(
   partyLink.style.cssText = 'font:11px ui-monospace,monospace;color:rgba(255,216,74,0.7);letter-spacing:0.2em;margin-top:18px;text-decoration:none;';
 }
 
+function renderCoopCampaignBanner(parent: HTMLElement, state: GameState): void {
+  const banner = el('div', { parent });
+  banner.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:10px;margin:8px auto 18px;max-width:620px;';
+
+  const verdict = el('p', { parent: banner, text: 'CO-OP CREW' });
+  verdict.style.cssText = 'margin:0;font-size:1.45rem;letter-spacing:0.25em;color:var(--hud-yellow);text-shadow:0 0 10px rgba(255,216,74,0.45);';
+
+  const total = runLeaderboardScore(state);
+  const meta = el('p', { parent: banner, text: `${total.toLocaleString()} TEAM SCORE · WAVE ${state.wave} · NO SATS PAYOUT` });
+  meta.style.cssText = 'margin:-4px 0 0;font:0.8rem ui-monospace,monospace;color:rgba(220,230,255,0.72);letter-spacing:0.12em;text-align:center;';
+
+  const row = el('div', { parent: banner });
+  row.style.cssText = 'display:flex;gap:18px;justify-content:center;align-items:stretch;flex-wrap:wrap;';
+  for (let i = 0; i < Math.min(2, state.players.length); i++) {
+    const wrap = el('div', { parent: row });
+    wrap.style.cssText = 'min-width:160px;padding:10px 18px;border-radius:8px;text-align:center;border:1px solid rgba(140,255,180,0.32);background:rgba(60,200,140,0.06);';
+    const label = el('div', { parent: wrap, text: `P${i + 1}` });
+    label.style.cssText = 'font-family:monospace;font-size:0.8rem;letter-spacing:0.2em;color:rgba(140,255,180,0.72);';
+    const score = el('div', { parent: wrap, text: state.players[i].score.toLocaleString() });
+    score.style.cssText = 'font-size:1.55rem;letter-spacing:0.05em;color:#dcffe8;margin:2px 0;';
+    const lives = el('div', { parent: wrap, text: `${Math.max(0, state.players[i].lives)} lives` });
+    lives.style.cssText = 'font-size:0.78rem;color:rgba(220,255,232,0.62);font-family:monospace;';
+  }
+}
+
 /** Side-by-side score panel for couch / duel runs. WINNER gets a yellow
  *  highlight; equal-score runs render DRAW. Inserts right after the
  *  gameover header so it's the first thing the player reads, then the
@@ -9916,7 +10016,8 @@ function renderRunCredits(
   // recap stays as-is (player[0]-coupled ghost / claim flows; duel runs
   // are friendly only so no stakes attach to the credit anyway).
   if (state.players.length === 2) {
-    renderVersusBanner(overlay, state);
+    if (isCoopCampaignMode()) renderCoopCampaignBanner(overlay, state);
+    else renderVersusBanner(overlay, state);
   }
 
   // Arc-aware fall line — frames the loss as a story beat rather than a bare
@@ -9946,7 +10047,8 @@ function renderRunCredits(
   // a long Lightning round-trip is in flight (binding defined further
   // below; hoisted via let).
   const publishWrap = el('div', { parent: overlay });
-  void maybePublishScore(state, publishWrap, (paused) => setIdlePaused(paused));
+  if (isCoopCampaignMode()) void maybePublishCoopCampaignScore(state, publishWrap);
+  else void maybePublishScore(state, publishWrap, (paused) => setIdlePaused(paused));
 
   // Best-effort kind 30763 ghost publish. Independent of the score claim so
   // sign-capable sessions leave a ghost trail even when they don't claim
@@ -10274,16 +10376,18 @@ export function renderCompletion(state: GameState): void {
   // save under the session display name, advance to celebration. The
   // 4-char arcade picker pre-stage is gone now that every run has a
   // signed-in identity attached at the front door.
-  const isNewHigh = isHighScore(state.players[0].score) && state.players[0].score > 0;
+  const board = activeScoreBoard();
+  const leaderboardScore = runLeaderboardScore(state);
+  const isNewHigh = isHighScore(leaderboardScore, board) && leaderboardScore > 0;
   if (isNewHigh && !state.initialsEnteredThisRun) {
     addLocalHighScore({
       name: scoreboardNameFor(state),
-      score: state.players[0].score,
-      sats: state.players[0].sats,
+      score: leaderboardScore,
+      sats: runLeaderboardSats(state),
       wave: 25,
       at: new Date().toISOString(),
       pubkey: state.session?.pubkey,
-    });
+    }, board);
     state.initialsEnteredThisRun = true;
   }
   renderCompletionRecap(state);
@@ -11735,9 +11839,21 @@ function appendDeathmatchUrlParams(params: URLSearchParams, players: number, rul
   params.set('deathmatchAiSkill', String(resolved.aiSkill));
 }
 
+type LobbyMatchKind = 'duel' | 'coop-campaign' | 'deathmatch';
+
+function appendLobbyModeUrlParams(params: URLSearchParams, kind: LobbyMatchKind, players: number, rules?: Partial<DeathmatchRules>): void {
+  if (kind === 'coop-campaign') {
+    params.set('mode', 'coop-campaign');
+    params.set('players', '2');
+    params.set('peerBatch', '1');
+    return;
+  }
+  if (kind === 'deathmatch') appendDeathmatchUrlParams(params, players, rules);
+}
+
 /** Build the page URL the partner opens to join an existing session. Slot
  *  is the partner's slot (the OTHER slot from the inviter's). */
-function buildDuelInviteUrl(session: string, partnerSlot: number, players = 2, rules?: Partial<DeathmatchRules>): string {
+function buildDuelInviteUrl(session: string, partnerSlot: number, players = 2, rules?: Partial<DeathmatchRules>, kind: LobbyMatchKind = players > 2 ? 'deathmatch' : 'duel'): string {
   const peer = buildBrokerPeerUrl(session);
   const origin = window.location.origin;
   const params = new URLSearchParams({
@@ -11746,7 +11862,7 @@ function buildDuelInviteUrl(session: string, partnerSlot: number, players = 2, r
     slot: String(partnerSlot),
     players: String(players),
   });
-  appendDeathmatchUrlParams(params, players, rules);
+  appendLobbyModeUrlParams(params, kind, players, rules);
   return `${origin}/?${params.toString()}`;
 }
 
@@ -11757,7 +11873,7 @@ function buildDuelInviteUrl(session: string, partnerSlot: number, players = 2, r
  *  SpectatorPeer.connect can open it directly; it must NOT reuse the
  *  duel peer URL (that one has `r=peer`, which the broker treats as a
  *  half-handshake peer and the spectator never resolves). */
-function buildSpectateUrl(session: string, players = 2, rules?: Partial<DeathmatchRules>): string {
+function buildSpectateUrl(session: string, players = 2, rules?: Partial<DeathmatchRules>, kind: LobbyMatchKind = players > 2 ? 'deathmatch' : 'duel'): string {
   const base = defaultBrokerWsUrl().replace(/\/$/, '');
   const peerWatchUrl = `${base}/?s=${encodeURIComponent(session)}&r=peerwatch`;
   const origin = window.location.origin;
@@ -11766,7 +11882,7 @@ function buildSpectateUrl(session: string, players = 2, rules?: Partial<Deathmat
     peer: peerWatchUrl,
     players: String(players),
   });
-  appendDeathmatchUrlParams(params, players, rules);
+  appendLobbyModeUrlParams(params, kind, players, rules);
   return `${origin}/?${params.toString()}`;
 }
 
@@ -11786,6 +11902,7 @@ export function renderDuelLobby(): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
+  const coopLobby = new URLSearchParams(window.location.search).get('coop') === '1';
 
   // Wordmark logo — same image the title uses, mix-blend-mode:screen so the
   // baked-in starfield drops out over the page background. Reusing the
@@ -11798,17 +11915,18 @@ export function renderDuelLobby(): void {
   (lobbyLogo as HTMLImageElement).decoding = 'async';
   lobbyLogo.style.cssText = 'max-width:min(360px, 70vw);width:auto;height:auto;';
 
-  const subtitle = el('p', { parent: overlay, text: 'DUEL / DEATHMATCH' });
+  const subtitle = el('p', { parent: overlay, text: coopLobby ? 'CO-OP CAMPAIGN' : 'DUEL / DEATHMATCH' });
   subtitle.style.cssText = 'font-size:1.2rem;color:var(--hud-yellow);letter-spacing:0.3em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:-8px 0 4px;';
 
-  const tag = el('p', { parent: overlay, text: '2 TO 64 PILOTS · ONE ARENA' });
+  const tag = el('p', { parent: overlay, text: coopLobby ? '2 PILOTS · 25 WAVES · SHARED SCORE' : '2 TO 64 PILOTS · ONE ARENA' });
   tag.style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.85);letter-spacing:0.22em;margin:0 0 14px;font-family:ui-monospace,monospace;';
 
   const rules = el('p', { parent: overlay });
   rules.style.cssText = 'margin:0 auto 18px;font-size:0.85rem;color:rgba(220,210,255,0.78);max-width:560px;line-height:1.55;text-align:center;';
-  rules.innerHTML =
-    'Shared arena, deterministic seed, frame-perfect lockstep. ' +
-    'Deathmatch rounds use time, kill-cap, and elimination rules. No sats, no stakes — bragging rights only.';
+  rules.innerHTML = coopLobby
+    ? 'Campaign waves together over deterministic lockstep. Shared co-op leaderboard, no sats payouts.'
+    : 'Shared arena, deterministic seed, frame-perfect lockstep. ' +
+      'Deathmatch rounds use time, kill-cap, and elimination rules. No sats, no stakes — bragging rights only.';
 
   const tabRow = el('div', { className: 'menu-row', parent: overlay });
   const hostTab = el('button', { className: 'menu-btn', parent: tabRow, text: 'HOST' });
@@ -11828,7 +11946,7 @@ export function renderDuelLobby(): void {
     try { teardown?.(); } catch { /* ignore */ }
     teardown = null;
     panel.innerHTML = '';
-    teardown = next === 'host' ? renderHostPanel(panel) : renderJoinPanel(panel);
+    teardown = next === 'host' ? renderHostPanel(panel, coopLobby) : renderJoinPanel(panel, coopLobby);
   };
   hostTab.addEventListener('click', () => setTab('host'));
   joinTab.addEventListener('click', () => setTab('join'));
@@ -11843,19 +11961,20 @@ export function renderDuelLobby(): void {
   setTab('host');
 }
 
-function renderHostPanel(parent: HTMLElement): (() => void) {
+function renderHostPanel(parent: HTMLElement, coopLobby = false): (() => void) {
   const session = generateSessionId();
   let playerCount = 2;
   let deathmatchRules = makeDeathmatchRules(playerCount);
+  const matchKind = (): LobbyMatchKind => coopLobby ? 'coop-campaign' : playerCount > 2 ? 'deathmatch' : 'duel';
   const joinedSlots = new Set<number>();
-  const partnerUrl = (): string => buildDuelInviteUrl(session, 1, playerCount, deathmatchRules);
-  const inviterUrl = (): string => buildDuelInviteUrl(session, 0, playerCount, deathmatchRules);
-  const spectateUrl = (): string => buildSpectateUrl(session, playerCount, deathmatchRules);
+  const partnerUrl = (): string => buildDuelInviteUrl(session, 1, playerCount, deathmatchRules, matchKind());
+  const inviterUrl = (): string => buildDuelInviteUrl(session, 0, playerCount, deathmatchRules, matchKind());
+  const spectateUrl = (): string => buildSpectateUrl(session, playerCount, deathmatchRules, matchKind());
   const inviteBundle = (): string => {
     if (playerCount <= 2) return partnerUrl();
     const lines: string[] = [];
     for (let slot = 1; slot < playerCount; slot++) {
-      lines.push(`P${slot + 1}: ${buildDuelInviteUrl(session, slot, playerCount, deathmatchRules)}`);
+      lines.push(`P${slot + 1}: ${buildDuelInviteUrl(session, slot, playerCount, deathmatchRules, matchKind())}`);
     }
     return lines.join('\n');
   };
@@ -11870,7 +11989,7 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
   status.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px 18px;border-radius:999px;border:1.5px solid rgba(255,216,74,0.45);background:rgba(255,216,74,0.08);';
   const statusDot = el('span', { parent: status });
   statusDot.style.cssText = 'width:10px;height:10px;border-radius:50%;background:#ffd84a;box-shadow:0 0 12px rgba(255,216,74,0.85);animation:pallasiteWaitPulse 1.4s ease-in-out infinite;';
-  const statusText = el('span', { parent: status, text: 'WAITING FOR OPPONENT…' });
+  const statusText = el('span', { parent: status, text: coopLobby ? 'WAITING FOR CO-PILOT…' : 'WAITING FOR OPPONENT…' });
   statusText.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:0.95rem;letter-spacing:0.18em;color:#ffd84a;";
   ensurePulseKeyframes();
 
@@ -11879,7 +11998,7 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
       statusDot.style.background = '#8cffb4';
       statusDot.style.boxShadow = '0 0 14px rgba(140,255,180,0.9)';
       statusDot.style.animation = 'none';
-      statusText.textContent = 'OPPONENT CONNECTED ✓';
+      statusText.textContent = coopLobby ? 'CO-PILOT CONNECTED ✓' : 'OPPONENT CONNECTED ✓';
       statusText.style.color = '#8cffb4';
       status.style.borderColor = 'rgba(140,255,180,0.55)';
       status.style.background = 'rgba(140,255,180,0.1)';
@@ -11887,7 +12006,7 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
       statusDot.style.background = '#ffd84a';
       statusDot.style.boxShadow = '0 0 12px rgba(255,216,74,0.85)';
       statusDot.style.animation = 'pallasiteWaitPulse 1.4s ease-in-out infinite';
-      statusText.textContent = 'WAITING FOR OPPONENT…';
+      statusText.textContent = coopLobby ? 'WAITING FOR CO-PILOT…' : 'WAITING FOR OPPONENT…';
       statusText.style.color = '#ffd84a';
       status.style.borderColor = 'rgba(255,216,74,0.45)';
       status.style.background = 'rgba(255,216,74,0.08)';
@@ -11942,10 +12061,11 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
   // ── INVITE block ──────────────────────────────────────────────────────
   // Card-shaped section so the invite reads as one unit (QR + session +
   // copy) rather than three loose rows stacked on top of each other.
-  const inviteCard = lobbyCard(parent, 'INVITE PILOTS');
+  const inviteCard = lobbyCard(parent, coopLobby ? 'INVITE CO-PILOT' : 'INVITE PILOTS');
 
   const sizeRow = el('div', { className: 'menu-row', parent: inviteCard });
   sizeRow.style.cssText = 'gap:8px;flex-wrap:wrap;margin:-2px 0 2px;';
+  if (coopLobby) sizeRow.style.display = 'none';
   const sizeButtons = new Map<number, HTMLButtonElement>();
   const timeButtons = new Map<number, HTMLButtonElement>();
   const killButtons = new Map<number, HTMLButtonElement>();
@@ -11960,9 +12080,9 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
     matchRules.style.display = playerCount > 2 ? 'flex' : 'none';
     rulesSummary.textContent = playerCount > 2
       ? `${Math.round(deathmatchRules.timeLimitMs / 60_000)} min · ${deathmatchRules.killLimit} kills · ${deathmatchRules.respawns} respawns · FFA`
-      : 'Classic two-player duel';
+      : coopLobby ? 'Co-op campaign · shared score · no sats payouts' : 'Classic two-player duel';
     watchInfo.textContent = playerCount === 2
-      ? 'Anyone with this link can watch the duel live, no account needed.'
+      ? coopLobby ? 'Anyone with this link can watch the co-op campaign live, no account needed.' : 'Anyone with this link can watch the duel live, no account needed.'
       : `Anyone with this link can watch all ${playerCount} pilots live, no account needed.`;
     slotLinks.replaceChildren();
     if (playerCount > 2) {
@@ -11972,7 +12092,7 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
         slotBtn.title = `Copy invite for player ${slot + 1}`;
         slotBtn.addEventListener('click', () => {
           const original = slotBtn.textContent ?? `P${slot + 1}`;
-          void navigator.clipboard.writeText(buildDuelInviteUrl(session, slot, playerCount, deathmatchRules))
+          void navigator.clipboard.writeText(buildDuelInviteUrl(session, slot, playerCount, deathmatchRules, matchKind()))
             .then(() => { slotBtn.textContent = 'OK'; setTimeout(() => { slotBtn.textContent = original; }, 900); })
             .catch(() => { slotBtn.textContent = 'ERR'; setTimeout(() => { slotBtn.textContent = original; }, 900); });
         });
@@ -12055,7 +12175,7 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
 
   const info = el('p', { parent: inviteCard });
   info.style.cssText = 'margin:0;font-size:0.85rem;color:rgba(220,210,255,0.78);line-height:1.45;text-align:center;max-width:420px;';
-  info.textContent = 'Send the link or have them scan the code.';
+  info.textContent = coopLobby ? 'Send the link or have your co-pilot scan the code.' : 'Send the link or have them scan the code.';
 
   const qrCanvas = el('canvas', { parent: inviteCard });
   qrCanvas.style.cssText = 'background:#fff;padding:10px;border-radius:8px;max-width:220px;width:100%;height:auto;';
@@ -12081,11 +12201,11 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
   // can watch the duel live via a read-only peerwatch socket — this is
   // a genuinely novel feature and deserves visible billing in the lobby
   // instead of getting tucked under the READY button.
-  const watchCard = lobbyCard(parent, '👁  SHARE THE FIGHT');
+  const watchCard = lobbyCard(parent, coopLobby ? '👁  SHARE THE RUN' : '👁  SHARE THE FIGHT');
 
   const watchInfo = el('p', { parent: watchCard });
   watchInfo.style.cssText = 'margin:0;font-size:0.85rem;color:rgba(220,210,255,0.78);line-height:1.45;text-align:center;max-width:420px;';
-  watchInfo.textContent = 'Anyone with this link can watch the duel live, no account needed.';
+  watchInfo.textContent = coopLobby ? 'Anyone with this link can watch the co-op campaign live, no account needed.' : 'Anyone with this link can watch the duel live, no account needed.';
 
   const watchRow = el('div', { className: 'menu-row', parent: watchCard });
   watchRow.style.cssText = 'gap:8px;flex-wrap:wrap;margin:0;';
@@ -12108,7 +12228,7 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
   // has scanned the QR.
   const readyRow = el('div', { className: 'menu-row', parent });
   readyRow.style.cssText = 'margin-top:6px;';
-  const readyBtn = el('button', { className: 'menu-btn', parent: readyRow, text: 'READY · ENTER THE ARENA ⚔' });
+  const readyBtn = el('button', { className: 'menu-btn', parent: readyRow, text: coopLobby ? 'READY · START CO-OP ▶' : 'READY · ENTER THE ARENA ⚔' });
   readyBtn.style.cssText = 'font-size:1.05rem;padding:12px 28px;letter-spacing:0.2em;';
   readyBtn.addEventListener('click', () => { window.location.assign(inviterUrl()); });
 
@@ -12117,7 +12237,7 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
   // to scan and join. Give them something to read + a hook back to the
   // single-player draw (today's daily leader) so the page doesn't feel
   // dead in the meantime.
-  const tipStripTeardown = lobbyTipStrip(parent);
+  const tipStripTeardown = lobbyTipStrip(parent, coopLobby);
   renderDailyLeaderChip(parent);
   updateInviteViews();
 
@@ -12141,16 +12261,26 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
  *
  *  Returns a teardown that stops the rotation timer; the panel switch
  *  in renderDuelLobby calls it so we don't leak intervals across tabs. */
-function lobbyTipStrip(parent: HTMLElement): (() => void) {
-  const TIPS: readonly string[] = [
-    'You enter as slot 0. Lockstep buffers your input until the remote slots join, so READY is safe to press now.',
-    'Deathmatch is free-for-all: every other pilot is a valid target.',
-    'No sats, no stakes. Bragging rights only.',
-    'Share the spectate link so anyone can watch every pilot live.',
-    'Rounds end on the time cap, kill cap, or last pilot standing.',
-    'Hyperspace doubles as a panic button. Shield burns a cooldown.',
-    'Every client sees the EXACT same arena: same seed, same rocks, same rules.',
-  ];
+function lobbyTipStrip(parent: HTMLElement, coopLobby = false): (() => void) {
+  const TIPS: readonly string[] = coopLobby
+    ? [
+        'You enter as slot 0. Lockstep buffers your input until your co-pilot joins, so READY is safe to press now.',
+        'Co-op campaign uses the normal 25-wave route with a shared final score.',
+        'No sats pay out in co-op. Scores publish to the separate co-op board.',
+        'Share the spectate link so anyone can watch the whole run live.',
+        'The run ends when both ships are out of lives.',
+        'Hyperspace doubles as a panic button. Shield burns a cooldown.',
+        'Both clients see the EXACT same campaign: same seed, same rocks, same waves.',
+      ]
+    : [
+        'You enter as slot 0. Lockstep buffers your input until the remote slots join, so READY is safe to press now.',
+        'Deathmatch is free-for-all: every other pilot is a valid target.',
+        'No sats, no stakes. Bragging rights only.',
+        'Share the spectate link so anyone can watch every pilot live.',
+        'Rounds end on the time cap, kill cap, or last pilot standing.',
+        'Hyperspace doubles as a panic button. Shield burns a cooldown.',
+        'Every client sees the EXACT same arena: same seed, same rocks, same rules.',
+      ];
 
   const tip = el('p', { parent });
   tip.style.cssText = [
@@ -12208,10 +12338,12 @@ function lobbyCard(parent: HTMLElement, label: string): HTMLDivElement {
   return card;
 }
 
-function renderJoinPanel(parent: HTMLElement): (() => void) {
+function renderJoinPanel(parent: HTMLElement, coopLobby = false): (() => void) {
   const info = el('p', { parent });
   info.style.cssText = 'margin:0;font-size:0.88rem;color:rgba(220,210,255,0.8);line-height:1.5;text-align:center;max-width:480px;';
-  info.innerHTML = 'Scan the QR on your opponent\'s screen, or paste the invite link they sent you.';
+  info.innerHTML = coopLobby
+    ? 'Scan the QR on your co-pilot\'s screen, or paste the invite link they sent you.'
+    : 'Scan the QR on your opponent\'s screen, or paste the invite link they sent you.';
 
   const input = el('input', { parent }) as HTMLInputElement;
   input.type = 'url';

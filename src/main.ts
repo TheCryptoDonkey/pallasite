@@ -12,7 +12,7 @@ import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './see
 import { render, preloadBackground, setRenderMode, getRenderModeKind, drawAsciiHud } from './render.js';
 import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderDuelLobby, renderDuelConnecting, simulateStart } from './ui.js';
 import { postHeartbeat } from './faucet.js';
-import { currentMode, getStoredMode, isStoredDefenderMode } from './mode.js';
+import { currentMode, getStoredMode, isStoredDefenderMode, type RunMode } from './mode.js';
 import { deathmatchActive } from './deathmatch.js';
 import {
   startStreamSession,
@@ -78,6 +78,9 @@ function requestedDeathmatchPlayers(defaultCount: number): number {
 }
 
 function requestedStartPlayers(): number {
+  if (urlCoopCampaignMode) {
+    return boundedPlayerCount(mpParams.get('players'), 2, 2, 2);
+  }
   if ((peer || spectator) && (urlDeathmatchMode || getStoredMode() === 'deathmatch')) {
     return boundedPlayerCount(mpParams.get('deathmatchPlayers') ?? mpParams.get('players'), requestedPeerPlayers, 2, 64);
   }
@@ -210,7 +213,8 @@ const mpParams = new URLSearchParams(window.location.search);
 const urlMode = mpParams.get('mode');
 const mpUrl = mpParams.get('peer');
 const mpSession = mpParams.get('session');
-const requestedPeerPlayers = boundedPlayerCount(mpParams.get('players') ?? mpParams.get('deathmatchPlayers'), 2, 2, 64);
+const urlCoopCampaignMode = urlMode === 'coop-campaign' || urlMode === 'coop';
+const requestedPeerPlayers = urlCoopCampaignMode ? 2 : boundedPlayerCount(mpParams.get('players') ?? mpParams.get('deathmatchPlayers'), 2, 2, 64);
 const mpSlotRaw = mpParams.get('slot');
 const parsedMpSlot = mpSlotRaw === null ? NaN : Number(mpSlotRaw);
 const mpSlotValid = Number.isInteger(parsedMpSlot) && parsedMpSlot >= 0 && parsedMpSlot < requestedPeerPlayers;
@@ -223,7 +227,7 @@ const mpMode = !!(mpUrl && mpSession && mpSlotValid);
 // slot to play with.
 const spectateSession = mpParams.get('spectate');
 const spectateMode = !mpMode && !!(spectateSession && mpUrl);
-const urlDeathmatchMode = urlMode === 'deathmatch' || ((mpMode || spectateMode) && requestedPeerPlayers > 2);
+const urlDeathmatchMode = !urlCoopCampaignMode && (urlMode === 'deathmatch' || ((mpMode || spectateMode) && requestedPeerPlayers > 2));
 const peerBatchFrames = mpParams.get('peerBatch') === '1' || mpParams.get('batchFrames') === '1';
 /** Defender preview mode (`?defender=1`). Enables the landscape follow
  *  camera + parallax starfield bg + forced radar; first-cut demo of the
@@ -337,12 +341,12 @@ void inputDelay;  // exporters / wiring in M2 step 7
 // import) can raise without a dependency back to main.ts.
 const edgeFlags = localEdges;
 
-function currentStartOptions(): { players: number; defender: boolean; aiOpponents: boolean; runMode?: 'campaign' | 'deathmatch'; deathmatchRules?: Partial<DeathmatchRules> } {
+function currentStartOptions(): { players: number; defender: boolean; aiOpponents: boolean; runMode?: RunMode; deathmatchRules?: Partial<DeathmatchRules> } {
   return {
     players: requestedStartPlayers(),
     defender: defenderMode,
     aiOpponents: !(peer || spectator),
-    runMode: urlDeathmatchMode ? 'deathmatch' : (peer || spectator) ? 'campaign' : undefined,
+    runMode: urlDeathmatchMode ? 'deathmatch' : urlCoopCampaignMode ? 'coop-campaign' : (peer || spectator) ? 'campaign' : undefined,
     deathmatchRules: requestedDeathmatchRules(),
   };
 }
@@ -768,8 +772,9 @@ window.addEventListener('keydown', e => {
     // renderTitle's IGNITE button so Enter and the on-screen button stay
     // consistent. Done BEFORE the difficulty lock + gateBehindOnboarding
     // because none of that applies to the lobby flow.
-    if (getStoredMode() === 'duel' && !peer && !spectator) {
-      window.location.assign('/duel');
+    const storedMode = getStoredMode();
+    if ((storedMode === 'duel' || storedMode === 'coop-campaign') && !peer && !spectator) {
+      window.location.assign(storedMode === 'coop-campaign' ? '/duel?coop=1' : '/duel');
       return;
     }
     lockInDifficulty(getStoredDifficulty());
