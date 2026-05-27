@@ -33,6 +33,7 @@
 import {
   makeInitialState,
   startGame,
+  beginWave,
   updateGame,
   spawnAsteroid,
   __testRespawnShip,
@@ -41,6 +42,8 @@ import { render, setRenderMode } from '/src/render.ts';
 import { deathmatchSpawnPoint } from '/src/deathmatch.ts';
 import { REPLAY_EXPLOSION_MS, REPLAY_SLOW_MS, REPLAY_SLOW_RATE } from '/src/types.ts';
 import { samplePlayerInput, applyPlayerInput, EMPTY_INPUT } from '/src/netcode.ts';
+import { currentMode } from '/src/mode.ts';
+import { addLocalHighScore, clearLocalHighScores, getLocalHighScores, isHighScore } from '/src/score.ts';
 
 const RETRO_MODE = {
   kind: 'retro', vw: 1280, vh: 720, dpr: 1, scale: 1, tx: 0, ty: 0,
@@ -91,6 +94,69 @@ test('bc7ec95 distinct 2P spawn', () => {
   if (p0.x === p1.x && p0.y === p1.y) {
     throw new Error(`p0 and p1 spawn co-located at (${p0.x}, ${p0.y})`);
   }
+});
+
+test('co-op campaign locks real two-player campaign mode', () => {
+  const s = makeInitialState();
+  startGame(s, 0xfeedc0de, { players: 2, runMode: 'coop-campaign', aiOpponents: false });
+  assertEq(currentMode(), 'coop-campaign', 'currentMode');
+  assertEq(s.players.length, 2, 'players.length');
+  assertEq(s.players.filter((p) => p.ai).length, 0, 'ai player count');
+  assertEq(s.deathmatchRules, null, 'deathmatch rules disabled');
+});
+
+test('co-op wave starts reset both live ships', () => {
+  const s = makeInitialState();
+  startGame(s, 0xfeedc0de, { players: 2, runMode: 'coop-campaign', aiOpponents: false });
+  s.players[0].ship.pos.x = 120;
+  s.players[0].ship.pos.y = 140;
+  s.players[1].ship.pos.x = 1120;
+  s.players[1].ship.pos.y = 560;
+  beginWave(s, 2);
+  assert(dist(s.players[0].ship.pos, s.players[1].ship.pos) > 80, 'co-op ships remain distinct after wave reset');
+  assert(Math.abs(s.players[0].ship.pos.y - s.players[1].ship.pos.y) < 1, 'co-op ships share wave spawn row');
+  assert(s.players.every((p) => p.ship.invulnerableUntil > s.elapsed), 'both ships get wave invulnerability');
+});
+
+test('co-op campaign sat coins credit score only', () => {
+  const s = makeInitialState();
+  startGame(s, 0xfeedc0de, { players: 2, runMode: 'coop-campaign', aiOpponents: false });
+  s.phase = 'playing';
+  s.elapsed = 5000;
+  const p = s.players[0];
+  p.ship.pos.x = 640;
+  p.ship.pos.y = 360;
+  p.sats = 0;
+  p.score = 0;
+  s.coins = [{
+    id: 999,
+    pos: { x: p.ship.pos.x, y: p.ship.pos.y },
+    vel: { x: 0, y: 0 },
+    radius: 10,
+    alive: true,
+    ttl: 1000,
+    collected: false,
+    kind: 'sat',
+    value: 7,
+  }];
+  updateGame(s);
+  assertEq(p.sats, 0, 'co-op sat coin does not credit sats');
+  assert(p.score >= 7, `co-op sat coin becomes score, got ${p.score}`);
+});
+
+test('co-op local leaderboard is separate from solo', () => {
+  clearLocalHighScores();
+  clearLocalHighScores('coop-campaign');
+  addLocalHighScore({ name: 'SOLO', score: 100, sats: 3, wave: 4, at: '2026-05-27T00:00:00.000Z' });
+  addLocalHighScore({ name: 'CREW', score: 250, sats: 0, wave: 6, at: '2026-05-27T00:00:00.000Z' }, 'coop-campaign');
+  assertEq(getLocalHighScores().length, 1, 'solo board length');
+  assertEq(getLocalHighScores('coop-campaign').length, 1, 'co-op board length');
+  assertEq(getLocalHighScores()[0].name, 'SOLO', 'solo board entry');
+  assertEq(getLocalHighScores('coop-campaign')[0].name, 'CREW', 'co-op board entry');
+  assertEq(isHighScore(120), true, 'solo high score threshold');
+  assertEq(isHighScore(120, 'coop-campaign'), true, 'co-op board still has room');
+  clearLocalHighScores();
+  clearLocalHighScores('coop-campaign');
 });
 
 // 894b128 — localHeading override takes precedence over p.targetHeading.
