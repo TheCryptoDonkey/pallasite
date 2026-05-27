@@ -134,7 +134,7 @@ export function simulateStart(): void {
  *  flight. The overlay is cleared by simulateStart()'s subsequent
  *  clearOverlay() call (via onStartCb → clearOverlay), so there's no
  *  flicker between this and the game's first render. */
-export function renderDuelConnecting(slot: number): void {
+export function renderDuelConnecting(slot: number, players = 2, spectating = false): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
@@ -143,10 +143,16 @@ export function renderDuelConnecting(slot: number): void {
   card.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:14px;padding:24px 28px;border-radius:10px;border:1px solid rgba(184,144,255,0.35);background:rgba(15,8,32,0.55);max-width:420px;text-align:center;';
 
   el('h2', { parent: card, text: 'CONNECTING' }).style.cssText = 'margin:0;font-size:1.45rem;letter-spacing:0.2em;color:var(--hud-yellow);';
-  el('p', { parent: card, text: 'Waiting for opponent to join the arena.' })
+  const otherPilots = Math.max(1, players - 1);
+  const waitingText = spectating
+    ? `Waiting for ${players > 2 ? `${players} pilots` : 'the pilots'} to join the arena.`
+    : players > 2
+      ? `Waiting for ${otherPilots} other pilot${otherPilots === 1 ? '' : 's'} to join the arena.`
+      : 'Waiting for opponent to join the arena.';
+  el('p', { parent: card, text: waitingText })
     .style.cssText = 'margin:0;font-size:0.9rem;color:rgba(220,210,255,0.8);line-height:1.5;';
 
-  const slotChip = el('p', { parent: card, text: `You are P${slot + 1}.` });
+  const slotChip = el('p', { parent: card, text: spectating ? `Watching ${players} pilot${players === 1 ? '' : 's'}.` : `You are P${slot + 1}.` });
   slotChip.style.cssText = 'margin:0;font-family:monospace;font-size:0.78rem;color:rgba(180,140,255,0.65);letter-spacing:0.12em;';
 
   // Animated dots so the screen never looks frozen. Pure CSS-free fallback
@@ -11935,7 +11941,7 @@ function renderHostPanel(parent: HTMLElement): (() => void) {
   // ── INVITE block ──────────────────────────────────────────────────────
   // Card-shaped section so the invite reads as one unit (QR + session +
   // copy) rather than three loose rows stacked on top of each other.
-  const inviteCard = lobbyCard(parent, 'INVITE YOUR OPPONENT');
+  const inviteCard = lobbyCard(parent, 'INVITE PILOTS');
 
   const sizeRow = el('div', { className: 'menu-row', parent: inviteCard });
   sizeRow.style.cssText = 'gap:8px;flex-wrap:wrap;margin:-2px 0 2px;';

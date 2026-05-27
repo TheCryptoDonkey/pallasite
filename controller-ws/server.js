@@ -84,6 +84,10 @@ const MAX_PHONES_PER_SESSION = parseInt(process.env.MAX_PHONES ?? '8', 10);
  *  buffer is above this. Lockstep payloads are ~50 bytes; this only fires
  *  on a stuck or much-slower peer. */
 const PEER_BACKPRESSURE_BYTES = parseInt(process.env.PEER_BACKPRESSURE_BYTES ?? '65536', 10);
+/** Optional deterministic forward delay for local soak tests. Production
+ *  leaves both at zero, so the relay still forwards immediately. */
+const PEER_FORWARD_DELAY_MS = Math.max(0, parseInt(process.env.PEER_FORWARD_DELAY_MS ?? '0', 10) || 0);
+const PEER_FORWARD_JITTER_MS = Math.max(0, parseInt(process.env.PEER_FORWARD_JITTER_MS ?? '0', 10) || 0);
 /** Per peer-mode session, how many recent `frame` messages per player to buffer
  *  for replay to late-joining peerwatchers. Each message is ~50 bytes;
  *  the default covers ~25s of history for any configured session size.
@@ -342,16 +346,38 @@ function attachPeerWatcher(slot, session, ws) {
 
 /** Fan out a peer-originated message to every watcher of this session.
  *  Same backpressure rule as the peer-to-peer forward path. */
-function fanOutToWatchers(slot, payload) {
+function fanOutToWatchers(slot, payload, msg = null, fromSlot = -1) {
   if (!slot.peerWatchers || slot.peerWatchers.size === 0) return;
+  let watcherIndex = 0;
   for (const w of slot.peerWatchers) {
-    if (w.readyState !== w.OPEN) continue;
-    if (w.bufferedAmount > PEER_BACKPRESSURE_BYTES) {
-      peerDropped++;
-      continue;
-    }
-    try { w.send(payload); } catch { /* socket transient */ }
+    sendPeerPayload(w, payload, peerForwardDelayMs(msg, fromSlot, 97 + watcherIndex));
+    watcherIndex++;
   }
+}
+
+function peerForwardDelayMs(msg, fromSlot, toSlot) {
+  if (PEER_FORWARD_DELAY_MS <= 0 && PEER_FORWARD_JITTER_MS <= 0) return 0;
+  if (PEER_FORWARD_JITTER_MS <= 0) return PEER_FORWARD_DELAY_MS;
+  const rawFrame = msg && msg.frame;
+  const frame = Number.isFinite(Number(rawFrame)) ? Math.max(0, Math.floor(Number(rawFrame))) : 0;
+  const from = Number.isFinite(Number(fromSlot)) ? Math.max(0, Math.floor(Number(fromSlot))) : 0;
+  const to = Number.isFinite(Number(toSlot)) ? Math.max(0, Math.floor(Number(toSlot))) : 0;
+  const h = (Math.imul(frame + 1, 1103515245) ^ Math.imul(from + 3, 2654435761) ^ Math.imul(to + 7, 1597334677)) >>> 0;
+  return PEER_FORWARD_DELAY_MS + (h % (PEER_FORWARD_JITTER_MS + 1));
+}
+
+function sendPeerPayload(target, payload, delayMs = 0) {
+  if (!target || target.readyState !== target.OPEN) return;
+  const send = () => {
+    if (!target || target.readyState !== target.OPEN) return;
+    if (target.bufferedAmount > PEER_BACKPRESSURE_BYTES) {
+      peerDropped++;
+      return;
+    }
+    try { target.send(payload, { binary: false }); } catch {}
+  };
+  if (delayMs > 0) setTimeout(send, delayMs);
+  else send();
 }
 
 function attachPeer(slot, session, ws) {
@@ -378,12 +404,7 @@ function attachPeer(slot, session, ws) {
       for (let i = 0; i < (slot.peerCount || 2); i++) {
         if (i === ws._peerSlot) continue;
         const target = slot.peers[i];
-        if (!target || target.readyState !== target.OPEN) continue;
-        if (target.bufferedAmount > PEER_BACKPRESSURE_BYTES) {
-          peerDropped++;
-        } else {
-          try { target.send(payload, { binary: false }); } catch {}
-        }
+        sendPeerPayload(target, payload, peerForwardDelayMs(msg, ws._peerSlot, i));
       }
       // Buffer frames (only — not hashes) so a late-joining peerwatch
       // can replay them on attach. Hashes are 1/60 the rate and a
@@ -402,7 +423,7 @@ function attachPeer(slot, session, ws) {
       // Fan out the same payload to every peerwatch socket on this
       // session. Spectators see what each peer sent in the order it
       // was sent; deterministic lockstep depends on consistent ordering.
-      fanOutToWatchers(slot, payload);
+      fanOutToWatchers(slot, payload, msg, ws._peerSlot);
       return;
     }
 

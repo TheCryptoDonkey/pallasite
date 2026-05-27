@@ -1545,7 +1545,7 @@ async function boot(): Promise<void> {
     // Surface a "Connecting" placeholder so the player isn't staring at a
     // blank canvas while peer.connect() blocks on the partner's arrival.
     // simulateStart's clearOverlay() removes this once peer-joined fires.
-    renderDuelConnecting(mpSlot);
+    renderDuelConnecting(mpSlot, requestedPeerPlayers, false);
     try {
       await peer.connect({ url: mpUrl, session: mpSession, localSlot: mpSlot, players: requestedPeerPlayers });
       setPeerActive(true);
@@ -1588,7 +1588,7 @@ async function boot(): Promise<void> {
   // with theirs from frame 0.
   if (spectateMode && mpUrl && spectateSession) {
     spectator = new SpectatorPeer();
-    renderDuelConnecting(0);
+    renderDuelConnecting(0, requestedPeerPlayers, true);
     try {
       await spectator.connect({ url: mpUrl, session: spectateSession, players: requestedPeerPlayers });
       setPeerActive(true);
