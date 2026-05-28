@@ -60,6 +60,7 @@ import { currentMods, lockInDifficulty, getStoredDifficulty, currentDifficulty }
 import { lockInMode, getStoredMode, currentMode, isEndlessMode, isSanctumMode, isDefenderMode, isCoopCampaignMode, type RunMode } from './mode.js';
 import { arenaActive, arenaCage, confineToArena, clampToArena, outsideArena } from './arena.js';
 import {
+  configureDeathmatchWorld,
   deathmatchActive,
   deathmatchSpawnPoint,
   deathmatchWorldH,
@@ -298,6 +299,7 @@ export interface StartGameOptions {
   players?: number;
   defender?: boolean;
   aiOpponents?: boolean;
+  aiSlots?: readonly number[];
   runMode?: RunMode;
   deathmatchRules?: Partial<DeathmatchRules>;
 }
@@ -332,7 +334,9 @@ export function startGame(s: GameState, forcedSeed?: number, opts?: StartGameOpt
   const mods = currentMods();
   const deathmatch = deathmatchActive();
   const playerCount = deathmatch ? Math.max(2, opts?.players ?? 4) : (opts?.players ?? 1);
+  if (deathmatch) configureDeathmatchWorld(playerCount);
   const deathmatchAiOpponents = deathmatch && (opts?.aiOpponents ?? true);
+  const deathmatchAiSlots = deathmatch && opts?.aiSlots !== undefined ? new Set(opts.aiSlots) : null;
   const deathmatchRules = deathmatch ? makeDeathmatchRules(playerCount, opts?.deathmatchRules) : null;
   s.deathmatchRules = deathmatchRules;
   s.deathmatchStartedAt = 0;
@@ -369,7 +373,7 @@ export function startGame(s: GameState, forcedSeed?: number, opts?: StartGameOpt
       s.players[i].ship.pos.x = spawn.x;
       s.players[i].ship.pos.y = spawn.y;
       s.players[i].ship.rot = spawn.rot;
-      if (deathmatchAiOpponents && i > 0) s.players[i].ai = true;
+      if (deathmatchAiSlots ? deathmatchAiSlots.has(i) : deathmatchAiOpponents && i > 0) s.players[i].ai = true;
     }
   } else if (playerCount === 2) {
     s.players[0].ship.pos.x = WORLD_W * 0.30;
@@ -1067,6 +1071,7 @@ function spawnDeathmatchTerrain(s: GameState): void {
   const ww = deathmatchWorldW();
   const wh = deathmatchWorldH();
   const centre = { x: ww / 2, y: wh / 2 };
+  const arenaScale = Math.max(0.75, Math.min(3, Math.sqrt((ww * wh) / (4096 * 4096))));
   const tightenTerrainShape = (a: Asteroid): void => {
     a.shape = a.shape.map((v) => Math.max(0.84, Math.min(0.99, 0.84 + (v - 0.7) * 0.34)));
   };
@@ -1110,22 +1115,23 @@ function spawnDeathmatchTerrain(s: GameState): void {
     const a = spawnAsteroid('large', 20, { x: f.x, y: f.y }, { x: 0, y: 0 }, f.type, { terrain: true, gravity: f.gravity });
     s.asteroids.push(lockTerrain(a, f.r));
   }
-  const extraCover = Math.min(14, Math.max(0, Math.floor((s.players.length + 3) / 6)));
+  const extraCover = Math.min(30, Math.max(0, Math.floor((s.players.length + 3) / 6) + Math.floor((arenaScale - 1) * 5)));
   for (let i = 0; i < extraCover; i++) {
     const angle = (i / Math.max(1, extraCover)) * Math.PI * 2 + 0.28;
-    const dist = 920 + (i % 3) * 430;
+    const dist = (920 + (i % 3) * 430) * arenaScale;
     const x = Math.max(240, Math.min(ww - 240, centre.x + Math.cos(angle) * dist));
     const y = Math.max(240, Math.min(wh - 240, centre.y + Math.sin(angle) * dist));
     const type = i % 4 === 0 ? 'iron' : i % 4 === 1 ? 'carbonaceous' : i % 4 === 2 ? 'mesosiderite' : 'ballast';
     const a = spawnAsteroid('large', 20, { x, y }, { x: 0, y: 0 }, type, { terrain: true, gravity: 7 + (i % 3) * 2 });
     s.asteroids.push(lockTerrain(a, 165 + (i % 4) * 34));
   }
-  for (let i = 0; i < 16; i++) {
+  const driftingCount = Math.min(80, Math.max(12, 10 + Math.ceil(s.players.length * 0.85)));
+  for (let i = 0; i < driftingCount; i++) {
     let x = centre.x;
     let y = centre.y;
     for (let attempt = 0; attempt < 16; attempt++) {
       const angle = gameRng() * Math.PI * 2;
-      const dist = 650 + gameRng() * 1250;
+      const dist = (650 + gameRng() * 1250) * arenaScale;
       x = Math.max(180, Math.min(ww - 180, centre.x + Math.cos(angle) * dist));
       y = Math.max(180, Math.min(wh - 180, centre.y + Math.sin(angle) * dist));
       if (clearOfTerrain(x, y, 70)) break;
@@ -1390,6 +1396,18 @@ type DeathmatchBroadphase = {
   ships: SpatialHash<PlayerCollider>;
 };
 
+const DEATHMATCH_AI_PERSONAS = [
+  { rangeMul: 0.86, aggressionMul: 1.22, shieldMul: 0.88, aimMul: 0.92 },
+  { rangeMul: 1.22, aggressionMul: 0.82, shieldMul: 1.10, aimMul: 1.08 },
+  { rangeMul: 1.00, aggressionMul: 1.00, shieldMul: 1.00, aimMul: 1.00 },
+  { rangeMul: 0.72, aggressionMul: 1.34, shieldMul: 1.24, aimMul: 0.88 },
+  { rangeMul: 1.38, aggressionMul: 0.72, shieldMul: 0.96, aimMul: 1.16 },
+] as const;
+
+function deathmatchAiPersona(slot: number): typeof DEATHMATCH_AI_PERSONAS[number] {
+  return DEATHMATCH_AI_PERSONAS[Math.abs(slot) % DEATHMATCH_AI_PERSONAS.length];
+}
+
 function buildShipColliders(s: GameState): PlayerCollider[] {
   const out: PlayerCollider[] = [];
   for (let i = 0; i < s.players.length; i++) {
@@ -1414,6 +1432,56 @@ function buildDeathmatchBroadphase(s: GameState): DeathmatchBroadphase {
   return { asteroids, ufos, mines, enemyBullets, ships };
 }
 
+function incomingThreat(ship: Ship, threat: { pos: Vec2; vel: Vec2; radius: number }, horizonS: number, padding: number): boolean {
+  const dx = threat.pos.x - ship.pos.x;
+  const dy = threat.pos.y - ship.pos.y;
+  const rvx = threat.vel.x - ship.vel.x;
+  const rvy = threat.vel.y - ship.vel.y;
+  const dangerRadius = ship.radius + threat.radius + padding;
+  const dangerSq = dangerRadius * dangerRadius;
+  const distSq = dx * dx + dy * dy;
+  if (distSq <= dangerSq) return true;
+  const speedSq = rvx * rvx + rvy * rvy;
+  if (speedSq <= 0.001) return false;
+  const closing = dx * rvx + dy * rvy;
+  if (closing >= 0) return false;
+  const t = -closing / speedSq;
+  if (t < 0 || t > horizonS) return false;
+  const cx = dx + rvx * t;
+  const cy = dy + rvy * t;
+  return cx * cx + cy * cy <= dangerSq;
+}
+
+function shouldDeathmatchAiUseShield(s: GameState, slot: number, skill: number, shieldMul = 1): boolean {
+  const p = s.players[slot];
+  if (!p || !p.ship.alive || p.ship.shieldUp || s.elapsed < p.ship.shieldReadyAt) return false;
+  if (s.elapsed <= p.ship.invulnerableUntil || p.ship.hyperspaceCloakMs > 0) return false;
+  const bulletHorizon = (0.10 + skill * 0.28) * shieldMul;
+  const hazardHorizon = (0.12 + skill * 0.18) * shieldMul;
+  const bulletPadding = (8 + skill * 18) * shieldMul;
+  const hazardPadding = (10 + skill * 16) * shieldMul;
+  for (const b of s.bullets) {
+    if (!b.alive || b.owner === slot) continue;
+    if (incomingThreat(p.ship, b, bulletHorizon, bulletPadding)) return true;
+  }
+  for (const b of s.enemyBullets) {
+    if (!b.alive) continue;
+    if (incomingThreat(p.ship, b, bulletHorizon, bulletPadding)) return true;
+  }
+  for (const a of s.asteroids) {
+    if (!a.alive || a.terrain || (a.depth ?? 3) !== 3) continue;
+    if (incomingThreat(p.ship, a, hazardHorizon, hazardPadding)) return true;
+  }
+  for (const m of s.mines) {
+    if (!m.alive) continue;
+    const dx = m.pos.x - p.ship.pos.x;
+    const dy = m.pos.y - p.ship.pos.y;
+    const danger = m.radius + p.ship.radius + (34 + skill * 18) * shieldMul;
+    if (dx * dx + dy * dy <= danger * danger) return true;
+  }
+  return false;
+}
+
 function updateDeathmatchAi(s: GameState): void {
   if (!deathmatchActive()) return;
   const shipGrid = s.players.length >= 16 ? new SpatialHash<PlayerCollider>(DEATHMATCH_SPATIAL_CELL) : null;
@@ -1428,6 +1496,12 @@ function updateDeathmatchAi(s: GameState): void {
     p.targetHeading = null;
     p.thrustOverride = false;
     if (!p.ship.alive || p.ship.hyperspaceCloakMs > 0) continue;
+    const baseSkill = s.deathmatchRules?.aiSkill ?? 1;
+    const crowdScale = Math.max(0.70, 1 - Math.max(0, s.players.length - 4) * 0.005);
+    const slotVariance = 0.88 + (i % 5) * 0.06;
+    const persona = deathmatchAiPersona(i);
+    const skill = Math.max(0.30, Math.min(1.45, baseSkill * crowdScale * slotVariance * persona.aimMul));
+    if (shouldDeathmatchAiUseShield(s, i, skill, persona.shieldMul)) tryActivateShield(s, s.elapsed, p);
     let target: PlayerState | null = null;
     let bestSq = Infinity;
     const candidates = shipGrid
@@ -1447,20 +1521,23 @@ function updateDeathmatchAi(s: GameState): void {
     if (!target) continue;
     const dx = target.ship.pos.x - p.ship.pos.x;
     const dy = target.ship.pos.y - p.ship.pos.y;
-    const baseSkill = s.deathmatchRules?.aiSkill ?? 1;
-    const crowdScale = Math.max(0.70, 1 - Math.max(0, s.players.length - 4) * 0.005);
-    const slotVariance = 0.88 + (i % 5) * 0.06;
-    const skill = Math.max(0.45, Math.min(1.45, baseSkill * crowdScale * slotVariance));
-    const preferredDistance = 260 + skill * 110;
-    const fireRange = 620 + skill * 420;
+    const preferredDistance = (260 + skill * 110) * persona.rangeMul;
+    const fireRange = (420 + skill * 500) * persona.rangeMul;
     const turnDeadzone = Math.max(0.045, 0.12 - skill * 0.035);
-    const fireCone = 0.22 + skill * 0.08;
-    const aim = Math.atan2(dy, dx);
+    const fireCone = 0.16 + skill * 0.09;
+    const aimError = Math.max(0, 1 - skill) * (
+      Math.sin((s.frame + i * 53) * 0.034) * 0.24 +
+      Math.sin((s.frame + i * 29) * 0.071) * 0.10
+    );
+    const aim = Math.atan2(dy, dx) + aimError;
     const delta = angleDelta(p.ship.rot, aim);
     if (delta < -turnDeadzone) p.keys.ArrowLeft = true;
     if (delta > turnDeadzone) p.keys.ArrowRight = true;
     p.keys.ArrowUp = bestSq > preferredDistance * preferredDistance || Math.abs(delta) > 0.72;
-    p.keys.Space = bestSq < fireRange * fireRange && Math.abs(delta) < fireCone;
+    const burstPeriod = Math.max(8, Math.round((28 - skill * 10) / persona.aggressionMul));
+    const burstWindow = Math.max(2, Math.round((2 + skill * 5) * persona.aggressionMul));
+    const inBurst = ((s.frame + i * 7) % burstPeriod) < burstWindow;
+    p.keys.Space = inBurst && bestSq < fireRange * fireRange && Math.abs(delta) < fireCone;
   }
 }
 
@@ -2639,16 +2716,18 @@ export function tryActivateShield(s: GameState, now: number, p: PlayerState): bo
   p.ship.shieldUp = true;
   p.ship.shieldExpiresAt = now + SHIELD_DURATION_MS;
   p.ship.shieldReadyAt = now + SHIELD_DURATION_MS + SHIELD_COOLDOWN_MS * mods.shieldCooldownMul;
-  audio.shieldUp();
-  recordStreamEvent('sb', p.ship.pos.x, p.ship.pos.y);
-  // Small punch on activation — the shield ignite reads as a meaningful
-  // event, not a button click.
-  bumpTrauma(s, 0.18);
-  audio.pulseDuck(0.7, 180);
-  haptic('tap');
-  s.shieldUsedThisWave = true;
-  markAchievement(s, 'first-shield');
-  toastNow(s, 'SHIELD UP');
+  if (!p.ai) {
+    audio.shieldUp();
+    recordStreamEvent('sb', p.ship.pos.x, p.ship.pos.y);
+    // Small punch on activation — the shield ignite reads as a meaningful
+    // event, not a button click.
+    bumpTrauma(s, 0.18);
+    audio.pulseDuck(0.7, 180);
+    haptic('tap');
+    s.shieldUsedThisWave = true;
+    markAchievement(s, 'first-shield');
+    toastNow(s, 'SHIELD UP');
+  }
   return true;
 }
 
@@ -3694,6 +3773,12 @@ export function updateGame(s: GameState): void {
         if (circlesHit(b, target.ship)) {
           b.alive = false;
           b.hasLanded = true;
+          if (target.ship.shieldUp) {
+            spawnParticles(s, b.pos.x, b.pos.y, 8, '#5b9dff', 180, 320);
+            audio.shieldHit();
+            target.ship.shieldHitFlash = 1;
+            break;
+          }
           const attacker = s.players[b.owner];
           killShip(s, target, attacker);
           break;

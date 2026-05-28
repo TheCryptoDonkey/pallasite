@@ -27,7 +27,7 @@ export type PeerSlot = number;
 
 /** Messages this client sends to the broker. */
 export type PeerMsgOut =
-  | { type: 'hello-peer'; session: string; slot: PeerSlot; version: 1; players?: number }
+  | { type: 'hello-peer'; session: string; slot: PeerSlot; version: 1; players?: number; aiFill?: boolean; humanSlots?: number[] }
   | { type: 'frame'; frame: number; slot: PeerSlot; input: number }
   | { type: 'frames'; slot: PeerSlot; base: number; inputs: number[] }
   | { type: 'hash'; frame: number; slot: PeerSlot; hash: number }
@@ -42,8 +42,12 @@ export type PeerMsgIn =
   | { type: 'hash'; frame: number; slot: PeerSlot; hash: number }
   | { type: 'peer-joined'; slot: PeerSlot }
   | { type: 'peer-left'; slot: PeerSlot; reason: string }
-  | { type: 'peerwatch-ready'; players?: number }
+  | { type: 'peerwatch-ready'; players?: number; aiFill?: boolean; humanSlots?: number[]; takeovers?: HumanSlotTakeover[] }
+  | { type: 'session-config'; players?: number; aiFill?: boolean; humanSlots?: number[]; takeovers?: HumanSlotTakeover[] }
   | { type: 'session-error'; code: string };
+
+export interface HumanSlotTakeover { slot: number; frame: number }
+export interface HumanSlotConfig { humanSlots: number[]; takeovers: HumanSlotTakeover[] }
 
 /** Per-frame inbox entry, drained by the lockstep loop into the InputLog. */
 export interface FrameDelivery { frame: number; slot: PeerSlot; input: number; }
@@ -63,6 +67,10 @@ export interface PeerConnectOpts {
   players?: number;
   /** Enable batched frame windows. Requires a broker that understands `frames`. */
   batchFrames?: boolean;
+  /** In deathmatch, allow absent slots to be deterministic AI pilots. */
+  aiFill?: boolean;
+  /** Slot list chosen by the host as human-controlled for this run. */
+  humanSlots?: number[];
 }
 
 // ── Peer interface ───────────────────────────────────────────────────────────
@@ -95,6 +103,10 @@ export interface Peer {
    *  Set to null to clear. LoopbackPeer never reconnects, so this is a
    *  no-op on the loopback implementation. */
   setOnReconnected?(cb: (() => void) | null): void;
+  /** Final human slots for an AI-filled deathmatch, once broker config lands. */
+  getHumanSlots?(): number[];
+  /** Human-slot config plus scheduled AI->human takeover frames. */
+  getHumanSlotConfig?(): HumanSlotConfig;
 }
 
 // ── LoopbackPeer ─────────────────────────────────────────────────────────────
@@ -293,6 +305,8 @@ export class WebSocketPeer implements Peer {
   private wsSentFrameCount = 0;
   private wsRecvFramePayloadCount = 0;
   private wsSentFramePayloadCount = 0;
+  private humanSlots: number[] = [];
+  private humanTakeovers: HumanSlotTakeover[] = [];
 
   connect(opts: PeerConnectOpts): Promise<void> {
     return new Promise<void>((resolve, reject) => {
@@ -341,6 +355,8 @@ export class WebSocketPeer implements Peer {
         localSlot: opts.localSlot,
         players: opts.players ?? 2,
         batchFrames: opts.batchFrames === true,
+        aiFill: opts.aiFill === true,
+        humanSlots: Array.isArray(opts.humanSlots) ? opts.humanSlots : undefined,
         enableWireTrace,
       });
     });
@@ -355,6 +371,7 @@ export class WebSocketPeer implements Peer {
       | { kind: 'connect-failed'; error: string }
       | { kind: 'peer-left' }
       | { kind: 'session-error'; code: string }
+      | { kind: 'session-config'; humanSlots: number[]; takeovers?: HumanSlotTakeover[] }
       | { kind: 'frame'; frame: number; slot: PeerSlot; input: number }
       | { kind: 'frames'; slot: PeerSlot; base: number; inputs: number[] }
       | { kind: 'hash'; frame: number; slot: PeerSlot; hash: number }
@@ -378,6 +395,10 @@ export class WebSocketPeer implements Peer {
       case 'session-error':
         if (this.rejectConnect) { this.rejectConnect(new Error('session-error: ' + m.code)); this.resolveConnect = null; this.rejectConnect = null; }
         this.disconnect();
+        return;
+      case 'session-config':
+        this.humanSlots = Array.isArray(m.humanSlots) ? m.humanSlots.slice() : [];
+        this.humanTakeovers = Array.isArray(m.takeovers) ? m.takeovers.slice() : [];
         return;
       case 'frame':
         this.frameInbox.push({ frame: m.frame, slot: m.slot, input: m.input });
@@ -451,6 +472,17 @@ export class WebSocketPeer implements Peer {
     this.onReconnected = cb;
   }
 
+  getHumanSlots(): number[] {
+    return this.humanSlots.slice();
+  }
+
+  getHumanSlotConfig(): HumanSlotConfig {
+    return {
+      humanSlots: this.humanSlots.slice(),
+      takeovers: this.humanTakeovers.map(t => ({ slot: t.slot, frame: t.frame })),
+    };
+  }
+
   disconnect(): void {
     if (this.worker) {
       // Tell the worker to close the WS but do NOT terminate the worker
@@ -518,6 +550,10 @@ function buildPeerWorkerSource(): string {
     var session = '';
     var localSlot = 0;
     var expectedPlayers = 2;
+    var aiFill = false;
+    var startHumanSlots = null;
+    var configuredHumanSlots = null;
+    var configuredTakeovers = [];
     var connected = false;
     var initialConnectDone = false;
     var joinedSlots = {};
@@ -546,14 +582,52 @@ function buildPeerWorkerSource(): string {
       if (typeof slot !== 'number' || slot < 0 || slot >= expectedPlayers) return;
       joinedSlots[slot] = true;
     }
+    function normaliseSlots(raw) {
+      if (!Array.isArray(raw)) return null;
+      var seen = {};
+      var out = [];
+      for (var i = 0; i < raw.length; i++) {
+        var slot = Math.floor(Number(raw[i]));
+        if (!Number.isFinite(slot) || slot < 0 || slot >= expectedPlayers) continue;
+        if (seen[slot]) continue;
+        seen[slot] = true;
+        out.push(slot);
+      }
+      out.sort(function (a, b) { return a - b; });
+      return out;
+    }
+    function normaliseTakeovers(raw) {
+      if (!Array.isArray(raw)) return [];
+      var out = [];
+      var seen = {};
+      for (var i = 0; i < raw.length; i++) {
+        var item = raw[i] || {};
+        var slot = Math.floor(Number(item.slot));
+        var frame = Math.floor(Number(item.frame));
+        if (!Number.isFinite(slot) || slot < 0 || slot >= expectedPlayers || !Number.isFinite(frame) || frame <= 0) continue;
+        if (seen[slot]) continue;
+        seen[slot] = true;
+        out.push({ slot: slot, frame: frame });
+      }
+      out.sort(function (a, b) { return a.slot - b.slot; });
+      return out;
+    }
     function allExpectedJoined() {
       for (var i = 0; i < expectedPlayers; i++) {
         if (!joinedSlots[i]) return false;
       }
       return true;
     }
+    function allHumanSlotsJoined() {
+      if (!configuredHumanSlots || configuredHumanSlots.length <= 0) return false;
+      if (configuredHumanSlots.indexOf(localSlot) < 0) return false;
+      for (var i = 0; i < configuredHumanSlots.length; i++) {
+        if (!joinedSlots[configuredHumanSlots[i]]) return false;
+      }
+      return true;
+    }
     function maybeSignalConnected() {
-      if (!allExpectedJoined()) return;
+      if (aiFill ? !allHumanSlotsJoined() : !allExpectedJoined()) return;
       if (!initialConnectDone) {
         initialConnectDone = true;
         post({ kind: 'connected' });
@@ -643,6 +717,8 @@ function buildPeerWorkerSource(): string {
         joinedSlots = {};
         markJoined(localSlot);
         var hello = { type: 'hello-peer', session: session, slot: localSlot, version: 1, players: expectedPlayers };
+        if (aiFill) hello.aiFill = true;
+        if (aiFill && localSlot === 0 && startHumanSlots && startHumanSlots.length > 0) hello.humanSlots = startHumanSlots;
         if (ws) ws.send(JSON.stringify(hello));
         connected = true;
       });
@@ -660,6 +736,11 @@ function buildPeerWorkerSource(): string {
           post({ kind: 'frames', slot: msg.slot, base: msg.base, inputs: inputs });
         } else if (msg.type === 'hash') {
           post({ kind: 'hash', frame: msg.frame, slot: msg.slot, hash: msg.hash });
+        } else if (msg.type === 'session-config') {
+          configuredHumanSlots = normaliseSlots(msg.humanSlots);
+          configuredTakeovers = normaliseTakeovers(msg.takeovers);
+          post({ kind: 'session-config', humanSlots: configuredHumanSlots || [], takeovers: configuredTakeovers });
+          maybeSignalConnected();
         } else if (msg.type === 'peer-joined') {
           markJoined(msg.slot);
           maybeSignalConnected();
@@ -695,6 +776,10 @@ function buildPeerWorkerSource(): string {
         localSlot = msg.localSlot;
         expectedPlayers = Math.max(2, Math.min(64, Math.floor(Number(msg.players) || 2)));
         batchFrames = msg.batchFrames === true;
+        aiFill = msg.aiFill === true;
+        startHumanSlots = normaliseSlots(msg.humanSlots);
+        configuredHumanSlots = null;
+        configuredTakeovers = [];
         var cfg = frameBatchConfig(expectedPlayers);
         frameBatchMs = cfg.ms;
         frameBatchMax = cfg.max;
@@ -741,15 +826,21 @@ export class SpectatorPeer {
   private connected = false;
   private slotsBound: boolean[] = [false, false];
   private expectedPlayers = 2;
+  private aiFill = false;
+  private humanSlots: number[] | null = null;
+  private humanTakeovers: HumanSlotTakeover[] = [];
   private frameInbox: SpectatorFrameDelivery[] = [];
   private hashInbox: SpectatorHashDelivery[] = [];
   private resolveConnect: (() => void) | null = null;
   private rejectConnect: ((e: Error) => void) | null = null;
 
-  connect(opts: { url: string; session: string; players?: number }): Promise<void> {
+  connect(opts: { url: string; session: string; players?: number; aiFill?: boolean }): Promise<void> {
     void opts.session;  // session is encoded into opts.url by the caller
     this.expectedPlayers = Math.max(2, Math.min(64, Math.floor(opts.players ?? 2)));
     this.slotsBound = new Array(this.expectedPlayers).fill(false);
+    this.aiFill = opts.aiFill === true;
+    this.humanSlots = null;
+    this.humanTakeovers = [];
     return new Promise<void>((resolve, reject) => {
       this.resolveConnect = resolve;
       this.rejectConnect = reject;
@@ -792,7 +883,59 @@ export class SpectatorPeer {
   }
 
   isConnected(): boolean { return this.connected; }
-  bothPeersBound(): boolean { return this.slotsBound.slice(0, this.expectedPlayers).every(Boolean); }
+  bothPeersBound(): boolean { return this.requiredSlotsBound(); }
+
+  getHumanSlots(): number[] {
+    return this.humanSlots ? this.humanSlots.slice() : [];
+  }
+
+  getHumanSlotConfig(): HumanSlotConfig {
+    return {
+      humanSlots: this.getHumanSlots(),
+      takeovers: this.humanTakeovers.map(t => ({ slot: t.slot, frame: t.frame })),
+    };
+  }
+
+  private setHumanConfig(rawSlots: number[] | undefined, rawTakeovers: HumanSlotTakeover[] | undefined): void {
+    if (!Array.isArray(rawSlots)) return;
+    const seen = new Set<number>();
+    const out: number[] = [];
+    for (const value of rawSlots) {
+      const slot = Math.floor(Number(value));
+      if (!Number.isFinite(slot) || slot < 0 || slot >= this.expectedPlayers || seen.has(slot)) continue;
+      seen.add(slot);
+      out.push(slot);
+    }
+    out.sort((a, b) => a - b);
+    this.humanSlots = out;
+    const takeovers: HumanSlotTakeover[] = [];
+    if (Array.isArray(rawTakeovers)) {
+      const takeoverSeen = new Set<number>();
+      for (const raw of rawTakeovers) {
+        const slot = Math.floor(Number(raw?.slot));
+        const frame = Math.floor(Number(raw?.frame));
+        if (!Number.isFinite(slot) || slot < 0 || slot >= this.expectedPlayers || !Number.isFinite(frame) || frame <= 0 || takeoverSeen.has(slot)) continue;
+        takeoverSeen.add(slot);
+        takeovers.push({ slot, frame });
+      }
+    }
+    takeovers.sort((a, b) => a.slot - b.slot);
+    this.humanTakeovers = takeovers;
+  }
+
+  private requiredSlotsBound(): boolean {
+    if (!this.aiFill) return this.slotsBound.slice(0, this.expectedPlayers).every(Boolean);
+    if (!this.humanSlots || this.humanSlots.length === 0) return false;
+    return this.humanSlots.every(slot => this.slotsBound[slot] === true);
+  }
+
+  private resolveIfReady(): void {
+    if (this.requiredSlotsBound() && this.resolveConnect) {
+      this.resolveConnect();
+      this.resolveConnect = null;
+      this.rejectConnect = null;
+    }
+  }
 
   private onMessage(ev: MessageEvent): void {
     let msg: PeerMsgIn;
@@ -807,19 +950,24 @@ export class SpectatorPeer {
           for (let i = 0; i < Math.min(next.length, this.slotsBound.length); i++) next[i] = this.slotsBound[i];
           this.slotsBound = next;
         }
-        if (this.bothPeersBound() && this.resolveConnect) {
-          this.resolveConnect();
-          this.resolveConnect = null;
-          this.rejectConnect = null;
+        if (msg.aiFill) this.aiFill = true;
+        this.setHumanConfig(msg.humanSlots, msg.takeovers);
+        this.resolveIfReady();
+        return;
+      case 'session-config':
+        if (msg.players !== undefined) {
+          this.expectedPlayers = Math.max(2, Math.min(64, Math.floor(msg.players)));
+          const next = new Array(this.expectedPlayers).fill(false);
+          for (let i = 0; i < Math.min(next.length, this.slotsBound.length); i++) next[i] = this.slotsBound[i];
+          this.slotsBound = next;
         }
+        if (msg.aiFill) this.aiFill = true;
+        this.setHumanConfig(msg.humanSlots, msg.takeovers);
+        this.resolveIfReady();
         return;
       case 'peer-joined':
         this.slotsBound[msg.slot] = true;
-        if (this.bothPeersBound() && this.resolveConnect) {
-          this.resolveConnect();
-          this.resolveConnect = null;
-          this.rejectConnect = null;
-        }
+        this.resolveIfReady();
         return;
       case 'peer-left':
         this.slotsBound[msg.slot] = false;
