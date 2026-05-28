@@ -292,22 +292,26 @@ function peerInputDelayFrames(players: number, aiFilledSession = false): number 
   return Math.min(32, 22 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
 }
 /** Consecutive stalled sim frames before the "waiting for OPPONENT" overlay
- *  surfaces. ~100ms tolerates ordinary network jitter without flicker. */
-const PEER_STALL_OVERLAY_FRAMES = 6;
+ *  surfaces. Brief broker jitter should recover invisibly; the overlay is
+ *  for sustained missing-input stalls, not sub-second hiccups. */
+const PEER_STALL_OVERLAY_FRAMES = 45;
 /** Consecutive stalled sim frames before we declare the partner gone and
  *  end the run. ~10s at 60Hz. Generous because chromium's WS dispatch can
  *  briefly stall on an idle worker and the retry-every-rAF backstop needs
  *  a few real-time seconds to refill the gap; tearing down at 2s killed
  *  recoverable duels in production. */
 const PEER_STALL_DISCONNECT_FRAMES = 600;
-/** When lockstep stalls, resend this many recent local input frames so a
- *  partner missing an earlier command can backfill the exact frame it is
- *  blocked on. Keep this compact: repeated large replays can clog the
- *  production relay and turn a short stall into persistent lag. */
-const PEER_RESEND_WINDOW_FRAMES = 32;
+/** When lockstep stalls, resend a compact window around the exact read frame
+ *  the sim is blocked on. Replaying only the latest tail can miss the hole;
+ *  replaying a large tail clogs the production relay. */
+const PEER_RESEND_BEHIND_FRAMES = 4;
+const PEER_RESEND_AHEAD_FRAMES = 8;
 /** Cap the bulk resend cadence. Live play sends each frame once; the history
  *  replay only needs to run often enough to backfill a real hole. */
 const PEER_RESEND_INTERVAL_MS = 250;
+/** Do not replay history for ordinary jitter. WebSockets are ordered and
+ *  reliable, so a missing read frame is usually delayed, not lost. */
+const PEER_RESEND_AFTER_STALL_FRAMES = 8;
 /** Count of consecutive frames the lockstep loop has been unable to
  *  advance (remote input missing). Reset every time a frame ticks. Only
  *  meaningful while a peer is active. */
@@ -444,11 +448,11 @@ function currentStartOptions(): { players: number; defender: boolean; aiOpponent
   };
 }
 
-function resendRecentPeerInputs(throughFrame: number, now: number): void {
+function resendPeerInputRange(fromFrame: number, throughFrame: number, now: number): void {
   if (!peer || !inputLog || throughFrame < 0) return;
   if (now - lastPeerResendAt < PEER_RESEND_INTERVAL_MS) return;
   lastPeerResendAt = now;
-  const from = Math.max(0, throughFrame - PEER_RESEND_WINDOW_FRAMES + 1);
+  const from = Math.max(0, fromFrame);
   for (let f = from; f <= throughFrame; f++) {
     const encoded = inputLog.get(f, mpSlot);
     if (encoded >= 0) peer.sendFrame(f, encoded);
@@ -1252,11 +1256,15 @@ function loop(now: number): void {
         }
       }
       if (stalled) {
-        // We already sent state.frame above. Re-send the recent committed
-        // prefix too; the partner may be blocked on state.frame - delay, not
-        // on the newest duplicate we would otherwise keep trickling.
+        // The local frame was sent when it was first sampled. If the stall is
+        // sustained, replay a compact committed prefix; the partner may be
+        // blocked on state.frame - delay rather than on the newest frame.
         lockstepBlockedThisTick = true;
-        resendRecentPeerInputs(state.frame - 1, now);
+        if (peerStallFrames >= PEER_RESEND_AFTER_STALL_FRAMES) {
+          const resendFrom = readFrame - PEER_RESEND_BEHIND_FRAMES;
+          const resendThrough = Math.min(state.frame - 1, readFrame + PEER_RESEND_AHEAD_FRAMES);
+          resendPeerInputRange(resendFrom, resendThrough, now);
+        }
         break;  // hold the accumulator; next rAF retries
       }
       // 4) Apply + edge dispatch. Record each slot's applied encoded
