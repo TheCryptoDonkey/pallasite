@@ -24,6 +24,7 @@
     "test:deathmatch:soak": "tsx tools/run-deathmatch-soak.ts",
     "scale:deathmatch": "tsx tools/run-deathmatch-scale.ts",
     "check:prod:playability": "tsx tools/check-prod-playability.ts",
+    "check:prod:multiplayer": "tsx tools/check-prod-multiplayer.ts",
     "record:solar": "tsx tools/record-solar-qa.ts",
     "sync-sdk": "if [ -f ../signet-login/dist/signet-login.iife.js ]; then cp ../signet-login/dist/signet-login.iife.js public/signet-login.iife.js; else echo 'sync-sdk: signet-login sibling not present, using committed copy'; fi",
     "gen-backgrounds": "tsx tools/generate-backgrounds.ts",

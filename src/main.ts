@@ -317,6 +317,12 @@ const PEER_RESEND_AFTER_STALL_FRAMES = 8;
  *  meaningful while a peer is active. */
 let peerStallFrames = 0;
 let lastPeerResendAt = -Infinity;
+let peerStallCount = 0;
+let peerStallActive = false;
+let peerMaxStallFrames = 0;
+let peerResendCount = 0;
+let peerResendFrameCount = 0;
+let lastActivePeerInputDelay = 0;
 /** Sticky flag: once the partner is declared lost we tear the peer down
  *  and stop trying. Prevents the disconnect path firing every rAF after
  *  game-over. */
@@ -385,6 +391,12 @@ function exitMultiplayerUrlSession(): void {
   inputLog = null;
   peerStallFrames = 0;
   lastPeerResendAt = -Infinity;
+  peerStallCount = 0;
+  peerStallActive = false;
+  peerMaxStallFrames = 0;
+  peerResendCount = 0;
+  peerResendFrameCount = 0;
+  lastActivePeerInputDelay = 0;
   peerDisconnectDeclared = false;
   peerDesyncFrame = -1;
   localCanaryHashes.clear();
@@ -448,14 +460,76 @@ function currentStartOptions(): { players: number; defender: boolean; aiOpponent
   };
 }
 
+function peerDebugSnapshot(): {
+  active: boolean;
+  frame: number;
+  inputDelay: number;
+  stallFrames: number;
+  stallCount: number;
+  maxStallFrames: number;
+  resendCount: number;
+  resendFrameCount: number;
+  localLatest: number;
+  remoteLatest: number;
+  localRemoteFrameGap: number | null;
+  slotFrameSpread: number | null;
+  lastReceivedFrame: number;
+} {
+  let localLatest = inputLog && peer ? inputLog.latest(mpSlot) : -1;
+  let remoteLatest = -1;
+  let minLatest = Infinity;
+  let maxLatest = -1;
+  if (inputLog) {
+    for (let i = 0; i < inputLog.players; i++) {
+      const latest = inputLog.latest(i);
+      if (latest >= 0) {
+        minLatest = Math.min(minLatest, latest);
+        maxLatest = Math.max(maxLatest, latest);
+      }
+      if (peer && i !== mpSlot) remoteLatest = Math.max(remoteLatest, latest);
+    }
+    if (spectator) {
+      localLatest = -1;
+      remoteLatest = maxLatest;
+    }
+  }
+  const localRemoteFrameGap = localLatest >= 0 && remoteLatest >= 0 ? localLatest - remoteLatest : null;
+  const slotFrameSpread = minLatest !== Infinity && maxLatest >= 0 ? maxLatest - minLatest : null;
+  return {
+    active: isPeerActive(),
+    frame: state.frame,
+    inputDelay: lastActivePeerInputDelay,
+    stallFrames: Math.round(peerStallFrames),
+    stallCount: peerStallCount,
+    maxStallFrames: Math.round(peerMaxStallFrames),
+    resendCount: peerResendCount,
+    resendFrameCount: peerResendFrameCount,
+    localLatest,
+    remoteLatest,
+    localRemoteFrameGap,
+    slotFrameSpread,
+    lastReceivedFrame: peer ? peer.lastReceivedFrame() : spectator ? remoteLatest : -1,
+  };
+}
+
+(window as unknown as { __pallasitePeerDebug?: () => unknown }).__pallasitePeerDebug = peerDebugSnapshot;
+
 function resendPeerInputRange(fromFrame: number, throughFrame: number, now: number): void {
   if (!peer || !inputLog || throughFrame < 0) return;
   if (now - lastPeerResendAt < PEER_RESEND_INTERVAL_MS) return;
   lastPeerResendAt = now;
   const from = Math.max(0, fromFrame);
+  let sent = 0;
   for (let f = from; f <= throughFrame; f++) {
     const encoded = inputLog.get(f, mpSlot);
-    if (encoded >= 0) peer.sendFrame(f, encoded);
+    if (encoded >= 0) {
+      peer.sendFrame(f, encoded);
+      sent++;
+    }
+  }
+  if (sent > 0) {
+    peerResendCount++;
+    peerResendFrameCount += sent;
   }
 }
 
@@ -1174,6 +1248,7 @@ function loop(now: number): void {
     // slot and stomp the canonical input for that frame.
     const peerActive = isPeerActive();
     const activeDelay = peerActive ? peerInputDelayFrames(state.players.length || requestedPeerPlayers, aiFillDeathmatch && urlDeathmatchModeActive()) : inputDelay;
+    if (peerActive) lastActivePeerInputDelay = activeDelay;
     // Encoded inputs the apply step fed into this sim tick. Captured here
     // so the desync hunter's canary serialiser (further down) can include
     // them — answers "did the peers apply different inputs at this frame,
@@ -1350,11 +1425,17 @@ function loop(now: number): void {
       peerStallFrames += frameDeltaS / FIXED_STEP_S;
     } else if (advanced || !lockstepBlockedThisTick) {
       peerStallFrames = 0;
+      peerStallActive = false;
     } else {
+      if (!peerStallActive) {
+        peerStallCount++;
+        peerStallActive = true;
+      }
       // Count wall-clock time once per rAF. Do not include stepAccumulator:
       // it intentionally remains banked while stalled, and adding it every
       // tick makes the timeout grow 1+2+3... instead of at real-time pace.
       peerStallFrames += frameDeltaS / FIXED_STEP_S;
+      peerMaxStallFrames = Math.max(peerMaxStallFrames, peerStallFrames);
     }
     if (!peerDisconnectDeclared) {
       const overFrames = peerStallFrames >= PEER_STALL_DISCONNECT_FRAMES;
@@ -1770,7 +1851,7 @@ async function boot(): Promise<void> {
   if (!isControllerSurface() && new URLSearchParams(window.location.search).get('dbg') === 'audio') {
     setupAudioDebugOverlay();
   }
-  if (duelDebugMode) setupDuelDebugOverlay();
+  if (duelDebugMode || wireTraceEnabled) setupDuelDebugOverlay();
 
   // 600bn flavour — prime the council manifest + member avatars so
   // wave 1 (council-textured asteroids) has its portraits ready by
@@ -2346,6 +2427,7 @@ function setupDuelDebugOverlay(): void {
     totalRecv += d.count;
   });
   const render = (): void => {
+    const debug = peerDebugSnapshot();
     const localLatest = inputLog ? inputLog.latest(mpSlot) : -1;
     let remoteLatest = -1;
     if (inputLog) {
@@ -2359,9 +2441,11 @@ function setupDuelDebugOverlay(): void {
     const peerConn = peer ? peer.isConnected() : (spectator ? spectator.isConnected() : false);
     panel.textContent = [
       `frame:${state.frame}  slot:${mpSlot}/${requestedPeerPlayers}  conn:${peerConn ? 'Y' : 'N'}`,
+      `delay:${debug.inputDelay}f  gap:${debug.localRemoteFrameGap ?? '-'}  spread:${debug.slotFrameSpread ?? '-'}`,
       `local#:${localLatest} peersMin#:${remoteLatest}`,
       `peer.lastRx:${peerLast}  drain/s:${lastDrainCount}  total:${totalRecv}`,
-      `stall:${peerStallFrames}f  desync:${peerDesyncFrame < 0 ? '-' : peerDesyncFrame}`,
+      `stall:${debug.stallFrames}f count:${debug.stallCount} max:${debug.maxStallFrames}f`,
+      `resend:${debug.resendCount}/${debug.resendFrameCount}  desync:${peerDesyncFrame < 0 ? '-' : peerDesyncFrame}`,
       `phase:${state.phase}  wave:${state.wave}  seed:${state.seed?.toString(16) ?? '-'}`,
     ].join('\n');
     lastDrainCount = 0;
