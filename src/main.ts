@@ -280,12 +280,15 @@ const spectateSeed = spectateMode && spectateSession ? sessionSeed(spectateSessi
 let peer: Peer | null = null;
 /** The spectator transport for watch-mode. Null in solo / couch / duel. */
 let spectator: SpectatorPeer | null = null;
-/** Input-delay in sim frames when a peer is wired. Session-sized so larger
- *  deathmatches have more jitter budget while the legacy duel stays snappy. */
-function peerInputDelayFrames(players: number): number {
+/** Input-delay in sim frames when a peer is wired. AI-filled sessions use a
+ *  small fixed delay so 64P with bots does not inherit a huge 64-human buffer.
+ *  The value must be immutable for a session: late-join replay re-simulates
+ *  from frame 0, so changing delay when human slots join would desync. */
+function peerInputDelayFrames(players: number, aiFilledSession = false): number {
   const configured = boundedPlayerCount(mpParams.get('inputDelay'), NaN, 0, 60);
   if (Number.isFinite(configured)) return configured;
-  return Math.min(36, 14 + Math.ceil(Math.log2(Math.max(2, players))) * 3);
+  if (aiFilledSession) return 8;
+  return Math.min(24, 6 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
 }
 /** Consecutive stalled sim frames before the "waiting for OPPONENT" overlay
  *  surfaces. ~100ms tolerates ordinary network jitter without flicker. */
@@ -1164,7 +1167,7 @@ function loop(now: number): void {
     // same value so a frozen frame does not re-sample over the same log
     // slot and stomp the canonical input for that frame.
     const peerActive = isPeerActive();
-    const activeDelay = peerActive ? peerInputDelayFrames(state.players.length || requestedPeerPlayers) : inputDelay;
+    const activeDelay = peerActive ? peerInputDelayFrames(state.players.length || requestedPeerPlayers, aiFillDeathmatch && urlDeathmatchModeActive()) : inputDelay;
     // Encoded inputs the apply step fed into this sim tick. Captured here
     // so the desync hunter's canary serialiser (further down) can include
     // them — answers "did the peers apply different inputs at this frame,
