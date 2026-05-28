@@ -1147,10 +1147,11 @@ function loop(now: number): void {
     }
   }
   // Peer stall accounting: capture the sim frame before the inner loop so
-  // we can tell, after it runs, whether ANY frame actually advanced. Only
-  // meaningful when a peer is wired; solo and couch skip the bookkeeping
-  // below entirely.
+  // we can tell, after it runs, whether ANY frame actually advanced. Track
+  // the explicit lockstep stall separately; a rAF that simply had no fixed
+  // sim step due is not a network stall.
   const frameBeforeStep = state.frame;
+  let lockstepBlockedThisTick = false;
   while (stepAccumulator >= FIXED_STEP_S) {
     // Lockstep input pipeline. On every advancing frame:
     //   1) snapshot the LOCAL slots' input into the log (and send via peer
@@ -1262,6 +1263,7 @@ function loop(now: number): void {
         // We already sent state.frame above. Re-send the recent committed
         // prefix too; the partner may be blocked on state.frame - delay, not
         // on the newest duplicate we would otherwise keep trickling.
+        lockstepBlockedThisTick = true;
         resendRecentPeerInputs(state.frame - 1, now);
         break;  // hold the accumulator; next rAF retries
       }
@@ -1342,7 +1344,11 @@ function loop(now: number): void {
     const peerGone = !!peer && !peer.isConnected();
     const spectateGone = !!spectator && !spectator.bothPeersBound();
     const partnerLeft = peerGone || spectateGone;
-    if (advanced && !partnerLeft) {
+    if (partnerLeft) {
+      // Count the disconnect path below from the moment the peer link is
+      // observed gone, even if the sim would otherwise be idle this rAF.
+      peerStallFrames += frameDeltaS / FIXED_STEP_S;
+    } else if (advanced || !lockstepBlockedThisTick) {
       peerStallFrames = 0;
     } else {
       // Count wall-clock time once per rAF. Do not include stepAccumulator:

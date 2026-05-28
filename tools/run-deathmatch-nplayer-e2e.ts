@@ -60,7 +60,7 @@ async function waitForHttp(url: string, ok: (status: number) => boolean, timeout
   throw new Error(`${url} not ready: ${String(lastErr)}`);
 }
 
-async function probe(page: Page): Promise<{
+async function probe(page: Page, players = PLAYERS): Promise<{
   frame: number;
   phase: string;
   peerActive: boolean;
@@ -88,7 +88,7 @@ async function probe(page: Page): Promise<{
       aiPlayers: Array.isArray(s?.players) ? s.players.filter((p: any) => p?.ai === true).length : -1,
       inputCounts: counts,
     };
-  }, PLAYERS);
+  }, players);
 }
 
 async function runAllHumanScenario(browserInstance: Browser): Promise<void> {
@@ -121,7 +121,7 @@ async function runAllHumanScenario(browserInstance: Browser): Promise<void> {
       { timeout: 30_000 },
     )));
   } catch (e) {
-    const probes = await Promise.all(pages.map(probe));
+    const probes = await Promise.all(pages.map((page) => probe(page)));
     for (let i = 0; i < probes.length; i++) {
       const p = probes[i];
       process.stderr.write(`startup P${i + 1}: frame=${p.frame} phase=${p.phase} peer=${p.peerActive} players=${p.players} ai=${p.aiPlayers} stall=${p.stall ?? '-'} desync=${p.desync} inputs=${p.inputCounts.join('/')}\n`);
@@ -142,7 +142,7 @@ async function runAllHumanScenario(browserInstance: Browser): Promise<void> {
   await Promise.all(pages.map((page) => page.keyboard.up('Space').catch(() => undefined)));
   await wait(800);
 
-  const probes = await Promise.all(pages.map(probe));
+  const probes = await Promise.all(pages.map((page) => probe(page)));
   for (let i = 0; i < probes.length; i++) {
     const p = probes[i];
     process.stdout.write(`P${i + 1}: frame=${p.frame} phase=${p.phase} players=${p.players} ai=${p.aiPlayers} stall=${p.stall ?? '-'} desync=${p.desync} inputs=${p.inputCounts.join('/')}\n`);
@@ -190,7 +190,7 @@ async function runAiFillScenario(browserInstance: Browser): Promise<void> {
       { timeout: 30_000 },
     )));
   } catch (e) {
-    const probes = await Promise.all(pages.map(probe));
+    const probes = await Promise.all(pages.map((page) => probe(page)));
     for (let i = 0; i < probes.length; i++) {
       const p = probes[i];
       process.stderr.write(`AI-fill startup P${i === 0 ? 2 : 1}: frame=${p.frame} phase=${p.phase} peer=${p.peerActive} players=${p.players} ai=${p.aiPlayers} stall=${p.stall ?? '-'} desync=${p.desync} inputs=${p.inputCounts.join('/')}\n`);
@@ -205,7 +205,7 @@ async function runAiFillScenario(browserInstance: Browser): Promise<void> {
   await Promise.all(pages.map((page) => page.keyboard.up('ArrowRight').catch(() => undefined)));
   await Promise.all(pages.map((page) => page.keyboard.up('ArrowLeft').catch(() => undefined)));
   await wait(800);
-  const probes = await Promise.all(pages.map(probe));
+  const probes = await Promise.all(pages.map((page) => probe(page)));
   for (let i = 0; i < probes.length; i++) {
     const p = probes[i];
     process.stdout.write(`AI-fill P${i === 0 ? 2 : 1}: frame=${p.frame} phase=${p.phase} players=${p.players} ai=${p.aiPlayers} stall=${p.stall ?? '-'} desync=${p.desync} inputs=${p.inputCounts.join('/')}\n`);
@@ -241,7 +241,7 @@ async function runAiFillScenario(browserInstance: Browser): Promise<void> {
   await latePage.keyboard.down('ArrowUp');
   await wait(4200);
   await latePage.keyboard.up('ArrowUp').catch(() => undefined);
-  const takeoverProbes = await Promise.all(pages.map(probe));
+  const takeoverProbes = await Promise.all(pages.map((page) => probe(page)));
   for (let i = 0; i < takeoverProbes.length; i++) {
     const p = takeoverProbes[i];
     const label = i === 2 ? 'late P3' : `P${i === 0 ? 2 : 1}`;
@@ -256,6 +256,81 @@ async function runAiFillScenario(browserInstance: Browser): Promise<void> {
   await lateCtx.close().catch(() => undefined);
   await Promise.all(pages.map((page) => page.context().close().catch(() => undefined)));
   process.stdout.write('AI-filled deathmatch lockstep PASS\n');
+}
+
+async function runTwoPlayerLateTakeoverScenario(browserInstance: Browser): Promise<void> {
+  const session = randomBytes(4).toString('hex');
+  const hostCtx = await browserInstance.newContext({ serviceWorkers: 'block' });
+  const lateCtx = await browserInstance.newContext({ serviceWorkers: 'block' });
+  const host = await hostCtx.newPage();
+  const late = await lateCtx.newPage();
+  const pages = [host, late];
+  for (let i = 0; i < pages.length; i++) {
+    pages[i].on('pageerror', (e) => process.stderr.write(`[2P late P${i + 1}] ${e.message}\n`));
+    pages[i].on('console', (msg) => {
+      const text = msg.text();
+      if (text.includes('[duel]') || text.includes('[peer]') || text.includes('session-error')) {
+        process.stderr.write(`[2P late P${i + 1} ${msg.type()}] ${text}\n`);
+      }
+    });
+  }
+
+  const base = `${VITE_BASE}/?peer=${encodeURIComponent(BROKER_URL)}&session=${session}&players=2&deathmatchPlayers=2&mode=deathmatch&wiretrace=1&peerBatch=1&aiFill=1`;
+  await host.goto(`${base}&slot=0&humanSlots=0`, { waitUntil: 'load' });
+  await host.waitForFunction(
+    () => {
+      const s = (window as any).__pallasiteState;
+      return !!(window as any).__pallasitePeerActive && s?.phase === 'playing' && s?.players?.length === 2 && s.players.filter((p: any) => p?.ai === true).length === 1;
+    },
+    undefined,
+    { timeout: 30_000 },
+  );
+  await wait(1800);
+
+  await late.goto(`${base}&slot=1`, { waitUntil: 'load' });
+  await Promise.all(pages.map((page) => page.waitForFunction(
+    () => {
+      const s = (window as any).__pallasiteState;
+      return !!(window as any).__pallasitePeerActive && s?.phase === 'playing' && s?.players?.length === 2;
+    },
+    undefined,
+    { timeout: 30_000 },
+  )));
+  await Promise.all(pages.map((page) => page.waitForFunction(
+    () => {
+      const s = (window as any).__pallasiteState;
+      return Array.isArray(s?.players) && s.players.length === 2 && s.players.filter((p: any) => p?.ai === true).length === 0;
+    },
+    undefined,
+    { timeout: 30_000 },
+  )));
+
+  await Promise.all([
+    host.keyboard.down('ArrowLeft'),
+    late.keyboard.down('ArrowRight'),
+  ]);
+  await wait(4200);
+  await Promise.all([
+    host.keyboard.up('ArrowLeft').catch(() => undefined),
+    late.keyboard.up('ArrowRight').catch(() => undefined),
+  ]);
+  await wait(800);
+
+  const probes = await Promise.all(pages.map((page) => probe(page, 2)));
+  for (let i = 0; i < probes.length; i++) {
+    const p = probes[i];
+    process.stdout.write(`2P late takeover P${i + 1}: frame=${p.frame} phase=${p.phase} players=${p.players} ai=${p.aiPlayers} stall=${p.stall ?? '-'} desync=${p.desync} inputs=${p.inputCounts.join('/')}\n`);
+    if (!p.peerActive) throw new Error(`2P late takeover P${i + 1} peer inactive`);
+    if (p.phase !== 'playing') throw new Error(`2P late takeover P${i + 1} not playing`);
+    if (p.frame < 120) throw new Error(`2P late takeover P${i + 1} did not advance far enough`);
+    if (p.players !== 2) throw new Error(`2P late takeover P${i + 1} wrong player count`);
+    if (p.aiPlayers !== 0) throw new Error(`2P late takeover P${i + 1} still has AI-controlled slot`);
+    if (p.stall) throw new Error(`2P late takeover P${i + 1} stalled`);
+    if (p.desync) throw new Error(`2P late takeover P${i + 1} desynced`);
+    if (p.inputCounts.some((count) => count < 50)) throw new Error(`2P late takeover P${i + 1} missing input history`);
+  }
+  await Promise.all(pages.map((page) => page.context().close().catch(() => undefined)));
+  process.stdout.write('2P late takeover deathmatch lockstep PASS\n');
 }
 
 async function main(): Promise<void> {
@@ -283,6 +358,7 @@ async function main(): Promise<void> {
     await warmCtx.close();
     await runAllHumanScenario(browserInstance);
     await runAiFillScenario(browserInstance);
+    await runTwoPlayerLateTakeoverScenario(browserInstance);
   } finally {
     if (browser) await browser.close().catch(() => undefined);
     cleanup();
