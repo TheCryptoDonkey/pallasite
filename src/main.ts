@@ -292,7 +292,7 @@ function peerInputDelayFrames(players: number, aiFilledSession = false): number 
   const configured = boundedPlayerCount(mpParams.get('inputDelay'), NaN, 0, 60);
   if (Number.isFinite(configured)) return configured;
   if (urlCoopCampaignModeActive()) return 48;
-  if (aiFilledSession) return 24;
+  if (aiFilledSession) return 32;
   if (urlDeathmatchModeActive()) return Math.min(56, 44 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
   return Math.min(32, 22 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
 }
