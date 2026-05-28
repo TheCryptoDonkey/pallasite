@@ -1071,6 +1071,7 @@ function setFastCrtOverlay(active: boolean): void {
 }
 
 function shouldUseFastCrt(): boolean {
+  if (deathmatchActive()) return true;
   return Array.isArray(state.players) && state.players.length >= FAST_CRT_PLAYER_THRESHOLD;
 }
 

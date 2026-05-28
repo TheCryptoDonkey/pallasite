@@ -39,12 +39,13 @@ import {
   startGame,
   beginWave,
   updateGame,
+  FIXED_STEP_S,
   spawnAsteroid,
   __testRespawnShip,
 } from '/src/game.ts';
 import { render, setRenderMode } from '/src/render.ts';
 import { deathmatchArenaSize, deathmatchSpawnPoint, defaultDeathmatchAiSkill } from '/src/deathmatch.ts';
-import { REPLAY_EXPLOSION_MS, REPLAY_SLOW_MS, REPLAY_SLOW_RATE } from '/src/types.ts';
+import { REPLAY_EXPLOSION_MS, REPLAY_SLOW_MS, REPLAY_SLOW_RATE, SHIP_THRUST, SHIP_DRAG } from '/src/types.ts';
 import { samplePlayerInput, applyPlayerInput, EMPTY_INPUT } from '/src/netcode.ts';
 import { currentMode } from '/src/mode.ts';
 import { addLocalHighScore, clearLocalHighScores, getLocalHighScores, isHighScore } from '/src/score.ts';
@@ -293,6 +294,26 @@ test('deathmatch terrain pushes instead of kills', () => {
   assertEq(p.ship.alive, true, 'ship survives terrain contact');
   assertEq(p.lives, lives, 'terrain contact does not consume a respawn');
   assert(dist(p.ship.pos, terrain.pos) >= minDist - 0.75, `ship pushed clear of terrain (dist=${dist(p.ship.pos, terrain.pos)}, min=${minDist})`);
+});
+
+test('deathmatch ship thrust matches campaign near terrain gravity', () => {
+  const s = makeInitialState();
+  startGame(s, 0x51a7, { players: 2, runMode: 'deathmatch', aiOpponents: false });
+  const terrain = s.asteroids.find((a) => a.terrain && a.gravity > 0);
+  assert(terrain, 'expected gravity terrain');
+  const p = s.players[0];
+  p.ship.pos.x = terrain.pos.x + terrain.radius + 400;
+  p.ship.pos.y = terrain.pos.y;
+  p.ship.vel.x = 0;
+  p.ship.vel.y = 0;
+  p.ship.rot = 0;
+  p.ship.rotVel = 0;
+  p.ship.invulnerableUntil = s.elapsed + 10_000;
+  p.keys.ArrowUp = true;
+  updateGame(s);
+  const expectedVx = SHIP_THRUST * FIXED_STEP_S * Math.exp(-SHIP_DRAG * FIXED_STEP_S);
+  assert(Math.abs(p.ship.vel.x - expectedVx) < 0.02, `deathmatch thrust vx drifted (${p.ship.vel.x} vs ${expectedVx})`);
+  assert(Math.abs(p.ship.vel.y) < 0.02, `deathmatch thrust injected y velocity (${p.ship.vel.y})`);
 });
 
 test('deathmatch easy bot skill is lower than normal', () => {
