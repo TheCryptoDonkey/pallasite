@@ -280,15 +280,16 @@ const spectateSeed = spectateMode && spectateSession ? sessionSeed(spectateSessi
 let peer: Peer | null = null;
 /** The spectator transport for watch-mode. Null in solo / couch / duel. */
 let spectator: SpectatorPeer | null = null;
-/** Input-delay in sim frames when a peer is wired. AI-filled sessions use a
- *  small fixed delay so 64P with bots does not inherit a huge 64-human buffer.
- *  The value must be immutable for a session: late-join replay re-simulates
- *  from frame 0, so changing delay when human slots join would desync. */
+/** Input-delay in sim frames when a peer is wired. Small AI-filled sessions
+ *  still need enough buffer for production broker jitter; large bot-filled
+ *  arenas stay tighter so 64P does not inherit a huge 64-human buffer. The
+ *  value must be immutable for a session: late-join replay re-simulates from
+ *  frame 0, so changing delay when human slots join would desync. */
 function peerInputDelayFrames(players: number, aiFilledSession = false): number {
   const configured = boundedPlayerCount(mpParams.get('inputDelay'), NaN, 0, 60);
   if (Number.isFinite(configured)) return configured;
-  if (aiFilledSession) return 8;
-  return Math.min(24, 6 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
+  if (aiFilledSession) return players <= 4 ? 16 : 8;
+  return Math.min(28, 14 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
 }
 /** Consecutive stalled sim frames before the "waiting for OPPONENT" overlay
  *  surfaces. ~100ms tolerates ordinary network jitter without flicker. */
