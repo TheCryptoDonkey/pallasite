@@ -242,6 +242,14 @@ async function runAiFillScenario(browserInstance: Browser): Promise<void> {
   await latePage.keyboard.down('ArrowUp');
   await wait(4200);
   await latePage.keyboard.up('ArrowUp').catch(() => undefined);
+  await Promise.all(pages.map((page) => page.waitForFunction(
+    () => {
+      const s = (window as any).__pallasiteState;
+      return Array.isArray(s?.players) && s.players.length === 4 && s.players.filter((p: any) => p?.ai === true).length === 1;
+    },
+    undefined,
+    { timeout: 10_000 },
+  )));
   const takeoverProbes = await Promise.all(pages.map((page) => probe(page)));
   for (let i = 0; i < takeoverProbes.length; i++) {
     const p = takeoverProbes[i];

@@ -296,10 +296,20 @@ function peerInputDelayFrames(players: number, aiFilledSession = false): number 
   if (urlDeathmatchModeActive()) return Math.min(56, 44 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
   return Math.min(32, 22 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
 }
+
+function shouldBatchPeerFrames(): boolean {
+  if (!peerBatchFrames) return false;
+  // Four all-human peers are latency-sensitive and still small enough to send
+  // immediate 60Hz frames. Keep batching for AI-filled/larger arenas where
+  // fan-out pressure matters more than per-frame latency.
+  if (urlDeathmatchModeActive() && !aiFillDeathmatch && requestedPeerPlayers <= 4) return false;
+  return true;
+}
+
 /** Consecutive stalled sim frames before the "waiting for OPPONENT" overlay
  *  surfaces. Brief broker jitter should recover invisibly; the overlay is
  *  for sustained missing-input stalls, not sub-second hiccups. */
-const PEER_STALL_OVERLAY_FRAMES = 45;
+const PEER_STALL_OVERLAY_FRAMES = 60;
 /** Consecutive stalled sim frames before we declare the partner gone and
  *  end the run. ~10s at 60Hz. Generous because chromium's WS dispatch can
  *  briefly stall on an idle worker and the retry-every-rAF backstop needs
@@ -1771,7 +1781,7 @@ async function boot(): Promise<void> {
         session: mpSession,
         localSlot: mpSlot,
         players: requestedPeerPlayers,
-        batchFrames: peerBatchFrames,
+        batchFrames: shouldBatchPeerFrames(),
         aiFill: aiFillDeathmatch,
         humanSlots: requestedHumanSlots,
       });
