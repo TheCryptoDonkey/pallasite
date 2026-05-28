@@ -3764,6 +3764,42 @@ function drawPowerUp(ctx: CanvasRenderingContext2D, p: PowerUp, now: number): vo
   ctx.restore();
 }
 
+function drawDeathmatchLocalMarker(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapsed: number, players: number): void {
+  if (!deathmatchActive() || players < 8) return;
+  if (!ship.alive || ship.hyperspaceCloakMs > 0) return;
+  const pulse = 0.5 + 0.5 * Math.sin(now * 0.008);
+  const flicker = ship.invulnerableUntil > elapsed ? 0.72 + pulse * 0.22 : 1;
+  const r = ship.radius + 22 + pulse * 5;
+  ctx.save();
+  ctx.translate(ship.pos.x, ship.pos.y);
+  ctx.globalAlpha = flicker;
+  ctx.strokeStyle = '#58ff58';
+  ctx.fillStyle = '#58ff58';
+  ctx.shadowColor = '#58ff58';
+  ctx.shadowBlur = 13;
+  ctx.lineWidth = 2.4;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.stroke();
+  for (let i = 0; i < 4; i++) {
+    const a = ship.rot + i * Math.PI / 2;
+    const x0 = Math.cos(a) * (r + 5);
+    const y0 = Math.sin(a) * (r + 5);
+    const x1 = Math.cos(a) * (r + 19);
+    const y1 = Math.sin(a) * (r + 19);
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+  }
+  ctx.font = 'bold 12px ui-monospace, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.shadowBlur = 9;
+  ctx.fillText('YOU', 0, -r - 17);
+  ctx.restore();
+}
+
 // ── Particles ─────────────────────────────────────────────────────────────────
 
 /**
@@ -3886,13 +3922,16 @@ function drawDeathmatchHudExtras(ctx: CanvasRenderingContext2D, s: GameState, w:
     .sort((a, b) => b.kills - a.kills || b.score - a.score || a.deaths - b.deaths || a.slot - b.slot);
   const localSlot = renderMode.localSlot ?? 0;
   const localRank = Math.max(0, rows.findIndex(r => r.slot === localSlot));
-  const maxRows = Math.min(rows.length, w < 760 ? 3 : w < 1080 ? 5 : 8);
+  const manyPlayers = s.players.length >= 32;
+  const maxRows = Math.min(rows.length, manyPlayers ? (w < 760 ? 2 : 4) : w < 760 ? 3 : w < 1080 ? 5 : 8);
   const visibleRows = rows.slice(0, maxRows);
   if (localRank >= maxRows && rows[localRank]) visibleRows[visibleRows.length - 1] = rows[localRank];
-  const panelW = Math.min(w < 760 ? 188 : 286, Math.max(172, w * 0.28));
-  const panelX = Math.round(w / 2 - panelW / 2);
-  const panelY = topY + 88;
-  const rowH = 16;
+  const panelW = Math.min(w < 760 ? 188 : manyPlayers ? 228 : 286, Math.max(172, w * (manyPlayers ? 0.22 : 0.28)));
+  const panelX = manyPlayers
+    ? Math.max(24 + renderMode.insets.left, Math.round(rightX - panelW))
+    : Math.round(w / 2 - panelW / 2);
+  const panelY = manyPlayers ? topY + 62 : topY + 88;
+  const rowH = manyPlayers ? 14 : 16;
   const panelH = 42 + visibleRows.length * rowH;
   const liveCount = s.players.filter(p => p.ship.alive).length;
   ctx.save();
@@ -3913,7 +3952,7 @@ function drawDeathmatchHudExtras(ctx: CanvasRenderingContext2D, s: GameState, w:
   ctx.fillStyle = 'rgba(180, 200, 240, 0.70)';
   ctx.fillText('K/D', panelX + panelW - 78, panelY + 24);
   ctx.fillText('PTS', panelX + panelW - 10, panelY + 24);
-  ctx.font = '12px ui-monospace, monospace';
+  ctx.font = `${manyPlayers ? 11 : 12}px ui-monospace, monospace`;
   for (let i = 0; i < visibleRows.length; i++) {
     const r = visibleRows[i];
     const rank = rows.indexOf(r) + 1;
@@ -3943,7 +3982,7 @@ function drawDeathmatchHudExtras(ctx: CanvasRenderingContext2D, s: GameState, w:
   if (!feed.length || w < 620) return;
   const feedW = Math.min(250, Math.max(190, w * 0.22));
   const feedX = Math.max(24 + renderMode.insets.left, rightX - feedW);
-  const feedY = topY + 62;
+  const feedY = manyPlayers ? panelY + panelH + 8 : topY + 62;
   ctx.save();
   ctx.fillStyle = 'rgba(4, 8, 18, 0.64)';
   ctx.strokeStyle = 'rgba(255, 216, 74, 0.26)';
@@ -5176,9 +5215,12 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
   if (radarDeathmatch) {
     const maxW = renderMode.vw - 48 - insets.left - insets.right;
     const maxH = renderMode.vh - 128 - insets.top - insets.bottom;
-    const size = Math.round(Math.max(144, Math.min(228, maxW, maxH * 0.38)));
+    const manyPlayers = s.players.length >= 32;
+    const size = Math.round(Math.max(132, Math.min(manyPlayers ? 178 : 212, maxW, maxH * 0.34)));
     x0 = 24 + insets.left;
-    y0 = 92 + insets.top;
+    y0 = renderMode.vh >= 560
+      ? renderMode.vh - size - 24 - insets.bottom
+      : 92 + insets.top;
     w = size;
     h = size;
   }
@@ -5259,7 +5301,7 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
   for (const m of s.mines) blip(m.pos.x, m.pos.y, 3, '#ff5a4a', 'rgba(255,210,190,0.72)');
   for (const u of s.ufos) blip(u.pos.x, u.pos.y, 3.6, '#ff4af0', 'rgba(255,210,255,0.75)');
   const localSlot = renderMode.localSlot ?? 0;
-  const playerBlip = s.players.length > 16 ? 3.2 : 4.6;
+  const playerBlip = s.players.length > 32 ? 2.4 : s.players.length > 16 ? 3.2 : 4.6;
   for (let i = 0; i < s.players.length; i++) {
     const pl = s.players[i];
     if (!pl.ship.alive) continue;
@@ -5268,9 +5310,9 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
     const colour = local ? '#58ff58' : playerColours[i % playerColours.length];
     oc.fillStyle = colour;
     oc.strokeStyle = local ? 'rgba(232,255,232,0.95)' : 'rgba(255,255,255,0.58)';
-    oc.lineWidth = local ? 1.8 : 1;
+    oc.lineWidth = local ? 2.2 : 1;
     oc.beginPath();
-    oc.arc(p.x, p.y, local ? playerBlip + 1.2 : playerBlip, 0, Math.PI * 2);
+    oc.arc(p.x, p.y, local ? playerBlip + 2.6 : playerBlip, 0, Math.PI * 2);
     oc.fill();
     oc.stroke();
     if (radarDeathmatch && s.players.length <= 8) {
@@ -5612,6 +5654,9 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
           drawShield(ctx, pl.ship, now, state.elapsed);
           drawShip(ctx, pl.ship, now, state.elapsed, idleSway);
         }
+      }
+      if (deathmatchRun && dx === 0 && dy === 0) {
+        drawDeathmatchLocalMarker(ctx, p0.ship, now, state.elapsed, state.players.length);
       }
       if (isGhost) ctx.restore();
     }

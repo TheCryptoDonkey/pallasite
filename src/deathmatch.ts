@@ -14,7 +14,10 @@ export const DEATHMATCH_WORLD_W = 4096;
 export const DEATHMATCH_WORLD_H = 4096;
 export const DEATHMATCH_DEFAULT_TIME_LIMIT_MS = 3 * 60 * 1000;
 const DEATHMATCH_MIN_WORLD = 2560;
-const DEATHMATCH_MAX_WORLD = 12288;
+// Keep 64P wide without turning the first camera view into empty space.
+// 8192px is still over 10x the campaign playfield area, but nearby slots,
+// cover and motion cues remain readable at the standard follow-camera zoom.
+const DEATHMATCH_MAX_WORLD = 8192;
 
 let activeDeathmatchWorld = { w: DEATHMATCH_WORLD_W, h: DEATHMATCH_WORLD_H };
 

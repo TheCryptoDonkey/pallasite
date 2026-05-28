@@ -391,6 +391,11 @@ test('deathmatch arena scales with player count', () => {
   assert(two.w < four.w, '4P arena should be wider than 2P');
   assert(four.w < sixtyFour.w, '64P arena should be wider than 4P');
   assert(two.h < sixtyFour.h, '64P arena should be taller than 2P');
+  assert(sixtyFour.w <= 8192, '64P arena should stay readable at follow-camera scale');
+  const p1 = deathmatchSpawnPoint(0, 64);
+  let nearest = Infinity;
+  for (let i = 1; i < 64; i++) nearest = Math.min(nearest, dist(p1, deathmatchSpawnPoint(i, 64)));
+  assert(nearest < 900, `64P nearest spawn should be close enough to find action (nearest=${nearest})`);
 });
 
 test('deathmatch shield blocks player bullets', () => {
