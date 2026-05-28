@@ -2167,18 +2167,35 @@ function drawHyperspaceMalfunction(ctx: CanvasRenderingContext2D, ship: Ship, no
 const asteroidPhotoreal: Map<AsteroidType, HTMLImageElement> = new Map();
 const asteroidPhotorealStarted = new Set<AsteroidType>();
 
+function asteroidPhotorealAssetType(type: AsteroidType): AsteroidType | null {
+  switch (type) {
+    case 'stony':
+    case 'iron':
+    case 'chondrite':
+    case 'pallasite':
+    case 'carbonaceous':
+    case 'mesosiderite':
+    case 'achondrite':
+      return type;
+    default:
+      return null;
+  }
+}
+
 /** Lazy-load the per-type photoreal surface webp on first request.
  *  Returns null until the image has decoded; drawAsteroid then falls
  *  back to the procedural canvas in the meantime. */
 function getAsteroidPhotoreal(type: AsteroidType): HTMLImageElement | null {
-  if (!asteroidPhotorealStarted.has(type)) {
-    asteroidPhotorealStarted.add(type);
+  const assetType = asteroidPhotorealAssetType(type);
+  if (!assetType) return null;
+  if (!asteroidPhotorealStarted.has(assetType)) {
+    asteroidPhotorealStarted.add(assetType);
     const img = new Image();
-    img.onload = () => { asteroidPhotoreal.set(type, img); };
+    img.onload = () => { asteroidPhotoreal.set(assetType, img); };
     // onerror just leaves the map unset → procedural fallback stays.
-    img.src = `/backgrounds/asteroid-${type}.webp`;
+    img.src = `/backgrounds/asteroid-${assetType}.webp`;
   }
-  return asteroidPhotoreal.get(type) ?? null;
+  return asteroidPhotoreal.get(assetType) ?? null;
 }
 
 /** Boot hook — kick all four photoreal loads at module init on 600bn
