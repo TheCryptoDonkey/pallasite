@@ -281,16 +281,18 @@ let peer: Peer | null = null;
 /** The spectator transport for watch-mode. Null in solo / couch / duel. */
 let spectator: SpectatorPeer | null = null;
 /** Input-delay in sim frames when a peer is wired. Co-op favours smoothness
- *  over twitch response and needs a larger production jitter buffer. Small
- *  AI-filled deathmatches stay moderate; large bot-filled arenas stay tighter
- *  so 64P does not inherit a huge 64-human buffer. The value must be immutable
- *  for a session: late-join replay re-simulates from frame 0, so changing
- *  delay when human slots join would desync. */
+ *  over twitch response and needs a larger production jitter buffer. All-human
+ *  deathmatch also needs more room because every peer receives every other
+ *  peer's 60Hz stream. AI-filled deathmatches stay tighter, especially large
+ *  bot-filled arenas. The value must be immutable for a session: late-join
+ *  replay re-simulates from frame 0, so changing delay when human slots join
+ *  would desync. */
 function peerInputDelayFrames(players: number, aiFilledSession = false): number {
   const configured = boundedPlayerCount(mpParams.get('inputDelay'), NaN, 0, 60);
   if (Number.isFinite(configured)) return configured;
   if (urlCoopCampaignModeActive()) return 48;
   if (aiFilledSession) return players <= 4 ? 24 : 8;
+  if (urlDeathmatchModeActive()) return Math.min(56, 44 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
   return Math.min(32, 22 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
 }
 /** Consecutive stalled sim frames before the "waiting for OPPONENT" overlay
