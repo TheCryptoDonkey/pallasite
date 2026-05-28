@@ -317,6 +317,10 @@ const PEER_RESEND_INTERVAL_MS = 250;
 /** Do not replay history for ordinary jitter. WebSockets are ordered and
  *  reliable, so a missing read frame is usually delayed, not lost. */
 const PEER_RESEND_AFTER_STALL_FRAMES = 8;
+/** Extra deterministic handoff room after the broker's late AI-slot takeover
+ *  frame. A late human has to replay buffered history from frame 0 before the
+ *  existing peers can require their live inputs without stalling. */
+const PEER_LATE_TAKEOVER_CLIENT_GRACE_FRAMES = 120;
 /** Count of consecutive frames the lockstep loop has been unable to
  *  advance (remote input missing). Reset every time a frame ticks. Only
  *  meaningful while a peer is active. */
@@ -448,7 +452,8 @@ function syncDeathmatchAiSlotsForFrame(readFrame: number): void {
   for (const t of cfg.takeovers) takeovers.set(t.slot, t.frame);
   for (let i = 0; i < state.players.length; i++) {
     const takeoverFrame = takeovers.get(i);
-    const humanNow = humans.has(i) && (takeoverFrame === undefined || readFrame >= takeoverFrame);
+    const effectiveTakeoverFrame = takeoverFrame === undefined ? undefined : takeoverFrame + PEER_LATE_TAKEOVER_CLIENT_GRACE_FRAMES;
+    const humanNow = humans.has(i) && (effectiveTakeoverFrame === undefined || readFrame >= effectiveTakeoverFrame);
     state.players[i].ai = !humanNow;
   }
 }
