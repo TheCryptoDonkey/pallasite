@@ -1,7 +1,7 @@
 /**
  * Real-browser deathmatch scale probe.
  *
- * Boots the actual Vite app in Chromium, starts deathmatch with N AI ships,
+ * Boots the actual Vite app in Chromium, starts local deathmatch with N AI ships,
  * waits for the WebGL mesh overlay, and measures render + sim health while
  * the game plays. This is intentionally not a pure logic harness: it catches
  * the class of bugs where state is fine but the canvas/mesh path is not.
@@ -77,7 +77,7 @@ function parsePlayerCounts(): number[] {
   const out = raw.split(',')
     .map((part) => Math.floor(Number(part.trim())))
     .filter((n) => Number.isFinite(n))
-    .map((n) => Math.max(4, Math.min(MAX_PLAYERS, n)));
+    .map((n) => Math.max(2, Math.min(MAX_PLAYERS, n)));
   return Array.from(new Set(out)).sort((a, b) => a - b);
 }
 
@@ -253,7 +253,7 @@ async function runCase(browser: Browser, requestedPlayers: number, durationMs: n
   page.on('pageerror', (e: Error) => pageErrors.push(e.message));
 
   try {
-    const url = `${VITE_BASE}/?deathmatchPlayers=${requestedPlayers}&deathmatchAi=all`;
+    const url = `${VITE_BASE}/?mode=deathmatch&autoStart=1&deathmatchPlayers=${requestedPlayers}&deathmatchAi=all`;
     await page.goto(url, { waitUntil: 'load' });
     await page.evaluate(() => window.focus());
     await page.keyboard.press('Enter');

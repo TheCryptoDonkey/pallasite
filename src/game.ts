@@ -3387,7 +3387,10 @@ export function updateGame(s: GameState): void {
       } else {
         audio.thrustOff();
       }
-      if (deathmatch) applyDeathmatchGravity(deathmatchGravityWells, p.ship.pos, p.ship.vel, p.ship.radius, dt);
+      // Deathmatch uses the same ship control contract as campaign:
+      // thrust, drag, rotation, and inertia must feel identical. Terrain
+      // gravity is reserved for drifting asteroids below; applying it to
+      // ships made low-player deathmatch feel like a different flight model.
 
       // Drag
       const dragK = Math.exp(-SHIP_DRAG * dt);
@@ -3546,9 +3549,11 @@ export function updateGame(s: GameState): void {
     a.pos.x += a.vel.x * dt;
     a.pos.y += a.vel.y * dt;
     a.rot += a.rotVel * dt;
-    // Lodestone rocks tug the ship toward them — a mobile gravity well,
-    // gameplay-plane only, skipped while the ship is cloaked.
-    if (a.type === 'lodestone' && a.alive && (a.depth ?? 3) === 3) {
+    // Lodestone rocks tug the ship in campaign — a mobile gravity well,
+    // gameplay-plane only, skipped while the ship is cloaked. Deathmatch
+    // keeps ship handling campaign-pure for PvP fairness; cover gravity
+    // only perturbs drifting rocks there.
+    if (!deathmatch && a.type === 'lodestone' && a.alive && (a.depth ?? 3) === 3) {
       for (const p of s.players) {
         if (p.ship.alive && p.ship.hyperspaceCloakMs <= 0) {
           const dx = a.pos.x - p.ship.pos.x;

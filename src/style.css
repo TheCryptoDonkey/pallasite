@@ -93,10 +93,10 @@ body[data-display="modern"] #game3d {
 }
 #game3d.is-active { display: block; }
 
-/* High-population CRT mode. The full CRT canvas pass flattens WebGL into
-   the 2D canvas and runs blur over the whole frame, which is too expensive
-   for 32+ player deathmatch. This keeps both canvases compositor-backed and
-   adds the tube treatment as cheap fixed overlays instead. */
+/* Fast CRT mode. The full CRT canvas pass flattens WebGL into the 2D canvas
+   and runs blur over the whole frame, which is too expensive for deathmatch
+   and high-population sessions. This keeps both canvases compositor-backed
+   and adds the tube treatment as cheap fixed overlays instead. */
 body[data-crt-fast="1"]::before,
 body[data-crt-fast="1"]::after {
   content: '';

@@ -28,6 +28,23 @@ import { isSanctumMode } from './mode.js';
 import { arenaActive, arenaCage, type ArenaCage } from './arena.js';
 import { deathmatchActive, deathmatchWorldH, deathmatchWorldW } from './deathmatch.js';
 
+interface WorldBounds {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+function boundsIntersectCircle(bounds: WorldBounds | undefined, x: number, y: number, r: number): boolean {
+  if (!bounds) return true;
+  return x + r >= bounds.x0 && x - r <= bounds.x1 && y + r >= bounds.y0 && y - r <= bounds.y1;
+}
+
+function boundsIntersectRect(bounds: WorldBounds | undefined, x0: number, y0: number, x1: number, y1: number): boolean {
+  if (!bounds) return true;
+  return x1 >= bounds.x0 && x0 <= bounds.x1 && y1 >= bounds.y0 && y0 <= bounds.y1;
+}
+
 // ── Stars ─────────────────────────────────────────────────────────────────────
 
 const STAR_COUNT = 110;
@@ -583,6 +600,29 @@ function drawCoverImage(ctx: CanvasRenderingContext2D, img: HTMLImageElement, x:
   ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
 }
 
+function drawCoverImageBounds(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  worldW: number,
+  worldH: number,
+  bounds: WorldBounds | undefined,
+): void {
+  if (!bounds) {
+    drawCoverImage(ctx, img, 0, 0, worldW, worldH);
+    return;
+  }
+  const scale = Math.max(worldW / img.width, worldH / img.height);
+  const drawW = img.width * scale;
+  const drawH = img.height * scale;
+  const drawX = (worldW - drawW) / 2;
+  const drawY = (worldH - drawH) / 2;
+  const sx = (bounds.x0 - drawX) / scale;
+  const sy = (bounds.y0 - drawY) / scale;
+  const sw = (bounds.x1 - bounds.x0) / scale;
+  const sh = (bounds.y1 - bounds.y0) / scale;
+  ctx.drawImage(img, sx, sy, sw, sh, bounds.x0, bounds.y0, bounds.x1 - bounds.x0, bounds.y1 - bounds.y0);
+}
+
 /** Two lazy-built starfield layers for the Defender preview. The base
  *  tile (defenderTile, ~3:1 ultra-wide image) is the "very distant"
  *  layer; these two add mid-distance and near-field depth on top. */
@@ -650,17 +690,21 @@ function drawDefenderBackground(ctx: CanvasRenderingContext2D): void {
   ctx.restore();
 }
 
-function drawDeathmatchBackground(ctx: CanvasRenderingContext2D, now: number, orbitMs: number): void {
+function drawDeathmatchBackground(ctx: CanvasRenderingContext2D, now: number, orbitMs: number, bounds?: WorldBounds): void {
   const rw = deathmatchWorldW();
   const rh = deathmatchWorldH();
+  const fillX = bounds?.x0 ?? 0;
+  const fillY = bounds?.y0 ?? 0;
+  const fillW = bounds ? bounds.x1 - bounds.x0 : rw;
+  const fillH = bounds ? bounds.y1 - bounds.y0 : rh;
   ctx.fillStyle = '#02050c';
-  ctx.fillRect(0, 0, rw, rh);
+  ctx.fillRect(fillX, fillY, fillW, fillH);
 
   const deepSpace = loadDeathmatchDeepSpace();
   if (deepSpace && deepSpace.width > 0) {
-    drawCoverImage(ctx, deepSpace, 0, 0, rw, rh);
+    drawCoverImageBounds(ctx, deepSpace, rw, rh, bounds);
     ctx.fillStyle = 'rgba(0, 0, 0, 0.36)';
-    ctx.fillRect(0, 0, rw, rh);
+    ctx.fillRect(fillX, fillY, fillW, fillH);
   }
 
   const nebulae = [
@@ -669,6 +713,7 @@ function drawDeathmatchBackground(ctx: CanvasRenderingContext2D, now: number, or
     { x: rw * 0.54, y: rh * 0.78, r: 940, c0: 'rgba(70, 210, 180, 0.08)', c1: 'rgba(70, 210, 180, 0)' },
   ];
   for (const n of nebulae) {
+    if (!boundsIntersectCircle(bounds, n.x, n.y, n.r)) continue;
     const g = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r);
     g.addColorStop(0, n.c0);
     g.addColorStop(1, n.c1);
@@ -683,6 +728,7 @@ function drawDeathmatchBackground(ctx: CanvasRenderingContext2D, now: number, or
     { x: rw * 0.82, y: rh * 0.72, rx: 320, ry: 84, rot: 0.42 },
   ];
   for (const g of fallbackGalaxies) {
+    if (!boundsIntersectRect(bounds, g.x - g.rx, g.y - g.rx, g.x + g.rx, g.y + g.rx)) continue;
     ctx.save();
     ctx.translate(g.x, g.y);
     ctx.rotate(g.rot + Math.sin(now * 0.00004) * 0.02);
@@ -698,12 +744,13 @@ function drawDeathmatchBackground(ctx: CanvasRenderingContext2D, now: number, or
     ctx.restore();
   }
 
-  drawDeathmatchSolarScenery(ctx, rw, rh, orbitMs);
+  drawDeathmatchSolarScenery(ctx, rw, rh, orbitMs, bounds);
 
   ctx.fillStyle = 'rgba(230, 245, 255, 0.9)';
   for (let i = 0; i < 360; i++) {
     const x = ((i * 977 + 271) % 4096) / 4096 * rw;
     const y = ((i * 577 + 911) % 4096) / 4096 * rh;
+    if (bounds && (x < bounds.x0 - 4 || x > bounds.x1 + 4 || y < bounds.y0 - 4 || y > bounds.y1 + 4)) continue;
     const twinkle = 0.55 + 0.45 * Math.sin(now * 0.0015 + i * 11.37);
     const r = (i % 9 === 0 ? 1.8 : i % 5 === 0 ? 1.25 : 0.75) * twinkle;
     ctx.globalAlpha = 0.42 + twinkle * 0.5;
@@ -1555,7 +1602,16 @@ function drawSaturnSystem(ctx: CanvasRenderingContext2D, x: number, y: number, r
   drawSolarMoons(ctx, moons, sun, now);
 }
 
-function drawSolarAsteroidBelt(ctx: CanvasRenderingContext2D, sx: number, sy: number, rx: number, ry: number, now: number): void {
+function drawSolarAsteroidBelt(
+  ctx: CanvasRenderingContext2D,
+  sx: number,
+  sy: number,
+  rx: number,
+  ry: number,
+  now: number,
+  bounds?: WorldBounds,
+): void {
+  if (!boundsIntersectRect(bounds, sx - rx * 1.25, sy - ry * 1.25 - 48, sx + rx * 1.25, sy + ry * 1.25 + 48)) return;
   ctx.save();
   ctx.globalCompositeOperation = 'screen';
   for (let i = 0; i < 8; i++) {
@@ -1576,6 +1632,7 @@ function drawSolarAsteroidBelt(ctx: CanvasRenderingContext2D, sx: number, sy: nu
       const band = 0.94 + (i % 2) * 0.13;
       const x = sx + Math.cos(angle) * rx * band;
       const y = sy + Math.sin(angle) * ry * band;
+      if (!boundsIntersectCircle(bounds, x, y, 150)) continue;
       const w = 210 + i * 34;
       const h = w * (beltSprite.height / Math.max(1, beltSprite.width));
       ctx.save();
@@ -1595,6 +1652,7 @@ function drawSolarAsteroidBelt(ctx: CanvasRenderingContext2D, sx: number, sy: nu
     const x = sx + Math.cos(angle) * rx * band;
     const y = sy + Math.sin(angle) * ry * band + jitter * 36;
     const size = i % 67 === 0 ? 4.2 : i % 31 === 0 ? 3.1 : i % 11 === 0 ? 2.0 : 0.95;
+    if (bounds && (x < bounds.x0 - 8 || x > bounds.x1 + 8 || y < bounds.y0 - 8 || y > bounds.y1 + 8)) continue;
     const warm = i % 5 === 0;
     ctx.fillStyle = warm ? 'rgba(220, 185, 132, 0.78)' : 'rgba(152, 166, 186, 0.58)';
     ctx.beginPath();
@@ -1660,17 +1718,35 @@ function solarRotation(now: number, rotationDays: number, epoch = 0): number {
   return epoch + ((now * SOLAR_DAYS_PER_MS) / rotationDays) * Math.PI * 2;
 }
 
-function drawDeathmatchSolarScenery(ctx: CanvasRenderingContext2D, rw: number, rh: number, now: number): void {
+function drawDeathmatchSolarScenery(ctx: CanvasRenderingContext2D, rw: number, rh: number, now: number, bounds?: WorldBounds): void {
   const sun = { x: rw * 0.13, y: rh * 0.16 };
-  for (const planet of DEATHMATCH_SOLAR_PLANETS) drawOrbit(ctx, sun.x, sun.y, planet.orbitRx, planet.orbitRy);
-  drawOrbit(ctx, sun.x, sun.y, 1460, 875);
-  drawSolarAsteroidBelt(ctx, sun.x, sun.y, 1460, 875, now);
+  for (const planet of DEATHMATCH_SOLAR_PLANETS) {
+    if (boundsIntersectRect(bounds, sun.x - planet.orbitRx, sun.y - planet.orbitRy, sun.x + planet.orbitRx, sun.y + planet.orbitRy)) {
+      drawOrbit(ctx, sun.x, sun.y, planet.orbitRx, planet.orbitRy);
+    }
+  }
+  if (boundsIntersectRect(bounds, sun.x - 1460, sun.y - 875, sun.x + 1460, sun.y + 875)) {
+    drawOrbit(ctx, sun.x, sun.y, 1460, 875);
+  }
+  drawSolarAsteroidBelt(ctx, sun.x, sun.y, 1460, 875, now, bounds);
 
   const bodies = DEATHMATCH_SOLAR_PLANETS
     .map((spec) => ({ spec, ...solarOrbitPosition(sun, spec, now) }))
     .sort((a, b) => a.y - b.y);
 
   for (const body of bodies) {
+    const visibilityRadius = body.spec.kind === 'saturn'
+      ? body.spec.radius * 4.2
+      : body.spec.kind === 'jupiter'
+      ? body.spec.radius * 1.8
+      : body.spec.kind === 'earth'
+      ? body.spec.radius + EARTH_MOON.orbit + EARTH_MOON.size + 8
+      : body.spec.kind === 'mars'
+      ? body.spec.radius * 2.7
+      : body.spec.kind === 'pluto'
+      ? body.spec.radius * 2.8
+      : body.spec.radius * 1.8;
+    if (!boundsIntersectCircle(bounds, body.x, body.y, visibilityRadius)) continue;
     const light = normalise2(sun.x - body.x, sun.y - body.y);
     const spin = solarRotation(now, body.spec.rotationDays, body.spec.epoch);
     if (body.spec.kind === 'mercury') {
@@ -1718,10 +1794,10 @@ function drawDeathmatchSolarScenery(ctx: CanvasRenderingContext2D, rw: number, r
     }
   }
 
-  drawSol(ctx, sun.x, sun.y, 68, now);
+  if (boundsIntersectCircle(bounds, sun.x, sun.y, 68 * 6.2)) drawSol(ctx, sun.x, sun.y, 68, now);
 }
 
-function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: number): void {
+function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: number, deathmatchBounds?: WorldBounds): void {
   // Defender preview: replace the wave bg with a multi-layer parallax
   // starfield that scrolls under the follow camera. Skips the wave webp +
   // procedural fallback paths entirely.
@@ -1730,7 +1806,7 @@ function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: nu
     return;
   }
   if (deathmatchActive() && state.phase !== 'title') {
-    drawDeathmatchBackground(ctx, now, state.elapsed);
+    drawDeathmatchBackground(ctx, now, state.elapsed, deathmatchBounds);
     return;
   }
   // Arena replaces the wave backdrop with a flat containment void; the grid
@@ -5391,7 +5467,15 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     return;
   }
 
-  drawBackground(ctx, state, now);
+  const deathmatchViewBounds: WorldBounds | undefined = followActive && deathmatchRun
+    ? {
+        x0: Math.max(0, camX - camStrip / 2),
+        y0: Math.max(0, camY - camStripY / 2),
+        x1: Math.min(rw, camX + camStrip / 2),
+        y1: Math.min(rh, camY + camStripY / 2),
+      }
+    : undefined;
+  drawBackground(ctx, state, now, deathmatchViewBounds);
   // Stars ride the world transform; under the follow camera draw them at each
   // visible seam copy so a strip straddling x=0 / WORLD_W stays starred.
   // Skipped in defender mode where the parallax starfield from
@@ -5480,6 +5564,10 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // Arena cage floor — the grid sits beneath the entity layer.
   if (arenaCageR) drawArenaGrid(ctx, arenaCageR, now);
 
+  const visibleInDeathmatchView = (x: number, y: number, r: number): boolean => (
+    !deathmatchViewBounds || boundsIntersectCircle(deathmatchViewBounds, x, y, r + 120)
+  );
+
   for (const dx of ghostXs) {
     for (const dy of ghostYs) {
       const isGhost = dx !== 0 || dy !== 0;
@@ -5492,6 +5580,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       // every band; depth still reads via size/speed/opacity cues.
       const sortedAsteroids = state.asteroids.slice().sort((p, q) => (p.depth ?? 3) - (q.depth ?? 3));
       for (const a of sortedAsteroids) {
+        if (!visibleInDeathmatchView(a.pos.x, a.pos.y, a.radius)) continue;
         const dCfg = DEPTH_CONFIGS[a.depth ?? 3];
         if (dCfg && dCfg.alphaMul !== 1) {
           ctx.save();
@@ -5507,18 +5596,19 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       // genuine wrapped world and must include them; the Y-ghost passes still
       // must not, or a phantom appears on the off-screen opposite edge.
       if (dy === 0 && (dx === 0 || followActive)) {
-        for (const m of state.mines) drawMine(ctx, m, now);
-        for (const u of state.ufos) drawUfo(ctx, u, now);
+        for (const m of state.mines) if (visibleInDeathmatchView(m.pos.x, m.pos.y, m.radius)) drawMine(ctx, m, now);
+        for (const u of state.ufos) if (visibleInDeathmatchView(u.pos.x, u.pos.y, u.radius)) drawUfo(ctx, u, now);
       }
-      for (const b of state.bullets) drawBullet(ctx, b, true);
-      for (const b of state.enemyBullets) drawBullet(ctx, b, false);
-      for (const c of state.coins) drawCoin(ctx, c, now);
-      for (const p of state.powerups) drawPowerUp(ctx, p, now);
+      for (const b of state.bullets) if (visibleInDeathmatchView(b.pos.x, b.pos.y, b.radius)) drawBullet(ctx, b, true);
+      for (const b of state.enemyBullets) if (visibleInDeathmatchView(b.pos.x, b.pos.y, b.radius)) drawBullet(ctx, b, false);
+      for (const c of state.coins) if (visibleInDeathmatchView(c.pos.x, c.pos.y, c.radius)) drawCoin(ctx, c, now);
+      for (const p of state.powerups) if (visibleInDeathmatchView(p.pos.x, p.pos.y, p.radius + 20)) drawPowerUp(ctx, p, now);
       drawGhostShip(ctx, state);
       drawGhostAttract(ctx, state, now);
       const idleSway = state.phase === 'title' || state.phase === 'wavestart';
       for (const pl of state.players) {
         if (pl.ship.alive || pl.ship.hyperspaceCloakMs > 0) {
+          if (!visibleInDeathmatchView(pl.ship.pos.x, pl.ship.pos.y, pl.ship.radius + 80)) continue;
           drawShield(ctx, pl.ship, now, state.elapsed);
           drawShip(ctx, pl.ship, now, state.elapsed, idleSway);
         }
