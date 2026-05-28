@@ -337,6 +337,79 @@ async function main(): Promise<void> {
         JSON.stringify(localDm),
       );
       await dmPage.close();
+
+      // Regression: after landing on a deathmatch URL, choosing CAMPAIGN
+      // from the title screen must clear the live deathmatch route state.
+      // Otherwise IGNITE still starts deathmatch because main.ts cached
+      // the URL-derived mode at boot.
+      const campaignPage = await ctx.newPage();
+      await campaignPage.addInitScript(() => {
+        localStorage.setItem('pallasite:mode', 'deathmatch');
+        localStorage.setItem('pallasite:onboarded', '1');
+      });
+      await campaignPage.goto(`${VITE_BASE}/?mode=deathmatch&deathmatchPlayers=4&aiFill=1&deathmatchTime=300`, { waitUntil: 'load' });
+      await campaignPage.evaluate(() => {
+        const state = (window as unknown as { __pallasiteState?: { session?: unknown } }).__pallasiteState;
+        if (!state) throw new Error('missing pallasite state');
+        state.session = {
+          pubkey: '0'.repeat(64),
+          displayName: 'E2E',
+          method: 'guest',
+          signer: { capabilities: { canSignEvents: false } },
+        };
+      });
+      await campaignPage.evaluate(() => {
+        const play = Array.from(document.querySelectorAll('button')).find(b => (b.textContent ?? '').includes('PLAY'));
+        if (!play) throw new Error('PLAY button not found');
+        play.click();
+      });
+      await campaignPage.waitForFunction(
+        () => Array.from(document.querySelectorAll('button')).some(b => (b.textContent ?? '').trim() === 'CAMPAIGN'),
+        undefined,
+        { timeout: LOBBY_RENDER_TIMEOUT_MS },
+      );
+      await campaignPage.evaluate(() => {
+        const campaign = Array.from(document.querySelectorAll('button')).find(b => (b.textContent ?? '').trim() === 'CAMPAIGN');
+        if (!campaign) throw new Error('CAMPAIGN button not found');
+        campaign.click();
+      });
+      await campaignPage.waitForFunction(
+        () => Array.from(document.querySelectorAll('button')).some(b => (b.textContent ?? '').includes('IGNITE')),
+        undefined,
+        { timeout: LOBBY_RENDER_TIMEOUT_MS },
+      );
+      await campaignPage.evaluate(() => {
+        const start = Array.from(document.querySelectorAll('button')).find(b => (b.textContent ?? '').includes('IGNITE'));
+        if (!start) throw new Error('IGNITE button not found');
+        start.click();
+      });
+      await campaignPage.waitForFunction(
+        () => {
+          const s = (window as unknown as { __pallasiteState?: { phase?: string; players?: unknown[]; deathmatchRules?: unknown } }).__pallasiteState;
+          return !!s && (s.phase === 'playing' || s.phase === 'wavestart') && s.players?.length === 1;
+        },
+        undefined,
+        { timeout: LOBBY_RENDER_TIMEOUT_MS },
+      );
+      const campaignRun = await campaignPage.evaluate(() => {
+        const s = (window as unknown as { __pallasiteState?: { phase?: string; players?: unknown[]; deathmatchRules?: unknown } }).__pallasiteState;
+        const params = new URLSearchParams(window.location.search);
+        return {
+          storedMode: localStorage.getItem('pallasite:mode'),
+          urlMode: params.get('mode'),
+          deathmatchPlayers: params.get('deathmatchPlayers'),
+          phase: s?.phase ?? null,
+          players: s?.players?.length ?? 0,
+          deathmatchRules: !!s?.deathmatchRules,
+        };
+      });
+      reportCheck(
+        checks,
+        'campaign clears deathmatch URL state',
+        campaignRun.storedMode === 'campaign' && campaignRun.urlMode === null && campaignRun.deathmatchPlayers === null && campaignRun.players === 1 && !campaignRun.deathmatchRules,
+        JSON.stringify(campaignRun),
+      );
+      await campaignPage.close();
     } finally {
       await browser.close();
     }

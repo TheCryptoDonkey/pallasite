@@ -71,24 +71,34 @@ function boundedNumber(raw: string | null, fallback: number, min: number, max: n
   return integer ? Math.floor(clamped) : clamped;
 }
 
+let multiplayerUrlSessionSuppressed = false;
+
+function urlCoopCampaignModeActive(): boolean {
+  return !multiplayerUrlSessionSuppressed && urlCoopCampaignMode;
+}
+
+function urlDeathmatchModeActive(): boolean {
+  return !multiplayerUrlSessionSuppressed && urlDeathmatchMode;
+}
+
 function requestedDeathmatchPlayers(defaultCount: number): number {
-  if (!urlDeathmatchMode && getStoredMode() !== 'deathmatch') return defaultCount;
+  if (!urlDeathmatchModeActive() && getStoredMode() !== 'deathmatch') return defaultCount;
   const params = new URLSearchParams(window.location.search);
   return boundedPlayerCount(params.get('deathmatchPlayers') ?? params.get('players'), defaultCount, 2, 64);
 }
 
 function requestedStartPlayers(): number {
-  if (urlCoopCampaignMode) {
+  if (urlCoopCampaignModeActive()) {
     return boundedPlayerCount(mpParams.get('players'), 2, 2, 2);
   }
-  if ((peer || spectator) && (urlDeathmatchMode || getStoredMode() === 'deathmatch')) {
+  if ((peer || spectator) && (urlDeathmatchModeActive() || getStoredMode() === 'deathmatch')) {
     return boundedPlayerCount(mpParams.get('deathmatchPlayers') ?? mpParams.get('players'), requestedPeerPlayers, 2, 64);
   }
-  return requestedDeathmatchPlayers((peer || spectator) ? requestedPeerPlayers : (couchMode ? 2 : 1));
+  return requestedDeathmatchPlayers(!multiplayerUrlSessionSuppressed && (peer || spectator) ? requestedPeerPlayers : (couchMode ? 2 : 1));
 }
 
 function applyDeathmatchHarnessOptions(): void {
-  if (!urlDeathmatchMode && getStoredMode() !== 'deathmatch') return;
+  if (!urlDeathmatchModeActive() && getStoredMode() !== 'deathmatch') return;
   const params = new URLSearchParams(window.location.search);
   if (params.get('deathmatchAi') === 'all') {
     for (const p of state.players) p.ai = true;
@@ -96,7 +106,7 @@ function applyDeathmatchHarnessOptions(): void {
 }
 
 function requestedDeathmatchRules(): Partial<DeathmatchRules> | undefined {
-  if (!urlDeathmatchMode && getStoredMode() !== 'deathmatch') return undefined;
+  if (!urlDeathmatchModeActive() && getStoredMode() !== 'deathmatch') return undefined;
   const params = new URLSearchParams(window.location.search);
   const out: Partial<DeathmatchRules> = {};
   const timeSec = boundedNumber(params.get('deathmatchTime') ?? params.get('dmTime'), NaN, 0, 30 * 60, true);
@@ -356,8 +366,28 @@ void inputDelay;  // exporters / wiring in M2 step 7
 // import) can raise without a dependency back to main.ts.
 const edgeFlags = localEdges;
 
+function exitMultiplayerUrlSession(): void {
+  multiplayerUrlSessionSuppressed = true;
+  setPeerActive(false);
+  try { peer?.disconnect(); } catch { /* socket may already be closed */ }
+  peer = null;
+  try { spectator?.disconnect(); } catch { /* socket may already be closed */ }
+  spectator = null;
+  __testHooks.peerRef = null;
+  inputLog = null;
+  peerStallFrames = 0;
+  lastPeerResendAt = -Infinity;
+  peerDisconnectDeclared = false;
+  peerDesyncFrame = -1;
+  localCanaryHashes.clear();
+  delete document.body.dataset.peerStall;
+  delete document.body.dataset.peerDesync;
+}
+
+(window as unknown as { __pallasiteExitMultiplayerSession?: () => void }).__pallasiteExitMultiplayerSession = exitMultiplayerUrlSession;
+
 function currentDeathmatchAiSlots(players: number): number[] | undefined {
-  if (!aiFillDeathmatch || !urlDeathmatchMode) return undefined;
+  if (!aiFillDeathmatch || !urlDeathmatchModeActive()) return undefined;
   const liveConfig = peer?.getHumanSlotConfig?.() ?? spectator?.getHumanSlotConfig?.();
   const liveHumanSlots = liveConfig?.humanSlots ?? peer?.getHumanSlots?.() ?? spectator?.getHumanSlots?.() ?? [];
   const configuredHumanSlots = liveHumanSlots.length > 0 ? liveHumanSlots : requestedHumanSlots;
@@ -374,7 +404,7 @@ function currentDeathmatchAiSlots(players: number): number[] | undefined {
 }
 
 function currentHumanSlotConfig(): HumanSlotConfig | null {
-  if (!aiFillDeathmatch || !urlDeathmatchMode) return null;
+  if (!aiFillDeathmatch || !urlDeathmatchModeActive()) return null;
   const live = peer?.getHumanSlotConfig?.() ?? spectator?.getHumanSlotConfig?.();
   const humanSlots = live?.humanSlots?.length ? live.humanSlots : requestedHumanSlots;
   if (!humanSlots || humanSlots.length === 0) return null;
@@ -404,7 +434,7 @@ function currentStartOptions(): { players: number; defender: boolean; aiOpponent
     players,
     defender: defenderMode,
     aiOpponents: !(peer || spectator),
-    runMode: urlDeathmatchMode ? 'deathmatch' : urlCoopCampaignMode ? 'coop-campaign' : (peer || spectator) ? 'campaign' : undefined,
+    runMode: urlDeathmatchModeActive() ? 'deathmatch' : urlCoopCampaignModeActive() ? 'coop-campaign' : (peer || spectator) ? 'campaign' : undefined,
     deathmatchRules: requestedDeathmatchRules(),
     aiSlots: currentDeathmatchAiSlots(players),
   };
@@ -1514,7 +1544,7 @@ async function boot(): Promise<void> {
       // (not currentMode) so the camera engages from the FIRST frame after
       // the player picks DEFENDER, not only after IGNITE runs lockInMode.
       const defenderActive = defenderMode || isStoredDefenderMode();
-      const deathmatchFollow = deathmatchActive() || urlDeathmatchMode;
+      const deathmatchFollow = deathmatchActive() || urlDeathmatchModeActive();
       const follow = (vh > vw) || defenderActive || deathmatchFollow;
       const scale = Math.min(vw / WORLD_W, vh / WORLD_H);
       const tx = (vw - WORLD_W * scale) / 2;
@@ -1777,7 +1807,7 @@ async function boot(): Promise<void> {
   // so the queued simulateStart() microtask is about to fire and clear
   // the overlay anyway. Skipping renderAttract avoids a one-frame flash
   // of the attract screen between peer-joined and game start.
-  const autoStartLocalDeathmatch = autoStartMode && !peer && !spectator && urlDeathmatchMode;
+  const autoStartLocalDeathmatch = autoStartMode && !peer && !spectator && urlDeathmatchModeActive();
   if (!peer && !spectator && !defenderMode && !autoStartLocalDeathmatch) renderAttract(state);
   if (autoStartLocalDeathmatch) {
     queueMicrotask(() => { simulateStart(); });
