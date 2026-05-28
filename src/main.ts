@@ -292,17 +292,17 @@ function peerInputDelayFrames(players: number, aiFilledSession = false): number 
   const configured = boundedPlayerCount(mpParams.get('inputDelay'), NaN, 0, 60);
   if (Number.isFinite(configured)) return configured;
   if (urlCoopCampaignModeActive()) return 48;
-  if (aiFilledSession) return 32;
+  if (aiFilledSession) return 40;
   if (urlDeathmatchModeActive()) return Math.min(56, 44 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
   return Math.min(32, 22 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
 }
 
 function shouldBatchPeerFrames(): boolean {
   if (!peerBatchFrames) return false;
-  // Four all-human peers are latency-sensitive and still small enough to send
-  // immediate 60Hz frames. Keep batching for AI-filled/larger arenas where
-  // fan-out pressure matters more than per-frame latency.
-  if (urlDeathmatchModeActive() && !aiFillDeathmatch && requestedPeerPlayers <= 4) return false;
+  // Small deathmatches are latency-sensitive and still small enough to send
+  // immediate 60Hz frames. Keep batching for larger arenas where fan-out
+  // pressure matters more than per-frame latency.
+  if (urlDeathmatchModeActive() && requestedPeerPlayers <= 8) return false;
   return true;
 }
 
