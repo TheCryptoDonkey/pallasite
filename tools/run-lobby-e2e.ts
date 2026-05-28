@@ -297,6 +297,21 @@ async function main(): Promise<void> {
       });
       reportCheck(checks, 'deathmatch lobby route', dm.heading && dm.waitingForPilots && dm.selected4p && dm.slotLinks && dm.rules, JSON.stringify(dm));
       await dmPage.evaluate(() => {
+        const p3 = Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'P3');
+        if (!p3) throw new Error('P3 slot button not found');
+        (p3 as HTMLButtonElement).click();
+      });
+      const dmQr = await dmPage.evaluate(() => {
+        const qr = Array.from(document.querySelectorAll('canvas')).find((c) => c.dataset.slot !== undefined);
+        const label = Array.from(document.querySelectorAll('p')).find((p) => (p.textContent ?? '').includes('QR ·'));
+        return {
+          slot: qr?.dataset.slot ?? null,
+          title: qr?.title ?? null,
+          label: label?.textContent ?? null,
+        };
+      });
+      reportCheck(checks, 'deathmatch slot QR switches beyond P2', dmQr.slot === '2' && dmQr.title === 'P3 invite QR' && dmQr.label === 'QR · P3', JSON.stringify(dmQr));
+      await dmPage.evaluate(() => {
         const ready = Array.from(document.querySelectorAll('button')).find(b => (b.textContent ?? '').includes('START DEATHMATCH'));
         if (!ready) throw new Error('deathmatch READY button not found');
         ready.click();

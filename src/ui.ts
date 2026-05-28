@@ -12015,7 +12015,10 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby
     }
     return Array.from(slots).sort((a, b) => a - b);
   };
-  const partnerUrl = (): string => buildDuelInviteUrl(session, 1, playerCount, deathmatchRules, matchKind());
+  let qrInviteSlot = 1;
+  const inviteUrlForSlot = (slot: number, humanSlots?: readonly number[]): string =>
+    buildDuelInviteUrl(session, slot, playerCount, deathmatchRules, matchKind(), humanSlots);
+  const partnerUrl = (): string => inviteUrlForSlot(1);
   const inviterUrl = (): string => buildDuelInviteUrl(
     session,
     0,
@@ -12032,7 +12035,7 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby
     if (playerCount <= 2) return partnerUrl();
     const lines: string[] = [];
     for (let slot = 1; slot < playerCount; slot++) {
-      lines.push(`P${slot + 1}: ${buildDuelInviteUrl(session, slot, playerCount, deathmatchRules, matchKind())}`);
+      lines.push(`P${slot + 1}: ${inviteUrlForSlot(slot)}`);
     }
     return lines.join('\n');
   };
@@ -12128,8 +12131,20 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby
   const timeButtons = new Map<number, HTMLButtonElement>();
   const killButtons = new Map<number, HTMLButtonElement>();
   const respawnButtons = new Map<number, HTMLButtonElement>();
+  const slotButtons = new Map<number, HTMLButtonElement>();
+  const renderInviteQr = (): void => {
+    const maxSlot = Math.max(1, playerCount - 1);
+    qrInviteSlot = Math.max(1, Math.min(qrInviteSlot, maxSlot));
+    qrCanvas.dataset.slot = String(qrInviteSlot);
+    qrCanvas.title = playerCount > 2 ? `P${qrInviteSlot + 1} invite QR` : 'P2 invite QR';
+    qrLabel.textContent = playerCount > 2 ? `QR · P${qrInviteSlot + 1}` : 'QR · P2';
+    for (const [slot, btn] of slotButtons) btn.className = `menu-btn${slot === qrInviteSlot ? '' : ' secondary'}`;
+    void QRCode.toCanvas(qrCanvas, inviteUrlForSlot(qrInviteSlot), { width: 220, margin: 1 })
+      .catch((err: unknown) => { console.warn('[duel] QR render failed:', err); });
+  };
   const updateInviteViews = (): void => {
     const isDeathmatch = matchKind() === 'deathmatch';
+    qrInviteSlot = Math.max(1, Math.min(qrInviteSlot, Math.max(1, playerCount - 1)));
     for (const [count, btn] of sizeButtons) btn.className = `menu-btn${count === playerCount ? '' : ' secondary'}`;
     for (const [seconds, btn] of timeButtons) btn.className = `menu-btn${deathmatchRules.timeLimitMs === seconds * 1000 ? '' : ' secondary'}`;
     for (const [kills, btn] of killButtons) btn.className = `menu-btn${deathmatchRules.killLimit === kills ? '' : ' secondary'}`;
@@ -12144,21 +12159,20 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby
       ? coopLobby ? 'Anyone with this link can watch the co-op campaign live, no account needed.' : isDeathmatch ? 'Anyone with this link can watch both pilots live, no account needed.' : 'Anyone with this link can watch the duel live, no account needed.'
       : `Anyone with this link can watch all ${playerCount} pilots live, no account needed.`;
     slotLinks.replaceChildren();
+    slotButtons.clear();
     if (playerCount > 2) {
       for (let slot = 1; slot < playerCount; slot++) {
-        const slotBtn = el('button', { className: 'menu-btn secondary', parent: slotLinks, text: `P${slot + 1}` }) as HTMLButtonElement;
+        const slotBtn = el('button', { className: `menu-btn${slot === qrInviteSlot ? '' : ' secondary'}`, parent: slotLinks, text: `P${slot + 1}` }) as HTMLButtonElement;
         slotBtn.style.cssText = 'padding:5px 9px;font-size:0.72rem;letter-spacing:0.08em;';
-        slotBtn.title = `Copy invite for player ${slot + 1}`;
+        slotBtn.title = `Show invite QR for player ${slot + 1}`;
+        slotButtons.set(slot, slotBtn);
         slotBtn.addEventListener('click', () => {
-          const original = slotBtn.textContent ?? `P${slot + 1}`;
-          void navigator.clipboard.writeText(buildDuelInviteUrl(session, slot, playerCount, deathmatchRules, matchKind()))
-            .then(() => { slotBtn.textContent = 'OK'; setTimeout(() => { slotBtn.textContent = original; }, 900); })
-            .catch(() => { slotBtn.textContent = 'ERR'; setTimeout(() => { slotBtn.textContent = original; }, 900); });
+          qrInviteSlot = slot;
+          renderInviteQr();
         });
       }
     }
-    void QRCode.toCanvas(qrCanvas, partnerUrl(), { width: 220, margin: 1 })
-      .catch((err: unknown) => { console.warn('[duel] QR render failed:', err); });
+    renderInviteQr();
     renderSessionStatus();
   };
   for (const count of [2, 4, 8, 16, 64]) {
@@ -12242,6 +12256,8 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby
 
   const qrCanvas = el('canvas', { parent: inviteCard });
   qrCanvas.style.cssText = 'background:#fff;padding:10px;border-radius:8px;max-width:220px;width:100%;height:auto;';
+  const qrLabel = el('p', { parent: inviteCard, text: 'QR · P2' });
+  qrLabel.style.cssText = 'margin:-6px 0 0;font:0.72rem ui-monospace,monospace;letter-spacing:0.18em;color:rgba(255,216,74,0.86);';
 
   const sessionRow = el('div', { parent: inviteCard });
   sessionRow.style.cssText = 'display:flex;align-items:center;gap:8px;font-family:ui-monospace,monospace;font-size:0.85rem;color:rgba(220,210,255,0.85);';
