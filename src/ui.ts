@@ -880,6 +880,8 @@ export function renderTitle(state: GameState): void {
   const storedMode = getStoredMode();
   const startLabel = storedMode === 'coop-campaign'
     ? 'CO-OP LOBBY · PRESS ENTER'
+    : storedMode === 'deathmatch'
+      ? 'DEATHMATCH LOBBY · PRESS ENTER'
     : storedMode === 'duel'
       ? 'ENTER LOBBY · PRESS ENTER'
       : 'IGNITE · PRESS ENTER';
@@ -887,13 +889,13 @@ export function renderTitle(state: GameState): void {
   startBtn.addEventListener('click', () => {
     void (async () => {
       void audio.unlockAudio();
-      // Duel takes the dedicated route; everything else stays on the solo
+      // Multiplayer-backed modes take the dedicated lobby route; everything else stays on the solo
       // path. The lobby reads the same broker the peer arena uses, so no
       // session needs to be created here — that happens inside the lobby
       // (HOST flow generates a session id; JOIN consumes one from the URL).
       const mode = getStoredMode();
-      if (mode === 'duel' || mode === 'coop-campaign') {
-        window.location.assign(mode === 'coop-campaign' ? '/duel?coop=1' : '/duel');
+      if (mode === 'duel' || mode === 'coop-campaign' || mode === 'deathmatch') {
+        window.location.assign(mode === 'coop-campaign' ? '/duel?coop=1' : mode === 'deathmatch' ? '/duel?deathmatch=1' : '/duel');
         return;
       }
       // Fallback path for IGNITE without first typing a name: rather
@@ -1546,7 +1548,7 @@ function renderModeRow(parent: HTMLElement, state: GameState): void {
       // Toggling in/out of lobby-backed modes changes the IGNITE button
       // label/behaviour and the leaderboard board, so re-render the title
       // rather than keep those separate DOM islands in sync by hand.
-      if ((prev === 'duel') !== (info.id === 'duel') || (prev === 'coop-campaign') !== (info.id === 'coop-campaign')) {
+      if (prev === 'duel' || prev === 'coop-campaign' || prev === 'deathmatch' || info.id === 'duel' || info.id === 'coop-campaign' || info.id === 'deathmatch') {
         renderTitle(state);
       } else {
         refresh();
@@ -11828,10 +11830,10 @@ function buildBrokerPeerUrl(session: string): string {
 }
 
 function appendDeathmatchUrlParams(params: URLSearchParams, players: number, rules?: Partial<DeathmatchRules>): void {
-  if (players <= 2) return;
   params.set('mode', 'deathmatch');
   params.set('deathmatchPlayers', String(players));
   params.set('peerBatch', '1');
+  params.set('aiFill', '1');
   const resolved = makeDeathmatchRules(players, rules);
   params.set('deathmatchTime', String(Math.round(resolved.timeLimitMs / 1000)));
   params.set('deathmatchKills', String(resolved.killLimit));
@@ -11853,7 +11855,7 @@ function appendLobbyModeUrlParams(params: URLSearchParams, kind: LobbyMatchKind,
 
 /** Build the page URL the partner opens to join an existing session. Slot
  *  is the partner's slot (the OTHER slot from the inviter's). */
-function buildDuelInviteUrl(session: string, partnerSlot: number, players = 2, rules?: Partial<DeathmatchRules>, kind: LobbyMatchKind = players > 2 ? 'deathmatch' : 'duel'): string {
+function buildDuelInviteUrl(session: string, partnerSlot: number, players = 2, rules?: Partial<DeathmatchRules>, kind: LobbyMatchKind = players > 2 ? 'deathmatch' : 'duel', humanSlots?: readonly number[]): string {
   const peer = buildBrokerPeerUrl(session);
   const origin = window.location.origin;
   const params = new URLSearchParams({
@@ -11863,6 +11865,9 @@ function buildDuelInviteUrl(session: string, partnerSlot: number, players = 2, r
     players: String(players),
   });
   appendLobbyModeUrlParams(params, kind, players, rules);
+  if (kind === 'deathmatch' && humanSlots && humanSlots.length > 0) {
+    params.set('humanSlots', Array.from(humanSlots).join(','));
+  }
   return `${origin}/?${params.toString()}`;
 }
 
@@ -11902,7 +11907,9 @@ export function renderDuelLobby(): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
-  const coopLobby = new URLSearchParams(window.location.search).get('coop') === '1';
+  const lobbyParams = new URLSearchParams(window.location.search);
+  const coopLobby = lobbyParams.get('coop') === '1';
+  const deathmatchLobby = !coopLobby && lobbyParams.get('deathmatch') === '1';
 
   // Wordmark logo — same image the title uses, mix-blend-mode:screen so the
   // baked-in starfield drops out over the page background. Reusing the
@@ -11915,16 +11922,18 @@ export function renderDuelLobby(): void {
   (lobbyLogo as HTMLImageElement).decoding = 'async';
   lobbyLogo.style.cssText = 'max-width:min(360px, 70vw);width:auto;height:auto;';
 
-  const subtitle = el('p', { parent: overlay, text: coopLobby ? 'CO-OP CAMPAIGN' : 'DUEL / DEATHMATCH' });
+  const subtitle = el('p', { parent: overlay, text: coopLobby ? 'CO-OP CAMPAIGN' : deathmatchLobby ? 'DEATHMATCH' : 'DUEL / DEATHMATCH' });
   subtitle.style.cssText = 'font-size:1.2rem;color:var(--hud-yellow);letter-spacing:0.3em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:-8px 0 4px;';
 
-  const tag = el('p', { parent: overlay, text: coopLobby ? '2 PILOTS · 25 WAVES · SHARED SCORE' : '2 TO 64 PILOTS · ONE ARENA' });
+  const tag = el('p', { parent: overlay, text: coopLobby ? '2 PILOTS · 25 WAVES · SHARED SCORE' : deathmatchLobby ? '2 TO 64 PILOTS · FREE-FOR-ALL' : '2 TO 64 PILOTS · ONE ARENA' });
   tag.style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.85);letter-spacing:0.22em;margin:0 0 14px;font-family:ui-monospace,monospace;';
 
   const rules = el('p', { parent: overlay });
   rules.style.cssText = 'margin:0 auto 18px;font-size:0.85rem;color:rgba(220,210,255,0.78);max-width:560px;line-height:1.55;text-align:center;';
   rules.innerHTML = coopLobby
     ? 'Campaign waves together over deterministic lockstep. Shared co-op leaderboard, no sats payouts.'
+    : deathmatchLobby
+    ? 'Shared arena, deterministic seed, frame-perfect lockstep. Host 2, 4, 8, 16, or 64 pilots; empty slots become AI until humans join.'
     : 'Shared arena, deterministic seed, frame-perfect lockstep. ' +
       'Deathmatch rounds use time, kill-cap, and elimination rules. No sats, no stakes — bragging rights only.';
 
@@ -11946,7 +11955,7 @@ export function renderDuelLobby(): void {
     try { teardown?.(); } catch { /* ignore */ }
     teardown = null;
     panel.innerHTML = '';
-    teardown = next === 'host' ? renderHostPanel(panel, coopLobby) : renderJoinPanel(panel, coopLobby);
+    teardown = next === 'host' ? renderHostPanel(panel, coopLobby, deathmatchLobby) : renderJoinPanel(panel, coopLobby, deathmatchLobby);
   };
   hostTab.addEventListener('click', () => setTab('host'));
   joinTab.addEventListener('click', () => setTab('join'));
@@ -11961,14 +11970,31 @@ export function renderDuelLobby(): void {
   setTab('host');
 }
 
-function renderHostPanel(parent: HTMLElement, coopLobby = false): (() => void) {
+function renderHostPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby = false): (() => void) {
   const session = generateSessionId();
-  let playerCount = 2;
+  let playerCount = deathmatchLobby ? 4 : 2;
   let deathmatchRules = makeDeathmatchRules(playerCount);
-  const matchKind = (): LobbyMatchKind => coopLobby ? 'coop-campaign' : playerCount > 2 ? 'deathmatch' : 'duel';
+  const matchKind = (): LobbyMatchKind => coopLobby ? 'coop-campaign' : deathmatchLobby || playerCount > 2 ? 'deathmatch' : 'duel';
   const joinedSlots = new Set<number>();
+  const humanSlotsForStart = (): number[] => {
+    const slots = new Set<number>([0]);
+    for (const slot of joinedSlots) {
+      if (slot > 0 && slot < playerCount) slots.add(slot);
+    }
+    return Array.from(slots).sort((a, b) => a - b);
+  };
   const partnerUrl = (): string => buildDuelInviteUrl(session, 1, playerCount, deathmatchRules, matchKind());
-  const inviterUrl = (): string => buildDuelInviteUrl(session, 0, playerCount, deathmatchRules, matchKind());
+  const inviterUrl = (): string => buildDuelInviteUrl(
+    session,
+    0,
+    playerCount,
+    deathmatchRules,
+    matchKind(),
+    matchKind() === 'deathmatch' ? humanSlotsForStart() : undefined,
+  );
+  const startUrl = (): string => {
+    return inviterUrl();
+  };
   const spectateUrl = (): string => buildSpectateUrl(session, playerCount, deathmatchRules, matchKind());
   const inviteBundle = (): string => {
     if (playerCount <= 2) return partnerUrl();
@@ -11989,7 +12015,7 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false): (() => void) {
   status.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px 18px;border-radius:999px;border:1.5px solid rgba(255,216,74,0.45);background:rgba(255,216,74,0.08);';
   const statusDot = el('span', { parent: status });
   statusDot.style.cssText = 'width:10px;height:10px;border-radius:50%;background:#ffd84a;box-shadow:0 0 12px rgba(255,216,74,0.85);animation:pallasiteWaitPulse 1.4s ease-in-out infinite;';
-  const statusText = el('span', { parent: status, text: coopLobby ? 'WAITING FOR CO-PILOT…' : 'WAITING FOR OPPONENT…' });
+  const statusText = el('span', { parent: status, text: coopLobby ? 'WAITING FOR CO-PILOT...' : deathmatchLobby ? 'WAITING FOR PILOTS...' : 'WAITING FOR OPPONENT...' });
   statusText.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:0.95rem;letter-spacing:0.18em;color:#ffd84a;";
   ensurePulseKeyframes();
 
@@ -11998,7 +12024,7 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false): (() => void) {
       statusDot.style.background = '#8cffb4';
       statusDot.style.boxShadow = '0 0 14px rgba(140,255,180,0.9)';
       statusDot.style.animation = 'none';
-      statusText.textContent = coopLobby ? 'CO-PILOT CONNECTED ✓' : 'OPPONENT CONNECTED ✓';
+      statusText.textContent = coopLobby ? 'CO-PILOT CONNECTED ✓' : deathmatchLobby ? 'PILOT CONNECTED ✓' : 'OPPONENT CONNECTED ✓';
       statusText.style.color = '#8cffb4';
       status.style.borderColor = 'rgba(140,255,180,0.55)';
       status.style.background = 'rgba(140,255,180,0.1)';
@@ -12006,7 +12032,7 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false): (() => void) {
       statusDot.style.background = '#ffd84a';
       statusDot.style.boxShadow = '0 0 12px rgba(255,216,74,0.85)';
       statusDot.style.animation = 'pallasiteWaitPulse 1.4s ease-in-out infinite';
-      statusText.textContent = coopLobby ? 'WAITING FOR CO-PILOT…' : 'WAITING FOR OPPONENT…';
+      statusText.textContent = coopLobby ? 'WAITING FOR CO-PILOT...' : deathmatchLobby ? 'WAITING FOR PILOTS...' : 'WAITING FOR OPPONENT...';
       statusText.style.color = '#ffd84a';
       status.style.borderColor = 'rgba(255,216,74,0.45)';
       status.style.background = 'rgba(255,216,74,0.08)';
@@ -12071,18 +12097,19 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false): (() => void) {
   const killButtons = new Map<number, HTMLButtonElement>();
   const respawnButtons = new Map<number, HTMLButtonElement>();
   const updateInviteViews = (): void => {
+    const isDeathmatch = matchKind() === 'deathmatch';
     for (const [count, btn] of sizeButtons) btn.className = `menu-btn${count === playerCount ? '' : ' secondary'}`;
     for (const [seconds, btn] of timeButtons) btn.className = `menu-btn${deathmatchRules.timeLimitMs === seconds * 1000 ? '' : ' secondary'}`;
     for (const [kills, btn] of killButtons) btn.className = `menu-btn${deathmatchRules.killLimit === kills ? '' : ' secondary'}`;
     for (const [respawns, btn] of respawnButtons) btn.className = `menu-btn${deathmatchRules.respawns === respawns ? '' : ' secondary'}`;
     copyBtn.textContent = playerCount === 2 ? 'COPY INVITE LINK' : 'COPY INVITE LINKS';
     watchBtn.textContent = 'COPY WATCH LINK';
-    matchRules.style.display = playerCount > 2 ? 'flex' : 'none';
-    rulesSummary.textContent = playerCount > 2
+    matchRules.style.display = isDeathmatch ? 'flex' : 'none';
+    rulesSummary.textContent = isDeathmatch
       ? `${Math.round(deathmatchRules.timeLimitMs / 60_000)} min · ${deathmatchRules.killLimit} kills · ${deathmatchRules.respawns} respawns · FFA`
       : coopLobby ? 'Co-op campaign · shared score · no sats payouts' : 'Classic two-player duel';
     watchInfo.textContent = playerCount === 2
-      ? coopLobby ? 'Anyone with this link can watch the co-op campaign live, no account needed.' : 'Anyone with this link can watch the duel live, no account needed.'
+      ? coopLobby ? 'Anyone with this link can watch the co-op campaign live, no account needed.' : isDeathmatch ? 'Anyone with this link can watch both pilots live, no account needed.' : 'Anyone with this link can watch the duel live, no account needed.'
       : `Anyone with this link can watch all ${playerCount} pilots live, no account needed.`;
     slotLinks.replaceChildren();
     if (playerCount > 2) {
@@ -12175,7 +12202,11 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false): (() => void) {
 
   const info = el('p', { parent: inviteCard });
   info.style.cssText = 'margin:0;font-size:0.85rem;color:rgba(220,210,255,0.78);line-height:1.45;text-align:center;max-width:420px;';
-  info.textContent = coopLobby ? 'Send the link or have your co-pilot scan the code.' : 'Send the link or have them scan the code.';
+  info.textContent = coopLobby
+    ? 'Send the link or have your co-pilot scan the code.'
+    : deathmatchLobby
+    ? 'Send the slot links or have pilots scan the code.'
+    : 'Send the link or have them scan the code.';
 
   const qrCanvas = el('canvas', { parent: inviteCard });
   qrCanvas.style.cssText = 'background:#fff;padding:10px;border-radius:8px;max-width:220px;width:100%;height:auto;';
@@ -12201,11 +12232,15 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false): (() => void) {
   // can watch the duel live via a read-only peerwatch socket — this is
   // a genuinely novel feature and deserves visible billing in the lobby
   // instead of getting tucked under the READY button.
-  const watchCard = lobbyCard(parent, coopLobby ? '👁  SHARE THE RUN' : '👁  SHARE THE FIGHT');
+  const watchCard = lobbyCard(parent, coopLobby ? '👁  SHARE THE RUN' : deathmatchLobby ? '👁  SHARE THE MATCH' : '👁  SHARE THE FIGHT');
 
   const watchInfo = el('p', { parent: watchCard });
   watchInfo.style.cssText = 'margin:0;font-size:0.85rem;color:rgba(220,210,255,0.78);line-height:1.45;text-align:center;max-width:420px;';
-  watchInfo.textContent = coopLobby ? 'Anyone with this link can watch the co-op campaign live, no account needed.' : 'Anyone with this link can watch the duel live, no account needed.';
+  watchInfo.textContent = coopLobby
+    ? 'Anyone with this link can watch the co-op campaign live, no account needed.'
+    : deathmatchLobby
+    ? `Anyone with this link can watch all ${playerCount} pilots live, no account needed.`
+    : 'Anyone with this link can watch the duel live, no account needed.';
 
   const watchRow = el('div', { className: 'menu-row', parent: watchCard });
   watchRow.style.cssText = 'gap:8px;flex-wrap:wrap;margin:0;';
@@ -12228,16 +12263,16 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false): (() => void) {
   // has scanned the QR.
   const readyRow = el('div', { className: 'menu-row', parent });
   readyRow.style.cssText = 'margin-top:6px;';
-  const readyBtn = el('button', { className: 'menu-btn', parent: readyRow, text: coopLobby ? 'READY · START CO-OP ▶' : 'READY · ENTER THE ARENA ⚔' });
+  const readyBtn = el('button', { className: 'menu-btn', parent: readyRow, text: coopLobby ? 'READY · START CO-OP ▶' : deathmatchLobby ? 'READY · START DEATHMATCH ▶' : 'READY · ENTER THE ARENA ⚔' });
   readyBtn.style.cssText = 'font-size:1.05rem;padding:12px 28px;letter-spacing:0.2em;';
-  readyBtn.addEventListener('click', () => { window.location.assign(inviterUrl()); });
+  readyBtn.addEventListener('click', () => { window.location.assign(startUrl()); });
 
   // ── While-you-wait ────────────────────────────────────────────────────
   // The host might sit here for tens of seconds waiting for the partner
   // to scan and join. Give them something to read + a hook back to the
   // single-player draw (today's daily leader) so the page doesn't feel
   // dead in the meantime.
-  const tipStripTeardown = lobbyTipStrip(parent, coopLobby);
+  const tipStripTeardown = lobbyTipStrip(parent, coopLobby, deathmatchLobby);
   renderDailyLeaderChip(parent);
   updateInviteViews();
 
@@ -12261,7 +12296,7 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false): (() => void) {
  *
  *  Returns a teardown that stops the rotation timer; the panel switch
  *  in renderDuelLobby calls it so we don't leak intervals across tabs. */
-function lobbyTipStrip(parent: HTMLElement, coopLobby = false): (() => void) {
+function lobbyTipStrip(parent: HTMLElement, coopLobby = false, deathmatchLobby = false): (() => void) {
   const TIPS: readonly string[] = coopLobby
     ? [
         'You enter as slot 0. Lockstep buffers your input until your co-pilot joins, so READY is safe to press now.',
@@ -12271,6 +12306,15 @@ function lobbyTipStrip(parent: HTMLElement, coopLobby = false): (() => void) {
         'The run ends when both ships are out of lives.',
         'Hyperspace doubles as a panic button. Shield burns a cooldown.',
         'Both clients see the EXACT same campaign: same seed, same rocks, same waves.',
+      ]
+    : deathmatchLobby
+    ? [
+        'You enter as slot 0. READY fills empty slots with AI, and late pilots take over their slot when they arrive.',
+        'Use the 2P, 4P, 8P, 16P, and 64P presets to create real human deathmatch sessions.',
+        'Every pilot gets a separate invite link; copy the bundle or send one slot link at a time.',
+        'Deathmatch is free-for-all: every other pilot is a valid target.',
+        'Rounds end on the time cap, kill cap, or last pilot standing.',
+        'Share the spectate link so anyone can watch every pilot live.',
       ]
     : [
         'You enter as slot 0. Lockstep buffers your input until the remote slots join, so READY is safe to press now.',
@@ -12338,11 +12382,13 @@ function lobbyCard(parent: HTMLElement, label: string): HTMLDivElement {
   return card;
 }
 
-function renderJoinPanel(parent: HTMLElement, coopLobby = false): (() => void) {
+function renderJoinPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby = false): (() => void) {
   const info = el('p', { parent });
   info.style.cssText = 'margin:0;font-size:0.88rem;color:rgba(220,210,255,0.8);line-height:1.5;text-align:center;max-width:480px;';
   info.innerHTML = coopLobby
     ? 'Scan the QR on your co-pilot\'s screen, or paste the invite link they sent you.'
+    : deathmatchLobby
+    ? 'Scan the QR on the host screen, or paste the deathmatch slot invite they sent you.'
     : 'Scan the QR on your opponent\'s screen, or paste the invite link they sent you.';
 
   const input = el('input', { parent }) as HTMLInputElement;

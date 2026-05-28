@@ -12,6 +12,8 @@
  *    sees peer-joined for any bound slots)
  *  - JOIN tab swaps in the input + scan buttons without leaking the host
  *    panel's peerwatch socket
+ *  - `/duel?deathmatch=1` opens directly into a 4P human deathmatch lobby
+ *  - READY with no joined deathmatch pilots starts a broker-backed AI-filled match
  *
  * Run with `pnpm run test:lobby`. Same single-process pattern as
  * run-e2e.ts so it composes into the existing `pnpm test` chain.
@@ -273,6 +275,68 @@ async function main(): Promise<void> {
       // Clean up sockets.
       try { opp2.close(); } catch { /* ignore */ }
       try { specWs.close(); } catch { /* ignore */ }
+
+      // ── Deathmatch route exposes real N-player human lobby ─────────
+      const dmPage = await ctx.newPage();
+      await dmPage.goto(`${VITE_BASE}/duel?deathmatch=1`, { waitUntil: 'load' });
+      await dmPage.waitForFunction(
+        () => document.body.innerText.includes('DEATHMATCH') && document.body.innerText.includes('WAITING FOR 3 PILOT'),
+        undefined,
+        { timeout: LOBBY_RENDER_TIMEOUT_MS },
+      );
+      const dm = await dmPage.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button'));
+        const text = document.body.innerText;
+        return {
+          heading: text.includes('DEATHMATCH'),
+          waitingForPilots: text.includes('WAITING FOR 3 PILOT'),
+          selected4p: buttons.some(b => b.textContent === '4P' && b.className === 'menu-btn'),
+          slotLinks: ['P2', 'P3', 'P4'].every(label => buttons.some(b => b.textContent === label)),
+          rules: text.includes('FFA'),
+        };
+      });
+      reportCheck(checks, 'deathmatch lobby route', dm.heading && dm.waitingForPilots && dm.selected4p && dm.slotLinks && dm.rules, JSON.stringify(dm));
+      await dmPage.evaluate(() => {
+        const ready = Array.from(document.querySelectorAll('button')).find(b => (b.textContent ?? '').includes('START DEATHMATCH'));
+        if (!ready) throw new Error('deathmatch READY button not found');
+        ready.click();
+      });
+      await dmPage.waitForURL((url) => {
+        return url.pathname === '/'
+          && url.searchParams.get('mode') === 'deathmatch'
+          && url.searchParams.get('deathmatchPlayers') === '4'
+          && url.searchParams.get('aiFill') === '1'
+          && url.searchParams.get('humanSlots') === '0'
+          && url.searchParams.has('peer');
+      }, { timeout: LOBBY_RENDER_TIMEOUT_MS });
+      await dmPage.waitForFunction(
+        () => {
+          const s = (window as unknown as { __pallasiteState?: { phase?: string; players?: Array<{ ai?: boolean }> } }).__pallasiteState;
+          return !!s && (s.phase === 'playing' || s.phase === 'wavestart') && s.players?.length === 4;
+        },
+        undefined,
+        { timeout: LOBBY_RENDER_TIMEOUT_MS },
+      );
+      const localDm = await dmPage.evaluate(() => {
+        const s = (window as unknown as { __pallasiteState?: { phase?: string; players?: Array<{ ai?: boolean }> } }).__pallasiteState;
+        const params = new URLSearchParams(window.location.search);
+        return {
+          mode: params.get('mode'),
+          aiFill: params.get('aiFill'),
+          humanSlots: params.get('humanSlots'),
+          peer: params.has('peer'),
+          phase: s?.phase ?? null,
+          players: s?.players?.length ?? 0,
+          aiPlayers: s?.players?.filter(p => p.ai).length ?? 0,
+        };
+      });
+      reportCheck(
+        checks,
+        'deathmatch READY fills empty slots with AI',
+        localDm.mode === 'deathmatch' && localDm.aiFill === '1' && localDm.humanSlots === '0' && localDm.peer && localDm.players === 4 && localDm.aiPlayers === 3,
+        JSON.stringify(localDm),
+      );
+      await dmPage.close();
     } finally {
       await browser.close();
     }

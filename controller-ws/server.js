@@ -33,8 +33,8 @@
  *   - Connect with r=peer; slot is NOT chosen by the URL.
  *   - Each client sends `{type:'hello-peer', session, slot, version:1, players}`
  *     as the first frame. The broker binds the ws to that slot.
- *   - A duplicate/out-of-range slot gets
- *     `{type:'session-error', code:'full'}` and the socket closes.
+ *   - A duplicate slot replaces the older socket for the same slot; an
+ *     out-of-range slot gets `{type:'session-error', code:'invalid-slot'}`.
  *   - When a peer binds, every other peer gets
  *     `{type:'peer-joined', slot:<joined>}`; the new peer gets one for
  *     every already-bound slot.
@@ -98,6 +98,12 @@ const PEER_FORWARD_JITTER_MS = Math.max(0, parseInt(process.env.PEER_FORWARD_JIT
  *  its sim never advances past PEER_INPUT_DELAY (=5). */
 const PEER_FRAME_BUFFER_PER_PLAYER = parseInt(process.env.PEER_FRAME_BUFFER_PER_PLAYER ?? '1500', 10);
 const MAX_PEER_PLAYERS = parseInt(process.env.MAX_PEER_PLAYERS ?? '64', 10);
+/** When a human joins an AI-filled deathmatch slot after the round has
+ *  already started, keep that slot AI-controlled for a short deterministic
+ *  handoff window. This gives the late client time to replay buffered
+ *  inputs and start sending its own future frames before the existing peers
+ *  require that slot in their lockstep input logs. */
+const PEER_LATE_TAKEOVER_DELAY_FRAMES = parseInt(process.env.PEER_LATE_TAKEOVER_DELAY_FRAMES ?? '90', 10);
 
 // SESSION_RE accepts controller pairing codes (4 letters) AND the
 // longer stream ids used by the live frame relay (player master pubkey,
@@ -161,6 +167,13 @@ function attach(ws, session, role, wantsMulti) {
       // populated when the corresponding peer sends `hello-peer`.
       peers: [],
       peerCount: 2,
+      // AI-filled deathmatch finalises the human slots when the host starts.
+      // Slots not listed here become deterministic local AI on every client.
+      peerHumanSlots: undefined,
+      // Slot -> sim frame where a late human should take over an AI-filled
+      // slot. Absent/0 means human from frame 0.
+      peerTakeovers: {},
+      peerLatestFrame: -1,
       // Peerwatch-mode spectators of this peer session. Every frame/hash
       // either peer sends is fanned out to every entry here. Watchers
       // never speak; their `message` handler is a no-op.
@@ -307,6 +320,83 @@ function peersPresent(slot) {
   return Array.isArray(slot.peers) && slot.peers.some(Boolean);
 }
 
+function normaliseHumanSlots(raw, peerCount) {
+  if (!Array.isArray(raw)) return null;
+  const seen = new Set();
+  const out = [];
+  for (const value of raw) {
+    const n = Math.floor(Number(value));
+    if (!Number.isFinite(n) || n < 0 || n >= peerCount || seen.has(n)) continue;
+    seen.add(n);
+    out.push(n);
+  }
+  out.sort((a, b) => a - b);
+  return out.includes(0) && out.length > 0 ? out : null;
+}
+
+function sameSlots(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function sessionConfigPayload(slot) {
+  if (!slot.peerHumanSlots) return null;
+  const takeovers = [];
+  const source = slot.peerTakeovers || {};
+  for (const key of Object.keys(source)) {
+    const takeoverSlot = Math.floor(Number(key));
+    const frame = Math.floor(Number(source[key]));
+    if (Number.isFinite(takeoverSlot) && Number.isFinite(frame) && frame > 0) {
+      takeovers.push({ slot: takeoverSlot, frame });
+    }
+  }
+  return JSON.stringify({
+    type: 'session-config',
+    players: slot.peerCount || 2,
+    aiFill: true,
+    humanSlots: slot.peerHumanSlots,
+    takeovers,
+  });
+}
+
+function sendSessionConfig(target, slot) {
+  const payload = sessionConfigPayload(slot);
+  if (!payload || !target || target.readyState !== target.OPEN) return;
+  try { target.send(payload); } catch {}
+}
+
+function fanOutSessionConfig(slot) {
+  const payload = sessionConfigPayload(slot);
+  if (!payload) return;
+  for (const p of slot.peers) {
+    if (p && p.readyState === p.OPEN) {
+      try { p.send(payload); } catch {}
+    }
+  }
+  fanOutToWatchers(slot, payload);
+}
+
+function closeAiFilledPeerSlots(slot) {
+  if (!slot.peerHumanSlots) return;
+  const human = new Set(slot.peerHumanSlots);
+  for (let i = 0; i < (slot.peerCount || 2); i++) {
+    const peer = slot.peers[i];
+    if (!peer || human.has(i)) continue;
+    try { peer.send(JSON.stringify({ type: 'session-error', code: 'ai-slot' })); } catch {}
+    try { peer.close(1008, 'ai-slot'); } catch {}
+  }
+}
+
+function replayRecentPeerFrames(target, slot) {
+  if (!target || target.readyState !== target.OPEN) return;
+  try {
+    for (const entry of slot.recentFrames) {
+      target.send(typeof entry === 'string' ? entry : entry.payload);
+    }
+  } catch { /* socket may already be closed */ }
+}
+
 /** Subscribe-only fan-out target for a peer session. Receives every
  *  frame/hash from either peer, plus peer-joined/peer-left
  *  notifications. Anything the watcher sends is silently dropped —
@@ -316,7 +406,13 @@ function attachPeerWatcher(slot, session, ws) {
   // Acknowledge + give the watcher the current peer-state so it can decide
   // whether to wait for the pair-up or start spectating immediately.
   try {
-    ws.send(JSON.stringify({ type: 'peerwatch-ready', players: slot.peerCount || 2 }));
+    ws.send(JSON.stringify({
+      type: 'peerwatch-ready',
+      players: slot.peerCount || 2,
+      aiFill: !!slot.peerHumanSlots,
+      humanSlots: slot.peerHumanSlots,
+    }));
+    sendSessionConfig(ws, slot);
     for (let i = 0; i < (slot.peerCount || 2); i++) {
       if (slot.peers[i]) ws.send(JSON.stringify({ type: 'peer-joined', slot: i }));
     }
@@ -326,9 +422,7 @@ function attachPeerWatcher(slot, session, ws) {
     // those inputs forever and its sim stalls at PEER_INPUT_DELAY.
     // Order preserved (buffer is a FIFO ring) so the deterministic
     // ordering the spectator's lockstep depends on stays intact.
-    for (const entry of slot.recentFrames) {
-      ws.send(typeof entry === 'string' ? entry : entry.payload);
-    }
+    replayRecentPeerFrames(ws, slot);
   } catch { /* socket may already be closed */ }
 
   // Silently drop everything the watcher sends. No "they accidentally
@@ -372,6 +466,14 @@ function peerForwardDelayMs(msg, fromSlot, toSlot) {
 function peerFramePayloadCount(msg) {
   if (msg && msg.type === 'frames' && Array.isArray(msg.inputs)) return Math.max(0, msg.inputs.length);
   return 1;
+}
+
+function peerFrameLatestFrame(msg) {
+  if (!msg) return -1;
+  if (msg.type === 'frames' && Array.isArray(msg.inputs)) {
+    return Math.max(-1, Math.floor(Number(msg.base)) + msg.inputs.length - 1);
+  }
+  return Number.isFinite(Number(msg.frame)) ? Math.floor(Number(msg.frame)) : -1;
 }
 
 function rememberPeerFramePayload(slot, payload, msg) {
@@ -421,6 +523,10 @@ function attachPeer(slot, session, ws) {
 
     if (msg.type === 'frame' || msg.type === 'frames' || msg.type === 'hash') {
       const payload = data.toString();
+      if (msg.type === 'frame' || msg.type === 'frames') {
+        const latest = peerFrameLatestFrame(msg);
+        if (latest > (slot.peerLatestFrame ?? -1)) slot.peerLatestFrame = latest;
+      }
       for (let i = 0; i < (slot.peerCount || 2); i++) {
         if (i === ws._peerSlot) continue;
         const target = slot.peers[i];
@@ -485,10 +591,14 @@ function handlePeerHello(slot, ws, msg) {
   const desiredPeerCount = Number.isFinite(requestedPlayers)
     ? Math.max(2, Math.min(MAX_PEER_PLAYERS, Math.floor(requestedPlayers)))
     : (slot.peerCount || 2);
+  const wantsAiFillConfig = msg.aiFill === true && Array.isArray(msg.humanSlots);
   if (!peersPresent(slot) && slot.recentFrames.length === 0) {
     const peerCountChanged = desiredPeerCount !== (slot.peerCount || 2);
     slot.peerCount = desiredPeerCount;
     slot.peers.length = desiredPeerCount;
+    slot.peerHumanSlots = undefined;
+    slot.peerTakeovers = {};
+    slot.peerLatestFrame = -1;
     if (peerCountChanged) {
       fanOutToWatchers(slot, JSON.stringify({ type: 'peerwatch-ready', players: slot.peerCount }));
     }
@@ -503,14 +613,64 @@ function handlePeerHello(slot, ws, msg) {
     try { ws.close(1008, 'invalid-slot'); } catch {}
     return;
   }
+  let nextHumanSlots = null;
+  let lateTakeoverFrame = null;
+  if (slot.peerHumanSlots && !slot.peerHumanSlots.includes(requested)) {
+    if (msg.aiFill !== true) {
+      try { ws.send(JSON.stringify({ type: 'session-error', code: 'ai-slot' })); } catch {}
+      try { ws.close(1008, 'ai-slot'); } catch {}
+      return;
+    }
+    nextHumanSlots = normaliseHumanSlots([...slot.peerHumanSlots, requested], slot.peerCount || 2);
+    if (!nextHumanSlots) {
+      try { ws.send(JSON.stringify({ type: 'session-error', code: 'invalid-human-slots' })); } catch {}
+      try { ws.close(1008, 'invalid-human-slots'); } catch {}
+      return;
+    }
+    lateTakeoverFrame = Math.max(0, (slot.peerLatestFrame ?? -1) + PEER_LATE_TAKEOVER_DELAY_FRAMES);
+  }
+  if (wantsAiFillConfig) {
+    if (requested !== 0) {
+      try { ws.send(JSON.stringify({ type: 'session-error', code: 'host-required' })); } catch {}
+      try { ws.close(1008, 'host-required'); } catch {}
+      return;
+    }
+    const configuredSlots = normaliseHumanSlots(msg.humanSlots, slot.peerCount || 2);
+    if (!configuredSlots) {
+      try { ws.send(JSON.stringify({ type: 'session-error', code: 'invalid-human-slots' })); } catch {}
+      try { ws.close(1008, 'invalid-human-slots'); } catch {}
+      return;
+    }
+    if (slot.peerHumanSlots && !sameSlots(slot.peerHumanSlots, configuredSlots)) {
+      try { ws.send(JSON.stringify({ type: 'session-error', code: 'start-config-mismatch' })); } catch {}
+      try { ws.close(1008, 'start-config-mismatch'); } catch {}
+      return;
+    }
+    nextHumanSlots = configuredSlots;
+  }
   if (slot.peers[requested]) {
-    try { ws.send(JSON.stringify({ type: 'session-error', code: 'full' })); } catch {}
-    try { ws.close(1013, 'full'); } catch {}
-    return;
+    const previous = slot.peers[requested];
+    slot.peers[requested] = undefined;
+    try { previous.close(1000, 'replaced'); } catch {}
   }
 
   slot.peers[requested] = ws;
   ws._peerSlot = requested;
+
+  if (nextHumanSlots) {
+    slot.peerHumanSlots = nextHumanSlots;
+    if (lateTakeoverFrame !== null) {
+      slot.peerTakeovers = slot.peerTakeovers || {};
+      slot.peerTakeovers[requested] = lateTakeoverFrame;
+    } else {
+      slot.peerTakeovers = {};
+    }
+    fanOutSessionConfig(slot);
+    if (lateTakeoverFrame !== null) replayRecentPeerFrames(ws, slot);
+    else closeAiFilledPeerSlots(slot);
+  } else {
+    sendSessionConfig(ws, slot);
+  }
 
   // Watchers always see a peer-joined the moment a slot is bound, even
   // if the other peer isn't there yet — they may have connected first
@@ -519,6 +679,7 @@ function handlePeerHello(slot, ws, msg) {
 
   for (let i = 0; i < (slot.peerCount || 2); i++) {
     if (i === requested) continue;
+    if (slot.peerHumanSlots && !slot.peerHumanSlots.includes(i)) continue;
     const other = slot.peers[i];
     if (other && other.readyState === other.OPEN) {
       try { other.send(JSON.stringify({ type: 'peer-joined', slot: requested })); } catch {}

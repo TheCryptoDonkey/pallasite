@@ -1,19 +1,18 @@
 /**
- * Focused deathmatch solar scenery QA.
+ * Record a focused solar-system scenery QA clip from the real app.
  *
- * Runs the real app in Chromium, enters a small AI deathmatch, moves the
- * follow camera to Sol / Mercury / Venus / Earth+Moon / Mars+moons /
- * Jupiter+Galilean moons / Saturn+major moons / Uranus / Pluto+Charon /
- * the asteroid belt, and captures evidence screenshots. The pixel checks are
- * deliberately simple: they catch blank/cropped/subtle-body regressions while
- * the screenshots remain the human-readable artefact for visual tuning.
+ * The capture path records the composited game canvas directly, then
+ * transcodes the image sequence to MP4. Output:
+ * tools/record-out/solar-system-qa.mp4.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { chromium, type Browser, type Page } from 'playwright';
 
-const VITE_PORT = 5199;
+const VITE_PORT = 5201;
 const VITE_BASE = `http://localhost:${VITE_PORT}`;
 const VITE_READY_TIMEOUT_MS = 30_000;
 const REACH_PLAYING_TIMEOUT_MS = 20_000;
@@ -21,6 +20,11 @@ const WEBGL_READY_TIMEOUT_MS = 12_000;
 const WORLD_W = 4096;
 const WORLD_H = 4096;
 const SOLAR_DAYS_PER_MS = 0.0012;
+const RECORD_FPS = 24;
+const SEGMENT_MS = 1_650;
+const VIEWPORT = { width: 1280, height: 720 } as const;
+const OUT_DIR = resolve(process.cwd(), 'tools/record-out');
+const FINAL_MP4 = resolve(OUT_DIR, 'solar-system-qa.mp4');
 
 type BodyKind = 'sol' | 'mercury' | 'venus' | 'earth' | 'mars' | 'jupiter' | 'saturn' | 'uranus' | 'pluto' | 'belt';
 interface Body { kind: BodyKind; x: number; y: number; radius: number }
@@ -139,7 +143,7 @@ async function focusBody(page: Page, body: Body): Promise<void> {
       s.players[i].lives = Math.max(1, s.players[i].lives ?? 1);
     }
   }, { x: body.x, y: body.y });
-  await wait(650);
+  await wait(580);
   await page.evaluate(() => {
     const s = (window as unknown as { __pallasiteState?: any }).__pallasiteState;
     const p = s?.players?.[0];
@@ -148,102 +152,58 @@ async function focusBody(page: Page, body: Body): Promise<void> {
   await wait(120);
 }
 
-async function sampleBodyPixels(page: Page, body: Body): Promise<{ bright: number; coloured: number; max: number }> {
-  return page.evaluate((kind) => {
-    const c = document.getElementById('game') as HTMLCanvasElement | null;
-    if (!c) throw new Error('missing #game canvas');
-    const ctx = c.getContext('2d');
-    if (!ctx) throw new Error('missing 2D context');
-    const data = ctx.getImageData(0, 0, c.width, c.height).data;
-    let bright = 0;
-    let coloured = 0;
-    let max = 0;
-    for (let i = 0; i < data.length; i += 4) {
-      const red = data[i];
-      const green = data[i + 1];
-      const blue = data[i + 2];
-      const hi = Math.max(red, green, blue);
-      const lo = Math.min(red, green, blue);
-      if (hi > max) max = hi;
-      if (kind === 'sol') {
-        if (red > 170 && green > 85 && blue < 130) bright++;
-        if (red > 140 && green > 60 && blue < 120 && red - blue > 55) coloured++;
-      } else if (kind === 'mercury') {
-        const rock = red > 92 && green > 84 && blue > 76 && red < 225 && green < 225 && blue < 225 && hi - lo < 72;
-        if (rock) bright++;
-        if (rock) coloured++;
-      } else if (kind === 'earth') {
-        const ocean = blue > 90 && green > 65 && red < 145 && blue - red > 24;
-        const land = green > 105 && red < 145 && blue < 170 && green - red > 18;
-        if (ocean || land) bright++;
-        if (ocean || land) coloured++;
-      } else if (kind === 'venus') {
-        const cloud = red > 130 && green > 86 && blue < 150 && red - blue > 26;
-        if (cloud) bright++;
-        if (cloud && red - green < 105) coloured++;
-      } else if (kind === 'mars') {
-        const rust = red > 118 && green > 54 && blue < 108 && red - blue > 38;
-        if (rust) bright++;
-        if (rust) coloured++;
-      } else if (kind === 'jupiter') {
-        const band = red > 112 && green > 68 && blue < 145 && red - blue > 18;
-        if (band) bright++;
-        if (band && red - green < 95) coloured++;
-      } else if (kind === 'saturn') {
-        const ringOrDisc = red > 130 && green > 92 && blue < 150 && red - blue > 18;
-        if (ringOrDisc) bright++;
-        if (ringOrDisc && green - blue > 4) coloured++;
-      } else if (kind === 'uranus') {
-        const ice = blue > 108 && green > 120 && red < 180 && blue - red > 18;
-        if (ice) bright++;
-        if (ice) coloured++;
-      } else if (kind === 'pluto') {
-        const ice = red > 112 && green > 92 && blue > 78 && red < 230 && green < 220 && blue < 210 && red - blue > 10;
-        if (ice) bright++;
-        if (ice) coloured++;
-      } else {
-        const rock = red > 90 && green > 72 && blue > 52 && red < 235 && green < 225 && blue < 215 && Math.max(red, green, blue) - Math.min(red, green, blue) > 12;
-        const warmRock = rock && red >= green && red - blue > 18;
-        if (rock) bright++;
-        if (warmRock || (rock && blue >= red - 12)) coloured++;
-      }
+async function recordSegment(page: Page, frameDir: string, startIndex: number, durationMs: number): Promise<number> {
+  const frameCount = Math.round(durationMs * RECORD_FPS / 1000);
+  await page.exposeBinding(`__pallasiteSaveSolarFrame${startIndex}`, async (_source, index: number, dataUrl: string) => {
+    const b64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+    writeFileSync(resolve(frameDir, `frame-${String(index).padStart(4, '0')}.jpg`), Buffer.from(b64, 'base64'));
+  });
+  const bindingName = `__pallasiteSaveSolarFrame${startIndex}`;
+  const script = String.raw`(async () => {
+    const duration = ${JSON.stringify(durationMs)};
+    const fps = ${JSON.stringify(RECORD_FPS)};
+    const start = ${JSON.stringify(startIndex)};
+    const width = ${JSON.stringify(VIEWPORT.width)};
+    const height = ${JSON.stringify(VIEWPORT.height)};
+    const binding = ${JSON.stringify(bindingName)};
+    const canvas = document.getElementById('game');
+    const overlay = document.getElementById('game3d');
+    const saveFrame = window[binding];
+    if (!canvas || typeof saveFrame !== 'function') {
+      throw new Error('recording canvas unavailable');
     }
-    return { bright, coloured, max };
-  }, body.kind);
-}
-
-async function runCase(page: Page, body: Body): Promise<{ label: string; screenshot: string; bright: number; coloured: number; max: number }> {
-  await focusBody(page, body);
-  const sample = await sampleBodyPixels(page, body);
-  const screenshot = `/tmp/pallasite-solar-${body.kind}.png`;
-  await page.screenshot({ path: screenshot, fullPage: false });
-  const minBright = body.kind === 'sol' ? 3000
-    : body.kind === 'mercury' ? 220
-      : body.kind === 'venus' ? 600
-        : body.kind === 'earth' ? 550
-          : body.kind === 'mars' ? 320
-            : body.kind === 'jupiter' ? 2600
-              : body.kind === 'saturn' ? 900
-                : body.kind === 'uranus' ? 1200
-                  : body.kind === 'pluto' ? 260
-                    : 180;
-  const minColour = body.kind === 'sol' ? 1200
-    : body.kind === 'mercury' ? 180
-      : body.kind === 'venus' ? 420
-        : body.kind === 'earth' ? 400
-          : body.kind === 'mars' ? 240
-            : body.kind === 'jupiter' ? 900
-              : body.kind === 'saturn' ? 500
-                : body.kind === 'uranus' ? 900
-                  : body.kind === 'pluto' ? 190
-                    : 120;
-  if (sample.bright < minBright || sample.coloured < minColour || sample.max < 120) {
-    throw new Error(`${body.kind} too subtle or missing: bright=${sample.bright}/${minBright} coloured=${sample.coloured}/${minColour} max=${sample.max}`);
-  }
-  return { label: body.kind, screenshot, ...sample };
+    const recCanvas = document.createElement('canvas');
+    recCanvas.width = width;
+    recCanvas.height = height;
+    const recCtx = recCanvas.getContext('2d', { alpha: false });
+    if (!recCtx) {
+      throw new Error('recording context unavailable');
+    }
+    const frameCountLocal = Math.round(duration * fps / 1000);
+    const started = performance.now();
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    for (let i = 0; i < frameCountLocal; i += 1) {
+      const target = started + (i * 1000 / fps);
+      const delay = target - performance.now();
+      if (delay > 0) await sleep(delay);
+      recCtx.setTransform(1, 0, 0, 1, 0, 0);
+      recCtx.clearRect(0, 0, width, height);
+      recCtx.drawImage(canvas, 0, 0, width, height);
+      if (overlay && overlay.width > 0 && overlay.height > 0) {
+        recCtx.drawImage(overlay, 0, 0, width, height);
+      }
+      await saveFrame(start + i, recCanvas.toDataURL('image/jpeg', 0.92));
+    }
+  })()`;
+  await page.evaluate(script);
+  return frameCount;
 }
 
 async function main(): Promise<void> {
+  mkdirSync(OUT_DIR, { recursive: true });
+  const frameDir = resolve(OUT_DIR, `solar-system-qa-frames-${Date.now().toString(16)}`);
+  mkdirSync(frameDir, { recursive: true });
+
   let vite: ChildProcess | null = null;
   if (await httpReady(`${VITE_BASE}/`)) {
     process.stdout.write(`using existing Vite at ${VITE_BASE}\n`);
@@ -259,7 +219,7 @@ async function main(): Promise<void> {
   try {
     await waitForHttp(`${VITE_BASE}/`, VITE_READY_TIMEOUT_MS);
     browser = await chromium.launch();
-    const context = await browser.newContext({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
+    const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1 });
     await context.addInitScript(() => {
       localStorage.setItem('pallasite:onboarded', '1');
       localStorage.setItem('pallasite:mode', 'deathmatch');
@@ -296,15 +256,30 @@ async function main(): Promise<void> {
       if (root) root.style.display = 'none';
     });
     const webglReady = await waitForWebGL(page);
-    await wait(400);
-    const now = await page.evaluate(() => (window as unknown as { __pallasiteState?: { elapsed?: number } }).__pallasiteState?.elapsed ?? 0);
-    const bodies = solarBodies(now);
     process.stdout.write(`webgl overlay ready: ${webglReady}\n`);
-    for (const body of bodies) {
-      const r = await runCase(page, body);
-      process.stdout.write(`${r.label.padEnd(7)} bright=${String(r.bright).padStart(5)} coloured=${String(r.coloured).padStart(5)} max=${String(r.max).padStart(3)} screenshot=${r.screenshot}\n`);
+
+    let frame = 0;
+    for (const kind of ['sol', 'mercury', 'venus', 'earth', 'mars', 'jupiter', 'saturn', 'uranus', 'pluto', 'belt'] as BodyKind[]) {
+      const now = await page.evaluate(() => (window as unknown as { __pallasiteState?: { elapsed?: number } }).__pallasiteState?.elapsed ?? 0);
+      const body = solarBodies(now).find((b) => b.kind === kind);
+      if (!body) throw new Error(`missing solar body ${kind}`);
+      process.stdout.write(`recording ${kind}...\n`);
+      await focusBody(page, body);
+      frame += await recordSegment(page, frameDir, frame, SEGMENT_MS);
     }
     await context.close();
+
+    const ffmpeg = spawnSync('ffmpeg', [
+      '-y',
+      '-framerate', String(RECORD_FPS),
+      '-i', resolve(frameDir, 'frame-%04d.jpg'),
+      '-vf', 'format=yuv420p',
+      '-movflags', '+faststart',
+      FINAL_MP4,
+    ], { stdio: 'inherit' });
+    if (ffmpeg.status !== 0) throw new Error(`ffmpeg failed with status ${ffmpeg.status}`);
+    process.stdout.write(`solar QA MP4: ${FINAL_MP4}\n`);
+    process.stdout.write(`frames: ${frameDir}\n`);
   } finally {
     if (browser) await browser.close().catch(() => undefined);
     kill();
@@ -312,6 +287,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((e) => {
-  process.stderr.write(`solar visual QA failed: ${e instanceof Error ? e.stack ?? e.message : String(e)}\n`);
+  process.stderr.write(`solar recording failed: ${e instanceof Error ? e.stack ?? e.message : String(e)}\n`);
   process.exit(1);
 });

@@ -30,6 +30,10 @@
 //     collide, terrain cover deflects instead of kills, deathmatch respawns
 //     choose a clear variant, and the death replay impact spawns a visible
 //     particle/debris burst.
+//
+//   - deathmatch AI invariants: Easy bot skill is softer than Normal, bots
+//     can raise shields against incoming shots, and shields block player
+//     bullets.
 import {
   makeInitialState,
   startGame,
@@ -39,7 +43,7 @@ import {
   __testRespawnShip,
 } from '/src/game.ts';
 import { render, setRenderMode } from '/src/render.ts';
-import { deathmatchSpawnPoint } from '/src/deathmatch.ts';
+import { deathmatchArenaSize, deathmatchSpawnPoint, defaultDeathmatchAiSkill } from '/src/deathmatch.ts';
 import { REPLAY_EXPLOSION_MS, REPLAY_SLOW_MS, REPLAY_SLOW_RATE } from '/src/types.ts';
 import { samplePlayerInput, applyPlayerInput, EMPTY_INPUT } from '/src/netcode.ts';
 import { currentMode } from '/src/mode.ts';
@@ -289,6 +293,125 @@ test('deathmatch terrain pushes instead of kills', () => {
   assertEq(p.ship.alive, true, 'ship survives terrain contact');
   assertEq(p.lives, lives, 'terrain contact does not consume a respawn');
   assert(dist(p.ship.pos, terrain.pos) >= minDist - 0.75, `ship pushed clear of terrain (dist=${dist(p.ship.pos, terrain.pos)}, min=${minDist})`);
+});
+
+test('deathmatch easy bot skill is lower than normal', () => {
+  assert(defaultDeathmatchAiSkill('easy') < defaultDeathmatchAiSkill('normal'), 'easy skill below normal');
+  assert(defaultDeathmatchAiSkill('normal') < defaultDeathmatchAiSkill('hard'), 'normal skill below hard');
+});
+
+test('deathmatch AI shields against incoming player bullets', () => {
+  const s = makeInitialState();
+  startGame(s, 0x51a7, {
+    players: 2,
+    runMode: 'deathmatch',
+    aiOpponents: true,
+    deathmatchRules: { aiSkill: 1, killLimit: 99, timeLimitMs: 60_000, respawns: 5 },
+  });
+  s.phase = 'playing';
+  s.elapsed = 5000;
+  s.asteroids = [];
+  s.ufos = [];
+  s.mines = [];
+  s.enemyBullets = [];
+  s.bullets = [];
+  const shooter = s.players[0];
+  const bot = s.players[1];
+  bot.ai = true;
+  bot.ship.alive = true;
+  bot.ship.pos.x = 720;
+  bot.ship.pos.y = 360;
+  bot.ship.vel.x = 0;
+  bot.ship.vel.y = 0;
+  bot.ship.invulnerableUntil = -1;
+  bot.ship.shieldUp = false;
+  bot.ship.shieldReadyAt = 0;
+  shooter.ship.alive = true;
+  shooter.ship.pos.x = 520;
+  shooter.ship.pos.y = 360;
+  s.bullets.push({
+    pos: { x: bot.ship.pos.x - 90, y: bot.ship.pos.y },
+    vel: { x: 900, y: 0 },
+    radius: 3,
+    alive: true,
+    id: 991,
+    ttl: 1000,
+    pierceLeft: 0,
+    caromHit: false,
+    wrapped: false,
+    hasLanded: false,
+    owner: 0,
+  });
+  updateGame(s);
+  assertEq(bot.ship.alive, true, 'bot survived incoming shot');
+  assertEq(bot.ship.shieldUp, true, 'bot raised shield');
+});
+
+test('deathmatch aiSlots fill only missing multiplayer slots', () => {
+  const s = makeInitialState();
+  startGame(s, 0x51a7, {
+    players: 4,
+    runMode: 'deathmatch',
+    aiOpponents: false,
+    aiSlots: [2, 3],
+    deathmatchRules: { aiSkill: 1, killLimit: 99, timeLimitMs: 60_000, respawns: 5 },
+  });
+  assertEq(s.players.length, 4, 'player count');
+  assertEq(s.players[0].ai === true, false, 'slot 0 remains human');
+  assertEq(s.players[1].ai === true, false, 'slot 1 remains human');
+  assertEq(s.players[2].ai === true, true, 'slot 2 filled by AI');
+  assertEq(s.players[3].ai === true, true, 'slot 3 filled by AI');
+});
+
+test('deathmatch arena scales with player count', () => {
+  const two = deathmatchArenaSize(2);
+  const four = deathmatchArenaSize(4);
+  const sixtyFour = deathmatchArenaSize(64);
+  assert(two.w < four.w, '4P arena should be wider than 2P');
+  assert(four.w < sixtyFour.w, '64P arena should be wider than 4P');
+  assert(two.h < sixtyFour.h, '64P arena should be taller than 2P');
+});
+
+test('deathmatch shield blocks player bullets', () => {
+  const s = makeInitialState();
+  startGame(s, 0x51a7, {
+    players: 2,
+    runMode: 'deathmatch',
+    aiOpponents: false,
+    deathmatchRules: { aiSkill: 1, killLimit: 99, timeLimitMs: 60_000, respawns: 5 },
+  });
+  s.phase = 'playing';
+  s.elapsed = 5000;
+  s.asteroids = [];
+  s.ufos = [];
+  s.mines = [];
+  s.enemyBullets = [];
+  s.bullets = [];
+  const target = s.players[1];
+  target.ship.alive = true;
+  target.ship.pos.x = 720;
+  target.ship.pos.y = 360;
+  target.ship.vel.x = 0;
+  target.ship.vel.y = 0;
+  target.ship.invulnerableUntil = -1;
+  target.ship.shieldUp = true;
+  target.ship.shieldExpiresAt = s.elapsed + 1000;
+  s.bullets.push({
+    pos: { x: target.ship.pos.x, y: target.ship.pos.y },
+    vel: { x: 0, y: 0 },
+    radius: 3,
+    alive: true,
+    id: 992,
+    ttl: 1000,
+    pierceLeft: 0,
+    caromHit: false,
+    wrapped: false,
+    hasLanded: false,
+    owner: 0,
+  });
+  updateGame(s);
+  assertEq(target.ship.alive, true, 'shielded target survived player bullet');
+  assertEq(s.bullets[0]?.alive, false, 'blocked bullet was consumed');
 });
 
 // Deathmatch respawn should skip blocked spawn variants while the deadline has
