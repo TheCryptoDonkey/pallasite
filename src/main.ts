@@ -313,14 +313,14 @@ const PEER_RESEND_BEHIND_FRAMES = 4;
 const PEER_RESEND_AHEAD_FRAMES = 8;
 /** Cap the bulk resend cadence. Live play sends each frame once; the history
  *  replay only needs to run often enough to backfill a real hole. */
-const PEER_RESEND_INTERVAL_MS = 250;
+const PEER_RESEND_INTERVAL_MS = 120;
 /** Do not replay history for ordinary jitter. WebSockets are ordered and
  *  reliable, so a missing read frame is usually delayed, not lost. */
-const PEER_RESEND_AFTER_STALL_FRAMES = 8;
+const PEER_RESEND_AFTER_STALL_FRAMES = 4;
 /** Extra deterministic handoff room after the broker's late AI-slot takeover
  *  frame. A late human has to replay buffered history from frame 0 before the
  *  existing peers can require their live inputs without stalling. */
-const PEER_LATE_TAKEOVER_CLIENT_GRACE_FRAMES = 120;
+const PEER_LATE_TAKEOVER_CLIENT_GRACE_FRAMES = 100;
 /** Count of consecutive frames the lockstep loop has been unable to
  *  advance (remote input missing). Reset every time a frame ticks. Only
  *  meaningful while a peer is active. */
