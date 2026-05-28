@@ -59,7 +59,7 @@ import { getMusicAnalyser } from './audio.js';
 import { fetchProfile, getCachedProfile, bestName } from './profile.js';
 import { type Difficulty, getStoredDifficulty, setStoredDifficulty, lockInDifficulty } from './difficulty.js';
 import { getStoredDailyPref, setStoredDailyPref, todayUTC, getActiveSeed } from './seed.js';
-import { getStoredMode, setStoredMode, currentMode, MODE_LIST, isCoopCampaignMode, type RunMode } from './mode.js';
+import { getStoredMode, setStoredMode, lockInMode, currentMode, MODE_LIST, isCoopCampaignMode, type RunMode } from './mode.js';
 import { DEV } from './credits.js';
 import {
   isStandalone, isIosSafari, isMobileViewport, canInstallNow,
@@ -1497,6 +1497,36 @@ function globalToLocal(entry: GlobalHighScore & { displayName: string }): Return
  * toasts COMING SOON and the selection reverts to the previous valid
  * mode.
  */
+function leaveMultiplayerUrlSessionForMode(mode: RunMode): void {
+  if (mode === 'duel' || mode === 'coop-campaign' || mode === 'deathmatch') return;
+  try {
+    (window as unknown as { __pallasiteExitMultiplayerSession?: () => void }).__pallasiteExitMultiplayerSession?.();
+  } catch { /* ignore */ }
+
+  try {
+    const url = new URL(window.location.href);
+    const params = url.searchParams;
+    const multiplayerKeys = [
+      'mode', 'coop', 'deathmatch', 'peer', 'session', 'slot', 'spectate',
+      'players', 'deathmatchPlayers', 'peerBatch', 'batchFrames', 'aiFill',
+      'humanSlots', 'inputDelay', 'wiretrace',
+      'deathmatchTime', 'deathmatchKills', 'deathmatchRespawns', 'deathmatchAiSkill',
+      'dmTime', 'dmKills', 'dmRespawns', 'dmAiSkill',
+      'deathmatchAi', 'autoStart', 'autostart',
+    ];
+    let changed = false;
+    for (const key of multiplayerKeys) {
+      if (!params.has(key)) continue;
+      params.delete(key);
+      changed = true;
+    }
+    if (changed) {
+      const search = params.toString();
+      window.history.replaceState(null, '', `${url.pathname}${search ? `?${search}` : ''}${url.hash}`);
+    }
+  } catch { /* ignore */ }
+}
+
 function renderModeRow(parent: HTMLElement, state: GameState): void {
   const wrapper = el('div', { parent });
   wrapper.style.cssText = 'display:flex;flex-direction:column;gap:8px;align-items:center;';
@@ -1540,6 +1570,8 @@ function renderModeRow(parent: HTMLElement, state: GameState): void {
       }
       const prev = getStoredMode();
       setStoredMode(info.id);
+      lockInMode(info.id);
+      leaveMultiplayerUrlSessionForMode(info.id);
       // Re-fit so the renderMode picks up the new mode's camera /
       // background / radar settings (Defender uses landscape follow +
       // parallax bg + forced radar — without a refit those wouldn't
