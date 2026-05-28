@@ -572,7 +572,7 @@ function buildPeerWorkerSource(): string {
       if (players >= 16) return { ms: 50, max: 8 };
       if (players >= 8) return { ms: 33, max: 6 };
       if (players >= 4) return { ms: 24, max: 4 };
-      return { ms: 12, max: 2 };
+      return { ms: 12, max: 8 };
     }
     function buildSocketUrl() {
       var sep = url.indexOf('?') >= 0 ? '&' : '?';
@@ -631,8 +631,6 @@ function buildPeerWorkerSource(): string {
       if (!initialConnectDone) {
         initialConnectDone = true;
         post({ kind: 'connected' });
-      } else {
-        post({ kind: 'reconnected' });
       }
     }
     function sendPayload(obj) {

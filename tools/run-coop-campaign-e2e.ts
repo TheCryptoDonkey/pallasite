@@ -112,7 +112,7 @@ async function main(): Promise<void> {
     const pages: Page[] = [];
     const gotos: Array<Promise<unknown>> = [];
     for (let slot = 0; slot < PLAYERS; slot++) {
-      const ctx = await browser.newContext();
+      const ctx = await browser.newContext({ serviceWorkers: 'block' });
       const page = await ctx.newPage();
       page.on('pageerror', (e) => process.stderr.write(`[P${slot + 1}] ${e.message}\n`));
       page.on('console', (msg) => {
