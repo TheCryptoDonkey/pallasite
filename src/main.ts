@@ -1345,6 +1345,10 @@ function loop(now: number): void {
           const resendThrough = Math.min(state.frame - 1, readFrame + PEER_RESEND_AHEAD_FRAMES);
           resendPeerInputRange(resendFrom, resendThrough, now);
         }
+        // Drop accumulated wall-clock backlog while lockstep waits. Replaying
+        // all banked time after recovery creates burst sends, visible judder,
+        // and usually another relay stall; resume at live pace instead.
+        stepAccumulator = Math.min(stepAccumulator, FIXED_STEP_S);
         break;  // hold the accumulator; next rAF retries
       }
       // 4) Apply + edge dispatch. Record each slot's applied encoded

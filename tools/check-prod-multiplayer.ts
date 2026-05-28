@@ -48,6 +48,8 @@ const SCALE_RATE_HZ = intArg('scaleRate', 20, 5, 60);
 const SCALE_BATCH = intArg('scaleBatch', 4, 1, 16);
 const SCALE_COUNTS = parseCounts('scale', [4, 8, 16, 64]);
 const ONLY_CASES = new Set((argValue('only') ?? 'all').split(',').map((v) => v.trim()).filter(Boolean));
+const INPUT_DELAY_OVERRIDE = argValue('inputDelay');
+const PEER_BATCH_OVERRIDE = argValue('peerBatch');
 const NAV_OPTS = { waitUntil: 'commit' as const, timeout: 60_000 };
 const NAV_RETRIES = 3;
 
@@ -171,7 +173,8 @@ function coopUrl(session: string, slot: number): string {
     players: 2,
     mode: 'coop-campaign',
     wiretrace: 1,
-    peerBatch: 1,
+    peerBatch: PEER_BATCH_OVERRIDE === '0' ? undefined : 1,
+    inputDelay: INPUT_DELAY_OVERRIDE ?? undefined,
   });
 }
 
@@ -187,7 +190,8 @@ function deathmatchPeerUrl(session: string, slot: number, players: number, opts:
     deathmatchKills: 250,
     deathmatchRespawns: 99,
     wiretrace: 1,
-    peerBatch: 1,
+    peerBatch: PEER_BATCH_OVERRIDE === '0' ? undefined : 1,
+    inputDelay: INPUT_DELAY_OVERRIDE ?? undefined,
     aiFill: opts.aiFill ? 1 : undefined,
     humanSlots: opts.humanSlots,
   });
