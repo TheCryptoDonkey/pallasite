@@ -330,7 +330,7 @@ const PEER_RESEND_AFTER_STALL_FRAMES = 4;
 /** Extra deterministic handoff room after the broker's late AI-slot takeover
  *  frame. A late human has to replay buffered history from frame 0 before the
  *  existing peers can require their live inputs without stalling. */
-const PEER_LATE_TAKEOVER_CLIENT_GRACE_FRAMES = 100;
+const PEER_LATE_TAKEOVER_CLIENT_GRACE_FRAMES = 180;
 /** Count of consecutive frames the lockstep loop has been unable to
  *  advance (remote input missing). Reset every time a frame ticks. Only
  *  meaningful while a peer is active. */
