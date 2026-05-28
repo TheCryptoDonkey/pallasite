@@ -47,6 +47,7 @@ const SCALE_DURATION_MS = intArg('scaleDuration', 1_500, 750, 10_000);
 const SCALE_RATE_HZ = intArg('scaleRate', 20, 5, 60);
 const SCALE_BATCH = intArg('scaleBatch', 4, 1, 16);
 const SCALE_COUNTS = parseCounts('scale', [4, 8, 16, 64]);
+const ONLY_CASES = new Set((argValue('only') ?? 'all').split(',').map((v) => v.trim()).filter(Boolean));
 const NAV_OPTS = { waitUntil: 'commit' as const, timeout: 60_000 };
 const NAV_RETRIES = 3;
 
@@ -303,13 +304,30 @@ function printBrowserResult(result: BrowserCaseResult): void {
   process.stdout.write(`[browser] ${result.name} PASS overlay=${result.overlaySamples} maxStall=${result.maxStallFrames}f gap=${result.maxFrameGap} resends=${result.totalResends}\n${lines.join('\n')}\n`);
 }
 
+function printBrowserFailure(result: BrowserCaseResult): void {
+  const lines = result.pages.map((p, i) => {
+    const d = p.debug;
+    return `    P${i + 1}: frame=${p.frame} phase=${p.phase} players=${p.players} ai=${p.aiPlayers}`
+      + ` peer=${p.peerActive} stall=${p.stall ?? '-'} desync=${p.desync}`
+      + ` delay=${d?.inputDelay ?? '-'} stallCount=${d?.stallCount ?? '-'} maxStall=${d?.maxStallFrames ?? '-'}`
+      + ` resends=${d?.resendCount ?? '-'}/${d?.resendFrameCount ?? '-'}`
+      + ` gap=${d?.localRemoteFrameGap ?? '-'} spread=${d?.slotFrameSpread ?? '-'} inputs=${p.inputCounts.join('/')}`;
+  });
+  process.stderr.write(`[browser] ${result.name} FAIL overlay=${result.overlaySamples} maxStall=${result.maxStallFrames}f gap=${result.maxFrameGap} resends=${result.totalResends}\n${lines.join('\n')}\n`);
+}
+
 async function finishBrowserCase(name: string, clients: ClientPage[], players: number, expectedAi: number, humanSlots: number[]): Promise<BrowserCaseResult> {
   const inputPromise = driveInputs(clients.filter((c) => !c.label.includes('watch')), Math.floor(BROWSER_DURATION_MS * 0.75));
   const overlaySamples = await sampleOverlay(clients, BROWSER_DURATION_MS);
   await inputPromise.catch(() => undefined);
   const probes = await Promise.all(clients.map((client) => probe(client.page, players)));
   const result = summarise(name, probes, overlaySamples);
-  assertBrowserCase(result, { players, ai: expectedAi, humanSlots });
+  try {
+    assertBrowserCase(result, { players, ai: expectedAi, humanSlots });
+  } catch (error) {
+    printBrowserFailure(result);
+    throw error;
+  }
   printBrowserResult(result);
   return result;
 }
@@ -490,16 +508,17 @@ async function runBrokerScale(players: number): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  process.stdout.write(`prod multiplayer smoke target=${TARGET} broker=${BROKER} duration=${BROWSER_DURATION_MS}ms scale=${SCALE_COUNTS.join(',')}\n`);
+  const shouldRun = (name: string): boolean => ONLY_CASES.has('all') || ONLY_CASES.has(name);
+  process.stdout.write(`prod multiplayer smoke target=${TARGET} broker=${BROKER} duration=${BROWSER_DURATION_MS}ms scale=${SCALE_COUNTS.join(',')} only=${Array.from(ONLY_CASES).join(',')}\n`);
   const browser = await chromium.launch();
   try {
-    await runCoop2(browser);
-    await runDeathmatchPrejoined2(browser);
-    await runDeathmatchLate2(browser);
-    await runDeathmatchAllHuman4(browser);
-    await runDeathmatchAiFill(browser, 4);
-    await runDeathmatchAiFill(browser, 8);
-    for (const count of SCALE_COUNTS) await runBrokerScale(count);
+    if (shouldRun('coop')) await runCoop2(browser);
+    if (shouldRun('prejoined')) await runDeathmatchPrejoined2(browser);
+    if (shouldRun('late')) await runDeathmatchLate2(browser);
+    if (shouldRun('allhuman4')) await runDeathmatchAllHuman4(browser);
+    if (shouldRun('aifill4')) await runDeathmatchAiFill(browser, 4);
+    if (shouldRun('aifill8')) await runDeathmatchAiFill(browser, 8);
+    if (shouldRun('scale')) for (const count of SCALE_COUNTS) await runBrokerScale(count);
   } finally {
     await browser.close().catch(() => undefined);
   }
