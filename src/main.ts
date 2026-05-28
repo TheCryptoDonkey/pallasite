@@ -288,8 +288,8 @@ let spectator: SpectatorPeer | null = null;
 function peerInputDelayFrames(players: number, aiFilledSession = false): number {
   const configured = boundedPlayerCount(mpParams.get('inputDelay'), NaN, 0, 60);
   if (Number.isFinite(configured)) return configured;
-  if (aiFilledSession) return players <= 4 ? 16 : 8;
-  return Math.min(28, 14 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
+  if (aiFilledSession) return players <= 4 ? 24 : 8;
+  return Math.min(32, 22 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
 }
 /** Consecutive stalled sim frames before the "waiting for OPPONENT" overlay
  *  surfaces. ~100ms tolerates ordinary network jitter without flicker. */
@@ -302,12 +302,12 @@ const PEER_STALL_OVERLAY_FRAMES = 6;
 const PEER_STALL_DISCONNECT_FRAMES = 600;
 /** When lockstep stalls, resend this many recent local input frames so a
  *  partner missing an earlier command can backfill the exact frame it is
- *  blocked on. Normal advancing play still sends only the current frame. */
-const PEER_RESEND_WINDOW_FRAMES = 60;
-/** Cap the bulk resend cadence. Current-frame keepalives still go out every
- *  loop; the expensive history replay only needs to run often enough to
- *  backfill a hole. */
-const PEER_RESEND_INTERVAL_MS = 100;
+ *  blocked on. Keep this compact: repeated large replays can clog the
+ *  production relay and turn a short stall into persistent lag. */
+const PEER_RESEND_WINDOW_FRAMES = 32;
+/** Cap the bulk resend cadence. Live play sends each frame once; the history
+ *  replay only needs to run often enough to backfill a real hole. */
+const PEER_RESEND_INTERVAL_MS = 250;
 /** Count of consecutive frames the lockstep loop has been unable to
  *  advance (remote input missing). Reset every time a frame ticks. Only
  *  meaningful while a peer is active. */
@@ -1192,22 +1192,15 @@ function loop(now: number): void {
         // the extra capacity is essentially free.
         inputLog = new InputLog(state.players.length, 4096);
       }
-      // 1) Sample LOCAL slot(s) and send — UNCONDITIONAL on every iter
-      //    at state.frame=N. The receiver's lockstep needs our frame N
-      //    in their inputLog before they can pass their iter N+5 stall
-      //    check, so a stalled local iter that didn't send would
-      //    deadlock the partner.
+      // 1) Sample LOCAL slot(s) and send once per sim frame. The receiver's
+      //    lockstep needs our frame N in its inputLog before it can pass the
+      //    delayed read for that frame, but retrying the same frame every
+      //    stalled rAF floods the production relay and makes jitter worse.
+      //    Missing frames are handled by the throttled compact resend below.
       //
-      //    BUT idempotent: sample only if inputLog[state.frame][slot]
-      //    is empty (-1). On a retry at the same state.frame (stalled
-      //    from a previous rAF), the slot is already populated; we
-      //    skip the re-sample so the wire sees ONE message per frame.
-      //    This is what prevents the desync the prior order tried to
-      //    fix by deferring sample — re-sampling with fresh keyboard
-      //    state would send duplicate (frame, value) pairs with
-      //    DIFFERENT values, and the receiver's last-write-wins ring
-      //    would diverge based on drain timing. Idempotent sample
-      //    keeps the frame's value stable across retries.
+      //    Idempotent sampling still matters: on a retry at the same
+      //    state.frame, keep the original encoded value so the frame's
+      //    canonical input cannot drift with wall-clock keyboard state.
       //
       //    Spectator mode has NO local slots — every input comes from
       //    the broker tap. Duel mode samples just the local slot; couch
@@ -1218,11 +1211,8 @@ function loop(now: number): void {
           ? [mpSlot]
           : (state.players.length >= 2 ? [0, 1] : [0]);
       for (const i of localSampleSlots) {
-        // Sample once per sim frame, then re-send that SAME encoded value
-        // every retry while stalled. The repeated send keeps Chromium's WS
-        // dispatch warm and gives the partner redundant copies, but the
-        // frame's canonical input cannot drift based on wall-clock key state.
         let encoded = inputLog.get(state.frame, i);
+        let sampledThisFrame = false;
         if (encoded < 0) {
           // Peer mode reads from the localKeys + localHeading + localThrust
           // mirrors so apply's delayed overwrite of `players[i]` cannot
@@ -1233,8 +1223,9 @@ function loop(now: number): void {
           const input = samplePlayerInput(state.players[i], edgeFlags[i], keysOverride, thrustOverrideOverride, headingOverride);
           encoded = encodePlayerInput(input);
           inputLog.record(state.frame, i, encoded);
+          sampledThisFrame = true;
         }
-        if (peer) peer.sendFrame(state.frame, encoded);
+        if (peer && sampledThisFrame) peer.sendFrame(state.frame, encoded);
       }
       // 2) Drain remote frames into the log. Duel: the OTHER slot only.
       //    Spectator: whichever slot each delivery is tagged with (both).

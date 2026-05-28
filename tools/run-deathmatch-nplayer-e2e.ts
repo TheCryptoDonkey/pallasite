@@ -5,7 +5,8 @@
  * one deathmatch session, drives a little input on every slot, and checks
  * that all clients advance without stalls/desyncs while holding four slots
  * in their input logs. Then repeats with two human slots and two AI-filled
- * slots to prove incomplete lobbies still start deterministically.
+ * slots to prove incomplete lobbies still start deterministically. It also
+ * covers the lobby flow where P2 joins before the host presses READY.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -333,6 +334,69 @@ async function runTwoPlayerLateTakeoverScenario(browserInstance: Browser): Promi
   process.stdout.write('2P late takeover deathmatch lockstep PASS\n');
 }
 
+async function runTwoPlayerPrejoinedStartScenario(browserInstance: Browser): Promise<void> {
+  const session = randomBytes(4).toString('hex');
+  const joinCtx = await browserInstance.newContext({ serviceWorkers: 'block' });
+  const hostCtx = await browserInstance.newContext({ serviceWorkers: 'block' });
+  const joiner = await joinCtx.newPage();
+  const host = await hostCtx.newPage();
+  const pages = [host, joiner];
+  for (let i = 0; i < pages.length; i++) {
+    const label = i === 0 ? 'host P1' : 'prejoined P2';
+    pages[i].on('pageerror', (e) => process.stderr.write(`[2P ${label}] ${e.message}\n`));
+    pages[i].on('console', (msg) => {
+      const text = msg.text();
+      if (text.includes('[duel]') || text.includes('[peer]') || text.includes('session-error')) {
+        process.stderr.write(`[2P ${label} ${msg.type()}] ${text}\n`);
+      }
+    });
+  }
+
+  const base = `${VITE_BASE}/?peer=${encodeURIComponent(BROKER_URL)}&session=${session}&players=2&deathmatchPlayers=2&mode=deathmatch&wiretrace=1&peerBatch=1&aiFill=1`;
+  await joiner.goto(`${base}&slot=1`, { waitUntil: 'load' });
+  await wait(1200);
+  await host.goto(`${base}&slot=0&humanSlots=0,1`, { waitUntil: 'load' });
+  await Promise.all(pages.map((page) => page.waitForFunction(
+    () => {
+      const s = (window as any).__pallasiteState;
+      return !!(window as any).__pallasitePeerActive
+        && s?.phase === 'playing'
+        && s?.players?.length === 2
+        && s.players.filter((p: any) => p?.ai === true).length === 0;
+    },
+    undefined,
+    { timeout: 30_000 },
+  )));
+
+  await Promise.all([
+    host.keyboard.down('ArrowLeft'),
+    joiner.keyboard.down('ArrowRight'),
+  ]);
+  await wait(4200);
+  await Promise.all([
+    host.keyboard.up('ArrowLeft').catch(() => undefined),
+    joiner.keyboard.up('ArrowRight').catch(() => undefined),
+  ]);
+  await wait(800);
+
+  const probes = await Promise.all(pages.map((page) => probe(page, 2)));
+  for (let i = 0; i < probes.length; i++) {
+    const p = probes[i];
+    const label = i === 0 ? 'host P1' : 'prejoined P2';
+    process.stdout.write(`2P prejoined ${label}: frame=${p.frame} phase=${p.phase} players=${p.players} ai=${p.aiPlayers} stall=${p.stall ?? '-'} desync=${p.desync} inputs=${p.inputCounts.join('/')}\n`);
+    if (!p.peerActive) throw new Error(`2P prejoined ${label} peer inactive`);
+    if (p.phase !== 'playing') throw new Error(`2P prejoined ${label} not playing`);
+    if (p.frame < 120) throw new Error(`2P prejoined ${label} did not advance far enough`);
+    if (p.players !== 2) throw new Error(`2P prejoined ${label} wrong player count`);
+    if (p.aiPlayers !== 0) throw new Error(`2P prejoined ${label} has AI-controlled slot`);
+    if (p.stall) throw new Error(`2P prejoined ${label} stalled`);
+    if (p.desync) throw new Error(`2P prejoined ${label} desynced`);
+    if (p.inputCounts.some((count) => count < 50)) throw new Error(`2P prejoined ${label} missing input history`);
+  }
+  await Promise.all(pages.map((page) => page.context().close().catch(() => undefined)));
+  process.stdout.write('2P prejoined deathmatch lockstep PASS\n');
+}
+
 async function main(): Promise<void> {
   const vite = startVite();
   const broker = startBroker();
@@ -359,6 +423,7 @@ async function main(): Promise<void> {
     await runAllHumanScenario(browserInstance);
     await runAiFillScenario(browserInstance);
     await runTwoPlayerLateTakeoverScenario(browserInstance);
+    await runTwoPlayerPrejoinedStartScenario(browserInstance);
   } finally {
     if (browser) await browser.close().catch(() => undefined);
     cleanup();
