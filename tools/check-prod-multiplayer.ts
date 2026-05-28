@@ -48,6 +48,7 @@ const SCALE_RATE_HZ = intArg('scaleRate', 20, 5, 60);
 const SCALE_BATCH = intArg('scaleBatch', 4, 1, 16);
 const SCALE_COUNTS = parseCounts('scale', [4, 8, 16, 64]);
 const NAV_OPTS = { waitUntil: 'commit' as const, timeout: 60_000 };
+const NAV_RETRIES = 3;
 
 interface PeerDebugProbe {
   active?: boolean;
@@ -131,6 +132,20 @@ async function newClient(browser: Browser, label: string): Promise<ClientPage> {
     }
   });
   return { label, page, context, pageErrors, consoleErrors };
+}
+
+async function gotoClient(client: ClientPage, url: string): Promise<void> {
+  for (let attempt = 1; attempt <= NAV_RETRIES; attempt++) {
+    try {
+      await client.page.goto(url, NAV_OPTS);
+      return;
+    } catch (error) {
+      if (attempt >= NAV_RETRIES) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`[${client.label}] navigation retry ${attempt}/${NAV_RETRIES}: ${message.split('\n')[0]}\n`);
+      await wait(500 * attempt);
+    }
+  }
 }
 
 function peerUrl(session: string, role = 'peer'): string {
@@ -307,7 +322,7 @@ async function runCoop2(browser: Browser): Promise<BrowserCaseResult> {
   const session = `coop-${randomBytes(4).toString('hex')}`;
   const clients = [await newClient(browser, 'coop P1'), await newClient(browser, 'coop P2')];
   try {
-    await Promise.all(clients.map((client, slot) => client.page.goto(coopUrl(session, slot), NAV_OPTS)));
+    await Promise.all(clients.map((client, slot) => gotoClient(client, coopUrl(session, slot))));
     await Promise.all(clients.map((client) => waitPlaying(client, 2, 0)));
     return await finishBrowserCase('2P co-op', clients, 2, 0, [0, 1]);
   } finally {
@@ -321,9 +336,9 @@ async function runDeathmatchPrejoined2(browser: Browser): Promise<BrowserCaseRes
   const host = await newClient(browser, 'prejoined P1');
   const clients = [host, joiner];
   try {
-    await joiner.page.goto(deathmatchPeerUrl(session, 1, 2, { aiFill: true }), NAV_OPTS);
+    await gotoClient(joiner, deathmatchPeerUrl(session, 1, 2, { aiFill: true }));
     await wait(1_800);
-    await host.page.goto(deathmatchPeerUrl(session, 0, 2, { aiFill: true, humanSlots: '0,1' }), NAV_OPTS);
+    await gotoClient(host, deathmatchPeerUrl(session, 0, 2, { aiFill: true, humanSlots: '0,1' }));
     await Promise.all(clients.map((client) => waitPlaying(client, 2, 0)));
     return await finishBrowserCase('2P deathmatch prejoined', clients, 2, 0, [0, 1]);
   } finally {
@@ -337,10 +352,10 @@ async function runDeathmatchLate2(browser: Browser): Promise<BrowserCaseResult> 
   const joiner = await newClient(browser, 'late P2');
   const clients = [host, joiner];
   try {
-    await host.page.goto(deathmatchPeerUrl(session, 0, 2, { aiFill: true, humanSlots: '0' }), NAV_OPTS);
+    await gotoClient(host, deathmatchPeerUrl(session, 0, 2, { aiFill: true, humanSlots: '0' }));
     await waitPlaying(host, 2, 1);
     await wait(1_800);
-    await joiner.page.goto(deathmatchPeerUrl(session, 1, 2, { aiFill: true }), NAV_OPTS);
+    await gotoClient(joiner, deathmatchPeerUrl(session, 1, 2, { aiFill: true }));
     await Promise.all(clients.map((client) => waitPlaying(client, 2, 0)));
     return await finishBrowserCase('2P deathmatch late takeover', clients, 2, 0, [0, 1]);
   } finally {
@@ -353,9 +368,9 @@ async function runDeathmatchAllHuman4(browser: Browser): Promise<BrowserCaseResu
   const clients = await Promise.all(Array.from({ length: 4 }, (_, slot) => newClient(browser, `4P P${slot + 1}`)));
   const watcher = await newClient(browser, '4P watch');
   try {
-    await Promise.all(clients.map((client, slot) => client.page.goto(deathmatchPeerUrl(session, slot, 4), NAV_OPTS)));
+    await Promise.all(clients.map((client, slot) => gotoClient(client, deathmatchPeerUrl(session, slot, 4))));
     await Promise.all(clients.map((client) => waitPlaying(client, 4, 0)));
-    await watcher.page.goto(spectateUrl(session, 4), NAV_OPTS);
+    await gotoClient(watcher, spectateUrl(session, 4));
     await waitPlaying(watcher, 4, 0);
     const all = [...clients, watcher];
     return await finishBrowserCase('4P deathmatch all-human + watch', all, 4, 0, [0, 1, 2, 3]);
@@ -368,8 +383,8 @@ async function runDeathmatchAiFill(browser: Browser, players: number): Promise<B
   const session = `aifill${players}-${randomBytes(4).toString('hex')}`;
   const clients = [await newClient(browser, `${players}P AI P1`), await newClient(browser, `${players}P AI P2`)];
   try {
-    await clients[0].page.goto(deathmatchPeerUrl(session, 0, players, { aiFill: true, humanSlots: '0,1' }), NAV_OPTS);
-    await clients[1].page.goto(deathmatchPeerUrl(session, 1, players, { aiFill: true }), NAV_OPTS);
+    await gotoClient(clients[0], deathmatchPeerUrl(session, 0, players, { aiFill: true, humanSlots: '0,1' }));
+    await gotoClient(clients[1], deathmatchPeerUrl(session, 1, players, { aiFill: true }));
     await Promise.all(clients.map((client) => waitPlaying(client, players, players - 2)));
     return await finishBrowserCase(`${players}P deathmatch AI-fill`, clients, players, players - 2, [0, 1]);
   } finally {
