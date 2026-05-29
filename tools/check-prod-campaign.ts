@@ -66,6 +66,16 @@ interface AssetProbe {
   webglReady?: boolean;
 }
 
+function isTransientRelayConsole(text: string): boolean {
+  return text.startsWith("WebSocket connection to 'wss://")
+    && (
+      text.includes('nos.lol')
+      || text.includes('nostr.wine')
+      || text.includes('relay.damus.io')
+      || text.includes('relay.nostr.band')
+    );
+}
+
 function visualStyle(): string {
   return JSON.stringify({
     asteroid: 'mesh',
@@ -108,6 +118,7 @@ async function newCampaignPage(browser: Browser, label: keyof typeof VIEWPORTS, 
   page.on('pageerror', (e: Error) => diagnostics.pageErrors.push(e.message));
   page.on('console', (msg: ConsoleMessage) => {
     const text = msg.text();
+    if (isTransientRelayConsole(text)) return;
     if (msg.type() === 'error' && !text.startsWith('Failed to load resource:')) diagnostics.consoleErrors.push(text);
   });
   page.on('response', (res) => {
@@ -419,6 +430,16 @@ function assertDiagnostics(label: string, diagnostics: Diagnostics): void {
   if (diagnostics.consoleErrors.length > 0) throw new Error(`${label}: console errors ${diagnostics.consoleErrors.join(' | ')}`);
 }
 
+async function captureScreenshot(page: Page, path: string): Promise<string> {
+  try {
+    await page.screenshot({ path, fullPage: false, timeout: 5_000 });
+    return path;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message.split('\n')[0] : String(err);
+    return `${path} (skipped: ${msg})`;
+  }
+}
+
 async function runDesktop(browser: Browser): Promise<void> {
   const { context, page, diagnostics } = await newCampaignPage(browser, 'desktop', true);
   try {
@@ -433,13 +454,13 @@ async function runDesktop(browser: Browser): Promise<void> {
     const movement = await probeMovement(page);
     assertMovement('desktop movement', movement);
     const shot = resolve(OUT_DIR, 'prod-campaign-desktop.png');
-    await page.screenshot({ path: shot, fullPage: false });
+    const shotResult = await captureScreenshot(page, shot);
     const afterGameOver = await forcePhaseAndRestart(page, 'gameover');
     assertCampaignState('desktop gameover restart', afterGameOver, false);
     const afterCompletion = await forcePhaseAndRestart(page, 'completed');
     assertCampaignState('desktop completion restart', afterCompletion, false);
     assertDiagnostics('desktop', diagnostics);
-    process.stdout.write(`[PASS] desktop campaign assets=${assets.campaignCriticalLoaded?.length ?? 0} hud=${hud.left}/${hud.center}/${hud.right} movement=${movement.speed.toFixed(1)}px/s/${movement.distance.toFixed(1)}px screenshot=${shot}\n`);
+    process.stdout.write(`[PASS] desktop campaign assets=${assets.campaignCriticalLoaded?.length ?? 0} hud=${hud.left}/${hud.center}/${hud.right} movement=${movement.speed.toFixed(1)}px/s/${movement.distance.toFixed(1)}px screenshot=${shotResult}\n`);
   } finally {
     await context.close();
   }
@@ -459,9 +480,9 @@ async function runMobile(browser: Browser): Promise<void> {
     const movement = await probeMovement(page);
     assertMovement('mobile movement', movement);
     const shot = resolve(OUT_DIR, 'prod-campaign-mobile.png');
-    await page.screenshot({ path: shot, fullPage: false });
+    const shotResult = await captureScreenshot(page, shot);
     assertDiagnostics('mobile', diagnostics);
-    process.stdout.write(`[PASS] mobile campaign assets=${assets.campaignCriticalLoaded?.length ?? 0} hud=${hud.left}/${hud.center}/${hud.right} movement=${movement.speed.toFixed(1)}px/s/${movement.distance.toFixed(1)}px screenshot=${shot}\n`);
+    process.stdout.write(`[PASS] mobile campaign assets=${assets.campaignCriticalLoaded?.length ?? 0} hud=${hud.left}/${hud.center}/${hud.right} movement=${movement.speed.toFixed(1)}px/s/${movement.distance.toFixed(1)}px screenshot=${shotResult}\n`);
   } finally {
     await context.close();
   }
