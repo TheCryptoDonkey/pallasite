@@ -1962,11 +1962,10 @@ async function boot(): Promise<void> {
     });
   }
 
-  // Prime music tracks so warp-transition (1.3s window) doesn't miss its
-  // first cue waiting on a cold fetch. Skipped on the controller PWA —
-  // no music will ever play there, so the ~3MB of opus track preloads
-  // would be pure data waste on a phone-grade connection.
-  if (!isControllerSurface()) preloadAllTracks();
+  // Optional diagnostic only. Real music priming happens inside the first
+  // trusted gesture via musicWarmUpAll(); boot-time media preloads compete
+  // with campaign art and browsers will not play them before activation.
+  if (!isControllerSurface() && new URLSearchParams(window.location.search).get('preloadMusic') === '1') preloadAllTracks();
 
   // ?dbg=audio overlay — pinned diagnostic panel showing AudioContext
   // state + current music element state + last load failure. Enables
