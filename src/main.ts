@@ -1145,7 +1145,8 @@ function recoverMusicFromGesture(force = false): void {
   musicSetTrackForState(state);
 }
 
-const firstUnlock = (): void => {
+const firstUnlock = (event: Event): void => {
+  if (!event.isTrusted) return;
   recoverMusicFromGesture(true);
   window.removeEventListener('pointerup', firstUnlock, true);
   window.removeEventListener('click', firstUnlock, true);
@@ -1166,7 +1167,8 @@ window.addEventListener('pointerup', firstUnlock, true);
 window.addEventListener('click', firstUnlock, true);
 window.addEventListener('keyup', firstUnlock, true);
 
-const recoverUnlock = (): void => {
+const recoverUnlock = (event: Event): void => {
+  if (!event.isTrusted) return;
   // The first unlock listener does the full forced prime and then removes
   // itself. Keep this listener for the rest of the session: after a real
   // backgrounding, route change, Bluetooth/audio-session interruption, or
