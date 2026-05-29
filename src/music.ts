@@ -125,6 +125,14 @@ function directMusicOutputActive(): boolean {
   return mobileRuntimeActive() || urlFlag('directMusic') === '1';
 }
 
+function mediaPlaybackGestureReady(): boolean {
+  try {
+    const activation = navigator.userActivation;
+    if (activation?.hasBeenActive || activation?.isActive) return true;
+  } catch { /* ignore */ }
+  return false;
+}
+
 function directTargetVolume(trim = 1): number {
   if (isMuted()) return 0;
   return Math.max(0, Math.min(1, getMasterVolume() * getMusicVolume() * getMusicDuckFactor() * trim));
@@ -374,8 +382,9 @@ export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequent
         }
       }, 250);
     };
-    attemptPlay(0);
     rampEntryTo(entry, trim, fadeMs);
+    if (!mediaPlaybackGestureReady()) return;
+    attemptPlay(0);
   };
   // Mark currentId immediately so memoisation in musicSetTrackForState matches
   // and a duplicate call during the gap is a no-op.
@@ -553,7 +562,7 @@ export function musicSetTrackForState(state: GameState): void {
   const nowMs = performance.now();
   if (nowMs - lastVerifyMs > VERIFY_INTERVAL_MS) {
     lastVerifyMs = nowMs;
-    if (currentId && state.phase !== 'paused' && state.phase !== 'deathreplay') {
+    if (currentId && mediaPlaybackGestureReady() && state.phase !== 'paused' && state.phase !== 'deathreplay') {
       // An iOS interruption can suspend the whole AudioContext while
       // leaving el.paused === false — the element thinks it's playing
       // but the suspended context emits silence. Checking only el.paused

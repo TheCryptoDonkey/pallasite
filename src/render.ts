@@ -110,22 +110,43 @@ export interface CriticalAssetReport {
   failed: string[];
 }
 
+const IMAGE_PRELOAD_TIMEOUT_MS = 12_000;
+
 function decodeImage(img: HTMLImageElement): Promise<void> {
-  if ('decode' in img) return img.decode().catch(() => undefined);
+  if ('decode' in img) {
+    return Promise.race([
+      img.decode().catch(() => undefined),
+      new Promise<void>((resolve) => window.setTimeout(resolve, 2_500)),
+    ]);
+  }
   return Promise.resolve();
 }
 
 function loadDecodedImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
+    let settled = false;
     const img = new Image();
     img.decoding = 'async';
-    img.onload = () => {
+    const finish = (ok: boolean): void => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      if (!ok) {
+        reject(new Error(`failed to load ${src}`));
+        return;
+      }
       void decodeImage(img).then(() => resolve(img));
     };
-    img.onerror = () => reject(new Error(`failed to load ${src}`));
+    const timer = window.setTimeout(() => {
+      finish(img.naturalWidth > 0 && img.naturalHeight > 0);
+    }, IMAGE_PRELOAD_TIMEOUT_MS);
+    img.onload = () => {
+      finish(true);
+    };
+    img.onerror = () => finish(false);
     img.src = src;
     if (img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
-      void decodeImage(img).then(() => resolve(img));
+      finish(true);
     }
   });
 }
