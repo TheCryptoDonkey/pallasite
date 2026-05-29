@@ -29,7 +29,7 @@ import {
 import { getActiveSkinId } from './skins.js';
 import { handleAuthCallback, tryRestore, sweepSignetArtefacts } from './auth.js';
 import * as audio from './audio.js';
-import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicSetMuted, musicResetElements, musicWarmUpAll } from './music.js';
+import { getMusicDebugSnapshot, musicForceRefresh, musicSetTrackForState, preloadAllTracks, musicSetPaused, musicSetMuted, musicResetElements, musicWarmUpAll } from './music.js';
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, applyDisplayMode } from './display.js';
@@ -1102,28 +1102,51 @@ const isControllerSurface = (): boolean =>
   window.location.hostname.startsWith('mobile.')
   || window.location.pathname.replace(/\/+$/, '') === '/controller';
 
-const firstUnlock = (): void => {
+let firstMusicGesturePrimed = false;
+let lastMusicGestureRecoveryMs = 0;
+const MUSIC_GESTURE_RECOVERY_THROTTLE_MS = 650;
+
+function phaseAllowsMusicRecovery(): boolean {
+  return state.phase !== 'paused'
+    && state.phase !== 'deathreplay'
+    && document.visibilityState === 'visible'
+    && !audio.isMuted();
+}
+
+function musicLooksStalled(): boolean {
+  if (!phaseAllowsMusicRecovery()) return false;
+  const snap = getMusicDebugSnapshot();
+  if (!snap.currentId) return false;
+  const ctxState = audio.getAudioContextState();
+  if (ctxState !== 'running' && ctxState !== 'none') return true;
+  if (snap.failedFlag) return true;
+  if (snap.paused) return true;
+  if ((snap.readyState ?? 0) === 0) return true;
+  if ((snap.networkState ?? 0) === 3 && (snap.readyState ?? 0) < 2) return true;
+  return false;
+}
+
+function recoverMusicFromGesture(force = false): void {
+  if (isControllerSurface()) return;
+  const now = performance.now();
+  if (!force && now - lastMusicGestureRecoveryMs < MUSIC_GESTURE_RECOVERY_THROTTLE_MS) return;
+  if (!force && !musicLooksStalled()) return;
+  lastMusicGestureRecoveryMs = now;
+  firstMusicGesturePrimed = true;
+
+  // This must run inside the active user gesture. If a previous element
+  // was created or replayed while the browser considered audio locked,
+  // rebuilding the MediaElementSource graph is more reliable than
+  // repeatedly calling play() on the same poisoned element.
   void audio.unlockAudio();
-  if (!isControllerSurface()) {
-    // Dispose every audio element created during the loop's pre-
-    // gesture ticks. iOS Safari refuses to ever output sound through
-    // a MediaElementSourceNode whose underlying <audio> had its
-    // first .play() rejected without a gesture — even after the
-    // AudioContext has resumed. Resetting the cache forces the next
-    // load() to construct fresh DOM elements + source nodes inside
-    // this gesture, which unlock cleanly.
-    musicResetElements();
-    // Prime every non-title track under THIS gesture too — iOS
-    // activation is per-element. Without this, later phase changes
-    // (wavestart → slow-orbit, warp → warp-transition, gameover →
-    // hull-breached, etc.) load fresh elements outside any gesture
-    // and their first .play() is rejected. musicWarmUpAll() does a
-    // muted in-gesture play + pause on each so they're left
-    // unlocked-and-ready. Skip pallasite-idle since
-    // musicSetTrackForState is about to play it normally.
-    musicWarmUpAll('pallasite-idle');
-    musicSetTrackForState(state);
-  }
+  musicResetElements();
+  musicWarmUpAll(force && state.phase === 'title' ? 'pallasite-idle' : undefined);
+  musicForceRefresh();
+  musicSetTrackForState(state);
+}
+
+const firstUnlock = (): void => {
+  recoverMusicFromGesture(true);
   window.removeEventListener('pointerup', firstUnlock, true);
   window.removeEventListener('click', firstUnlock, true);
   window.removeEventListener('keyup', firstUnlock, true);
@@ -1142,6 +1165,18 @@ const firstUnlock = (): void => {
 window.addEventListener('pointerup', firstUnlock, true);
 window.addEventListener('click', firstUnlock, true);
 window.addEventListener('keyup', firstUnlock, true);
+
+const recoverUnlock = (): void => {
+  // The first unlock listener does the full forced prime and then removes
+  // itself. Keep this listener for the rest of the session: after a real
+  // backgrounding, route change, Bluetooth/audio-session interruption, or
+  // browser autoplay race, the next tap can rebuild music without making the
+  // player dig into the hidden music reset panel.
+  recoverMusicFromGesture(!firstMusicGesturePrimed);
+};
+window.addEventListener('pointerup', recoverUnlock, true);
+window.addEventListener('click', recoverUnlock, true);
+window.addEventListener('keyup', recoverUnlock, true);
 
 // Lose focus → release keys & pause
 window.addEventListener('blur', () => {
@@ -1182,6 +1217,7 @@ function hardSilence(): void {
 function hardResume(): void {
   audio.resumePlayback();
   musicSetPaused(false);
+  musicForceRefresh();
 }
 let visibilityTimer: number | null = null;
 const VISIBILITY_SILENCE_DEBOUNCE_MS = 800;
@@ -1927,6 +1963,34 @@ async function boot(): Promise<void> {
   // needing devtools open.
   if (!isControllerSurface() && new URLSearchParams(window.location.search).get('dbg') === 'audio') {
     setupAudioDebugOverlay();
+  }
+  if (!isControllerSurface()) {
+    const musicProbe = (): {
+      audioContext: ReturnType<typeof audio.getAudioContextState>;
+      phase: GameState['phase'];
+      wave: number;
+      music: ReturnType<typeof getMusicDebugSnapshot>;
+    } => ({
+      audioContext: audio.getAudioContextState(),
+      phase: state.phase,
+      wave: state.wave,
+      music: getMusicDebugSnapshot(),
+    });
+    (window as unknown as {
+      __pallasiteMusicProbe?: () => {
+        audioContext: ReturnType<typeof audio.getAudioContextState>;
+        phase: GameState['phase'];
+        wave: number;
+        music: ReturnType<typeof getMusicDebugSnapshot>;
+      };
+    }).__pallasiteMusicProbe = musicProbe;
+    if (new URLSearchParams(window.location.search).get('musicSmoke') === '1') {
+      (window as unknown as { __pallasiteMusicPoison?: () => ReturnType<typeof musicProbe> }).__pallasiteMusicPoison = () => {
+        musicSetPaused(true);
+        audio.suspendPlayback();
+        return musicProbe();
+      };
+    }
   }
   if (duelDebugMode || wireTraceEnabled) setupDuelDebugOverlay();
 
