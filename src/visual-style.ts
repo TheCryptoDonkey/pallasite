@@ -37,29 +37,62 @@ interface State {
   asciiCols: number;
   bitDepth: number;
   bitColour: boolean;
+  brightness: number;
 }
 
+export const BRIGHTNESS = { min: 0.7, max: 1.35, step: 0.05, default: 1.0 } as const;
+
 function defaults(): State {
-  // Every fresh player opens in full 3D mesh with a CRT scanline pass.
-  // The WebGL overlay is the headline visual feature, and the CRT theme
-  // is the house presentation — anyone who actively wants the original
-  // 1979 line-art look can flip categories to vector and theme to
-  // standard from the settings panel; their choice persists. Pre-existing
-  // players keep whatever they had stored — load() only reaches defaults()
-  // when no value is in localStorage.
+  // Fresh installs open in full 3D mesh with the standard presentation.
+  // CRT remains selectable, but it is no longer the default: the extra
+  // full-frame post-process cost is not worth paying before a player opts in.
   return {
     asteroid: 'mesh',
     ship: 'mesh',
     bullet: 'mesh',
     particle: 'mesh',
-    theme: 'crt',
+    theme: 'none',
     asciiCols: ASCII_COLS.default,
     bitDepth: BIT_DEPTH.default,
     bitColour: false,
+    brightness: BRIGHTNESS.default,
   };
 }
 
 let cached: State | null = null;
+
+function urlFlag(name: string): string | null {
+  try { return new URLSearchParams(window.location.search).get(name); }
+  catch { return null; }
+}
+
+export function mobileRuntimeActive(): boolean {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+  const uaMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  const coarse = (() => {
+    try { return window.matchMedia?.('(pointer: coarse)').matches === true; }
+    catch { return false; }
+  })();
+  const touch = (navigator.maxTouchPoints ?? 0) > 0;
+  const smallViewport = Math.min(window.innerWidth || 9999, window.innerHeight || 9999) <= 640
+    || Math.max(window.innerWidth || 0, window.innerHeight || 0) <= 960;
+  return uaMobile || ((coarse || touch) && smallViewport);
+}
+
+/** Phone-safe presentation guard. Full 3D mesh is part of the mobile
+ *  experience, but mesh plus full-frame CRT/post-FX and a high-DPR backing store
+ *  pushes iOS Safari into wave-3 judder. This guard is runtime-only and
+ *  non-persistent: phones keep mesh, but skip expensive presentation FX and
+ *  use a bounded DPR. Add ?fullfx=1 for capture/debug. */
+export function mobilePerformanceGuardActive(): boolean {
+  const fullFx = urlFlag('fullfx') === '1' || urlFlag('highfx') === '1';
+  const forcedOff = urlFlag('mobileLite') === '0';
+  return !fullFx && !forcedOff && mobileRuntimeActive();
+}
+
+export function getRenderDprCap(): number {
+  return mobilePerformanceGuardActive() ? 1.5 : 2;
+}
 
 /** Coerce an unknown value into a known VisualTier; unknown → 'vector'. */
 function coerceTier(v: unknown): VisualTier {
@@ -81,6 +114,13 @@ function coerceBitDepth(v: unknown): number {
   return (BIT_DEPTH.stops as readonly number[]).includes(n) ? n : BIT_DEPTH.default;
 }
 
+function coerceBrightness(v: unknown): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return BRIGHTNESS.default;
+  const stepped = Math.round(n / BRIGHTNESS.step) * BRIGHTNESS.step;
+  return Math.max(BRIGHTNESS.min, Math.min(BRIGHTNESS.max, stepped));
+}
+
 function load(): State {
   if (cached) return cached;
   const base = defaults();
@@ -97,6 +137,7 @@ function load(): State {
         asciiCols: coerceAsciiCols(parsed.asciiCols ?? base.asciiCols),
         bitDepth: coerceBitDepth(parsed.bitDepth ?? base.bitDepth),
         bitColour: typeof parsed.bitColour === 'boolean' ? parsed.bitColour : base.bitColour,
+        brightness: coerceBrightness(parsed.brightness ?? base.brightness),
       };
       return cached;
     }
@@ -127,7 +168,8 @@ export function setForcedVisualTier(tier: VisualTier | null): void {
  *  tier override (see setForcedVisualTier). Render code falls back to
  *  'shaded' if the WebGL overlay hasn't loaded yet. */
 export function getVisualStyle(cat: VisualCategory): VisualTier {
-  return forcedTier ?? load()[cat];
+  if (forcedTier) return forcedTier;
+  return load()[cat];
 }
 
 /** The raw stored tier, ignoring any forced override. Used by the
@@ -156,6 +198,7 @@ export function setAllVisualStyles(tier: VisualTier): void {
 /** The active presentation theme: the post-process look (CRT etc.). A
  *  separate axis from the per-category fidelity tiers. */
 export function getTheme(): ThemeId {
+  if (mobilePerformanceGuardActive()) return 'none';
   return load().theme;
 }
 
@@ -194,6 +237,16 @@ export function getBitColour(): boolean {
 /** Set the bit-depth theme's palette mode. Persists and broadcasts. */
 export function setBitColour(on: boolean): void {
   save({ ...load(), bitColour: on });
+}
+
+/** Canvas brightness multiplier. Applied as a compositor filter so the
+ *  standard presentation stays cheap; the default 1.0 is visually neutral. */
+export function getBrightness(): number {
+  return load().brightness;
+}
+
+export function setBrightness(value: number): void {
+  save({ ...load(), brightness: coerceBrightness(value) });
 }
 
 /** Boot-time warm-up: if any category is already on 'mesh' from a

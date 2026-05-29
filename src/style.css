@@ -6,6 +6,7 @@
   --hud-purple: #b48cff;
   --hud-red: #ff5050;
   --font-vec: 'VT323', 'Press Start 2P', ui-monospace, monospace;
+  --pallasite-brightness: 1;
 }
 
 * {
@@ -74,6 +75,7 @@ body[data-display="modern"] #game3d {
     inset 0 0 120px rgba(0, 0, 0, 0.9),
     0 0 60px rgba(91, 109, 255, 0.15);
   border-radius: 12px;
+  filter: brightness(var(--pallasite-brightness));
 }
 
 /* WebGL mesh overlay — sits flush over #game, no chrome of its own.
@@ -90,6 +92,7 @@ body[data-display="modern"] #game3d {
   border-radius: 12px;
   pointer-events: none;  /* never intercepts gameplay input */
   image-rendering: auto;
+  filter: brightness(var(--pallasite-brightness));
 }
 #game3d.is-active { display: block; }
 

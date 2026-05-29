@@ -10,7 +10,8 @@
  * waves-1-8 tracks now and add the rest as they're laundered.
  */
 
-import { getMusicDestination } from './audio.js';
+import { getMasterVolume, getMusicDestination, getMusicDuckFactor, getMusicVolume, isMuted } from './audio.js';
+import { mobileRuntimeActive } from './visual-style.js';
 import type { GameState } from './types.js';
 import { getFlavour } from './flavour.js';
 import { isSanctumMode } from './mode.js';
@@ -95,9 +96,11 @@ const PHASE_FADE_PROFILE: Partial<Record<string, FadeProfile>> = {
 
 interface Loaded {
   el: HTMLAudioElement;
-  src: MediaElementAudioSourceNode;
-  gain: GainNode;
+  src: MediaElementAudioSourceNode | null;
+  gain: GainNode | null;
   failed: boolean;
+  direct: boolean;
+  volumeRaf: number | null;
 }
 
 const loaded = new Map<string, Loaded>();
@@ -105,6 +108,56 @@ let currentId: string | null = null;
 let lastAppliedKey = '';  // memoised state→track key so musicSetTrackForState is O(1) per frame
 
 const DEFAULT_FADE_MS = 800;
+
+function urlFlag(name: string): string | null {
+  try { return new URLSearchParams(window.location.search).get(name); }
+  catch { return null; }
+}
+
+/** iOS/Android fallback: play music directly through HTMLAudioElement
+ *  instead of routing it through MediaElementAudioSourceNode. Safari PWAs
+ *  can leave MediaElementAudioSource outputting silence even when the
+ *  AudioContext is running and el.paused=false; direct media playback is
+ *  the boring, reliable path. ?webaudioMusic=1 keeps the old route for
+ *  desktop debugging. */
+function directMusicOutputActive(): boolean {
+  if (urlFlag('webaudioMusic') === '1') return false;
+  return mobileRuntimeActive() || urlFlag('directMusic') === '1';
+}
+
+function directTargetVolume(trim = 1): number {
+  if (isMuted()) return 0;
+  return Math.max(0, Math.min(1, getMasterVolume() * getMusicVolume() * getMusicDuckFactor() * trim));
+}
+
+function setDirectVolume(entry: Loaded, volume: number): void {
+  if (entry.volumeRaf !== null) {
+    cancelAnimationFrame(entry.volumeRaf);
+    entry.volumeRaf = null;
+  }
+  try { entry.el.volume = Math.max(0, Math.min(1, volume)); } catch { /* ignore */ }
+}
+
+function rampDirectVolume(entry: Loaded, target: number, ms: number): void {
+  if (entry.volumeRaf !== null) {
+    cancelAnimationFrame(entry.volumeRaf);
+    entry.volumeRaf = null;
+  }
+  const start = entry.el.volume;
+  const clampedTarget = Math.max(0, Math.min(1, target));
+  if (ms <= 0 || Math.abs(start - clampedTarget) < 0.001) {
+    setDirectVolume(entry, clampedTarget);
+    return;
+  }
+  const startMs = performance.now();
+  const tick = (now: number): void => {
+    const t = Math.min(1, (now - startMs) / ms);
+    try { entry.el.volume = start + (clampedTarget - start) * t; } catch { /* ignore */ }
+    if (t < 1) entry.volumeRaf = requestAnimationFrame(tick);
+    else entry.volumeRaf = null;
+  };
+  entry.volumeRaf = requestAnimationFrame(tick);
+}
 
 /** Cache the Opus support test so we don't re-create an Audio element
  *  per load(). Empty string = no support. */
@@ -132,8 +185,6 @@ function trackUrlFor(track: Track): string {
 function load(track: Track): Loaded {
   const cached = loaded.get(track.id);
   if (cached) return cached;
-  const dest = getMusicDestination();
-  const ctx = dest.context as AudioContext;
   const el = new Audio();
   el.loop = track.loop !== false;
   el.preload = 'auto';
@@ -152,12 +203,21 @@ function load(track: Track): Loaded {
   // signal because the analyser tap reads pre-taint, but the gain →
   // destination chain plays nothing). The waveform was visible while
   // the audio was silent — exactly that fingerprint.
-  const src = ctx.createMediaElementSource(el);
-  const gain = ctx.createGain();
-  gain.gain.value = 0;
-  src.connect(gain);
-  gain.connect(dest);
-  const entry: Loaded = { el, src, gain, failed: false };
+  const direct = directMusicOutputActive();
+  let src: MediaElementAudioSourceNode | null = null;
+  let gain: GainNode | null = null;
+  if (direct) {
+    el.volume = 0;
+  } else {
+    const dest = getMusicDestination();
+    const ctx = dest.context as AudioContext;
+    src = ctx.createMediaElementSource(el);
+    gain = ctx.createGain();
+    gain.gain.value = 0;
+    src.connect(gain);
+    gain.connect(dest);
+  }
+  const entry: Loaded = { el, src, gain, failed: false, direct, volumeRaf: null };
   // First-time error → try the audio/ogg Blob workaround once. Safari
   // rejects .opus served without an audio/ogg Content-Type with
   // MediaError code 4 (MEDIA_ERR_SRC_NOT_SUPPORTED); side-loading via
@@ -247,6 +307,25 @@ function rampGainTo(gain: GainNode, target: number, ms: number): void {
   gain.gain.linearRampToValueAtTime(target, t + ms / 1000);
 }
 
+function rampEntryTo(entry: Loaded, targetTrim: number, ms: number): void {
+  if (entry.gain) {
+    rampGainTo(entry.gain, targetTrim, ms);
+  } else {
+    rampDirectVolume(entry, directTargetVolume(targetTrim), ms);
+  }
+}
+
+function refreshDirectVolumes(): void {
+  if (!directMusicOutputActive()) return;
+  for (const [id, entry] of loaded) {
+    if (!entry.direct) continue;
+    const trim = id === currentId ? (TRACKS[id]?.trim ?? 1) : 0;
+    if (entry.volumeRaf === null) {
+      try { entry.el.volume = directTargetVolume(trim); } catch { /* ignore */ }
+    }
+  }
+}
+
 /** Crossfade to a track id, or null to fade to silence. No-op if already on it.
  *  Pass `sequentialGapMs` to defer the fade-in until after the previous track's
  *  fade-out completes (for clean cinematic stings — see PHASE_FADE_PROFILE). */
@@ -257,7 +336,7 @@ export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequent
     const prevId = currentId;
     const prev = loaded.get(prevId);
     if (prev) {
-      rampGainTo(prev.gain, 0, fadeMs);
+      rampEntryTo(prev, 0, fadeMs);
       // Pause once the fade has completed so we don't keep decoding silently
       window.setTimeout(() => {
         if (currentId !== prevId) prev.el.pause();
@@ -273,6 +352,7 @@ export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequent
     const entry = load(track);
     if (entry.failed) { currentId = null; return; }
     const trim = track.trim ?? 1;
+    if (entry.direct) setDirectVolume(entry, 0);
     // Stings (loop:false) always play from 0 on re-trigger.
     if (track.loop === false) {
       try { entry.el.currentTime = 0; } catch { /* will play from 0 anyway */ }
@@ -295,7 +375,7 @@ export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequent
       }, 250);
     };
     attemptPlay(0);
-    rampGainTo(entry.gain, trim, fadeMs);
+    rampEntryTo(entry, trim, fadeMs);
   };
   // Mark currentId immediately so memoisation in musicSetTrackForState matches
   // and a duplicate call during the gap is a no-op.
@@ -446,6 +526,7 @@ let lastVerifyMs = 0;
 const VERIFY_INTERVAL_MS = 1000;
 
 export function musicSetTrackForState(state: GameState): void {
+  if (directMusicOutputActive()) refreshDirectVolumes();
   // Title rotation hook — on phase TRANSITION into 'title', pick a
   // fresh track from the idle pool. Done here (in the once-per-frame
   // setter) rather than in trackForState because the latter is called
@@ -485,6 +566,7 @@ export function musicSetTrackForState(state: GameState): void {
       }
       const entry = loaded.get(currentId);
       if (entry && !entry.failed) {
+        if (entry.direct) refreshDirectVolumes();
         if (entry.el.paused) {
           try { void entry.el.play().catch(() => undefined); } catch { /* ignore */ }
         } else if (entry.el.readyState === 0) {
@@ -571,8 +653,11 @@ export function musicForceRefresh(): void {
 export function musicResetElements(): void {
   for (const entry of loaded.values()) {
     try { entry.el.pause(); } catch { /* ignore */ }
-    try { entry.src.disconnect(); } catch { /* ignore */ }
-    try { entry.gain.disconnect(); } catch { /* ignore */ }
+    if (entry.volumeRaf !== null) {
+      try { cancelAnimationFrame(entry.volumeRaf); } catch { /* ignore */ }
+    }
+    try { entry.src?.disconnect(); } catch { /* ignore */ }
+    try { entry.gain?.disconnect(); } catch { /* ignore */ }
   }
   loaded.clear();
   currentId = null;
@@ -731,10 +816,13 @@ export function getMusicDebugSnapshot(): MusicDebugSnapshot {
  *  of 'suspended' has unreliable currentTime advancement and the ramp
  *  can complete with the gain still at 0 (silent track). */
 export function musicPreviewPlay(id: string): void {
-  const dest = getMusicDestination();
-  const ctx = dest.context as AudioContext;
-  if (ctx.state === 'suspended') {
-    void ctx.resume().catch(() => undefined);
+  let ctx: AudioContext | null = null;
+  if (!directMusicOutputActive()) {
+    const dest = getMusicDestination();
+    ctx = dest.context as AudioContext;
+    if (ctx.state === 'suspended') {
+      void ctx.resume().catch(() => undefined);
+    }
   }
   crossfadeTo(id, 250);
   // Snap the picked track's gain to full (bypass the 0→trim ramp). The
@@ -743,9 +831,11 @@ export function musicPreviewPlay(id: string): void {
   // audible the moment its play() is called.
   const entry = loaded.get(id);
   const trim = TRACKS[id]?.trim ?? 1;
-  if (entry) {
+  if (entry?.gain && ctx) {
     entry.gain.gain.cancelScheduledValues(ctx.currentTime);
     entry.gain.gain.value = trim;
+  } else if (entry?.direct) {
+    setDirectVolume(entry, directTargetVolume(trim));
   }
 }
 

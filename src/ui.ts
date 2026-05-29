@@ -26,6 +26,9 @@ import {
   setBitDepth,
   getBitColour,
   setBitColour,
+  BRIGHTNESS,
+  getBrightness,
+  setBrightness,
   type VisualCategory,
   type VisualTier,
 } from './visual-style.js';
@@ -8392,6 +8395,27 @@ export function renderSettings(onBack: () => void): void {
       paintTheme();
     });
   }
+  // Compositor brightness multiplier. This is separate from the post-FX
+  // theme so STANDARD can be tuned without paying a canvas post-process pass.
+  const brightnessRow = el('div', { parent: overlay });
+  brightnessRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr 48px;gap:14px;align-items:center;min-width:340px;';
+  el('label', { parent: brightnessRow, text: 'BRIGHTNESS' })
+    .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
+  const brightnessSlider = el('input', { parent: brightnessRow });
+  brightnessSlider.type = 'range';
+  brightnessSlider.min = String(BRIGHTNESS.min);
+  brightnessSlider.max = String(BRIGHTNESS.max);
+  brightnessSlider.step = String(BRIGHTNESS.step);
+  brightnessSlider.value = String(getBrightness());
+  brightnessSlider.style.cssText = 'width:100%;accent-color:#ffd84a;cursor:pointer;';
+  const brightnessVal = el('span', { parent: brightnessRow, text: `${Math.round(getBrightness() * 100)}%` });
+  brightnessVal.style.cssText = 'font-size:0.85rem;color:#ffd84a;text-align:right;font-variant-numeric:tabular-nums;';
+  brightnessSlider.addEventListener('input', () => {
+    const value = Number(brightnessSlider.value);
+    setBrightness(value);
+    brightnessVal.textContent = `${Math.round(getBrightness() * 100)}%`;
+  });
+
   // ASCII resolution — the character grid is the dial: finer grids trade
   // frame budget for detail. Only shown while ASCII is the active look,
   // since it does nothing for the other themes.

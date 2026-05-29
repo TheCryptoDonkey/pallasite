@@ -33,7 +33,7 @@ import { getMusicDebugSnapshot, musicForceRefresh, musicSetTrackForState, preloa
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, applyDisplayMode } from './display.js';
-import { warmWebGLIfPreviouslyEnabled, ensureWebGLForCurrentStyle, getTheme, getAsciiCols, getBitDepth, getBitColour, getVisualStyle, isWebGLOverlayReady } from './visual-style.js';
+import { warmWebGLIfPreviouslyEnabled, ensureWebGLForCurrentStyle, getTheme, getAsciiCols, getBitDepth, getBitColour, getVisualStyle, isWebGLOverlayReady, getRenderDprCap, getBrightness } from './visual-style.js';
 import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
 import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges, ensureLocalEdges, EMPTY_INPUT, isPeerActive, setPeerActive } from './netcode.js';
@@ -1261,6 +1261,14 @@ function setFastCrtOverlay(active: boolean): void {
   else delete document.body.dataset.crtFast;
 }
 
+let lastAppliedBrightness = '';
+function syncCanvasBrightness(): void {
+  const next = getBrightness().toFixed(2);
+  if (next === lastAppliedBrightness) return;
+  lastAppliedBrightness = next;
+  document.documentElement.style.setProperty('--pallasite-brightness', next);
+}
+
 function shouldUseFastCrt(): boolean {
   if (deathmatchActive()) return true;
   return Array.isArray(state.players) && state.players.length >= FAST_CRT_PLAYER_THRESHOLD;
@@ -1608,6 +1616,7 @@ function loop(now: number): void {
   // backfires under chromium-headless — when no frames are drawn the
   // browser slows rAF, which then can't push enough sends/sec to keep
   // lockstep moving.
+  syncCanvasBrightness();
   render(canvas, state, now);
   applyThemeFrame(canvas, now);
   if (getTheme() === 'ascii') drawAsciiHud(canvas, state);
@@ -1722,7 +1731,7 @@ async function boot(): Promise<void> {
 
   function fit(): void {
     const mode = getDisplayMode();
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const dpr = Math.min(window.devicePixelRatio || 1, getRenderDprCap());
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const insets = readSafeInsets();
