@@ -199,10 +199,14 @@ export function setBitColour(on: boolean): void {
 /** Boot-time warm-up: if any category is already on 'mesh' from a
  *  previous session, start the WebGL load immediately. Called from
  *  main.ts; safe to call repeatedly (the loader is idempotent). */
-export function warmWebGLIfPreviouslyEnabled(): void {
+export function warmWebGLIfPreviouslyEnabled(): Promise<void> {
   const s = load();
   const anyMesh = s.asteroid === 'mesh' || s.ship === 'mesh' || s.bullet === 'mesh' || s.particle === 'mesh';
-  if (anyMesh) void warmWebGL();
+  return anyMesh ? warmWebGL() : Promise.resolve();
+}
+
+export function ensureWebGLForCurrentStyle(): Promise<void> {
+  return warmWebGLIfPreviouslyEnabled();
 }
 
 /** Sync accessors render.ts uses each frame. Resolve to no-ops until the
@@ -259,23 +263,27 @@ export function callWebGLClearShipChunks(): void {
   overlayClearShipChunksFn?.();
 }
 
-let warmStarted = false;
+let warmPromise: Promise<void> | null = null;
 async function warmWebGL(): Promise<void> {
-  if (warmStarted) return;
-  warmStarted = true;
-  try {
-    const mod = await import('./webgl/overlay.js');
-    await mod.ensureWebGLOverlay();
-    overlayRenderFn = mod.renderOverlay;
-    overlayShipExplosionFn = mod.spawnShipMeshExplosion;
-    overlayClearShipChunksFn = mod.clearShipChunks;
-    overlayReady = true;
-  } catch (e) {
-    // If three.js fails to load (offline, sw bug, etc.), render code
-    // keeps falling back to shaded — no game-breaking failure mode.
-    console.warn('[visual-style] WebGL overlay load failed', e);
-    warmStarted = false;
-  }
+  if (overlayReady) return;
+  if (warmPromise) return warmPromise;
+  warmPromise = (async () => {
+    try {
+      const mod = await import('./webgl/overlay.js');
+      await mod.ensureWebGLOverlay();
+      overlayRenderFn = mod.renderOverlay;
+      overlayShipExplosionFn = mod.spawnShipMeshExplosion;
+      overlayClearShipChunksFn = mod.clearShipChunks;
+      overlayReady = true;
+    } catch (e) {
+      // If three.js fails to load (offline, sw bug, etc.), render code
+      // keeps falling back to shaded — no game-breaking failure mode.
+      console.warn('[visual-style] WebGL overlay load failed', e);
+    } finally {
+      if (!overlayReady) warmPromise = null;
+    }
+  })();
+  return warmPromise;
 }
 
 /** True iff every category is set to the same tier — used by the quick-pick

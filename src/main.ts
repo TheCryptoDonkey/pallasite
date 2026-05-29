@@ -9,7 +9,7 @@ import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHype
 import { getFlavour } from './flavour.js';
 import { lockInDifficulty, getStoredDifficulty, setStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
-import { render, preloadBackground, setRenderMode, getRenderModeKind, drawAsciiHud } from './render.js';
+import { render, preloadCriticalCampaignAssets, setRenderMode, getRenderModeKind, drawAsciiHud, type CriticalAssetReport } from './render.js';
 import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderDuelLobby, renderDuelConnecting, simulateStart } from './ui.js';
 import { postHeartbeat } from './faucet.js';
 import { currentMode, getStoredMode, isStoredDefenderMode, type RunMode } from './mode.js';
@@ -33,7 +33,7 @@ import { musicSetTrackForState, preloadAllTracks, musicSetPaused, musicSetMuted,
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, applyDisplayMode } from './display.js';
-import { warmWebGLIfPreviouslyEnabled, getTheme, getAsciiCols, getBitDepth, getBitColour } from './visual-style.js';
+import { warmWebGLIfPreviouslyEnabled, ensureWebGLForCurrentStyle, getTheme, getAsciiCols, getBitDepth, getBitColour, getVisualStyle, isWebGLOverlayReady } from './visual-style.js';
 import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
 import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges, ensureLocalEdges, EMPTY_INPUT, isPeerActive, setPeerActive } from './netcode.js';
@@ -140,11 +140,42 @@ const __testHooks = {
 // Render-test hooks: expose just enough internals so tools/run-render-e2e.ts
 // can confirm what visual tier is active and whether the WebGL overlay is
 // up. These are zero-cost when not called and never referenced in prod.
-import { getVisualStyle, isWebGLOverlayReady } from './visual-style.js';
 (window as unknown as { __pallasiteRenderProbe?: () => unknown }).__pallasiteRenderProbe = () => ({
   shipTier: getVisualStyle('ship'),
   asteroidTier: getVisualStyle('asteroid'),
   webglOverlayReady: isWebGLOverlayReady(),
+});
+
+let criticalCampaignAssetsReady = false;
+let criticalCampaignAssetReport: CriticalAssetReport = { loaded: [], failed: [] };
+let criticalCampaignAssetsPromise: Promise<CriticalAssetReport> | null = null;
+
+function warmCriticalCampaignAssets(): Promise<CriticalAssetReport> {
+  if (!criticalCampaignAssetsPromise) {
+    criticalCampaignAssetsPromise = preloadCriticalCampaignAssets()
+      .then((report) => {
+        criticalCampaignAssetReport = report;
+        criticalCampaignAssetsReady = report.failed.length === 0;
+        if (report.failed.length > 0) {
+          console.warn('[assets] critical campaign assets failed', report.failed);
+        }
+        return report;
+      })
+      .catch((err) => {
+        criticalCampaignAssetsReady = false;
+        criticalCampaignAssetReport = { loaded: [], failed: ['critical campaign preload threw'] };
+        console.warn('[assets] critical campaign preload failed', err);
+        return criticalCampaignAssetReport;
+      });
+  }
+  return criticalCampaignAssetsPromise;
+}
+
+(window as unknown as { __pallasiteAssetsProbe?: () => unknown }).__pallasiteAssetsProbe = () => ({
+  campaignCriticalReady: criticalCampaignAssetsReady,
+  campaignCriticalLoaded: criticalCampaignAssetReport.loaded.slice(),
+  campaignCriticalFailed: criticalCampaignAssetReport.failed.slice(),
+  webglReady: isWebGLOverlayReady(),
 });
 // E2E hook: surface peerActive so tests can verify the spectator /
 // duel handshake is actually engaged before asserting on lockstep
@@ -748,35 +779,67 @@ function digitFromCode(code: string): string | null {
   return m ? m[1] : null;
 }
 
+let startActionInFlight = false;
+
+function shouldWaitForSoloCampaignAssets(): boolean {
+  return state.phase === 'title'
+    && !peer
+    && !spectator
+    && !defenderMode
+    && !urlDeathmatchModeActive()
+    && !urlCoopCampaignModeActive()
+    && getStoredMode() === 'campaign';
+}
+
+function startRunNow(): void {
+  // Apply current daily-mode preference. Without this, the activeSeed from
+  // a prior daily run would persist through a subsequent free-mode start
+  // (the IGNITE button bypasses the keyboard Enter path that did the reset).
+  // Duel + spectate force a deterministic run config so both clients
+  // share the same modifiers: NORMAL difficulty, CAMPAIGN mode, no
+  // daily seed. Without this, two clients with different stored
+  // settings (one on HARD, the other NORMAL) produced different spawn
+  // mods → different UFO positions → P1's bullet missed what P2 still
+  // saw alive on screen. The seed alone is not enough; difficulty +
+  // mode also feed into the deterministic spawn pipeline.
+  if (peer || spectator) {
+    setStoredDifficulty('normal');
+    setDailySeed(null);
+  } else {
+    setDailySeed(getStoredDailyPref() ? todayUTC() : null);
+  }
+  startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, currentStartOptions());
+  applyDeathmatchHarnessOptions();
+  // Only force wavestart for the standard campaign — startGame on the
+  // 600bn flavour sets phase='sanctum' and doesn't want the warp/wave
+  // pipeline kicking in over the top.
+  if (modeUsesWaveStart()) state.phase = 'wavestart';
+  // Couch mode forces retro in fit(); re-run fit now that players[] is updated.
+  if (couchMode || currentMode() === 'deathmatch') (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
+  clearOverlay();
+  audio.setMusicDuck(1);
+  musicSetTrackForState(state);
+}
+
+async function startRunFromAction(): Promise<void> {
+  if (startActionInFlight) return;
+  startActionInFlight = true;
+  try {
+    if (shouldWaitForSoloCampaignAssets()) {
+      await Promise.all([
+        warmCriticalCampaignAssets(),
+        ensureWebGLForCurrentStyle(),
+      ]);
+    }
+    startRunNow();
+  } finally {
+    startActionInFlight = false;
+  }
+}
+
 bindActions({
   onStart: () => {
-    // Apply current daily-mode preference. Without this, the activeSeed from
-    // a prior daily run would persist through a subsequent free-mode start
-    // (the IGNITE button bypasses the keyboard Enter path that did the reset).
-    // Duel + spectate force a deterministic run config so both clients
-    // share the same modifiers: NORMAL difficulty, CAMPAIGN mode, no
-    // daily seed. Without this, two clients with different stored
-    // settings (one on HARD, the other NORMAL) produced different spawn
-    // mods → different UFO positions → P1's bullet missed what P2 still
-    // saw alive on screen. The seed alone is not enough; difficulty +
-    // mode also feed into the deterministic spawn pipeline.
-    if (peer || spectator) {
-      setStoredDifficulty('normal');
-      setDailySeed(null);
-    } else {
-      setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-    }
-    startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, currentStartOptions());
-    applyDeathmatchHarnessOptions();
-    // Only force wavestart for the standard campaign — startGame on the
-    // 600bn flavour sets phase='sanctum' and doesn't want the warp/wave
-    // pipeline kicking in over the top.
-    if (modeUsesWaveStart()) state.phase = 'wavestart';
-    // Couch mode forces retro in fit(); re-run fit now that players[] is updated.
-    if (couchMode || currentMode() === 'deathmatch') (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
-    clearOverlay();
-    audio.setMusicDuck(1);
-    musicSetTrackForState(state);
+    void startRunFromAction();
   },
   onResume: () => {
     resumeGame(state);
@@ -970,12 +1033,7 @@ window.addEventListener('keydown', e => {
     }
     lockInDifficulty(getStoredDifficulty());
     gateBehindOnboarding(() => {
-      setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-      startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, currentStartOptions());
-      applyDeathmatchHarnessOptions();
-      if (modeUsesWaveStart()) state.phase = 'wavestart';
-      if (couchMode || currentMode() === 'deathmatch') (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
-      clearOverlay();
+      void startRunFromAction();
     });
   }
   // Enter to play again from gameover. Gated on the arcade-initials
@@ -985,12 +1043,7 @@ window.addEventListener('keydown', e => {
   if (e.code === 'Enter' && state.phase === 'gameover' && !focusedIsButton && !document.querySelector('[data-arcade-initials="open"]')) {
     void audio.unlockAudio();
     lockInDifficulty(getStoredDifficulty());
-    setDailySeed(getStoredDailyPref() ? todayUTC() : null);
-    startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, currentStartOptions());
-    applyDeathmatchHarnessOptions();
-    if (modeUsesWaveStart()) state.phase = 'wavestart';
-    if (couchMode || currentMode() === 'deathmatch') (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
-    clearOverlay();
+    void startRunFromAction();
   }
 });
 
@@ -1843,9 +1896,9 @@ async function boot(): Promise<void> {
     }
   }
 
-  // Preload first two wave backgrounds so the start of the game is seamless
-  preloadBackground(1);
-  preloadBackground(2);
+  // Preload and decode the first campaign backgrounds plus asteroid surface
+  // textures so a Prague walk-up player does not see art pop in after IGNITE.
+  void warmCriticalCampaignAssets();
 
   // Fetch server-driven gameplay config (bonus_wave_chance etc.) in
   // the background. Fire-and-forget — the cached default (1.0) keeps

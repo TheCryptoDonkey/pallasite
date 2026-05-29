@@ -103,6 +103,32 @@ interface BackgroundCache {
 
 let bgCache: BackgroundCache | null = null;
 const overrideImages: Map<number, HTMLImageElement | 'failed' | 'pending'> = new Map();
+const overrideImagePromises: Map<number, Promise<boolean>> = new Map();
+
+export interface CriticalAssetReport {
+  loaded: string[];
+  failed: string[];
+}
+
+function decodeImage(img: HTMLImageElement): Promise<void> {
+  if ('decode' in img) return img.decode().catch(() => undefined);
+  return Promise.resolve();
+}
+
+function loadDecodedImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.decoding = 'async';
+    img.onload = () => {
+      void decodeImage(img).then(() => resolve(img));
+    };
+    img.onerror = () => reject(new Error(`failed to load ${src}`));
+    img.src = src;
+    if (img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
+      void decodeImage(img).then(() => resolve(img));
+    }
+  });
+}
 
 /** Kick off a background load for the given wave if not already requested. */
 /** Resolve the background URL for a wave. 600bn flavour overrides
@@ -115,12 +141,29 @@ function backgroundUrlForWave(wave: number): string {
 }
 
 export function preloadBackground(wave: number): void {
-  if (overrideImages.has(wave)) return;
+  void preloadBackgroundReady(wave);
+}
+
+export function preloadBackgroundReady(wave: number): Promise<boolean> {
+  const cached = overrideImages.get(wave);
+  if (cached && cached !== 'failed' && cached !== 'pending') {
+    return decodeImage(cached).then(() => true);
+  }
+  const pending = overrideImagePromises.get(wave);
+  if (pending) return pending;
   overrideImages.set(wave, 'pending');
-  const img = new Image();
-  img.onload = () => overrideImages.set(wave, img);
-  img.onerror = () => overrideImages.set(wave, 'failed');
-  img.src = backgroundUrlForWave(wave);
+  const src = backgroundUrlForWave(wave);
+  const promise = loadDecodedImage(src)
+    .then((img) => {
+      overrideImages.set(wave, img);
+      return true;
+    })
+    .catch(() => {
+      overrideImages.set(wave, 'failed');
+      return false;
+    });
+  overrideImagePromises.set(wave, promise);
+  return promise;
 }
 
 /** Drop a cached wave-N image so the next preloadBackground / drawBackground
@@ -131,6 +174,7 @@ export function preloadBackground(wave: number): void {
  *  sanctum-space.webp. */
 export function invalidateBackgroundCache(wave: number): void {
   overrideImages.delete(wave);
+  overrideImagePromises.delete(wave);
 }
 
 function tryLoadOverride(wave: number): HTMLImageElement | null {
@@ -2166,6 +2210,7 @@ function drawHyperspaceMalfunction(ctx: CanvasRenderingContext2D, ship: Ship, no
 
 const asteroidPhotoreal: Map<AsteroidType, HTMLImageElement> = new Map();
 const asteroidPhotorealStarted = new Set<AsteroidType>();
+const asteroidPhotorealPromises = new Map<AsteroidType, Promise<boolean>>();
 
 function asteroidPhotorealAssetType(type: AsteroidType): AsteroidType | null {
   switch (type) {
@@ -2198,6 +2243,24 @@ function getAsteroidPhotoreal(type: AsteroidType): HTMLImageElement | null {
   return asteroidPhotoreal.get(assetType) ?? null;
 }
 
+function preloadAsteroidPhotoreal(type: AsteroidType): Promise<boolean> {
+  const assetType = asteroidPhotorealAssetType(type);
+  if (!assetType) return Promise.resolve(true);
+  const cached = asteroidPhotoreal.get(assetType);
+  if (cached) return decodeImage(cached).then(() => true);
+  const pending = asteroidPhotorealPromises.get(assetType);
+  if (pending) return pending;
+  asteroidPhotorealStarted.add(assetType);
+  const promise = loadDecodedImage(`/backgrounds/asteroid-${assetType}.webp`)
+    .then((img) => {
+      asteroidPhotoreal.set(assetType, img);
+      return true;
+    })
+    .catch(() => false);
+  asteroidPhotorealPromises.set(assetType, promise);
+  return promise;
+}
+
 /** Boot hook — kick all four photoreal loads at module init on 600bn
  *  so the textures decode in parallel with other asset loads, well
  *  before the first asteroid is drawn. No-op on main flavour (those
@@ -2210,6 +2273,31 @@ function maybePreloadAsteroidPhotoreal(): void {
   }
 }
 maybePreloadAsteroidPhotoreal();
+
+const CRITICAL_CAMPAIGN_WAVES = [1, 2, 3] as const;
+const CRITICAL_ASTEROID_TEXTURES = ['stony', 'iron', 'chondrite', 'pallasite', 'carbonaceous', 'mesosiderite', 'achondrite'] as const satisfies readonly AsteroidType[];
+
+export async function preloadCriticalCampaignAssets(): Promise<CriticalAssetReport> {
+  if (typeof window === 'undefined') return { loaded: [], failed: [] };
+  const checks: Array<{ label: string; load: () => Promise<boolean> }> = [
+    ...CRITICAL_CAMPAIGN_WAVES.map((wave) => ({
+      label: backgroundUrlForWave(wave),
+      load: () => preloadBackgroundReady(wave),
+    })),
+    ...CRITICAL_ASTEROID_TEXTURES.map((type) => ({
+      label: `/backgrounds/asteroid-${type}.webp`,
+      load: () => preloadAsteroidPhotoreal(type),
+    })),
+  ];
+  const results = await Promise.all(checks.map(async (check) => ({
+    label: check.label,
+    ok: await check.load(),
+  })));
+  return {
+    loaded: results.filter((r) => r.ok).map((r) => r.label),
+    failed: results.filter((r) => !r.ok).map((r) => r.label),
+  };
+}
 
 const ASTEROID_TEXTURE_SIZE = 128;
 const asteroidTextureCache = new Map<AsteroidType, HTMLCanvasElement>();
