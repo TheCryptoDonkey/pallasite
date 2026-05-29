@@ -211,6 +211,7 @@ export function isMuted(): boolean {
 export function getMasterVolume(): number { return settings.master; }
 export function getMusicVolume(): number  { return settings.music; }
 export function getSfxVolume(): number    { return settings.sfx; }
+export function getMusicDuckFactor(): number { return musicDuck; }
 
 /** Diagnostic — current AudioContext lifecycle state, or 'none' if the
  *  context hasn't been created yet (no user gesture has reached
