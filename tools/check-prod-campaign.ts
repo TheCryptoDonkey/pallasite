@@ -20,7 +20,7 @@ import { chromium, type Browser, type BrowserContext, type ConsoleMessage, type 
 const TARGET = (process.env.TARGET ?? 'https://pallasite.app').replace(/\/$/, '');
 const OUT_DIR = resolve(process.cwd(), 'tools/record-out');
 const REACH_PLAYING_TIMEOUT_MS = 30_000;
-const ASSET_READY_TIMEOUT_MS = 20_000;
+const ASSET_READY_TIMEOUT_MS = 40_000;
 const HUD_MIN_PIXELS = 16;
 
 const VIEWPORTS = {

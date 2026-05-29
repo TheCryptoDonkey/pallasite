@@ -110,7 +110,7 @@ export interface CriticalAssetReport {
   failed: string[];
 }
 
-const IMAGE_PRELOAD_TIMEOUT_MS = 12_000;
+const IMAGE_PRELOAD_TIMEOUT_MS = 25_000;
 
 function decodeImage(img: HTMLImageElement): Promise<void> {
   if ('decode' in img) {

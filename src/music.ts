@@ -125,12 +125,18 @@ function directMusicOutputActive(): boolean {
   return mobileRuntimeActive() || urlFlag('directMusic') === '1';
 }
 
+let trustedMediaGestureSeen = false;
+function markTrustedMediaGesture(event: Event): void {
+  if (event.isTrusted) trustedMediaGestureSeen = true;
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('pointerup', markTrustedMediaGesture, true);
+  window.addEventListener('click', markTrustedMediaGesture, true);
+  window.addEventListener('keyup', markTrustedMediaGesture, true);
+}
+
 function mediaPlaybackGestureReady(): boolean {
-  try {
-    const activation = navigator.userActivation;
-    if (activation?.hasBeenActive || activation?.isActive) return true;
-  } catch { /* ignore */ }
-  return false;
+  return trustedMediaGestureSeen;
 }
 
 function directTargetVolume(trim = 1): number {
