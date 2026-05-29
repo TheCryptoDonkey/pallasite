@@ -195,7 +195,7 @@ function load(track: Track): Loaded {
   if (cached) return cached;
   const el = new Audio();
   el.loop = track.loop !== false;
-  el.preload = 'auto';
+  el.preload = mediaPlaybackGestureReady() ? 'auto' : 'none';
   el.src = trackUrlFor(track);
   // The eager el.load() that lived here for the iOS-PWA-readyState-0 case
   // moved into the per-second verify pass (see musicSetTrackForState).
