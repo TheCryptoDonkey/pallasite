@@ -1,6 +1,6 @@
 /**
- * Music subsystem — HTMLAudio elements wired through `audio.getMusicDestination()`
- * so the settings panel's music slider applies via the shared musicBus.
+ * Music subsystem — HTMLAudio elements with direct playback by default.
+ * The settings panel's music slider is applied through per-element volume.
  *
  * Tracks are loaded lazily on first play. Crossfades are short (default 800ms)
  * because the maps are tonal: lingering on the previous key clashes.
@@ -11,7 +11,6 @@
  */
 
 import { getMasterVolume, getMusicDestination, getMusicDuckFactor, getMusicVolume, isMuted } from './audio.js';
-import { mobileRuntimeActive } from './visual-style.js';
 import type { GameState } from './types.js';
 import { getFlavour } from './flavour.js';
 import { isSanctumMode } from './mode.js';
@@ -114,15 +113,14 @@ function urlFlag(name: string): string | null {
   catch { return null; }
 }
 
-/** iOS/Android fallback: play music directly through HTMLAudioElement
- *  instead of routing it through MediaElementAudioSourceNode. Safari PWAs
- *  can leave MediaElementAudioSource outputting silence even when the
- *  AudioContext is running and el.paused=false; direct media playback is
- *  the boring, reliable path. ?webaudioMusic=1 keeps the old route for
- *  desktop debugging. */
+/** Play music directly through HTMLAudioElement instead of routing it through
+ *  MediaElementAudioSourceNode. SFX can prove AudioContext unlock while the
+ *  media-element source still outputs silence, especially on Safari/iOS but
+ *  also after repeated Chrome autoplay recovery. Direct media playback is the
+ *  reliable path; ?webaudioMusic=1 keeps the old route for debugging. */
 function directMusicOutputActive(): boolean {
   if (urlFlag('webaudioMusic') === '1') return false;
-  return mobileRuntimeActive() || urlFlag('directMusic') === '1';
+  return true;
 }
 
 let trustedMediaGestureSeen = false;
@@ -366,6 +364,7 @@ export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequent
     const entry = load(track);
     if (entry.failed) { currentId = null; return; }
     const trim = track.trim ?? 1;
+    try { entry.el.muted = false; } catch { /* ignore */ }
     if (entry.direct) setDirectVolume(entry, 0);
     // Stings (loop:false) always play from 0 on re-trigger.
     if (track.loop === false) {
@@ -789,6 +788,9 @@ export function currentTrackId(): string | null { return currentId; }
 export interface MusicDebugSnapshot {
   currentId: string | null;
   src: string | null;
+  direct: boolean | null;
+  volume: number | null;
+  muted: boolean | null;
   paused: boolean | null;
   readyState: number | null;
   networkState: number | null;
@@ -802,6 +804,9 @@ export function getMusicDebugSnapshot(): MusicDebugSnapshot {
   return {
     currentId,
     src: entry ? entry.el.currentSrc || null : null,
+    direct: entry ? entry.direct : null,
+    volume: entry ? entry.el.volume : null,
+    muted: entry ? entry.el.muted : null,
     paused: entry ? entry.el.paused : null,
     readyState: entry ? entry.el.readyState : null,
     networkState: entry ? entry.el.networkState : null,

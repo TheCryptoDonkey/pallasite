@@ -88,13 +88,14 @@ function requestedDeathmatchPlayers(defaultCount: number): number {
 }
 
 function requestedStartPlayers(): number {
+  const peerSessionActive = !multiplayerUrlSessionSuppressed && !!(peer || spectator);
   if (urlCoopCampaignModeActive()) {
     return boundedPlayerCount(mpParams.get('players'), 2, 2, 2);
   }
-  if ((peer || spectator) && (urlDeathmatchModeActive() || getStoredMode() === 'deathmatch')) {
+  if (peerSessionActive && (urlDeathmatchModeActive() || getStoredMode() === 'deathmatch')) {
     return boundedPlayerCount(mpParams.get('deathmatchPlayers') ?? mpParams.get('players'), requestedPeerPlayers, 2, 64);
   }
-  return requestedDeathmatchPlayers(!multiplayerUrlSessionSuppressed && (peer || spectator) ? requestedPeerPlayers : (couchMode ? 2 : 1));
+  return requestedDeathmatchPlayers(peerSessionActive ? requestedPeerPlayers : (couchMode ? 2 : 1));
 }
 
 function applyDeathmatchHarnessOptions(): void {
@@ -311,8 +312,8 @@ const spectateSeed = spectateMode && spectateSession ? sessionSeed(spectateSessi
 let peer: Peer | null = null;
 /** The spectator transport for watch-mode. Null in solo / couch / duel. */
 let spectator: SpectatorPeer | null = null;
-/** Input-delay in sim frames when a peer is wired. Co-op favours smoothness
- *  over twitch response and needs a larger production jitter buffer. All-human
+/** Input-delay in sim frames when a peer is wired. Co-op must stay close to
+ *  solo campaign feel, so it uses only a modest production jitter buffer. All-human
  *  deathmatch also needs more room because every peer receives every other
  *  peer's 60Hz stream. AI-filled deathmatches stay moderate so N-player bot
  *  arenas avoid the huge all-human buffer while still tolerating production
@@ -322,7 +323,7 @@ let spectator: SpectatorPeer | null = null;
 function peerInputDelayFrames(players: number, aiFilledSession = false): number {
   const configured = boundedPlayerCount(mpParams.get('inputDelay'), NaN, 0, 60);
   if (Number.isFinite(configured)) return configured;
-  if (urlCoopCampaignModeActive()) return 48;
+  if (urlCoopCampaignModeActive()) return 36;
   if (aiFilledSession) return 40;
   if (urlDeathmatchModeActive()) return Math.min(56, 44 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
   return Math.min(32, 22 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
@@ -358,6 +359,13 @@ const PEER_RESEND_INTERVAL_MS = 120;
 /** Do not replay history for ordinary jitter. WebSockets are ordered and
  *  reliable, so a missing read frame is usually delayed, not lost. */
 const PEER_RESEND_AFTER_STALL_FRAMES = 4;
+function peerStallOverlayFrames(): number {
+  return urlCoopCampaignModeActive() ? 180 : PEER_STALL_OVERLAY_FRAMES;
+}
+
+function peerResendAfterStallFrames(): number {
+  return urlCoopCampaignModeActive() ? 2 : PEER_RESEND_AFTER_STALL_FRAMES;
+}
 /** Extra deterministic handoff room after the broker's late AI-slot takeover
  *  frame. A late human has to replay buffered history from frame 0 before the
  *  existing peers can require their live inputs without stalling. */
@@ -450,6 +458,20 @@ function exitMultiplayerUrlSession(): void {
   peerDisconnectDeclared = false;
   peerDesyncFrame = -1;
   localCanaryHashes.clear();
+  for (let i = 0; i < localKeys.length; i++) {
+    localKeys[i] = {};
+    localHeading[i] = null;
+    localThrust[i] = false;
+    if (edgeFlags[i]) {
+      edgeFlags[i].hyperspace = false;
+      edgeFlags[i].shield = false;
+    }
+  }
+  if (state.players.length > 1) {
+    state.players.splice(1);
+  }
+  state.deathmatchRules = null;
+  state.deathmatchFeed = [];
   delete document.body.dataset.peerStall;
   delete document.body.dataset.peerDesync;
 }
@@ -501,11 +523,12 @@ function syncDeathmatchAiSlotsForFrame(readFrame: number): void {
 
 function currentStartOptions(): { players: number; defender: boolean; aiOpponents: boolean; runMode?: RunMode; deathmatchRules?: Partial<DeathmatchRules>; aiSlots?: number[] } {
   const players = requestedStartPlayers();
+  const peerSessionActive = !multiplayerUrlSessionSuppressed && !!(peer || spectator);
   return {
     players,
     defender: defenderMode,
-    aiOpponents: !(peer || spectator),
-    runMode: urlDeathmatchModeActive() ? 'deathmatch' : urlCoopCampaignModeActive() ? 'coop-campaign' : (peer || spectator) ? 'campaign' : undefined,
+    aiOpponents: !peerSessionActive,
+    runMode: urlDeathmatchModeActive() ? 'deathmatch' : urlCoopCampaignModeActive() ? 'coop-campaign' : peerSessionActive ? 'campaign' : undefined,
     deathmatchRules: requestedDeathmatchRules(),
     aiSlots: currentDeathmatchAiSlots(players),
   };
@@ -1119,6 +1142,7 @@ function musicLooksStalled(): boolean {
   const ctxState = audio.getAudioContextState();
   if (ctxState !== 'running' && ctxState !== 'none') return true;
   if (snap.failedFlag) return true;
+  if (snap.muted) return true;
   if (snap.paused) return true;
   if ((snap.readyState ?? 0) === 0) return true;
   if ((snap.networkState ?? 0) === 3 && (snap.readyState ?? 0) < 2) return true;
@@ -1128,7 +1152,9 @@ function musicLooksStalled(): boolean {
 function recoverMusicFromGesture(force = false): void {
   if (isControllerSurface()) return;
   const now = performance.now();
-  if (!force && now - lastMusicGestureRecoveryMs < MUSIC_GESTURE_RECOVERY_THROTTLE_MS) return;
+  const snap = getMusicDebugSnapshot();
+  const mutedStall = !!snap.currentId && snap.muted === true;
+  if (!force && now - lastMusicGestureRecoveryMs < MUSIC_GESTURE_RECOVERY_THROTTLE_MS && !mutedStall) return;
   if (!force && !musicLooksStalled()) return;
   lastMusicGestureRecoveryMs = now;
   firstMusicGesturePrimed = true;
@@ -1453,7 +1479,7 @@ function loop(now: number): void {
         // sustained, replay a compact committed prefix; the partner may be
         // blocked on state.frame - delay rather than on the newest frame.
         lockstepBlockedThisTick = true;
-        if (peerStallFrames >= PEER_RESEND_AFTER_STALL_FRAMES) {
+        if (peerStallFrames >= peerResendAfterStallFrames()) {
           const resendFrom = readFrame - PEER_RESEND_BEHIND_FRAMES;
           const resendThrough = Math.min(state.frame - 1, readFrame + PEER_RESEND_AHEAD_FRAMES);
           resendPeerInputRange(resendFrom, resendThrough, now);
@@ -1576,7 +1602,7 @@ function loop(now: number): void {
         // End the current run. The existing phase-transition block below
         // picks this up and renders the gameover overlay.
         if (state.phase === 'playing') state.phase = 'gameover';
-      } else if (peerStallFrames >= PEER_STALL_OVERLAY_FRAMES) {
+      } else if (peerStallFrames >= peerStallOverlayFrames()) {
         if (document.body.dataset.peerStall !== 'waiting') {
           document.body.dataset.peerStall = 'waiting';
         }

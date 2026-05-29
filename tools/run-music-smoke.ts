@@ -22,6 +22,9 @@ interface MusicProbe {
   music: {
     currentId: string | null;
     paused: boolean | null;
+    direct: boolean | null;
+    volume: number | null;
+    muted: boolean | null;
     readyState: number | null;
     networkState: number | null;
     failedFlag: boolean | null;
@@ -87,6 +90,8 @@ async function waitForActiveMusic(page: Page, expectedTrack: string | RegExp, la
       return trackOk
         && p.audioContext === 'running'
         && p.music.paused === false
+        && p.music.muted !== true
+        && (p.music.volume ?? 1) > 0.05
         && (p.music.readyState ?? 0) >= 1
         && p.music.failedFlag !== true;
     },
