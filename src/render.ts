@@ -4476,6 +4476,7 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState): void {
   const isBnWave = (getFlavour() === '600bn' || isSanctumMode()) && s.wave === 1;
   const maxW = overlayWorldWidth() - 40;  // 20 world px margin each side
   const headline = isBnWave ? 'THE $600B WAVE' : `WAVE ${s.wave}`;
+  ctx.letterSpacing = '0em' as unknown as string;
   fitFontToWidth(ctx, headline, px => `bold ${px}px ui-monospace, monospace`, isBnWave ? 64 : 72, maxW);
   ctx.fillStyle = isBnWave ? '#ffd84a' : '#5b9dff';
   ctx.shadowColor = isBnWave ? '#ff8a3a' : '#5b9dff';
@@ -4485,11 +4486,11 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState): void {
   // Sub-name — pallasite specimen for campaign waves, council label
   // for the 600bn flavour.
   const subname = isBnWave ? 'COUNCIL OF 600' : waveName(s.wave);
+  ctx.letterSpacing = '0.18em' as unknown as string;
   fitFontToWidth(ctx, subname, px => `bold ${px}px ui-monospace, monospace`, 28, maxW);
   ctx.fillStyle = '#ffd84a';
   ctx.shadowColor = '#ffd84a';
   ctx.shadowBlur = 14;
-  ctx.letterSpacing = '0.18em' as unknown as string;
   ctx.fillText(subname, WORLD_W / 2, WORLD_H / 2 + 38);
 
   // One-line lore — pallasite history for campaign, 600B canon for
@@ -4498,12 +4499,12 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState): void {
     ? 'Madeira to Prague · The signal carries the stone'
     : waveSubtitle(s.wave);
   if (lore) {
+    ctx.letterSpacing = '0.06em' as unknown as string;
     fitFontToWidth(ctx, lore, px => `${px}px ui-monospace, monospace`, 16, maxW);
     ctx.fillStyle = '#fff5d8';
     ctx.shadowColor = 'rgba(0,0,0,0.9)';
     ctx.shadowBlur = 4;
     ctx.shadowOffsetY = 1;
-    ctx.letterSpacing = '0.06em' as unknown as string;
     ctx.fillText(lore, WORLD_W / 2, WORLD_H / 2 + 72);
     ctx.shadowOffsetY = 0;
   }
@@ -4513,11 +4514,11 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState): void {
     ? 'We stack. We build. We meme. We repeat.'
     : waveTagline(s.wave);
   if (tagline) {
+    ctx.letterSpacing = '0.10em' as unknown as string;
     fitFontToWidth(ctx, tagline, px => `${px}px ui-monospace, monospace`, 14, maxW);
     ctx.fillStyle = isBnWave ? '#ffb060' : '#7da5d4';
     ctx.shadowColor = isBnWave ? '#ff8a3a' : '#5b9dff';
     ctx.shadowBlur = 6;
-    ctx.letterSpacing = '0.10em' as unknown as string;
     ctx.fillText(tagline, WORLD_W / 2, WORLD_H / 2 + 102);
   }
 
@@ -4592,22 +4593,24 @@ function drawIntertitle(ctx: CanvasRenderingContext2D, s: GameState): void {
 
   const cx = WORLD_W / 2;
   const cy = WORLD_H / 2;
+  const maxW = overlayWorldWidth() - 40;
 
   // — Act label — small, wide-tracked, cold blue.
-  ctx.font = 'bold 17px ui-monospace, monospace';
+  ctx.letterSpacing = '0.34em' as unknown as string;
+  fitFontToWidth(ctx, intro.act, px => `bold ${px}px ui-monospace, monospace`, 17, maxW);
   ctx.fillStyle = '#5b9dff';
   ctx.shadowColor = '#5b9dff';
   ctx.shadowBlur = 14;
-  ctx.letterSpacing = '0.34em' as unknown as string;
   ctx.fillText(intro.act, cx, cy - 132);
 
   // — Two arc lines — the story beat.
-  ctx.font = '21px ui-monospace, monospace';
+  ctx.letterSpacing = '0.04em' as unknown as string;
+  fitFontToWidth(ctx, intro.lines[0], px => `${px}px ui-monospace, monospace`, 21, maxW);
   ctx.fillStyle = '#fff5d8';
   ctx.shadowColor = 'rgba(0,0,0,0.9)';
   ctx.shadowBlur = 4;
-  ctx.letterSpacing = '0.04em' as unknown as string;
   ctx.fillText(intro.lines[0], cx, cy - 90);
+  fitFontToWidth(ctx, intro.lines[1], px => `${px}px ui-monospace, monospace`, 21, maxW);
   ctx.fillText(intro.lines[1], cx, cy - 58);
 
   // — Divider —
@@ -4623,37 +4626,37 @@ function drawIntertitle(ctx: CanvasRenderingContext2D, s: GameState): void {
   ctx.globalAlpha = alpha;
 
   // — Wave identity — WAVE N + specimen name + factual subtitle + tagline.
-  ctx.font = 'bold 50px ui-monospace, monospace';
+  ctx.letterSpacing = '0em' as unknown as string;
+  fitFontToWidth(ctx, `WAVE ${s.wave}`, px => `bold ${px}px ui-monospace, monospace`, 50, maxW);
   ctx.fillStyle = '#5b9dff';
   ctx.shadowColor = '#5b9dff';
   ctx.shadowBlur = 22;
-  ctx.letterSpacing = '0em' as unknown as string;
   ctx.fillText(`WAVE ${s.wave}`, cx, cy + 22);
 
-  ctx.font = 'bold 25px ui-monospace, monospace';
+  ctx.letterSpacing = '0.18em' as unknown as string;
+  fitFontToWidth(ctx, waveName(s.wave), px => `bold ${px}px ui-monospace, monospace`, 25, maxW);
   ctx.fillStyle = '#ffd84a';
   ctx.shadowColor = '#ffd84a';
   ctx.shadowBlur = 14;
-  ctx.letterSpacing = '0.18em' as unknown as string;
   ctx.fillText(waveName(s.wave), cx, cy + 64);
 
   const subtitle = waveSubtitle(s.wave);
   if (subtitle) {
-    ctx.font = '15px ui-monospace, monospace';
+    ctx.letterSpacing = '0.06em' as unknown as string;
+    fitFontToWidth(ctx, subtitle, px => `${px}px ui-monospace, monospace`, 15, maxW);
     ctx.fillStyle = '#fff5d8';
     ctx.shadowColor = 'rgba(0,0,0,0.9)';
     ctx.shadowBlur = 4;
-    ctx.letterSpacing = '0.06em' as unknown as string;
     ctx.fillText(subtitle, cx, cy + 96);
   }
 
   const tagline = waveTagline(s.wave);
   if (tagline) {
-    ctx.font = '14px ui-monospace, monospace';
+    ctx.letterSpacing = '0.10em' as unknown as string;
+    fitFontToWidth(ctx, tagline, px => `${px}px ui-monospace, monospace`, 14, maxW);
     ctx.fillStyle = '#7da5d4';
     ctx.shadowColor = '#5b9dff';
     ctx.shadowBlur = 6;
-    ctx.letterSpacing = '0.10em' as unknown as string;
     ctx.fillText(tagline, cx, cy + 124);
   }
 

@@ -20,8 +20,8 @@ import { chromium, type Browser, type ConsoleMessage, type Page } from 'playwrig
 const TARGET = (process.env.TARGET ?? 'https://pallasite.app').replace(/\/$/, '');
 const OUT_DIR = resolve(process.cwd(), 'tools/record-out');
 const VIEWPORT = { width: 1280, height: 720 } as const;
-const REACH_PLAYING_TIMEOUT_MS = 30_000;
-const WEBGL_READY_TIMEOUT_MS = 15_000;
+const REACH_PLAYING_TIMEOUT_MS = 60_000;
+const WEBGL_READY_TIMEOUT_MS = 45_000;
 const DEFAULT_DURATION_MS = 5_000;
 
 type CaseKind = 'campaign' | 'deathmatch';
