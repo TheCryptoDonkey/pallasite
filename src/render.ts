@@ -2595,7 +2595,7 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   // "massive" than the 2D gold-halo vector circle that used to leak
   // through underneath. The bespoke gold halo is sacrificed in mesh tier;
   // shaded/vector tiers still get the original treatment below.
-  if (asteroidTier === 'mesh' && isWebGLOverlayReady() && !a.councilMember) return;
+  if (asteroidTier === 'mesh' && isWebGLOverlayReady() && !a.councilMember && (a.depth ?? 3) === 3) return;
   // SHADED-tier asteroids get the "tumbling through space" treatment:
   // drop shadow under, camera-fixed rim light + terminator shading on
   // top, neutral outline (no per-type tint). Council members carry
@@ -5845,7 +5845,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       return x + r >= left && x - r <= right && y + r >= top && y - r <= bottom;
     };
     const meshAsteroids = !holding && asteroidTier === 'mesh'
-      ? state.asteroids.filter((a) => !a.councilMember && meshVisible(a.pos.x, a.pos.y, a.radius))
+      ? state.asteroids.filter((a) => !a.councilMember && (a.depth ?? 3) === 3 && meshVisible(a.pos.x, a.pos.y, a.radius))
       : [];
     const meshUfos = !holding && ufosMesh
       ? state.ufos.filter((u) => meshVisible(u.pos.x, u.pos.y, u.radius))

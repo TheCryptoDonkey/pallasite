@@ -48,6 +48,7 @@ import { deathmatchArenaSize, deathmatchSpawnPoint, defaultDeathmatchAiSkill } f
 import { REPLAY_EXPLOSION_MS, REPLAY_SLOW_MS, REPLAY_SLOW_RATE, SHIP_THRUST, SHIP_DRAG } from '/src/types.ts';
 import { samplePlayerInput, applyPlayerInput, EMPTY_INPUT } from '/src/netcode.ts';
 import { currentMode } from '/src/mode.ts';
+import { setParallaxTier } from '/src/parallax.ts';
 import { addLocalHighScore, clearLocalHighScores, getLocalHighScores, isHighScore } from '/src/score.ts';
 
 const RETRO_MODE = {
@@ -245,6 +246,20 @@ test('894b128 localThrust survives apply clobber', () => {
 
 // Decorative parallax rocks are visual only. They should not kill a ship even
 // when exactly co-located with the player, and they should survive bullets.
+test('campaign wave 2 has only gameplay asteroids', () => {
+  setParallaxTier('dramatic');
+  try {
+    const s = makeInitialState();
+    startGame(s, 0x51a7, { players: 1, runMode: 'campaign' });
+    beginWave(s, 2);
+    const decorative = s.asteroids.filter((a) => (a.depth ?? 3) !== 3);
+    assertEq(decorative.length, 0, `decorative depth count: ${decorative.map((a) => a.depth).join(',')}`);
+    assert(s.asteroids.length > 0, 'wave 2 still spawns gameplay asteroids');
+  } finally {
+    setParallaxTier('off');
+  }
+});
+
 test('decorative parallax asteroids never collide', () => {
   const s = makeInitialState();
   startGame(s, 0x51a7, { players: 1, runMode: 'campaign' });
