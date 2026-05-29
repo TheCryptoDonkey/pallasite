@@ -825,12 +825,11 @@ async function startRunFromAction(): Promise<void> {
   if (startActionInFlight) return;
   startActionInFlight = true;
   try {
+    const readiness: Promise<unknown>[] = [ensureWebGLForCurrentStyle()];
     if (shouldWaitForSoloCampaignAssets()) {
-      await Promise.all([
-        warmCriticalCampaignAssets(),
-        ensureWebGLForCurrentStyle(),
-      ]);
+      readiness.push(warmCriticalCampaignAssets());
     }
+    await Promise.all(readiness);
     startRunNow();
   } finally {
     startActionInFlight = false;
