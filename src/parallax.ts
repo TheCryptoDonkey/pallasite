@@ -3,10 +3,10 @@
  *
  *   off       — every asteroid lives on the gameplay plane (depth 3).
  *                Matches pre-parallax behaviour exactly.
- *   subtle    — a handful of decorative asteroids drift in the background
- *                and foreground each wave. Mild alpha/size variation.
- *   dramatic  — more decorative spawns + stronger depth cues.
- *                Best with WebGL mesh + a good GPU.
+ *   subtle    — a handful of decorative asteroids drift in background-only
+ *                showcase modes. Mild alpha/size variation.
+ *   dramatic  — more decorative spawns + stronger depth cues in showcase
+ *                modes. Best with WebGL mesh + a good GPU.
  *
  * Collision behaviour is independent of this setting — gameplay-plane
  * asteroids always bounce off each other elastically. Parallax controls
@@ -21,9 +21,9 @@ const KEY = 'pallasite:parallax';
 
 function defaultTier(): ParallaxTier {
   // 600bn flavour defaults to dramatic — the Sanctum benefits from a
-  // richer sense of depth. Main campaign defaults to subtle so returning
-  // players get a tasteful enhancement without a jarring change.
-  return getFlavour() === '600bn' ? 'dramatic' : 'subtle';
+  // richer sense of depth. Main campaign defaults to off: every visible
+  // asteroid must be shootable and lethal, especially from wave 2 onward.
+  return getFlavour() === '600bn' ? 'dramatic' : 'off';
 }
 
 let cached: ParallaxTier | null = null;

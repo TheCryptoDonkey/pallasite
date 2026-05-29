@@ -514,9 +514,9 @@ function pickAsteroidType(wave: number): AsteroidType {
  *  parallax depth, take no damage and deal none. Count + visual
  *  treatment governed by the parallax setting.
  *
- *  Wave 1 spawns no decoratives — players need a clean onboarding
- *  where every visible rock is a gameplay rock. Decoration kicks in
- *  from wave 2 once the player has the controls under their fingers.
+ *  Main campaign spawns no decoratives: players need every visible
+ *  asteroid to be a gameplay rock. Decoration is reserved for showcase
+ *  modes where it cannot be mistaken for a shootable hazard.
  *
  *  Size bias depends on depth: backgrounds favour small/medium (they
  *  read as distant), foregrounds favour medium/large (closer to
@@ -524,6 +524,11 @@ function pickAsteroidType(wave: number): AsteroidType {
  *  vanished" confusion. */
 function spawnDecorativeAsteroids(s: GameState, wave: number): void {
   if (wave <= 1) return;
+  // Campaign contract: every asteroid the player can see must be a real
+  // shootable/lethal asteroid. Decorative parallax rocks looked like
+  // normal hazards on wave 2 but ignored bullets and ship collision, so
+  // keep them out of the main campaign/arena/co-op paths entirely.
+  if (getFlavour() !== '600bn' && !isSanctumMode()) return;
   // Parallax depth bands are dressing for the enhanced visual tiers. Pure
   // vector mode stays flat — classic 1979, no background depth.
   if (getVisualStyle('asteroid') === 'vector') return;
