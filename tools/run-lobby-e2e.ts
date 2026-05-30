@@ -254,10 +254,15 @@ async function main(): Promise<void> {
       });
       await wait(300);
       const onJoin = await page.evaluate(() => {
-        const input = document.querySelector('input[type="url"]') as HTMLInputElement | null;
-        return !!input;
+        const inputs = Array.from(document.querySelectorAll('input'));
+        return {
+          inviteInput: inputs.some(i => (i as HTMLInputElement).type === 'url'),
+          codeInput: inputs.some(i => (i as HTMLInputElement).placeholder.includes('SESSION CODE')),
+          codeButton: Array.from(document.querySelectorAll('button')).some(b => (b.textContent ?? '') === 'JOIN CODE'),
+        };
       });
-      reportCheck(checks, 'JOIN tab renders invite input', onJoin, `input=${onJoin}`);
+      reportCheck(checks, 'JOIN tab renders invite input', onJoin.inviteInput, JSON.stringify(onJoin));
+      reportCheck(checks, 'JOIN tab renders short-code input', onJoin.codeInput && onJoin.codeButton, JSON.stringify(onJoin));
 
       // ── HOST tab regenerates fresh session + badge ─────────────────
       await page.evaluate(() => {
@@ -311,6 +316,18 @@ async function main(): Promise<void> {
         };
       });
       reportCheck(checks, 'deathmatch slot QR switches beyond P2', dmQr.slot === '2' && dmQr.title === 'P3 invite QR' && dmQr.label === 'QR · P3', JSON.stringify(dmQr));
+
+      const waitingPage = await ctx.newPage();
+      await waitingPage.goto(`${VITE_BASE}/?peer=${encodeURIComponent(BROKER_URL)}&session=waitdemo&slot=1&players=2&mode=coop-campaign&peerBatch=1`, { waitUntil: 'domcontentloaded' });
+      const waitingForHost = await waitingPage.waitForFunction(
+        () => document.body.innerText.includes('WAITING FOR HOST') && document.body.innerText.includes('Waiting for the host to start'),
+        undefined,
+        { timeout: LOBBY_RENDER_TIMEOUT_MS },
+      ).then(() => true, () => false);
+      const waitingText = await waitingPage.locator('body').innerText().catch(() => '');
+      reportCheck(checks, 'joiner sees waiting for host', waitingForHost, `text=${waitingText.slice(0, 160).replace(/\s+/g, ' ')}`);
+      await waitingPage.close().catch(() => undefined);
+
       await dmPage.evaluate(() => {
         const ready = Array.from(document.querySelectorAll('button')).find(b => (b.textContent ?? '').includes('START DEATHMATCH'));
         if (!ready) throw new Error('deathmatch READY button not found');

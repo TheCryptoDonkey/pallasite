@@ -133,11 +133,13 @@ export function simulateStart(): void {
   onStartCb?.();
 }
 
+type ConnectingMatchKind = 'duel' | 'coop-campaign' | 'deathmatch';
+
 /** Show a "Connecting to duel" placeholder while peer.connect() is in
  *  flight. The overlay is cleared by simulateStart()'s subsequent
  *  clearOverlay() call (via onStartCb → clearOverlay), so there's no
  *  flicker between this and the game's first render. */
-export function renderDuelConnecting(slot: number, players = 2, spectating = false): void {
+export function renderDuelConnecting(slot: number, players = 2, spectating = false, kind: ConnectingMatchKind = 'duel'): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
@@ -145,10 +147,17 @@ export function renderDuelConnecting(slot: number, players = 2, spectating = fal
   const card = el('div', { parent: overlay });
   card.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:14px;padding:24px 28px;border-radius:10px;border:1px solid rgba(184,144,255,0.35);background:rgba(15,8,32,0.55);max-width:420px;text-align:center;';
 
-  el('h2', { parent: card, text: 'CONNECTING' }).style.cssText = 'margin:0;font-size:1.45rem;letter-spacing:0.2em;color:var(--hud-yellow);';
+  const waitingForHost = !spectating && slot > 0;
+  el('h2', { parent: card, text: waitingForHost ? 'WAITING FOR HOST' : 'CONNECTING' }).style.cssText = 'margin:0;font-size:1.45rem;letter-spacing:0.2em;color:var(--hud-yellow);';
   const otherPilots = Math.max(1, players - 1);
   const waitingText = spectating
     ? `Waiting for ${players > 2 ? `${players} pilots` : 'the pilots'} to join the arena.`
+    : waitingForHost
+      ? kind === 'coop-campaign'
+        ? 'Co-pilot connected. Waiting for the host to start the co-op run.'
+        : 'Pilot connected. Waiting for the host to start the game.'
+    : kind === 'coop-campaign'
+      ? 'Waiting for your co-pilot to join the campaign.'
     : players > 2
       ? `Waiting for ${otherPilots} other pilot${otherPilots === 1 ? '' : 's'} to join the arena.`
       : 'Waiting for opponent to join the arena.';
@@ -12468,6 +12477,18 @@ function renderJoinPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby
   input.placeholder = 'https://pallasite.app/?peer=…&session=…&slot=1';
   input.style.cssText = 'width:100%;max-width:480px;padding:10px 12px;font:0.85rem/1.4 ui-monospace,monospace;background:rgba(15,8,32,0.65);color:#dccfff;border:1px solid rgba(184,144,255,0.35);border-radius:6px;outline:none;';
 
+  const codeWrap = el('div', { parent });
+  codeWrap.style.cssText = 'display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap;width:100%;max-width:480px;';
+  const codeInput = el('input', { parent: codeWrap }) as HTMLInputElement;
+  codeInput.type = 'text';
+  codeInput.inputMode = 'text';
+  codeInput.autocapitalize = 'characters';
+  codeInput.autocomplete = 'off';
+  codeInput.placeholder = '8-CHAR SESSION CODE';
+  codeInput.maxLength = 16;
+  codeInput.style.cssText = 'flex:1 1 180px;min-width:0;padding:10px 12px;font:0.88rem/1.4 ui-monospace,monospace;letter-spacing:0.14em;text-transform:uppercase;background:rgba(15,8,32,0.65);color:#ffd84a;border:1px solid rgba(255,216,74,0.35);border-radius:6px;outline:none;';
+  const codeBtn = el('button', { className: 'menu-btn secondary', parent: codeWrap, text: coopLobby ? 'JOIN CO-OP CODE' : deathmatchLobby ? 'JOIN P2 CODE' : 'JOIN CODE' });
+
   const err = el('p', { parent });
   err.style.cssText = 'margin:0;min-height:1.2em;font-size:0.78rem;color:#ff8aa8;text-align:center;';
   const setError = (msg: string | null): void => { err.textContent = msg ?? ''; };
@@ -12491,6 +12512,22 @@ function renderJoinPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby
     return raw;
   };
 
+  const validateSessionCode = (raw: string): string | null => {
+    const code = raw.trim().replace(/\s+/g, '').toLowerCase();
+    if (!/^[a-z0-9_-]{4,128}$/i.test(code)) {
+      setError('Enter the short session code from the host screen.');
+      return null;
+    }
+    return code;
+  };
+
+  const inviteFromCode = (code: string): string => {
+    const kind: LobbyMatchKind = coopLobby ? 'coop-campaign' : deathmatchLobby ? 'deathmatch' : 'duel';
+    const players = deathmatchLobby ? 4 : 2;
+    const rules = deathmatchLobby ? makeDeathmatchRules(players) : undefined;
+    return buildDuelInviteUrl(code, 1, players, rules, kind);
+  };
+
   const row = el('div', { className: 'menu-row', parent });
   const joinBtn = el('button', { className: 'menu-btn', parent: row, text: 'JOIN ⚔' });
   const scanBtn = el('button', { className: 'menu-btn secondary', parent: row, text: '📷 SCAN QR' });
@@ -12503,8 +12540,15 @@ function renderJoinPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby
     const url = validateInvite(raw);
     if (url) window.location.assign(url);
   };
+  const tryJoinFromCode = (): void => {
+    setError(null);
+    const code = validateSessionCode(codeInput.value);
+    if (code) window.location.assign(inviteFromCode(code));
+  };
   joinBtn.addEventListener('click', tryJoinFromInput);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryJoinFromInput(); });
+  codeBtn.addEventListener('click', tryJoinFromCode);
+  codeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryJoinFromCode(); });
 
   // ── QR scanner host (hidden until SCAN tapped) ─────────────────────────
   const scanHost = el('div', { parent });

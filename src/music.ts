@@ -327,6 +327,35 @@ function rampEntryTo(entry: Loaded, targetTrim: number, ms: number): void {
   }
 }
 
+function entryOutputLevel(entry: Loaded): number {
+  if (entry.direct) return entry.el.volume;
+  return entry.gain?.gain.value ?? 0;
+}
+
+function pauseAfterFade(id: string, entry: Loaded, ms: number): void {
+  window.setTimeout(() => {
+    if (currentId !== id) {
+      try { entry.el.pause(); } catch { /* ignore */ }
+      if (entry.direct) setDirectVolume(entry, 0);
+    }
+  }, ms + 60);
+}
+
+function silenceStrayTracks(keepIds: ReadonlySet<string>, fadeMs: number): void {
+  for (const [id, entry] of loaded) {
+    if (keepIds.has(id)) continue;
+    rampEntryTo(entry, 0, fadeMs);
+    pauseAfterFade(id, entry, fadeMs);
+  }
+}
+
+function transitionFadeMs(prevId: string | null, nextId: string | null, requestedMs: number): number {
+  if (prevId && nextId && prevId !== nextId && TITLE_POOL.includes(prevId)) {
+    return Math.min(requestedMs, 220);
+  }
+  return requestedMs;
+}
+
 function refreshDirectVolumes(): void {
   if (!directMusicOutputActive()) return;
   for (const [id, entry] of loaded) {
@@ -334,6 +363,9 @@ function refreshDirectVolumes(): void {
     const trim = id === currentId ? (TRACKS[id]?.trim ?? 1) : 0;
     if (entry.volumeRaf === null) {
       try { entry.el.volume = directTargetVolume(trim); } catch { /* ignore */ }
+      if (trim === 0 && !entry.el.paused) {
+        try { entry.el.pause(); } catch { /* ignore */ }
+      }
     }
   }
 }
@@ -343,16 +375,19 @@ function refreshDirectVolumes(): void {
  *  fade-out completes (for clean cinematic stings — see PHASE_FADE_PROFILE). */
 export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequentialGapMs = 0): void {
   if (id === currentId) return;
+  const prevId = currentId;
+  const effectiveFadeMs = transitionFadeMs(prevId, id, fadeMs);
+  const keepIds = new Set<string>();
+  if (prevId) keepIds.add(prevId);
+  if (id) keepIds.add(id);
+  silenceStrayTracks(keepIds, Math.min(effectiveFadeMs, 180));
   // Fade out whatever was playing
-  if (currentId) {
-    const prevId = currentId;
+  if (prevId) {
     const prev = loaded.get(prevId);
     if (prev) {
-      rampEntryTo(prev, 0, fadeMs);
+      rampEntryTo(prev, 0, effectiveFadeMs);
       // Pause once the fade has completed so we don't keep decoding silently
-      window.setTimeout(() => {
-        if (currentId !== prevId) prev.el.pause();
-      }, fadeMs + 40);
+      pauseAfterFade(prevId, prev, effectiveFadeMs);
     }
   }
   // Schedule the new track. If sequentialGapMs is set, wait for the previous
@@ -387,7 +422,7 @@ export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequent
         }
       }, 250);
     };
-    rampEntryTo(entry, trim, fadeMs);
+    rampEntryTo(entry, trim, effectiveFadeMs);
     if (!mediaPlaybackGestureReady()) return;
     attemptPlay(0);
   };
@@ -396,7 +431,7 @@ export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequent
   currentId = id;
   if (id) {
     if (sequentialGapMs > 0 && currentId) {
-      window.setTimeout(startNew, fadeMs + sequentialGapMs);
+      window.setTimeout(startNew, effectiveFadeMs + sequentialGapMs);
     } else {
       startNew();
     }
@@ -798,9 +833,17 @@ export interface MusicDebugSnapshot {
   errorMsg: string | null;
   failedFlag: boolean | null;
   loadedCount: number;
+  playingIds: string[];
+  audibleIds: string[];
 }
 export function getMusicDebugSnapshot(): MusicDebugSnapshot {
   const entry = currentId ? loaded.get(currentId) : null;
+  const playingIds: string[] = [];
+  const audibleIds: string[] = [];
+  for (const [id, candidate] of loaded) {
+    if (!candidate.el.paused) playingIds.push(id);
+    if (!candidate.el.paused && !candidate.el.muted && entryOutputLevel(candidate) > 0.02) audibleIds.push(id);
+  }
   return {
     currentId,
     src: entry ? entry.el.currentSrc || null : null,
@@ -814,6 +857,8 @@ export function getMusicDebugSnapshot(): MusicDebugSnapshot {
     errorMsg: entry ? entry.el.error?.message ?? null : null,
     failedFlag: entry ? entry.failed : null,
     loadedCount: loaded.size,
+    playingIds,
+    audibleIds,
   };
 }
 

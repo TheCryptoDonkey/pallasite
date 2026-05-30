@@ -30,6 +30,8 @@ interface MusicProbe {
     failedFlag: boolean | null;
     loadedCount: number;
     src: string | null;
+    playingIds: string[];
+    audibleIds: string[];
   };
 }
 
@@ -93,7 +95,9 @@ async function waitForActiveMusic(page: Page, expectedTrack: string | RegExp, la
         && p.music.muted !== true
         && (p.music.volume ?? 1) > 0.05
         && (p.music.readyState ?? 0) >= 1
-        && p.music.failedFlag !== true;
+        && p.music.failedFlag !== true
+        && p.music.audibleIds.length === 1
+        && p.music.audibleIds[0] === p.music.currentId;
     },
     typeof expectedTrack === 'string' ? expectedTrack : { source: expectedTrack.source, flags: expectedTrack.flags },
     { timeout: MUSIC_READY_TIMEOUT_MS, polling: 100 },
@@ -180,7 +184,7 @@ async function main(): Promise<void> {
       return p?.phase === 'wavestart' || p?.phase === 'playing';
     }, undefined, { timeout: 20_000 });
     const wave = await waitForActiveMusic(page, 'slow-orbit', 'wave 1');
-    console.log(`wave music ok: ${wave.music.currentId} phase=${wave.phase} ready=${wave.music.readyState}`);
+    console.log(`wave music ok: ${wave.music.currentId} phase=${wave.phase} ready=${wave.music.readyState} audible=${wave.music.audibleIds.join(',')}`);
   } finally {
     if (browser) await browser.close().catch(() => undefined);
     killGroup(vite);

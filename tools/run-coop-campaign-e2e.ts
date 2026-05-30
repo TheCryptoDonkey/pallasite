@@ -69,6 +69,7 @@ async function probe(page: Page): Promise<{
   aiPlayers: number;
   sats: number[];
   inputCounts: number[];
+  debug: { inputDelay?: number; stallCount?: number; maxStallFrames?: number } | null;
   display: {
     bodyDisplay: string | null;
     cssW: number;
@@ -84,6 +85,7 @@ async function probe(page: Page): Promise<{
     const c = document.getElementById('game') as HTMLCanvasElement | null;
     const rect = c?.getBoundingClientRect();
     const probeLog = (window as any).__pallasiteInputLogProbe as ((from: number, to: number) => Array<[number, number, number]> | null) | undefined;
+    const debug = (window as any).__pallasitePeerDebug?.() ?? null;
     const counts = new Array(players).fill(0);
     const rows = probeLog ? probeLog(0, 120) : null;
     if (rows) {
@@ -99,6 +101,7 @@ async function probe(page: Page): Promise<{
       aiPlayers: Array.isArray(s?.players) ? s.players.filter((p: any) => p?.ai === true).length : -1,
       sats: Array.isArray(s?.players) ? s.players.map((p: any) => Number(p?.sats ?? 0)) : [],
       inputCounts: counts,
+      debug,
       display: {
         bodyDisplay: document.body.dataset.display ?? null,
         cssW: rect?.width ?? 0,
@@ -190,7 +193,7 @@ async function main(): Promise<void> {
     for (let i = 0; i < probes.length; i++) {
       const p = probes[i];
       const d = p.display;
-      process.stdout.write(`P${i + 1}: frame=${p.frame} phase=${p.phase} players=${p.players} ai=${p.aiPlayers} sats=${p.sats.join('/')} stall=${p.stall ?? '-'} desync=${p.desync} inputs=${p.inputCounts.join('/')} display=${d.bodyDisplay} css=${Math.round(d.cssW)}x${Math.round(d.cssH)} backing=${d.backingW}x${d.backingH}\n`);
+      process.stdout.write(`P${i + 1}: frame=${p.frame} phase=${p.phase} players=${p.players} ai=${p.aiPlayers} sats=${p.sats.join('/')} stall=${p.stall ?? '-'} desync=${p.desync} delay=${p.debug?.inputDelay ?? '-'} maxStall=${p.debug?.maxStallFrames ?? '-'} inputs=${p.inputCounts.join('/')} display=${d.bodyDisplay} css=${Math.round(d.cssW)}x${Math.round(d.cssH)} backing=${d.backingW}x${d.backingH}\n`);
     }
     for (let i = 0; i < probes.length; i++) {
       const p = probes[i];
@@ -205,6 +208,8 @@ async function main(): Promise<void> {
       if (p.sats.some((n) => n !== 0)) throw new Error(`P${i + 1} accrued sats in co-op`);
       if (p.stall) throw new Error(`P${i + 1} stalled`);
       if (p.desync) throw new Error(`P${i + 1} desynced`);
+      if ((p.debug?.inputDelay ?? 0) !== 24) throw new Error(`P${i + 1} wrong co-op input delay: ${p.debug?.inputDelay}`);
+      if ((p.debug?.maxStallFrames ?? 0) > 90) throw new Error(`P${i + 1} co-op stalled too long: ${p.debug?.maxStallFrames}f`);
       if (p.inputCounts.some((count) => count < 70)) throw new Error(`P${i + 1} missing input history`);
       if (d.bodyDisplay !== 'modern') throw new Error(`P${i + 1} portrait co-op fell out of modern display: ${d.bodyDisplay}`);
       if (Math.abs(cssAspect - backingAspect) > 0.02) throw new Error(`P${i + 1} canvas stretched: css=${cssAspect.toFixed(3)} backing=${backingAspect.toFixed(3)}`);
