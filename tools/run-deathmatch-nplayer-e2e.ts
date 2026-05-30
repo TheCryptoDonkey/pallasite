@@ -92,6 +92,80 @@ async function probe(page: Page, players = PLAYERS): Promise<{
   }, players);
 }
 
+async function takeoverDebug(page: Page): Promise<unknown> {
+  return page.evaluate(() => {
+    const s = (window as any).__pallasiteState;
+    const peerRef = (window as any).__pallasiteTestHooks?.peerRef;
+    return {
+      frame: s?.frame ?? -1,
+      phase: s?.phase ?? 'unknown',
+      peerActive: !!(window as any).__pallasitePeerActive,
+      ai: Array.isArray(s?.players) ? s.players.map((p: any) => p?.ai === true) : [],
+      peer: typeof (window as any).__pallasitePeerDebug === 'function'
+        ? (window as any).__pallasitePeerDebug()
+        : null,
+      humanConfig: peerRef && typeof peerRef.getHumanSlotConfig === 'function'
+        ? peerRef.getHumanSlotConfig()
+        : null,
+      counters: peerRef && typeof peerRef.getWireCounters === 'function'
+        ? peerRef.getWireCounters()
+        : null,
+    };
+  });
+}
+
+function flattenCanary(obj: unknown, prefix = ''): Map<string, unknown> {
+  const out = new Map<string, unknown>();
+  if (obj === null || typeof obj !== 'object') {
+    out.set(prefix, obj);
+    return out;
+  }
+  if (Array.isArray(obj)) {
+    obj.forEach((value, index) => {
+      for (const [key, child] of flattenCanary(value, `${prefix}[${index}]`)) out.set(key, child);
+    });
+    return out;
+  }
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    const childPrefix = prefix ? `${prefix}.${key}` : key;
+    for (const [childKey, child] of flattenCanary(value, childPrefix)) out.set(childKey, child);
+  }
+  return out;
+}
+
+async function canaryState(page: Page, frame: number): Promise<unknown | null> {
+  const raw = await page.evaluate((frame) => {
+    const history = (window as any).__pallasiteCanaryHistory as Map<number, string> | undefined;
+    return history?.get(frame) ?? null;
+  }, frame);
+  return typeof raw === 'string' ? JSON.parse(raw) : null;
+}
+
+async function dumpCanaryDiff(label: string, pages: Page[], frame = 60): Promise<void> {
+  const states = await Promise.all(pages.map((page) => canaryState(page, frame).catch(() => null)));
+  const base = states.find((state) => state !== null);
+  if (!base) return;
+  const flatBase = flattenCanary(base);
+  for (let i = 0; i < states.length; i++) {
+    const state = states[i];
+    if (!state || state === base) continue;
+    const flat = flattenCanary(state);
+    const keys = new Set([...flatBase.keys(), ...flat.keys()]);
+    const diffs: string[] = [];
+    for (const key of keys) {
+      const a = flatBase.get(key);
+      const b = flat.get(key);
+      if (JSON.stringify(a) !== JSON.stringify(b)) {
+        diffs.push(`${key}: ${JSON.stringify(a)} != ${JSON.stringify(b)}`);
+        if (diffs.length >= 8) break;
+      }
+    }
+    if (diffs.length > 0) {
+      process.stderr.write(`${label} canary frame ${frame} P1 vs P${i + 1}: ${diffs.join(' | ')}\n`);
+    }
+  }
+}
+
 async function runAllHumanScenario(browserInstance: Browser): Promise<void> {
   const session = randomBytes(4).toString('hex');
   const pages: Page[] = [];
@@ -106,7 +180,7 @@ async function runAllHumanScenario(browserInstance: Browser): Promise<void> {
         process.stderr.write(`[P${slot + 1} ${msg.type()}] ${text}\n`);
       }
     });
-    const url = `${VITE_BASE}/?peer=${encodeURIComponent(BROKER_URL)}&session=${session}&slot=${slot}&players=${PLAYERS}&deathmatchPlayers=${PLAYERS}&mode=deathmatch&wiretrace=1&peerBatch=1`;
+    const url = `${VITE_BASE}/?peer=${encodeURIComponent(BROKER_URL)}&session=${session}&slot=${slot}&players=${PLAYERS}&deathmatchPlayers=${PLAYERS}&mode=deathmatch&wiretrace=1&desync-hunt=1&peerBatch=1`;
     pages.push(page);
     gotos.push(page.goto(url, { waitUntil: 'load' }));
   }
@@ -156,7 +230,10 @@ async function runAllHumanScenario(browserInstance: Browser): Promise<void> {
     if (p.players !== PLAYERS) throw new Error(`P${i + 1} wrong player count`);
     if (p.aiPlayers !== 0) throw new Error(`P${i + 1} still has AI-controlled network slots`);
     if (p.stall) throw new Error(`P${i + 1} stalled`);
-    if (p.desync) throw new Error(`P${i + 1} desynced`);
+    if (p.desync) {
+      await dumpCanaryDiff('all-human', pages);
+      throw new Error(`P${i + 1} desynced`);
+    }
     if (p.inputCounts.some((count) => count < 50)) throw new Error(`P${i + 1} missing input history`);
   }
   await Promise.all(pages.map((page) => page.context().close().catch(() => undefined)));
@@ -210,6 +287,9 @@ async function runAiFillScenario(browserInstance: Browser): Promise<void> {
   for (let i = 0; i < probes.length; i++) {
     const p = probes[i];
     process.stdout.write(`AI-fill P${i === 0 ? 2 : 1}: frame=${p.frame} phase=${p.phase} players=${p.players} ai=${p.aiPlayers} stall=${p.stall ?? '-'} desync=${p.desync} inputs=${p.inputCounts.join('/')}\n`);
+  }
+  for (let i = 0; i < probes.length; i++) {
+    const p = probes[i];
     if (!p.peerActive) throw new Error(`AI-fill P${i + 1} peer inactive`);
     if (p.phase !== 'playing') throw new Error(`AI-fill P${i + 1} not playing`);
     if (p.frame < 60) throw new Error(`AI-fill P${i + 1} did not advance far enough`);
@@ -305,14 +385,22 @@ async function runTwoPlayerLateTakeoverScenario(browserInstance: Browser): Promi
     undefined,
     { timeout: 30_000 },
   )));
-  await Promise.all(pages.map((page) => page.waitForFunction(
-    () => {
-      const s = (window as any).__pallasiteState;
-      return Array.isArray(s?.players) && s.players.length === 2 && s.players.filter((p: any) => p?.ai === true).length === 0;
-    },
-    undefined,
-    { timeout: 30_000 },
-  )));
+  try {
+    await Promise.all(pages.map((page) => page.waitForFunction(
+      () => {
+        const s = (window as any).__pallasiteState;
+        return Array.isArray(s?.players) && s.players.length === 2 && s.players.filter((p: any) => p?.ai === true).length === 0;
+      },
+      undefined,
+      { timeout: 30_000 },
+    )));
+  } catch (e) {
+    const debug = await Promise.all(pages.map((page) => takeoverDebug(page).catch((err) => ({ error: String(err) }))));
+    for (let i = 0; i < debug.length; i++) {
+      process.stderr.write(`2P late takeover wait P${i + 1}: ${JSON.stringify(debug[i])}\n`);
+    }
+    throw e;
+  }
 
   await Promise.all([
     host.keyboard.down('ArrowLeft'),
@@ -392,6 +480,10 @@ async function runTwoPlayerPrejoinedStartScenario(browserInstance: Browser): Pro
     const p = probes[i];
     const label = i === 0 ? 'host P1' : 'prejoined P2';
     process.stdout.write(`2P prejoined ${label}: frame=${p.frame} phase=${p.phase} players=${p.players} ai=${p.aiPlayers} stall=${p.stall ?? '-'} desync=${p.desync} inputs=${p.inputCounts.join('/')}\n`);
+  }
+  for (let i = 0; i < probes.length; i++) {
+    const p = probes[i];
+    const label = i === 0 ? 'host P1' : 'prejoined P2';
     if (!p.peerActive) throw new Error(`2P prejoined ${label} peer inactive`);
     if (p.phase !== 'playing') throw new Error(`2P prejoined ${label} not playing`);
     if (p.frame < 120) throw new Error(`2P prejoined ${label} did not advance far enough`);
