@@ -270,7 +270,7 @@ const mpMode = !!(mpUrl && mpSession && mpSlotValid);
 const spectateSession = mpParams.get('spectate');
 const spectateMode = !mpMode && !!(spectateSession && mpUrl);
 const urlDeathmatchMode = !urlCoopCampaignMode && (urlMode === 'deathmatch' || ((mpMode || spectateMode) && requestedPeerPlayers > 2));
-const peerBatchFrames = mpParams.get('peerBatch') === '1' || mpParams.get('batchFrames') === '1';
+const peerBatchFrames = mpParams.get('peerBatch') !== '0' && mpParams.get('batchFrames') !== '0';
 const aiFillDeathmatch = urlDeathmatchMode && mpParams.get('aiFill') === '1';
 const autoStartMode = mpParams.get('autoStart') === '1' || mpParams.get('autostart') === '1';
 function parseSlotList(raw: string | null, max: number): number[] {
@@ -332,11 +332,11 @@ function peerInputDelayFrames(players: number, aiFilledSession = false): number 
 
 function shouldBatchPeerFrames(): boolean {
   if (!peerBatchFrames) return false;
-  // Small deathmatches are latency-sensitive and still small enough to send
-  // immediate 60Hz frames. Keep batching for larger arenas where fan-out
-  // pressure matters more than per-frame latency.
-  if (urlDeathmatchModeActive() && requestedPeerPlayers <= 8) return false;
-  return true;
+  // 2P remains raw 60Hz for the lowest possible co-op/duel latency. The
+  // product deathmatch envelope is 4P, where a two-frame micro-batch cuts
+  // fan-out payloads materially while staying inside the existing input
+  // jitter buffer.
+  return requestedPeerPlayers > 2;
 }
 
 /** Consecutive stalled sim frames before the "waiting for OPPONENT" overlay
@@ -367,6 +367,123 @@ function peerStallOverlayFrames(): number {
 function peerResendAfterStallFrames(): number {
   return urlCoopCampaignModeActive() ? 2 : PEER_RESEND_AFTER_STALL_FRAMES;
 }
+
+const PEER_PERF_RING_SIZE = 2048;
+interface PeerPerfRing { values: Float64Array; head: number; count: number }
+interface PeerPerfSummary {
+  samples: number;
+  avg: number;
+  p50: number;
+  p95: number;
+  p99: number;
+  max: number;
+  over16: number;
+  over33: number;
+  over50: number;
+}
+const peerPerfRaf: PeerPerfRing = { values: new Float64Array(PEER_PERF_RING_SIZE), head: 0, count: 0 };
+const peerPerfSim: PeerPerfRing = { values: new Float64Array(PEER_PERF_RING_SIZE), head: 0, count: 0 };
+const peerPerfRender: PeerPerfRing = { values: new Float64Array(PEER_PERF_RING_SIZE), head: 0, count: 0 };
+const peerPerfStartedAt = performance.now();
+let peerPerfLockstepBlockedTicks = 0;
+let peerPerfCatchupTicks = 0;
+let peerPerfMaxCatchupBehind = 0;
+let peerPerfLongTaskCount = 0;
+let peerPerfLongTaskMs = 0;
+let peerPerfLongTaskMaxMs = 0;
+
+function shouldRecordPeerPerf(): boolean {
+  return mpMode || spectateMode || isPeerActive();
+}
+
+function recordPeerPerfSample(ring: PeerPerfRing, ms: number): void {
+  if (!Number.isFinite(ms) || ms < 0) return;
+  ring.values[ring.head] = ms;
+  ring.head = (ring.head + 1) % PEER_PERF_RING_SIZE;
+  ring.count = Math.min(PEER_PERF_RING_SIZE, ring.count + 1);
+}
+
+function peerPerfSummary(ring: PeerPerfRing): PeerPerfSummary {
+  const values: number[] = [];
+  for (let i = 0; i < ring.count; i++) values.push(ring.values[i]);
+  values.sort((a, b) => a - b);
+  const samples = values.length;
+  let total = 0;
+  let over16 = 0;
+  let over33 = 0;
+  let over50 = 0;
+  for (const v of values) {
+    total += v;
+    if (v > 16.7) over16++;
+    if (v > 33.4) over33++;
+    if (v > 50) over50++;
+  }
+  const pct = (p: number): number => {
+    if (samples === 0) return 0;
+    return values[Math.min(samples - 1, Math.max(0, Math.floor((samples - 1) * p)))];
+  };
+  return {
+    samples,
+    avg: samples > 0 ? Number((total / samples).toFixed(3)) : 0,
+    p50: Number(pct(0.50).toFixed(3)),
+    p95: Number(pct(0.95).toFixed(3)),
+    p99: Number(pct(0.99).toFixed(3)),
+    max: samples > 0 ? Number(values[samples - 1].toFixed(3)) : 0,
+    over16,
+    over33,
+    over50,
+  };
+}
+
+function browserPerfSnapshot(): unknown {
+  const counters = (__testHooks.peerRef && typeof __testHooks.peerRef.getWireCounters === 'function')
+    ? __testHooks.peerRef.getWireCounters()
+    : null;
+  const wsRecv = typeof (counters as { wsRecvFrameCount?: unknown } | null)?.wsRecvFrameCount === 'number'
+    ? Number((counters as { wsRecvFrameCount: number }).wsRecvFrameCount)
+    : 0;
+  const mainRecv = typeof (counters as { recvFrameCount?: unknown } | null)?.recvFrameCount === 'number'
+    ? Number((counters as { recvFrameCount: number }).recvFrameCount)
+    : 0;
+  return {
+    frame: state.frame,
+    elapsedMs: Number((performance.now() - peerPerfStartedAt).toFixed(1)),
+    raf: peerPerfSummary(peerPerfRaf),
+    sim: peerPerfSummary(peerPerfSim),
+    render: peerPerfSummary(peerPerfRender),
+    lockstep: {
+      blockedTicks: peerPerfLockstepBlockedTicks,
+      catchupTicks: peerPerfCatchupTicks,
+      maxCatchupBehind: Math.round(peerPerfMaxCatchupBehind),
+      stallFrames: Math.round(peerStallFrames),
+      maxStallFrames: Math.round(peerMaxStallFrames),
+      stallCount: peerStallCount,
+    },
+    longTask: {
+      count: peerPerfLongTaskCount,
+      totalMs: Number(peerPerfLongTaskMs.toFixed(3)),
+      maxMs: Number(peerPerfLongTaskMaxMs.toFixed(3)),
+    },
+    workerMainLagFrames: Math.max(0, wsRecv - mainRecv),
+  };
+}
+
+(window as unknown as { __pallasiteBrowserPerf?: () => unknown }).__pallasiteBrowserPerf = browserPerfSnapshot;
+
+try {
+  const supported = PerformanceObserver.supportedEntryTypes || [];
+  if (supported.includes('longtask')) {
+    const observer = new PerformanceObserver((list) => {
+      if (!shouldRecordPeerPerf()) return;
+      for (const entry of list.getEntries()) {
+        peerPerfLongTaskCount++;
+        peerPerfLongTaskMs += entry.duration;
+        peerPerfLongTaskMaxMs = Math.max(peerPerfLongTaskMaxMs, entry.duration);
+      }
+    });
+    observer.observe({ entryTypes: ['longtask'] });
+  }
+} catch { /* longtask is unavailable in some browsers */ }
 /** Extra deterministic handoff room after the broker's late AI-slot takeover
  *  frame. A late human has to replay buffered history from frame 0 before the
  *  existing peers can require their live inputs without stalling. */
@@ -429,6 +546,7 @@ ensureLocalInputSlots(Math.max(2, requestedPeerPlayers));
 // commit run delay-based lockstep against a remote peer feeding inputs into
 // the same log.
 let inputLog: InputLog | null = null;
+let localPeerPrefilledThrough = -1;
 // Input-delay in sim frames. 0 in solo (decode reads the exact frame just
 // sampled, byte-identical). Set positive in multiplayer to absorb the relay
 // round-trip; both clients use the same value so the lockstep stays fair.
@@ -448,6 +566,7 @@ function exitMultiplayerUrlSession(): void {
   spectator = null;
   __testHooks.peerRef = null;
   inputLog = null;
+  localPeerPrefilledThrough = -1;
   peerStallFrames = 0;
   lastPeerResendAt = -Infinity;
   peerStallCount = 0;
@@ -516,6 +635,19 @@ function localPeerStartupPrefillThrough(activeDelay: number): number {
   const takeover = cfg?.takeovers.find(t => t.slot === mpSlot);
   if (!takeover) return activeDelay;
   return takeover.frame + PEER_LATE_TAKEOVER_CLIENT_GRACE_FRAMES + activeDelay;
+}
+
+function ensureLocalPeerStartupPrefill(activeDelay: number): void {
+  if (!peer || spectator || !inputLog) return;
+  const through = localPeerStartupPrefillThrough(activeDelay);
+  if (through < 0 || through <= localPeerPrefilledThrough) return;
+  const emptyEncoded = encodePlayerInput(EMPTY_INPUT);
+  for (let f = Math.max(0, localPeerPrefilledThrough + 1); f <= through; f++) {
+    if (inputLog.get(f, mpSlot) >= 0) continue;
+    inputLog.record(f, mpSlot, emptyEncoded);
+    peer.sendFrame(f, emptyEncoded);
+  }
+  localPeerPrefilledThrough = through;
 }
 
 function syncDeathmatchAiSlotsForFrame(readFrame: number): void {
@@ -1354,7 +1486,9 @@ function loop(now: number): void {
     return;
   }
   // Bank real time, clamped, then spend it one fixed sim step at a time.
-  const frameDeltaS = Math.min(MAX_CATCHUP_STEPS * FIXED_STEP_S, Math.max(0, (now - lastFrame) / 1000));
+  const rawFrameDeltaMs = Math.max(0, now - lastFrame);
+  if (shouldRecordPeerPerf()) recordPeerPerfSample(peerPerfRaf, rawFrameDeltaMs);
+  const frameDeltaS = Math.min(MAX_CATCHUP_STEPS * FIXED_STEP_S, rawFrameDeltaMs / 1000);
   stepAccumulator += frameDeltaS;
   lastFrame = now;
   // Peer catch-up: a late-joining peerwatch, AI-slot takeover, or slow-starting
@@ -1380,6 +1514,8 @@ function loop(now: number): void {
       // lag burns down in ~2.5s at 60Hz, well inside any realistic
       // PEER_STALL_DISCONNECT window.
       stepAccumulator += 4 * FIXED_STEP_S;
+      peerPerfCatchupTicks++;
+      peerPerfMaxCatchupBehind = Math.max(peerPerfMaxCatchupBehind, behind);
     }
   }
   // Peer stall accounting: capture the sim frame before the inner loop so
@@ -1389,6 +1525,7 @@ function loop(now: number): void {
   const frameBeforeStep = state.frame;
   let lockstepBlockedThisTick = false;
   while (stepAccumulator >= FIXED_STEP_S) {
+    const simStepStartedAt = shouldRecordPeerPerf() ? performance.now() : 0;
     // Lockstep input pipeline. On every advancing frame:
     //   1) snapshot the LOCAL slots' input into the log (and send via peer
     //      in duel mode); in couch mode both slots are local, in duel mode
@@ -1427,15 +1564,9 @@ function loop(now: number): void {
         // slots (PEER_INPUT_DELAY=5 × a couple of jitter frames) so
         // the extra capacity is essentially free.
         inputLog = new InputLog(state.players.length, 4096);
-        const prefillThrough = peer && !spectator ? localPeerStartupPrefillThrough(activeDelay) : -1;
-        if (prefillThrough >= 0) {
-          const emptyEncoded = encodePlayerInput(EMPTY_INPUT);
-          for (let f = 0; f <= prefillThrough; f++) {
-            inputLog.record(f, mpSlot, emptyEncoded);
-            peer?.sendFrame(f, emptyEncoded);
-          }
-        }
+        localPeerPrefilledThrough = -1;
       }
+      ensureLocalPeerStartupPrefill(activeDelay);
       // 1) Sample LOCAL slot(s) and send once per sim frame. The receiver's
       //    lockstep needs our frame N in its inputLog before it can pass the
       //    delayed read for that frame, but retrying the same frame every
@@ -1500,6 +1631,7 @@ function loop(now: number): void {
         // sustained, replay a compact committed prefix; the partner may be
         // blocked on state.frame - delay rather than on the newest frame.
         lockstepBlockedThisTick = true;
+        peerPerfLockstepBlockedTicks++;
         if (peerStallFrames >= peerResendAfterStallFrames()) {
           const resendFrom = readFrame - PEER_RESEND_BEHIND_FRAMES;
           const resendThrough = Math.min(state.frame - 1, readFrame + PEER_RESEND_AHEAD_FRAMES);
@@ -1541,6 +1673,7 @@ function loop(now: number): void {
       }
     }
     updateGame(state);
+    if (simStepStartedAt > 0) recordPeerPerfSample(peerPerfSim, performance.now() - simStepStartedAt);
     // ── Desync canary ────────────────────────────────────────────────
     // Every PEER_HASH_PERIOD sim steps, hash the gameplay-relevant slice
     // of GameState and send to the partner. We retain our own hash so a
@@ -1664,10 +1797,12 @@ function loop(now: number): void {
   // backfires under chromium-headless — when no frames are drawn the
   // browser slows rAF, which then can't push enough sends/sec to keep
   // lockstep moving.
+  const renderStartedAt = shouldRecordPeerPerf() ? performance.now() : 0;
   syncCanvasBrightness();
   render(canvas, state, now);
   applyThemeFrame(canvas, now);
   if (getTheme() === 'ascii') drawAsciiHud(canvas, state);
+  if (renderStartedAt > 0) recordPeerPerfSample(peerPerfRender, performance.now() - renderStartedAt);
 
   // Phase transitions render UI overlays
   if (state.phase !== lastPhase) {

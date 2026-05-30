@@ -200,6 +200,44 @@ interface BrowserProbe {
     readyState: number;
     binaryFramesActive: boolean;
   } | null;
+  peerDebug: {
+    stallFrames?: number;
+    stallCount?: number;
+    maxStallFrames?: number;
+    localRemoteFrameGap?: number | null;
+    slotFrameSpread?: number | null;
+    resendCount?: number;
+    resendFrameCount?: number;
+  } | null;
+  browserPerf: BrowserPerfProbe | null;
+}
+
+interface PerfSummaryProbe {
+  samples?: number;
+  avg?: number;
+  p50?: number;
+  p95?: number;
+  p99?: number;
+  max?: number;
+  over16?: number;
+  over33?: number;
+  over50?: number;
+}
+
+interface BrowserPerfProbe {
+  raf?: PerfSummaryProbe;
+  sim?: PerfSummaryProbe;
+  render?: PerfSummaryProbe;
+  lockstep?: {
+    blockedTicks?: number;
+    catchupTicks?: number;
+    maxCatchupBehind?: number;
+    stallFrames?: number;
+    maxStallFrames?: number;
+    stallCount?: number;
+  };
+  longTask?: { count?: number; totalMs?: number; maxMs?: number };
+  workerMainLagFrames?: number;
 }
 
 async function probeBrowser(page: Page, players: number): Promise<BrowserProbe> {
@@ -207,6 +245,8 @@ async function probeBrowser(page: Page, players: number): Promise<BrowserProbe> 
     const s = (window as any).__pallasiteState;
     const probeLog = (window as any).__pallasiteInputLogProbe as ((from: number, to: number) => Array<[number, number, number]> | null) | undefined;
     const peerRef = (window as any).__pallasiteTestHooks?.peerRef;
+    const peerDebugFn = (window as any).__pallasitePeerDebug as (() => unknown) | undefined;
+    const browserPerfFn = (window as any).__pallasiteBrowserPerf as (() => unknown) | undefined;
     const counts = new Array(expectedPlayers).fill(0);
     const frame = Number(s?.frame ?? -1);
     const to = Math.max(0, Math.min(600, frame));
@@ -245,8 +285,33 @@ async function probeBrowser(page: Page, players: number): Promise<BrowserProbe> 
       aiPlayers: Array.isArray(s?.players) ? s.players.filter((p: any) => p?.ai === true).length : -1,
       inputCounts: counts,
       wireCounters,
+      peerDebug: typeof peerDebugFn === 'function' ? peerDebugFn() : null,
+      browserPerf: typeof browserPerfFn === 'function' ? browserPerfFn() : null,
     };
   }, players);
+}
+
+function fmtMs(value: number | undefined): string {
+  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(1) : '-';
+}
+
+function browserPerfLine(perf: BrowserPerfProbe | null): string {
+  if (!perf) return ' perf=-';
+  return ` perf=raf${fmtMs(perf.raf?.p95)}/${fmtMs(perf.raf?.p99)}ms`
+    + ` sim${fmtMs(perf.sim?.p95)}/${fmtMs(perf.sim?.p99)}ms`
+    + ` render${fmtMs(perf.render?.p95)}/${fmtMs(perf.render?.p99)}ms`
+    + ` lock=${perf.lockstep?.blockedTicks ?? 0}/${perf.lockstep?.catchupTicks ?? 0}`
+    + ` long=${perf.longTask?.count ?? 0}/${fmtMs(perf.longTask?.maxMs)}ms`
+    + ` lag=${perf.workerMainLagFrames ?? 0}`;
+}
+
+function assertBrowserPerf(players: number, label: string, perf: BrowserPerfProbe | null): void {
+  if (!perf) throw new Error(`${players}P ${label} missing browser perf probe`);
+  if ((perf.workerMainLagFrames ?? 0) > 240) throw new Error(`${players}P ${label} worker->main lag too high: ${perf.workerMainLagFrames}`);
+  if ((perf.raf?.p99 ?? 0) > 120) throw new Error(`${players}P ${label} rAF p99 too high: ${perf.raf?.p99}ms`);
+  if ((perf.sim?.p99 ?? 0) > 30) throw new Error(`${players}P ${label} sim p99 too high: ${perf.sim?.p99}ms`);
+  if ((perf.render?.p99 ?? 0) > 60) throw new Error(`${players}P ${label} render p99 too high: ${perf.render?.p99}ms`);
+  if ((perf.longTask?.maxMs ?? 0) > 750) throw new Error(`${players}P ${label} long task too high: ${perf.longTask?.maxMs}ms`);
 }
 
 function deathmatchParams(session: string, players: number, slot?: number, spectate = false): string {
@@ -358,7 +423,10 @@ async function runBrowserCase(browser: Browser, players: number): Promise<void> 
     const wire = c
       ? ` wire=${c.wsSentFrameCount}/${c.wsSentFramePayloadCount} recv=${c.wsRecvFrameCount}/${c.wsRecvFramePayloadCount} binary=${c.binaryFramesActive ? 'yes' : 'no'} buf=${c.bufferedAmount}`
       : ' wire=-';
-    process.stdout.write(`  P${i + 1}: frame=${p.frame} phase=${p.phase} stall=${p.stall ?? '-'} desync=${p.desync} inputs=${p.inputCounts.join('/')}${wire}\n`);
+    const debug = p.peerDebug
+      ? ` debug=maxStall${p.peerDebug.maxStallFrames ?? '-'}f resends=${p.peerDebug.resendCount ?? '-'}/${p.peerDebug.resendFrameCount ?? '-'} gap=${p.peerDebug.localRemoteFrameGap ?? '-'}`
+      : ' debug=-';
+    process.stdout.write(`  P${i + 1}: frame=${p.frame} phase=${p.phase} stall=${p.stall ?? '-'} desync=${p.desync} inputs=${p.inputCounts.join('/')}${wire}${debug}${browserPerfLine(p.browserPerf)}\n`);
     if (!p.peerActive) throw new Error(`${players}P P${i + 1} peer inactive`);
     if (p.phase !== 'playing') throw new Error(`${players}P P${i + 1} phase=${p.phase}`);
     if (p.players !== players) throw new Error(`${players}P P${i + 1} player count=${p.players}`);
@@ -372,13 +440,14 @@ async function runBrowserCase(browser: Browser, players: number): Promise<void> 
       if (c.wsSentFrameCount < 120) throw new Error(`${players}P P${i + 1} sent too few logical frames: ${c.wsSentFrameCount}`);
       if (c.wsSentFramePayloadCount <= 0) throw new Error(`${players}P P${i + 1} sent no frame payloads`);
       if (!c.binaryFramesActive) throw new Error(`${players}P P${i + 1} did not negotiate binary frame wire`);
-      if (players > 8 && c.wsSentFramePayloadCount >= Math.floor(c.wsSentFrameCount * 0.85)) {
+      if (c.wsSentFramePayloadCount >= Math.floor(c.wsSentFrameCount * 0.85)) {
         throw new Error(`${players}P P${i + 1} batching ineffective: frames=${c.wsSentFrameCount} payloads=${c.wsSentFramePayloadCount}`);
       }
       if (c.bufferedAmount > 32768) throw new Error(`${players}P P${i + 1} socket backlog too high: ${c.bufferedAmount}`);
     }
+    assertBrowserPerf(players, `P${i + 1}`, p.browserPerf);
   }
-  process.stdout.write(`  S:  frame=${spectatorProbe.frame} phase=${spectatorProbe.phase} stall=${spectatorProbe.stall ?? '-'} inputs=${spectatorProbe.inputCounts.join('/')}\n`);
+  process.stdout.write(`  S:  frame=${spectatorProbe.frame} phase=${spectatorProbe.phase} stall=${spectatorProbe.stall ?? '-'} inputs=${spectatorProbe.inputCounts.join('/')}${browserPerfLine(spectatorProbe.browserPerf)}\n`);
   if (!spectatorProbe.peerActive) throw new Error(`${players}P spectator peer inactive`);
   if (spectatorProbe.phase !== 'playing') throw new Error(`${players}P spectator phase=${spectatorProbe.phase}`);
   if (spectatorProbe.players !== players) throw new Error(`${players}P spectator player count=${spectatorProbe.players}`);
@@ -386,6 +455,7 @@ async function runBrowserCase(browser: Browser, players: number): Promise<void> 
   if (spectatorProbe.frame < 100) throw new Error(`${players}P spectator did not catch up`);
   if (minFrame - spectatorProbe.frame > 360) throw new Error(`${players}P spectator lag too high: ${minFrame - spectatorProbe.frame}`);
   if (maxFrame - minFrame > 180) throw new Error(`${players}P peer frame spread too high: ${minFrame}..${maxFrame}`);
+  assertBrowserPerf(players, 'spectator', spectatorProbe.browserPerf);
 
   for (const ctx of contexts) await ctx.close().catch(() => undefined);
   printBrokerMetrics(`browser ${players}P`, await fetchBrokerMetrics(), metricsBefore);

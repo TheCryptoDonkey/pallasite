@@ -631,9 +631,9 @@ function buildPeerWorkerSource(): string {
     function post(m) { self.postMessage(m); }
     function frameBatchConfig(players) {
       if (players >= 16) return { ms: 50, max: 8 };
-      if (players >= 8) return { ms: 33, max: 6 };
-      if (players >= 4) return { ms: 24, max: 4 };
-      return { ms: 12, max: 8 };
+      if (players >= 8) return { ms: 33, max: 4 };
+      if (players >= 3) return { ms: 20, max: 2 };
+      return { ms: 12, max: 2 };
     }
     function buildSocketUrl() {
       var sep = url.indexOf('?') >= 0 ? '&' : '?';
