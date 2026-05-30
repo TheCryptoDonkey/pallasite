@@ -208,7 +208,12 @@ async function main(): Promise<void> {
       if (p.sats.some((n) => n !== 0)) throw new Error(`P${i + 1} accrued sats in co-op`);
       if (p.stall) throw new Error(`P${i + 1} stalled`);
       if (p.desync) throw new Error(`P${i + 1} desynced`);
-      if ((p.debug?.inputDelay ?? 0) !== 24) throw new Error(`P${i + 1} wrong co-op input delay: ${p.debug?.inputDelay}`);
+      // Input delay is now broker-negotiated from the measured link. The local
+      // e2e broker injects no latency, so adaptation drives it well below the
+      // 24f static co-op tier — that lower delay is the latency win. Assert it
+      // stays in the valid [floor, tier] band rather than pinning the old value.
+      const coopDelay = p.debug?.inputDelay ?? 0;
+      if (coopDelay < 2 || coopDelay > 24) throw new Error(`P${i + 1} co-op input delay out of band: ${coopDelay}`);
       if ((p.debug?.maxStallFrames ?? 0) > 90) throw new Error(`P${i + 1} co-op stalled too long: ${p.debug?.maxStallFrames}f`);
       if (p.inputCounts.some((count) => count < 70)) throw new Error(`P${i + 1} missing input history`);
       if (d.bodyDisplay !== 'modern') throw new Error(`P${i + 1} portrait co-op fell out of modern display: ${d.bodyDisplay}`);

@@ -330,6 +330,44 @@ function peerInputDelayFrames(players: number, aiFilledSession = false): number 
   return Math.min(32, 22 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
 }
 
+/** Hard floor for the broker-negotiated delay. The broker sizes the session
+ *  delay to the measured link; this stops even a LAN-fast session from dropping
+ *  below a one-frame jitter cushion. The static tier (peerInputDelayFrames) is
+ *  the ceiling, applied at the read site, so an adaptive session is never worse
+ *  than the pre-adaptive default — only the same or snappier. */
+const ADAPT_MIN_DELAY_FRAMES = 2;
+/** How long to wait after connect for the broker to assign the session's
+ *  adaptive input delay before falling back to the static tier. The broker
+ *  measures RTT for ~160ms after the roster completes, then broadcasts; every
+ *  peer resolves connect at the same all-bound moment and waits together, so an
+ *  old/quiet broker is fallen back to consistently by all peers (no split). */
+const NEGOTIATED_DELAY_WAIT_MS = 1000;
+
+/** Broker-negotiated lockstep input delay for the live session, frozen before
+ *  the sim starts consuming real input. null until negotiated (or when a
+ *  ?inputDelay= override / loopback transport bypasses negotiation), in which
+ *  case the read site uses the static tier. */
+let negotiatedInputDelay: number | null = null;
+
+/** After connect, poll the transport for the broker's assigned session delay
+ *  and freeze it. A ?inputDelay= URL override skips negotiation entirely (the
+ *  tier already reflects the override). Resolves on the first non-null value or
+ *  after NEGOTIATED_DELAY_WAIT_MS (→ static-tier fallback). Must complete
+ *  BEFORE setPeerActive(true) so the value is fixed for frame 0. */
+async function captureNegotiatedInputDelay(get: () => number | null): Promise<void> {
+  if (mpParams.get('inputDelay') !== null) { negotiatedInputDelay = null; return; }
+  // AI-filled sessions are not adapted by the broker (their late-takeover
+  // handoff is tuned to the static tier), so don't wait — fall straight back.
+  if (aiFillDeathmatch) { negotiatedInputDelay = null; return; }
+  const deadline = performance.now() + NEGOTIATED_DELAY_WAIT_MS;
+  for (;;) {
+    const v = get();
+    if (v !== null) { negotiatedInputDelay = v; return; }
+    if (performance.now() >= deadline) { negotiatedInputDelay = null; return; }
+    await new Promise<void>(r => setTimeout(r, 20));
+  }
+}
+
 function shouldBatchPeerFrames(): boolean {
   if (!peerBatchFrames) return false;
   // 2P remains raw 60Hz for the lowest possible co-op/duel latency. The
@@ -458,6 +496,8 @@ function browserPerfSnapshot(): unknown {
       stallFrames: Math.round(peerStallFrames),
       maxStallFrames: Math.round(peerMaxStallFrames),
       stallCount: peerStallCount,
+      inputDelay: lastActivePeerInputDelay,
+      negotiatedInputDelay,
     },
     longTask: {
       count: peerPerfLongTaskCount,
@@ -575,6 +615,7 @@ function exitMultiplayerUrlSession(): void {
   peerResendCount = 0;
   peerResendFrameCount = 0;
   lastActivePeerInputDelay = 0;
+  negotiatedInputDelay = null;
   peerDisconnectDeclared = false;
   peerDesyncFrame = -1;
   localCanaryHashes.clear();
@@ -1541,8 +1582,22 @@ function loop(now: number): void {
     // same value so a frozen frame does not re-sample over the same log
     // slot and stomp the canonical input for that frame.
     const peerActive = isPeerActive();
-    const activeDelay = peerActive ? peerInputDelayFrames(state.players.length || requestedPeerPlayers, aiFillDeathmatch && urlDeathmatchModeActive()) : inputDelay;
-    if (peerActive) lastActivePeerInputDelay = activeDelay;
+    // Static tier = the pre-adaptive safe default (also honours ?inputDelay=).
+    // When the broker negotiated a delay from the measured link, use it but
+    // clamp to [floor, tier] so the session is adaptive yet never worse than
+    // the static default. Determinism holds: staticTier is a pure function of
+    // player-count/mode and negotiatedInputDelay is the one broker-broadcast
+    // value every peer froze, so activeDelay is identical across the session.
+    let activeDelay: number;
+    if (peerActive) {
+      const staticTier = peerInputDelayFrames(state.players.length || requestedPeerPlayers, aiFillDeathmatch && urlDeathmatchModeActive());
+      activeDelay = negotiatedInputDelay !== null
+        ? Math.max(ADAPT_MIN_DELAY_FRAMES, Math.min(staticTier, negotiatedInputDelay))
+        : staticTier;
+      lastActivePeerInputDelay = activeDelay;
+    } else {
+      activeDelay = inputDelay;
+    }
     // Encoded inputs the apply step fed into this sim tick. Captured here
     // so the desync hunter's canary serialiser (further down) can include
     // them — answers "did the peers apply different inputs at this frame,
@@ -2071,6 +2126,14 @@ async function boot(): Promise<void> {
         aiFill: aiFillDeathmatch,
         humanSlots: requestedHumanSlots,
       });
+      // Freeze the broker-negotiated adaptive input delay BEFORE going active,
+      // so frame 0 already runs at the session-agreed value. AI-filled sessions
+      // are not adapted (their late-takeover handoff is tuned to the static
+      // tier), so skip the await entirely — this keeps that fragile path's
+      // startup timing byte-for-byte identical to the pre-adaptive code.
+      if (!aiFillDeathmatch) {
+        await captureNegotiatedInputDelay(() => peer?.getNegotiatedInputDelay?.() ?? null);
+      }
       setPeerActive(true);
       // Replay hook: after a successful reconnect (NOT the initial connect),
       // re-send our local slot's most recent input frames so the partner
@@ -2115,6 +2178,12 @@ async function boot(): Promise<void> {
     renderDuelConnecting(0, requestedPeerPlayers, true, connectKind);
     try {
       await spectator.connect({ url: mpUrl, session: spectateSession, players: requestedPeerPlayers, aiFill: aiFillDeathmatch });
+      // Spectators run the same lockstep loop and must use the identical
+      // session delay, or their sim diverges from the players'. AI-filled
+      // sessions are not adapted, so skip the await there (byte-identical path).
+      if (!aiFillDeathmatch) {
+        await captureNegotiatedInputDelay(() => spectator?.getNegotiatedInputDelay?.() ?? null);
+      }
       setPeerActive(true);
       // eslint-disable-next-line no-console
       console.log('[spectate] watching', spectateSession, 'via', mpUrl);
