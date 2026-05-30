@@ -108,6 +108,34 @@ const MAX_PEER_PLAYERS = parseInt(process.env.MAX_PEER_PLAYERS ?? '64', 10);
  *  inputs and start sending its own future frames before the existing peers
  *  require that slot in their lockstep input logs. */
 const PEER_LATE_TAKEOVER_DELAY_FRAMES = parseInt(process.env.PEER_LATE_TAKEOVER_DELAY_FRAMES ?? '90', 10);
+
+/** Adaptive lockstep input delay.
+ *
+ *  Delay-based lockstep applies every slot's input from the SAME delayed sim
+ *  frame on every client, so the input-delay buffer is part of the determinism
+ *  contract: all peers in a session must use one identical value. The broker is
+ *  the single authority that can pick it, so it measures socket RTT to each
+ *  peer (protocol ping/pong — transparent to the browser, no client change)
+ *  and assigns ONE session-wide delay sized to the real link.
+ *
+ *  The broker folds its own forward-delay knobs into the estimate, so the soak
+ *  (which injects PEER_FORWARD_DELAY/JITTER) still gets a delay that covers the
+ *  injected latency. Production leaves both at zero, so the delay tracks the
+ *  measured RTT alone. Clients clamp the value to their own static tier, so a
+ *  session is never worse than the pre-adaptive default. */
+const ADAPT_FRAME_MS = 1000 / 60;
+const ADAPT_MEASURE_WINDOW_MS = Math.max(40, parseInt(process.env.ADAPT_MEASURE_WINDOW_MS ?? '160', 10) || 160);
+const ADAPT_PING_INTERVAL_MS = 45;
+const ADAPT_MIN_DELAY_FRAMES = 2;
+const ADAPT_MAX_DELAY_FRAMES = 60;
+/** Extra frames over the measured envelope to absorb RTT jitter the few probe
+ *  samples didn't capture. The lockstep stall/resend net covers the rest. */
+const ADAPT_SAFETY_FRAMES = 3;
+/** One-way latency assumed for a peer that never returned a pong, so a silent
+ *  measurement still yields a sane (slightly conservative) delay rather than
+ *  collapsing to the floor. */
+const ADAPT_DEFAULT_ONE_WAY_MS = 30;
+
 const PEER_BINARY_MAGIC = 0x50; // 'P'
 const PEER_BINARY_VERSION = 1;
 const PEER_BINARY_FRAME = 1;
@@ -514,24 +542,118 @@ function peerJoinedPayload(slot, joinedSlot) {
   return JSON.stringify(msg);
 }
 
-function sessionConfigPayload(slot) {
-  if (!slot.peerHumanSlots) return null;
-  const takeovers = [];
-  const source = slot.peerTakeovers || {};
-  for (const key of Object.keys(source)) {
-    const takeoverSlot = Math.floor(Number(key));
-    const frame = Math.floor(Number(source[key]));
-    if (Number.isFinite(takeoverSlot) && Number.isFinite(frame) && frame > 0) {
-      takeovers.push({ slot: takeoverSlot, frame });
-    }
+// ── Adaptive input-delay measurement ────────────────────────────────────────
+
+/** Send one protocol ping carrying the send time. The browser auto-replies
+ *  with a pong echoing the payload (RFC 6455), so the pong handler can read
+ *  the round-trip without any client-side code. */
+function pingPeer(ws) {
+  if (!ws || ws.readyState !== ws.OPEN) return;
+  try { ws.ping(String(performance.now())); } catch { /* socket racing closed */ }
+}
+
+/** Record a pong's round-trip against the time we stamped into the ping. */
+function recordPeerPong(ws, data) {
+  const sent = Number(data && data.toString());
+  if (!Number.isFinite(sent)) return;
+  const rtt = performance.now() - sent;
+  if (rtt < 0 || rtt > 60000) return;
+  if (!ws._rttSamples) ws._rttSamples = [];
+  ws._rttSamples.push(rtt);
+}
+
+/** Conservative one-way estimate for a peer: half of its worst probed RTT, so
+ *  a single jittery sample widens the delay rather than narrowing it. Falls
+ *  back to a sane default when no pong came back. */
+function peerOneWayMs(ws) {
+  const s = ws && ws._rttSamples;
+  if (!s || s.length === 0) return ADAPT_DEFAULT_ONE_WAY_MS;
+  let worst = 0;
+  for (const v of s) if (v > worst) worst = v;
+  return worst / 2;
+}
+
+function peerRequiredPresent(slot) {
+  for (const i of peerRequiredSlots(slot)) {
+    const peer = slot.peers[i];
+    if (!peer || peer.readyState !== peer.OPEN) return false;
   }
+  return true;
+}
+
+/** Pick one session-wide input delay (in sim frames) sized to the slowest
+ *  human peer pair plus the broker's own forward delay, with a jitter margin.
+ *  The path that matters is peer A → broker → peer B, whose one-way time is
+ *  ~oneWay(A)+oneWay(B); we take the two slowest peers as the worst case. */
+function computeSessionInputDelay(slot) {
+  const oneWays = [];
+  for (const i of peerRequiredSlots(slot)) {
+    const peer = slot.peers[i];
+    if (peer) oneWays.push(peerOneWayMs(peer));
+  }
+  oneWays.sort((a, b) => b - a);
+  const slowest = oneWays[0] ?? ADAPT_DEFAULT_ONE_WAY_MS;
+  const secondSlowest = oneWays[1] ?? slowest;
+  const worstPairOneWayMs = slowest + secondSlowest;
+  const brokerForwardMs = PEER_FORWARD_DELAY_MS + PEER_FORWARD_JITTER_MS;
+  const frames = Math.ceil((worstPairOneWayMs + brokerForwardMs) / ADAPT_FRAME_MS) + ADAPT_SAFETY_FRAMES;
+  return Math.max(ADAPT_MIN_DELAY_FRAMES, Math.min(ADAPT_MAX_DELAY_FRAMES, frames));
+}
+
+/** Once every required human peer is bound, probe them across a short window
+ *  and then lock in a single session delay, broadcasting it to peers and
+ *  watchers via session-config. Runs once per session (guarded by
+ *  `peerDelayScheduled`); late joiners inherit the already-fixed value. */
+function maybeNegotiateSessionDelay(slot, session) {
+  if (slot.peerDelayScheduled || slot.peerInputDelay !== undefined) return;
+  // AI-filled sessions keep the static tier. Their late-human takeover handoff
+  // (replay-from-zero + a broker-scheduled handoff frame) is co-tuned with the
+  // large static delay, and a session can gain a late human at any time, so we
+  // never adapt them. Plain human sessions (co-op, duel, full-roster
+  // deathmatch) are where the latency win lands.
+  if (slot.peerHumanSlots) return;
+  if (!peerRequiredPresent(slot)) return;
+  slot.peerDelayScheduled = true;
+  const probe = () => {
+    for (const i of peerRequiredSlots(slot)) pingPeer(slot.peers[i]);
+  };
+  probe();
+  setTimeout(probe, ADAPT_PING_INTERVAL_MS);
+  setTimeout(probe, ADAPT_PING_INTERVAL_MS * 2);
+  setTimeout(() => {
+    // The session may have torn down or a peer dropped during the window;
+    // recompute against whoever is still present (or skip if the pair broke).
+    if (!sessions.has(session) || slot.peerInputDelay !== undefined) return;
+    slot.peerInputDelay = computeSessionInputDelay(slot);
+    fanOutSessionConfig(slot);
+  }, ADAPT_MEASURE_WINDOW_MS);
+}
+
+function sessionConfigPayload(slot) {
+  const hasHumanSlots = !!slot.peerHumanSlots;
+  const hasInputDelay = Number.isFinite(slot.peerInputDelay);
+  // Nothing to announce yet: a plain session before its delay is negotiated
+  // stays silent, exactly as before adaptive delay existed.
+  if (!hasHumanSlots && !hasInputDelay) return null;
   const msg = {
     type: 'session-config',
     players: slot.peerCount || 2,
-    aiFill: true,
-    humanSlots: slot.peerHumanSlots,
-    takeovers,
   };
+  if (hasInputDelay) msg.inputDelay = slot.peerInputDelay;
+  if (hasHumanSlots) {
+    const takeovers = [];
+    const source = slot.peerTakeovers || {};
+    for (const key of Object.keys(source)) {
+      const takeoverSlot = Math.floor(Number(key));
+      const frame = Math.floor(Number(source[key]));
+      if (Number.isFinite(takeoverSlot) && Number.isFinite(frame) && frame > 0) {
+        takeovers.push({ slot: takeoverSlot, frame });
+      }
+    }
+    msg.aiFill = true;
+    msg.humanSlots = slot.peerHumanSlots;
+    msg.takeovers = takeovers;
+  }
   if (peerBinaryReady(slot)) msg.binaryFrames = true;
   return JSON.stringify(msg);
 }
@@ -588,6 +710,7 @@ function attachPeerWatcher(slot, session, ws) {
       players: slot.peerCount || 2,
       aiFill: !!slot.peerHumanSlots,
       humanSlots: slot.peerHumanSlots,
+      inputDelay: Number.isFinite(slot.peerInputDelay) ? slot.peerInputDelay : undefined,
       binaryFrames: ws._peerBinaryFrames === true && peerBinaryReady(slot) ? true : undefined,
     }));
     sendSessionConfig(ws, slot);
@@ -772,6 +895,10 @@ function attachPeer(slot, session, ws) {
   ws._peerSlot = -1;
   ws._peerBinaryFrames = false;
 
+  // Adaptive input-delay: the browser auto-pongs our pings, letting us measure
+  // socket RTT with no client cooperation. Samples feed computeSessionInputDelay.
+  ws.on('pong', (data) => recordPeerPong(ws, data));
+
   ws.on('message', (data, isBinary) => {
     let msg;
     let payload;
@@ -787,7 +914,7 @@ function attachPeer(slot, session, ws) {
 
     if (msg.type === 'hello-peer') {
       if (isBinary) return;
-      handlePeerHello(slot, ws, msg);
+      handlePeerHello(slot, session, ws, msg);
       return;
     }
     if (ws._peerSlot < 0) return;
@@ -851,7 +978,7 @@ function attachPeer(slot, session, ws) {
   ws.on('error', closeHandler);
 }
 
-function handlePeerHello(slot, ws, msg) {
+function handlePeerHello(slot, session, ws, msg) {
   // Already bound: a second hello-peer is a protocol error; ignore it
   // rather than re-arrange slots.
   if (ws._peerSlot >= 0) return;
@@ -960,6 +1087,11 @@ function handlePeerHello(slot, ws, msg) {
       try { ws.send(joinedOther); } catch {}
     }
   }
+  // Once the full human roster is present, measure RTT and lock in the
+  // session's adaptive lockstep input delay. One-shot per session; late
+  // joiners inherit the already-fixed value via sendSessionConfig above.
+  maybeNegotiateSessionDelay(slot, session);
+
   // If more peers are still absent, do nothing. Each arrival triggers this
   // same branch and all connected clients count joined slots locally.
 }

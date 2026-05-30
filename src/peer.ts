@@ -42,8 +42,8 @@ export type PeerMsgIn =
   | { type: 'hash'; frame: number; slot: PeerSlot; hash: number }
   | { type: 'peer-joined'; slot: PeerSlot; binaryFrames?: boolean }
   | { type: 'peer-left'; slot: PeerSlot; reason: string }
-  | { type: 'peerwatch-ready'; players?: number; aiFill?: boolean; humanSlots?: number[]; takeovers?: HumanSlotTakeover[]; binaryFrames?: boolean }
-  | { type: 'session-config'; players?: number; aiFill?: boolean; humanSlots?: number[]; takeovers?: HumanSlotTakeover[]; binaryFrames?: boolean }
+  | { type: 'peerwatch-ready'; players?: number; aiFill?: boolean; humanSlots?: number[]; takeovers?: HumanSlotTakeover[]; inputDelay?: number; binaryFrames?: boolean }
+  | { type: 'session-config'; players?: number; aiFill?: boolean; humanSlots?: number[]; takeovers?: HumanSlotTakeover[]; inputDelay?: number; binaryFrames?: boolean }
   | { type: 'session-error'; code: string };
 
 export interface HumanSlotTakeover { slot: number; frame: number }
@@ -107,6 +107,11 @@ export interface Peer {
   getHumanSlots?(): number[];
   /** Human-slot config plus scheduled AI->human takeover frames. */
   getHumanSlotConfig?(): HumanSlotConfig;
+  /** The broker-negotiated lockstep input delay in sim frames, or null if the
+   *  broker has not assigned one yet (or this transport never negotiates, e.g.
+   *  loopback). The whole session shares one value so determinism holds; the
+   *  caller freezes it before the sim starts consuming real input. */
+  getNegotiatedInputDelay?(): number | null;
 }
 
 // ── LoopbackPeer ─────────────────────────────────────────────────────────────
@@ -365,6 +370,7 @@ export class WebSocketPeer implements Peer {
   private binaryFramesActive = false;
   private humanSlots: number[] = [];
   private humanTakeovers: HumanSlotTakeover[] = [];
+  private negotiatedInputDelay: number | null = null;
 
   connect(opts: PeerConnectOpts): Promise<void> {
     return new Promise<void>((resolve, reject) => {
@@ -429,7 +435,7 @@ export class WebSocketPeer implements Peer {
       | { kind: 'connect-failed'; error: string }
       | { kind: 'peer-left' }
       | { kind: 'session-error'; code: string }
-      | { kind: 'session-config'; humanSlots: number[]; takeovers?: HumanSlotTakeover[] }
+      | { kind: 'session-config'; humanSlots: number[]; takeovers?: HumanSlotTakeover[]; inputDelay?: number | null }
       | { kind: 'frame'; frame: number; slot: PeerSlot; input: number }
       | { kind: 'frames'; slot: PeerSlot; base: number; inputs: number[] }
       | { kind: 'hash'; frame: number; slot: PeerSlot; hash: number }
@@ -457,6 +463,9 @@ export class WebSocketPeer implements Peer {
       case 'session-config':
         this.humanSlots = Array.isArray(m.humanSlots) ? m.humanSlots.slice() : [];
         this.humanTakeovers = Array.isArray(m.takeovers) ? m.takeovers.slice() : [];
+        if (typeof m.inputDelay === 'number' && Number.isFinite(m.inputDelay)) {
+          this.negotiatedInputDelay = Math.max(0, Math.floor(m.inputDelay));
+        }
         return;
       case 'frame':
         this.frameInbox.push({ frame: m.frame, slot: m.slot, input: m.input });
@@ -541,6 +550,10 @@ export class WebSocketPeer implements Peer {
       humanSlots: this.humanSlots.slice(),
       takeovers: this.humanTakeovers.map(t => ({ slot: t.slot, frame: t.frame })),
     };
+  }
+
+  getNegotiatedInputDelay(): number | null {
+    return this.negotiatedInputDelay;
   }
 
   disconnect(): void {
@@ -891,7 +904,8 @@ function buildPeerWorkerSource(): string {
           if (msg.binaryFrames === true) binaryWire = true;
           configuredHumanSlots = normaliseSlots(msg.humanSlots);
           configuredTakeovers = normaliseTakeovers(msg.takeovers);
-          post({ kind: 'session-config', humanSlots: configuredHumanSlots || [], takeovers: configuredTakeovers });
+          var negotiatedDelay = (typeof msg.inputDelay === 'number' && isFinite(msg.inputDelay)) ? Math.floor(msg.inputDelay) : null;
+          post({ kind: 'session-config', humanSlots: configuredHumanSlots || [], takeovers: configuredTakeovers, inputDelay: negotiatedDelay });
           maybeSignalConnected();
         } else if (msg.type === 'peer-joined') {
           if (msg.binaryFrames === true) binaryWire = true;
@@ -985,6 +999,7 @@ export class SpectatorPeer {
   private aiFill = false;
   private humanSlots: number[] | null = null;
   private humanTakeovers: HumanSlotTakeover[] = [];
+  private negotiatedInputDelay: number | null = null;
   private frameInbox: SpectatorFrameDelivery[] = [];
   private hashInbox: SpectatorHashDelivery[] = [];
   private resolveConnect: (() => void) | null = null;
@@ -1053,6 +1068,16 @@ export class SpectatorPeer {
     };
   }
 
+  getNegotiatedInputDelay(): number | null {
+    return this.negotiatedInputDelay;
+  }
+
+  private setNegotiatedInputDelay(raw: number | undefined): void {
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      this.negotiatedInputDelay = Math.max(0, Math.floor(raw));
+    }
+  }
+
   private setHumanConfig(rawSlots: number[] | undefined, rawTakeovers: HumanSlotTakeover[] | undefined): void {
     if (!Array.isArray(rawSlots)) return;
     const seen = new Set<number>();
@@ -1107,6 +1132,7 @@ export class SpectatorPeer {
         }
         if (msg.aiFill) this.aiFill = true;
         this.setHumanConfig(msg.humanSlots, msg.takeovers);
+        this.setNegotiatedInputDelay(msg.inputDelay);
         this.resolveIfReady();
         return;
       case 'session-config':
@@ -1118,6 +1144,7 @@ export class SpectatorPeer {
         }
         if (msg.aiFill) this.aiFill = true;
         this.setHumanConfig(msg.humanSlots, msg.takeovers);
+        this.setNegotiatedInputDelay(msg.inputDelay);
         this.resolveIfReady();
         return;
       case 'peer-joined':

@@ -52,7 +52,11 @@ const BROKER_RATE_HZ = intArg('brokerRate', 60, 5, 60);
 const BROKER_BATCH_SIZE = intArg('brokerBatch', 4, 1, 16);
 const FORWARD_DELAY_MS = intArg('delay', 60, 0, 1_000);
 const FORWARD_JITTER_MS = intArg('jitter', 120, 0, 2_000);
-const INPUT_DELAY_FRAMES = intArg('inputDelay', 36, 0, 60);
+// -1 (default) lets the broker negotiate the adaptive input delay from the
+// measured link, which is what we want to exercise. Pass --inputDelay=N to
+// force the legacy static delay instead (bypasses adaptation via the URL knob).
+const INPUT_DELAY_FRAMES = intArg('inputDelay', -1, -1, 60);
+const FORCED_INPUT_DELAY = INPUT_DELAY_FRAMES >= 0;
 
 function startVite(): ChildProcess {
   const p = spawn('pnpm', ['exec', 'vite', '--force', '--host', '127.0.0.1', '--port', String(VITE_PORT), '--strictPort'], {
@@ -235,6 +239,8 @@ interface BrowserPerfProbe {
     stallFrames?: number;
     maxStallFrames?: number;
     stallCount?: number;
+    inputDelay?: number;
+    negotiatedInputDelay?: number | null;
   };
   longTask?: { count?: number; totalMs?: number; maxMs?: number };
   workerMainLagFrames?: number;
@@ -301,6 +307,7 @@ function browserPerfLine(perf: BrowserPerfProbe | null): string {
     + ` sim${fmtMs(perf.sim?.p95)}/${fmtMs(perf.sim?.p99)}ms`
     + ` render${fmtMs(perf.render?.p95)}/${fmtMs(perf.render?.p99)}ms`
     + ` lock=${perf.lockstep?.blockedTicks ?? 0}/${perf.lockstep?.catchupTicks ?? 0}`
+    + ` delay=${perf.lockstep?.inputDelay ?? '-'}f(neg${perf.lockstep?.negotiatedInputDelay ?? '-'})`
     + ` long=${perf.longTask?.count ?? 0}/${fmtMs(perf.longTask?.maxMs)}ms`
     + ` lag=${perf.workerMainLagFrames ?? 0}`;
 }
@@ -312,6 +319,15 @@ function assertBrowserPerf(players: number, label: string, perf: BrowserPerfProb
   if ((perf.sim?.p99 ?? 0) > 30) throw new Error(`${players}P ${label} sim p99 too high: ${perf.sim?.p99}ms`);
   if ((perf.render?.p99 ?? 0) > 60) throw new Error(`${players}P ${label} render p99 too high: ${perf.render?.p99}ms`);
   if ((perf.longTask?.maxMs ?? 0) > 750) throw new Error(`${players}P ${label} long task too high: ${perf.longTask?.maxMs}ms`);
+  // When the broker is allowed to negotiate, it must have assigned a delay and
+  // it must beat the legacy static tier — that lower delay IS the latency win.
+  if (!FORCED_INPUT_DELAY) {
+    const neg = perf.lockstep?.negotiatedInputDelay;
+    const eff = perf.lockstep?.inputDelay ?? 0;
+    if (neg == null) throw new Error(`${players}P ${label} expected a broker-negotiated input delay, got none`);
+    const staticTier = players <= 2 ? 30 : players <= 4 ? 36 : 56;
+    if (eff >= staticTier) throw new Error(`${players}P ${label} adaptive delay ${eff}f did not improve on static tier ${staticTier}f`);
+  }
 }
 
 function deathmatchParams(session: string, players: number, slot?: number, spectate = false): string {
@@ -319,13 +335,15 @@ function deathmatchParams(session: string, players: number, slot?: number, spect
     players: String(players),
     deathmatchPlayers: String(players),
     mode: 'deathmatch',
-    inputDelay: String(INPUT_DELAY_FRAMES),
     deathmatchTime: '300',
     deathmatchKills: '250',
     deathmatchRespawns: '99',
     wiretrace: '1',
     peerBatch: '1',
   });
+  // Only pin the input delay when explicitly forced; otherwise let the broker
+  // negotiate it adaptively from the measured link.
+  if (FORCED_INPUT_DELAY) params.set('inputDelay', String(INPUT_DELAY_FRAMES));
   if (spectate) {
     params.set('spectate', session);
     params.set('peer', `${BROKER_URL}/?s=${encodeURIComponent(session)}&r=peerwatch&binaryFrames=1`);
@@ -349,7 +367,7 @@ async function runBrowserCase(browser: Browser, players: number): Promise<void> 
   const pages: Page[] = [];
   const contexts: import('playwright').BrowserContext[] = [];
   const metricsBefore = await fetchBrokerMetrics();
-  process.stdout.write(`\n[browser ${players}P] session=${session} delay=${FORWARD_DELAY_MS}+${FORWARD_JITTER_MS}ms inputDelay=${INPUT_DELAY_FRAMES}f\n`);
+  process.stdout.write(`\n[browser ${players}P] session=${session} delay=${FORWARD_DELAY_MS}+${FORWARD_JITTER_MS}ms inputDelay=${FORCED_INPUT_DELAY ? INPUT_DELAY_FRAMES + 'f' : 'adapt'}\n`);
 
   for (let slot = 0; slot < players; slot++) {
     const ctx = await primeContext(browser);
@@ -642,7 +660,7 @@ async function runBrokerCase(players: number): Promise<void> {
 async function main(): Promise<void> {
   process.stdout.write(
     `deathmatch soak: browser=${BROWSER_COUNTS.join(',') || '-'} broker=${BROKER_COUNTS.join(',') || '-'} `
-    + `brokerRate=${BROKER_RATE_HZ}Hz brokerBatch=${BROKER_BATCH_SIZE} delay=${FORWARD_DELAY_MS} jitter=${FORWARD_JITTER_MS} inputDelay=${INPUT_DELAY_FRAMES}\n`,
+    + `brokerRate=${BROKER_RATE_HZ}Hz brokerBatch=${BROKER_BATCH_SIZE} delay=${FORWARD_DELAY_MS} jitter=${FORWARD_JITTER_MS} inputDelay=${FORCED_INPUT_DELAY ? INPUT_DELAY_FRAMES : 'adapt'}\n`,
   );
   const vite = startVite();
   const broker = startBroker();

@@ -1,0 +1,91 @@
+# Multiplayer latency: adaptive delay → rollback
+
+_2026-05-30. Goal: world-class feel / "zero lag" in the shared-arena modes
+(co-op, duel, 4P deathmatch)._
+
+## Diagnosis (measured, not guessed)
+
+A 4P deathmatch soak (`pnpm test:deathmatch:soak`, 60+120 ms injected network)
+shows the per-frame cost is already excellent and is **not** the problem:
+
+| p95 / p99 | value |
+|---|---|
+| sim step | 0.2–0.5 / 0.6 ms |
+| render | 0.5 / 0.7 ms |
+| long tasks / worker→main lag / desync / drops | 0 / 0 / false / 0 |
+
+The felt lag is entirely the **lockstep input-delay buffer**. Because lockstep
+applies every slot from the same delayed read frame (`state.frame − delay`) for
+determinism, the delay is applied to *your own ship too*. The shipped static
+tiers (`peerInputDelayFrames`, `main.ts`) were:
+
+| mode | delay | felt input lag |
+|---|---|---|
+| co-op campaign | 24f | 400 ms |
+| duel / 2P deathmatch | 30f | 500 ms |
+| 4P deathmatch | 36f | 600 ms |
+| AI-filled / large | 56f | 933 ms |
+
+The design doc budgeted "a few frames" for a 60–120 ms RTT; the shipped values
+were ~3–7× that, cranked up by the "Stabilize" commits to kill stalls. The soak
+proved the headroom: at 36f under a 180 ms network, blocked ticks were ~0.
+
+## Phase 1 — adaptive input delay (DONE)
+
+**Hard constraint:** all peers must apply the same input at the same sim frame,
+so the session must share **one identical delay**, frozen before frame 0. A
+per-client measured value would desync. So the **broker** (single authority)
+measures and assigns it.
+
+- **Broker** (`controller-ws/server.js`): measures socket RTT to each peer via
+  protocol ping/pong (`ws.ping()` + `'pong'` — transparent to the browser, no
+  client cooperation). Once the human roster is bound, it probes for ~160 ms,
+  computes one delay from `oneWay(slowest)+oneWay(2nd) + brokerForward +
+  safety`, clamps to `[2, 60]`, and ships it in `session-config` to peers and
+  spectators. One-shot per session; late joiners inherit it.
+- **Client** (`src/peer.ts`): `WebSocketPeer`/`SpectatorPeer`/worker capture
+  `inputDelay` from `session-config`; `getNegotiatedInputDelay()`.
+- **Main** (`src/main.ts`): after connect, `captureNegotiatedInputDelay` freezes
+  the value before `setPeerActive(true)`; the read site clamps it to
+  `[ADAPT_MIN_DELAY_FRAMES, staticTier]` so a session is **never worse than the
+  old default, usually much snappier**. `?inputDelay=` is a hard override.
+- **AI-filled sessions are excluded** from adaptation (broker skips negotiation,
+  client skips the await → byte-identical startup). Their late-human takeover
+  handoff is co-tuned to the 56f static tier; a session can gain a late human at
+  any time, so they stay static. The human modes (co-op, duel, full-roster
+  deathmatch) are where the win lands.
+
+**Determinism safety:** single broker-broadcast value, frozen pre-frame-0,
+constant for the run. Timeout fallback (1000 ms) is reached consistently by all
+peers because every peer's connect resolves at the same all-bound moment and
+waits together → no static-vs-negotiated split.
+
+**Results:** soak negotiates **14f** (vs 36f) under the 180 ms adversarial net,
+`desync=false`, `frameSpread≤2`, maxStall 1–4f. Co-op e2e drops to **4f (67 ms)**
+on a clean local link. In production (broker forward = 0, RTT 60–120 ms) expect
+~7–10f (≈120–170 ms). Validated: typecheck, prod build, 4 determinism harnesses,
+coop e2e, n-player e2e (incl. all AI-fill/late-takeover scenarios), soak,
+spectate-latejoin.
+
+## Phase 2 — rollback netcode (NEXT, the real "zero lag")
+
+Run local input at delay 0–1 (instant own-ship response); predict remote inputs
+(repeat-last); on a misprediction, restore a snapshot and re-simulate forward.
+For inertial Asteroids movement, remote mispredictions are visually tiny.
+
+**Prerequisites — essentially met:**
+- Determinism audited (B3 verifiable replay; `docs/b3-verifiable-replay.md`).
+- RNG is a single 32-bit number with `get/setRngState` (`src/seed.ts`).
+- Per-frame `InputLog` ring already exists, with "(later) rollback" hooks.
+- Sim is ~0.5 ms → re-simming 10–15 frames ≈ 5–8 ms, well inside budget.
+
+**To build:**
+1. Fast full `GameState` snapshot/restore (currently only the lossy
+   `serializeForCanary` slice exists). Allocation-light ring of snapshots over
+   the rollback window. Must round-trip every field `updateGame` touches +
+   module RNG state.
+2. Prediction (repeat-last-input) for un-received remote frames.
+3. Misprediction detect on real-input arrival → restore + re-sim. Reuse the
+   existing desync-canary hash to assert re-sim correctness.
+4. Cap rollback window; on overrun, fall back to the Phase-1 delay path.
+5. Adaptive delay stays as the floor/fallback when prediction is disabled.
