@@ -9,8 +9,8 @@
  *
  * Two implementations:
  *
- * - `WebSocketPeer` — real transport against the broker. JSON-encoded
- *   messages, one-and-done connect, automatic ping reconnect not done in v1.
+ * - `WebSocketPeer` — real transport against the broker. Control messages
+ *   stay JSON; broker-capable frame/hash traffic uses a compact binary form.
  * - `LoopbackPeer` — pair two instances together with `loopbackPair()`; one's
  *   send lands in the other's drain inbox after a configurable simulated
  *   latency. Used by the M3 offline harness to drive both sides of a duel
@@ -27,7 +27,7 @@ export type PeerSlot = number;
 
 /** Messages this client sends to the broker. */
 export type PeerMsgOut =
-  | { type: 'hello-peer'; session: string; slot: PeerSlot; version: 1; players?: number; aiFill?: boolean; humanSlots?: number[] }
+  | { type: 'hello-peer'; session: string; slot: PeerSlot; version: 1; players?: number; aiFill?: boolean; humanSlots?: number[]; binaryFrames?: boolean }
   | { type: 'frame'; frame: number; slot: PeerSlot; input: number }
   | { type: 'frames'; slot: PeerSlot; base: number; inputs: number[] }
   | { type: 'hash'; frame: number; slot: PeerSlot; hash: number }
@@ -40,10 +40,10 @@ export type PeerMsgIn =
   | { type: 'frame'; frame: number; slot: PeerSlot; input: number }
   | { type: 'frames'; slot: PeerSlot; base: number; inputs: number[] }
   | { type: 'hash'; frame: number; slot: PeerSlot; hash: number }
-  | { type: 'peer-joined'; slot: PeerSlot }
+  | { type: 'peer-joined'; slot: PeerSlot; binaryFrames?: boolean }
   | { type: 'peer-left'; slot: PeerSlot; reason: string }
-  | { type: 'peerwatch-ready'; players?: number; aiFill?: boolean; humanSlots?: number[]; takeovers?: HumanSlotTakeover[] }
-  | { type: 'session-config'; players?: number; aiFill?: boolean; humanSlots?: number[]; takeovers?: HumanSlotTakeover[] }
+  | { type: 'peerwatch-ready'; players?: number; aiFill?: boolean; humanSlots?: number[]; takeovers?: HumanSlotTakeover[]; binaryFrames?: boolean }
+  | { type: 'session-config'; players?: number; aiFill?: boolean; humanSlots?: number[]; takeovers?: HumanSlotTakeover[]; binaryFrames?: boolean }
   | { type: 'session-error'; code: string };
 
 export interface HumanSlotTakeover { slot: number; frame: number }
@@ -222,6 +222,63 @@ export function loopbackPair(oneWayDelayFrames = 3): [LoopbackPeer, LoopbackPeer
   return [a, b];
 }
 
+const PEER_BINARY_MAGIC = 0x50; // 'P'
+const PEER_BINARY_VERSION = 1;
+const PEER_BINARY_FRAME = 1;
+const PEER_BINARY_FRAMES = 2;
+const PEER_BINARY_HASH = 3;
+
+function parsePeerBinaryMessage(data: unknown): PeerMsgIn | null {
+  let buffer: ArrayBuffer;
+  let byteOffset = 0;
+  let byteLength = 0;
+  if (data instanceof ArrayBuffer) {
+    buffer = data;
+    byteLength = data.byteLength;
+  } else if (ArrayBuffer.isView(data)) {
+    buffer = data.buffer as ArrayBuffer;
+    byteOffset = data.byteOffset;
+    byteLength = data.byteLength;
+  } else {
+    return null;
+  }
+  if (byteLength < 9) return null;
+  const bytes = new Uint8Array(buffer, byteOffset, byteLength);
+  if (bytes[0] !== PEER_BINARY_MAGIC || bytes[1] !== PEER_BINARY_VERSION) return null;
+  const kind = bytes[2];
+  const slot = bytes[3];
+  const view = new DataView(buffer, byteOffset, byteLength);
+  const frameOrBase = view.getUint32(4, true);
+  if (kind === PEER_BINARY_FRAME) {
+    if (byteLength !== 12) return null;
+    return { type: 'frame', frame: frameOrBase, slot, input: view.getUint32(8, true) };
+  }
+  if (kind === PEER_BINARY_HASH) {
+    if (byteLength !== 12) return null;
+    return { type: 'hash', frame: frameOrBase, slot, hash: view.getUint32(8, true) };
+  }
+  if (kind === PEER_BINARY_FRAMES) {
+    const count = bytes[8];
+    if (count <= 0 || byteLength !== 9 + count * 4) return null;
+    const inputs: number[] = [];
+    for (let i = 0; i < count; i++) inputs.push(view.getUint32(9 + i * 4, true));
+    return { type: 'frames', slot, base: frameOrBase, inputs };
+  }
+  return null;
+}
+
+function parsePeerMessageData(data: unknown): PeerMsgIn | null {
+  const binary = parsePeerBinaryMessage(data);
+  if (binary) return binary;
+  if (typeof data !== 'string') return null;
+  try {
+    const parsed = JSON.parse(data) as PeerMsgIn;
+    return parsed && typeof parsed.type === 'string' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── WebSocketPeer ────────────────────────────────────────────────────────────
 
 /** Real transport against the controller-ws broker (`joystick` repo). The
@@ -305,6 +362,7 @@ export class WebSocketPeer implements Peer {
   private wsSentFrameCount = 0;
   private wsRecvFramePayloadCount = 0;
   private wsSentFramePayloadCount = 0;
+  private binaryFramesActive = false;
   private humanSlots: number[] = [];
   private humanTakeovers: HumanSlotTakeover[] = [];
 
@@ -376,7 +434,7 @@ export class WebSocketPeer implements Peer {
       | { kind: 'frames'; slot: PeerSlot; base: number; inputs: number[] }
       | { kind: 'hash'; frame: number; slot: PeerSlot; hash: number }
       | { kind: 'wire-entry'; entry: WireTraceEntry }
-      | { kind: 'counters'; bufferedAmount: number; readyState: number; wsRecvFrameCount: number; wsSentFrameCount: number; wsRecvFramePayloadCount: number; wsSentFramePayloadCount: number };
+      | { kind: 'counters'; bufferedAmount: number; readyState: number; wsRecvFrameCount: number; wsSentFrameCount: number; wsRecvFramePayloadCount: number; wsSentFramePayloadCount: number; binaryFramesActive?: boolean };
     switch (m.kind) {
       case 'connected':
         this.connected = true;
@@ -432,6 +490,7 @@ export class WebSocketPeer implements Peer {
         this.wsSentFrameCount = m.wsSentFrameCount;
         this.wsRecvFramePayloadCount = m.wsRecvFramePayloadCount;
         this.wsSentFramePayloadCount = m.wsSentFramePayloadCount;
+        this.binaryFramesActive = m.binaryFramesActive === true;
         return;
     }
   };
@@ -449,7 +508,7 @@ export class WebSocketPeer implements Peer {
   }
 
   /** Return lightweight cumulative counters (always available). */
-  getWireCounters(): { sentFrameCount: number; sentHashCount: number; recvFrameCount: number; recvHashCount: number; lastSendFrame: number; lastRecvFrame: number; bufferedAmount: number; readyState: number; wsRecvFrameCount: number; wsSentFrameCount: number; wsRecvFramePayloadCount: number; wsSentFramePayloadCount: number } {
+  getWireCounters(): { sentFrameCount: number; sentHashCount: number; recvFrameCount: number; recvHashCount: number; lastSendFrame: number; lastRecvFrame: number; bufferedAmount: number; readyState: number; wsRecvFrameCount: number; wsSentFrameCount: number; wsRecvFramePayloadCount: number; wsSentFramePayloadCount: number; binaryFramesActive: boolean } {
     return {
       sentFrameCount: this.sentFrameCount,
       sentHashCount: this.sentHashCount,
@@ -463,6 +522,7 @@ export class WebSocketPeer implements Peer {
       wsSentFrameCount: this.wsSentFrameCount,
       wsRecvFramePayloadCount: this.wsRecvFramePayloadCount,
       wsSentFramePayloadCount: this.wsSentFramePayloadCount,
+      binaryFramesActive: this.binaryFramesActive,
     };
   }
 
@@ -558,6 +618,7 @@ function buildPeerWorkerSource(): string {
     var initialConnectDone = false;
     var joinedSlots = {};
     var batchFrames = false;
+    var binaryWire = false;
     var frameBatchMs = 12;
     var frameBatchMax = 2;
     var pendingFrames = {};
@@ -626,6 +687,74 @@ function buildPeerWorkerSource(): string {
       }
       return true;
     }
+    var PEER_BINARY_MAGIC = 0x50;
+    var PEER_BINARY_VERSION = 1;
+    var PEER_BINARY_FRAME = 1;
+    var PEER_BINARY_FRAMES = 2;
+    var PEER_BINARY_HASH = 3;
+    function parseBinaryPeerMessage(data) {
+      if (!(data instanceof ArrayBuffer) || data.byteLength < 9) return null;
+      var bytes = new Uint8Array(data);
+      if (bytes[0] !== PEER_BINARY_MAGIC || bytes[1] !== PEER_BINARY_VERSION) return null;
+      var kind = bytes[2];
+      var slot = bytes[3];
+      var view = new DataView(data);
+      var frameOrBase = view.getUint32(4, true);
+      if (kind === PEER_BINARY_FRAME) {
+        if (data.byteLength !== 12) return null;
+        return { type: 'frame', frame: frameOrBase, slot: slot, input: view.getUint32(8, true) };
+      }
+      if (kind === PEER_BINARY_HASH) {
+        if (data.byteLength !== 12) return null;
+        return { type: 'hash', frame: frameOrBase, slot: slot, hash: view.getUint32(8, true) };
+      }
+      if (kind === PEER_BINARY_FRAMES) {
+        var count = bytes[8];
+        if (count <= 0 || data.byteLength !== 9 + count * 4) return null;
+        var inputs = [];
+        for (var i = 0; i < count; i++) inputs.push(view.getUint32(9 + i * 4, true));
+        return { type: 'frames', slot: slot, base: frameOrBase, inputs: inputs };
+      }
+      return null;
+    }
+    function binaryPeerFrame(frame, input) {
+      var buf = new ArrayBuffer(12);
+      var bytes = new Uint8Array(buf);
+      var view = new DataView(buf);
+      bytes[0] = PEER_BINARY_MAGIC;
+      bytes[1] = PEER_BINARY_VERSION;
+      bytes[2] = PEER_BINARY_FRAME;
+      bytes[3] = localSlot & 255;
+      view.setUint32(4, frame >>> 0, true);
+      view.setUint32(8, input >>> 0, true);
+      return buf;
+    }
+    function binaryPeerFrames(base, inputs) {
+      var count = Math.min(255, inputs.length);
+      var buf = new ArrayBuffer(9 + count * 4);
+      var bytes = new Uint8Array(buf);
+      var view = new DataView(buf);
+      bytes[0] = PEER_BINARY_MAGIC;
+      bytes[1] = PEER_BINARY_VERSION;
+      bytes[2] = PEER_BINARY_FRAMES;
+      bytes[3] = localSlot & 255;
+      view.setUint32(4, base >>> 0, true);
+      bytes[8] = count;
+      for (var i = 0; i < count; i++) view.setUint32(9 + i * 4, inputs[i] >>> 0, true);
+      return buf;
+    }
+    function binaryPeerHash(frame, hash) {
+      var buf = new ArrayBuffer(12);
+      var bytes = new Uint8Array(buf);
+      var view = new DataView(buf);
+      bytes[0] = PEER_BINARY_MAGIC;
+      bytes[1] = PEER_BINARY_VERSION;
+      bytes[2] = PEER_BINARY_HASH;
+      bytes[3] = localSlot & 255;
+      view.setUint32(4, frame >>> 0, true);
+      view.setUint32(8, hash >>> 0, true);
+      return buf;
+    }
     function maybeSignalConnected() {
       if (aiFill ? !allHumanSlotsJoined() : !allExpectedJoined()) return;
       if (!initialConnectDone) {
@@ -633,17 +762,34 @@ function buildPeerWorkerSource(): string {
         post({ kind: 'connected' });
       }
     }
-    function sendPayload(obj) {
+    function sendTextPayload(payload) {
       if (!ws || ws.readyState !== WebSocket.OPEN) return false;
       try {
-        ws.send(JSON.stringify(obj));
+        ws.send(payload);
         return true;
       } catch (e) {
         return false;
       }
     }
+    function sendPayload(obj) {
+      return sendTextPayload(JSON.stringify(obj));
+    }
     function sendFrameGroup(base, inputs) {
       if (inputs.length <= 0) return;
+      if (binaryWire) {
+        if (inputs.length === 1) {
+          if (sendTextPayload(binaryPeerFrame(base, inputs[0]))) {
+            wsSentFrameCount++;
+            wsSentFramePayloadCount++;
+          }
+          return;
+        }
+        if (sendTextPayload(binaryPeerFrames(base, inputs))) {
+          wsSentFrameCount += inputs.length;
+          wsSentFramePayloadCount++;
+        }
+        return;
+      }
       if (inputs.length === 1) {
         if (sendPayload({ type: 'frame', frame: base, slot: localSlot, input: inputs[0] })) {
           wsSentFrameCount++;
@@ -707,6 +853,7 @@ function buildPeerWorkerSource(): string {
     function openSocket() {
       try {
         ws = new WebSocket(buildSocketUrl());
+        ws.binaryType = 'arraybuffer';
       } catch (e) {
         post({ kind: 'connect-failed', error: e && e.message ? e.message : String(e) });
         return;
@@ -714,7 +861,7 @@ function buildPeerWorkerSource(): string {
       ws.addEventListener('open', function () {
         joinedSlots = {};
         markJoined(localSlot);
-        var hello = { type: 'hello-peer', session: session, slot: localSlot, version: 1, players: expectedPlayers };
+        var hello = { type: 'hello-peer', session: session, slot: localSlot, version: 1, players: expectedPlayers, binaryFrames: true };
         if (aiFill) hello.aiFill = true;
         if (aiFill && localSlot === 0 && startHumanSlots && startHumanSlots.length > 0) hello.humanSlots = startHumanSlots;
         if (ws) ws.send(JSON.stringify(hello));
@@ -722,7 +869,13 @@ function buildPeerWorkerSource(): string {
       });
       ws.addEventListener('message', function (ev) {
         var msg;
-        try { msg = JSON.parse(typeof ev.data === 'string' ? ev.data : ''); } catch (e) { return; }
+        if (ev.data instanceof ArrayBuffer) {
+          msg = parseBinaryPeerMessage(ev.data);
+        } else {
+          var raw = typeof ev.data === 'string' ? ev.data : '';
+          try { msg = JSON.parse(raw); } catch (e) { return; }
+        }
+        if (!msg) return;
         if (msg.type === 'frame') {
           wsRecvFrameCount++;
           wsRecvFramePayloadCount++;
@@ -735,11 +888,13 @@ function buildPeerWorkerSource(): string {
         } else if (msg.type === 'hash') {
           post({ kind: 'hash', frame: msg.frame, slot: msg.slot, hash: msg.hash });
         } else if (msg.type === 'session-config') {
+          if (msg.binaryFrames === true) binaryWire = true;
           configuredHumanSlots = normaliseSlots(msg.humanSlots);
           configuredTakeovers = normaliseTakeovers(msg.takeovers);
           post({ kind: 'session-config', humanSlots: configuredHumanSlots || [], takeovers: configuredTakeovers });
           maybeSignalConnected();
         } else if (msg.type === 'peer-joined') {
+          if (msg.binaryFrames === true) binaryWire = true;
           markJoined(msg.slot);
           maybeSignalConnected();
         } else if (msg.type === 'peer-left') {
@@ -764,7 +919,7 @@ function buildPeerWorkerSource(): string {
       });
     }
     setInterval(function () {
-      post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: ws ? ws.readyState : -1, wsRecvFrameCount: wsRecvFrameCount, wsSentFrameCount: wsSentFrameCount, wsRecvFramePayloadCount: wsRecvFramePayloadCount, wsSentFramePayloadCount: wsSentFramePayloadCount });
+      post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: ws ? ws.readyState : -1, wsRecvFrameCount: wsRecvFrameCount, wsSentFrameCount: wsSentFrameCount, wsRecvFramePayloadCount: wsRecvFramePayloadCount, wsSentFramePayloadCount: wsSentFramePayloadCount, binaryFramesActive: binaryWire });
     }, 1000);
     self.addEventListener('message', function (ev) {
       var msg = ev.data;
@@ -778,13 +933,14 @@ function buildPeerWorkerSource(): string {
         startHumanSlots = normaliseSlots(msg.humanSlots);
         configuredHumanSlots = null;
         configuredTakeovers = [];
+        binaryWire = false;
         var cfg = frameBatchConfig(expectedPlayers);
         frameBatchMs = cfg.ms;
         frameBatchMax = cfg.max;
         openSocket();
       } else if (msg.kind === 'disconnect') {
         flushFrameBatch();
-        post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: ws ? ws.readyState : -1, wsRecvFrameCount: wsRecvFrameCount, wsSentFrameCount: wsSentFrameCount, wsRecvFramePayloadCount: wsRecvFramePayloadCount, wsSentFramePayloadCount: wsSentFramePayloadCount });
+        post({ kind: 'counters', bufferedAmount: ws ? ws.bufferedAmount : -1, readyState: ws ? ws.readyState : -1, wsRecvFrameCount: wsRecvFrameCount, wsSentFrameCount: wsSentFrameCount, wsRecvFramePayloadCount: wsRecvFramePayloadCount, wsSentFramePayloadCount: wsSentFramePayloadCount, binaryFramesActive: binaryWire });
         if (ws && connected) {
           try { ws.send(JSON.stringify({ type: 'bye', slot: localSlot })); } catch (e) {}
         }
@@ -795,7 +951,9 @@ function buildPeerWorkerSource(): string {
       } else if (msg.kind === 'send-hash') {
         flushFrameBatch();
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        ws.send(JSON.stringify({ type: 'hash', frame: msg.frame, slot: localSlot, hash: msg.hash }));
+        ws.send(binaryWire
+          ? binaryPeerHash(msg.frame, msg.hash)
+          : JSON.stringify({ type: 'hash', frame: msg.frame, slot: localSlot, hash: msg.hash }));
       }
     });
   `;
@@ -844,6 +1002,7 @@ export class SpectatorPeer {
       this.rejectConnect = reject;
       try {
         this.ws = new WebSocket(opts.url);
+        this.ws.binaryType = 'arraybuffer';
       } catch (e) {
         reject(e instanceof Error ? e : new Error(String(e)));
         return;
@@ -936,10 +1095,8 @@ export class SpectatorPeer {
   }
 
   private onMessage(ev: MessageEvent): void {
-    let msg: PeerMsgIn;
-    try {
-      msg = JSON.parse(typeof ev.data === 'string' ? ev.data : '') as PeerMsgIn;
-    } catch { return; }
+    const msg = parsePeerMessageData(ev.data);
+    if (!msg) return;
     switch (msg.type) {
       case 'peerwatch-ready':
         if (msg.players !== undefined) {

@@ -313,17 +313,16 @@ let peer: Peer | null = null;
 /** The spectator transport for watch-mode. Null in solo / couch / duel. */
 let spectator: SpectatorPeer | null = null;
 /** Input-delay in sim frames when a peer is wired. Co-op must stay close to
- *  solo campaign feel, so it uses only a modest production jitter buffer. All-human
- *  deathmatch also needs more room because every peer receives every other
- *  peer's 60Hz stream. AI-filled deathmatches stay moderate so N-player bot
- *  arenas avoid the huge all-human buffer while still tolerating production
- *  relay jitter. The value must be immutable for a session: late-join replay
- *  re-simulates from frame 0, so changing delay when human slots join would
- *  desync. */
+ *  solo campaign feel, so it uses only a modest production jitter buffer. The
+ *  product deathmatch envelope is 4P; keep that path tight and reserve larger
+ *  buffers for explicit stress arenas where fan-out pressure dominates feel.
+ *  The value must be immutable for a session: late-join replay re-simulates
+ *  from frame 0, so changing delay when human slots join would desync. */
 function peerInputDelayFrames(players: number, aiFilledSession = false): number {
   const configured = boundedPlayerCount(mpParams.get('inputDelay'), NaN, 0, 60);
   if (Number.isFinite(configured)) return configured;
   if (urlCoopCampaignModeActive()) return 24;
+  if (urlDeathmatchModeActive() && players <= 4) return 30;
   if (aiFilledSession) return 40;
   if (urlDeathmatchModeActive()) return Math.min(56, 44 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
   return Math.min(32, 22 + Math.ceil(Math.log2(Math.max(2, players))) * 2);

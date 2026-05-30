@@ -153,7 +153,8 @@ async function gotoClient(client: ClientPage, url: string): Promise<void> {
 }
 
 function peerUrl(session: string, role = 'peer'): string {
-  return `${BROKER}/?s=${encodeURIComponent(session)}&r=${role}`;
+  const extra = role === 'peerwatch' ? '&binaryFrames=1' : '';
+  return `${BROKER}/?s=${encodeURIComponent(session)}&r=${role}${extra}`;
 }
 
 function appUrl(params: Record<string, string | number | boolean | undefined>): string {
@@ -187,6 +188,7 @@ interface BrokerMetrics {
     configuredForwardJitterMs?: number;
     forwardAttempts?: number;
     forwarded?: number;
+    forwardedBytes?: number;
     droppedBufferedAmount?: number;
     maxBufferedAmountObserved?: number;
     forwardLatencyMs?: {
@@ -243,6 +245,7 @@ function printBrokerMetrics(label: string, after: BrokerMetrics | null, before: 
   }
   const latency = after.peer?.forwardLatencyMs;
   const forwarded = metricDelta(after.peer?.forwarded, before?.peer?.forwarded);
+  const bytes = metricDelta(after.peer?.forwardedBytes, before?.peer?.forwardedBytes);
   const dropped = metricDelta(after.peer?.droppedBufferedAmount, before?.peer?.droppedBufferedAmount);
   const attempts = metricDelta(after.peer?.forwardAttempts, before?.peer?.forwardAttempts);
   const configuredDelay = `${after.peer?.configuredForwardDelayMs ?? '-'}/${after.peer?.configuredForwardJitterMs ?? '-'}`;
@@ -250,6 +253,7 @@ function printBrokerMetrics(label: string, after: BrokerMetrics | null, before: 
   process.stdout.write(
     `[broker-metrics] ${label}: attempts=${fmtDelta(attempts, after.peer?.forwardAttempts)}`
     + ` forwarded=${fmtDelta(forwarded, after.peer?.forwarded)}`
+    + ` bytes=${fmtDelta(bytes, after.peer?.forwardedBytes)}`
     + ` drops=${fmtDelta(dropped, after.peer?.droppedBufferedAmount)}`
     + ` latency p50/p95/p99=${latency?.p50 ?? '-'}/${latency?.p95 ?? '-'}/${latency?.p99 ?? '-'}ms max=${latency?.max ?? '-'}ms`
     + ` configuredDelay=${configuredDelay}ms`

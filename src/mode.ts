@@ -126,7 +126,7 @@ export const MODE_LIST: readonly ModeInfo[] = [
   { id: 'drift',    label: 'DRIFT',    hint: 'Endless. Continue past wave 25.',                          ready: true },
   { id: 'bossrush', label: 'BOSS RUSH', hint: 'Boss after boss. Coming soon.',                           ready: false },
   { id: 'arena',    label: 'ARENA',    hint: 'No wrap. Hard walls that close in.',                       ready: true },
-  { id: 'deathmatch', label: 'DEATHMATCH', hint: 'Host 2-64 pilots in a large radar arena.',              ready: true },
+  { id: 'deathmatch', label: 'DEATHMATCH', hint: 'Host 2 or 4 pilots in a large radar arena.',            ready: true },
   { id: 'sanctum',  label: 'SANCTUM',  hint: '600bn Sanctum — Council roster, the-cult bed, endless.',   ready: true },
   { id: 'duel',     label: 'DUEL',     hint: 'Two ships, one arena. Host or join over the broker.',      ready: true },
 ];
