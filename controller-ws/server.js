@@ -71,6 +71,7 @@
 
 import { WebSocketServer } from 'ws';
 import http from 'node:http';
+import { performance } from 'node:perf_hooks';
 
 const PORT = parseInt(process.env.PORT ?? '8788', 10);
 const HOST = process.env.HOST ?? '127.0.0.1';
@@ -119,11 +120,36 @@ const ROLES = new Set(['host', 'phone', 'publish', 'subscribe', 'peer', 'peerwat
 /** Counter for backpressure-dropped peer messages. Surfaced via the
  *  process log on shutdown; not exposed on the wire. */
 let peerDropped = 0;
+let peerForwardAttempts = 0;
+let peerForwardSent = 0;
+let peerForwardUnavailable = 0;
+let peerForwardErrors = 0;
+let peerForwardBytes = 0;
+let peerMaxBufferedAmountObserved = 0;
+
+const METRIC_SAMPLE_LIMIT = Math.max(256, parseInt(process.env.METRIC_SAMPLE_LIMIT ?? '8192', 10) || 8192);
+const peerForwardLatencySamples = [];
+let peerForwardLatencyHead = 0;
+let peerForwardLatencyCount = 0;
+let peerForwardLatencyTotalMs = 0;
+let lastCpuUsage = process.cpuUsage();
+let lastCpuWallMs = performance.now();
 
 /** Map sessionId → SessionSlot. */
 const sessions = new Map();
 
-const server = http.createServer((_req, res) => {
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url ?? '/', 'http://x');
+  if (req.method === 'GET' && url.pathname === '/healthz') {
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(JSON.stringify({ ok: true, uptimeSec: Number(process.uptime().toFixed(3)) }) + '\n');
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/metrics') {
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(JSON.stringify(metricsSnapshot()) + '\n');
+    return;
+  }
   res.writeHead(404, { 'content-type': 'text/plain' });
   res.end('controller relay, open a websocket\n');
 });
@@ -316,6 +342,123 @@ function attach(ws, session, role, wantsMulti) {
   ws.on('error', closeHandler);
 }
 
+function recordPeerForwardLatency(ms) {
+  const value = Math.max(0, Number(ms) || 0);
+  if (peerForwardLatencyCount < METRIC_SAMPLE_LIMIT) {
+    peerForwardLatencySamples.push(value);
+    peerForwardLatencyCount++;
+  } else {
+    const old = peerForwardLatencySamples[peerForwardLatencyHead] || 0;
+    peerForwardLatencyTotalMs -= old;
+    peerForwardLatencySamples[peerForwardLatencyHead] = value;
+    peerForwardLatencyHead = (peerForwardLatencyHead + 1) % METRIC_SAMPLE_LIMIT;
+  }
+  peerForwardLatencyTotalMs += value;
+}
+
+function percentile(sorted, p) {
+  if (sorted.length === 0) return 0;
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
+  return sorted[idx];
+}
+
+function latencySummary() {
+  const samples = peerForwardLatencySamples.slice().sort((a, b) => a - b);
+  const count = samples.length;
+  return {
+    sampleCount: count,
+    sampleLimit: METRIC_SAMPLE_LIMIT,
+    avg: count > 0 ? Number((peerForwardLatencyTotalMs / count).toFixed(3)) : 0,
+    min: count > 0 ? Number(samples[0].toFixed(3)) : 0,
+    p50: Number(percentile(samples, 50).toFixed(3)),
+    p95: Number(percentile(samples, 95).toFixed(3)),
+    p99: Number(percentile(samples, 99).toFixed(3)),
+    max: count > 0 ? Number(samples[count - 1].toFixed(3)) : 0,
+  };
+}
+
+function socketCounts() {
+  let open = 0;
+  let closing = 0;
+  let maxBufferedAmount = 0;
+  for (const client of wss.clients) {
+    if (client.readyState === client.OPEN) open++;
+    else closing++;
+    maxBufferedAmount = Math.max(maxBufferedAmount, Number(client.bufferedAmount) || 0);
+  }
+  return { total: wss.clients.size, open, closing, maxBufferedAmount };
+}
+
+function sessionCounts() {
+  const out = {
+    total: sessions.size,
+    hosts: 0,
+    phones: 0,
+    multiPhones: 0,
+    publishers: 0,
+    subscribers: 0,
+    peerSessions: 0,
+    peers: 0,
+    peerWatchers: 0,
+    recentFramePayloads: 0,
+  };
+  for (const slot of sessions.values()) {
+    if (slot.host) out.hosts++;
+    if (slot.phone) out.phones++;
+    if (slot.phones) out.multiPhones += slot.phones.size;
+    if (slot.publish) out.publishers++;
+    if (slot.subscribe) out.subscribers += slot.subscribe.size;
+    if (peersPresent(slot)) out.peerSessions++;
+    if (Array.isArray(slot.peers)) out.peers += slot.peers.filter(Boolean).length;
+    if (slot.peerWatchers) out.peerWatchers += slot.peerWatchers.size;
+    if (Array.isArray(slot.recentFrames)) out.recentFramePayloads += slot.recentFrames.length;
+  }
+  return out;
+}
+
+function cpuRecentPercent() {
+  const nowCpu = process.cpuUsage();
+  const nowWallMs = performance.now();
+  const usedMs = ((nowCpu.user - lastCpuUsage.user) + (nowCpu.system - lastCpuUsage.system)) / 1000;
+  const wallMs = Math.max(1, nowWallMs - lastCpuWallMs);
+  lastCpuUsage = nowCpu;
+  lastCpuWallMs = nowWallMs;
+  return Number(((usedMs / wallMs) * 100).toFixed(2));
+}
+
+function metricsSnapshot() {
+  const mem = process.memoryUsage();
+  const cpu = process.cpuUsage();
+  return {
+    ok: true,
+    uptimeSec: Number(process.uptime().toFixed(3)),
+    process: {
+      pid: process.pid,
+      rssBytes: mem.rss,
+      heapUsedBytes: mem.heapUsed,
+      heapTotalBytes: mem.heapTotal,
+      externalBytes: mem.external,
+      cpuUserMicros: cpu.user,
+      cpuSystemMicros: cpu.system,
+      cpuRecentPercent: cpuRecentPercent(),
+    },
+    sessions: sessionCounts(),
+    sockets: socketCounts(),
+    peer: {
+      configuredForwardDelayMs: PEER_FORWARD_DELAY_MS,
+      configuredForwardJitterMs: PEER_FORWARD_JITTER_MS,
+      forwardAttempts: peerForwardAttempts,
+      forwarded: peerForwardSent,
+      forwardUnavailable: peerForwardUnavailable,
+      forwardErrors: peerForwardErrors,
+      droppedBufferedAmount: peerDropped,
+      maxBufferedAmountObserved: peerMaxBufferedAmountObserved,
+      forwardedBytes: peerForwardBytes,
+      forwardLatencyMs: latencySummary(),
+    },
+  };
+}
+
 function peersPresent(slot) {
   return Array.isArray(slot.peers) && slot.peers.some(Boolean);
 }
@@ -489,14 +632,27 @@ function rememberPeerFramePayload(slot, payload, msg) {
 }
 
 function sendPeerPayload(target, payload, delayMs = 0) {
-  if (!target || target.readyState !== target.OPEN) return;
+  peerForwardAttempts++;
+  const queuedAt = performance.now();
   const send = () => {
-    if (!target || target.readyState !== target.OPEN) return;
-    if (target.bufferedAmount > PEER_BACKPRESSURE_BYTES) {
+    if (!target || target.readyState !== target.OPEN) {
+      peerForwardUnavailable++;
+      return;
+    }
+    const bufferedAmount = Number(target.bufferedAmount) || 0;
+    if (bufferedAmount > peerMaxBufferedAmountObserved) peerMaxBufferedAmountObserved = bufferedAmount;
+    if (bufferedAmount > PEER_BACKPRESSURE_BYTES) {
       peerDropped++;
       return;
     }
-    try { target.send(payload, { binary: false }); } catch {}
+    try {
+      target.send(payload, { binary: false });
+      peerForwardSent++;
+      peerForwardBytes += Buffer.byteLength(String(payload));
+      recordPeerForwardLatency(performance.now() - queuedAt);
+    } catch {
+      peerForwardErrors++;
+    }
   };
   if (delayMs > 0) setTimeout(send, delayMs);
   else send();
@@ -817,7 +973,8 @@ server.listen(PORT, HOST, () => {
 });
 
 process.on('SIGTERM', () => {
-  console.log(`[controller-ws] shutting down (peer-dropped=${peerDropped})`);
+  const latency = latencySummary();
+  console.log(`[controller-ws] shutting down (peer-forwarded=${peerForwardSent} peer-dropped=${peerDropped} p95=${latency.p95}ms p99=${latency.p99}ms)`);
   wss.close();
   server.close(() => process.exit(0));
 });

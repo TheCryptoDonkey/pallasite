@@ -57,7 +57,14 @@ and the payoff (driving someone's ship for a few seconds) is zero.
    ```
    curl -i https://controller.pallasite.app/
    # should respond with 404 'controller relay — open a websocket'
+   curl -s https://controller.pallasite.app/healthz
+   curl -s https://controller.pallasite.app/metrics
    ```
+
+`/metrics` returns aggregate process and relay counters only: RSS, recent CPU,
+socket/session counts, peer forward attempts/successes, bufferedAmount drops,
+and recent peer-forward p50/p95/p99 latency. It does not include session ids or
+message payloads.
 
 ## Subsequent deploys
 

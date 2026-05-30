@@ -2,7 +2,8 @@
  * Production multiplayer smoke for pallasite.app + controller.pallasite.app.
  *
  * Covers real browser lockstep for co-op/deathmatch join flows and a short
- * raw WebSocket fan-out probe for 4/8/16/64 relay pressure.
+ * raw WebSocket fan-out probe for the 4-player product target. Higher counts
+ * are stress-only and must be requested explicitly with --scale=8,16,64.
  *
  * Run:
  *   pnpm exec tsx tools/check-prod-multiplayer.ts
@@ -46,7 +47,7 @@ const BROWSER_DURATION_MS = intArg('browserDuration', 6_000, 2_000, 30_000);
 const SCALE_DURATION_MS = intArg('scaleDuration', 1_500, 750, 10_000);
 const SCALE_RATE_HZ = intArg('scaleRate', 20, 5, 60);
 const SCALE_BATCH = intArg('scaleBatch', 4, 1, 16);
-const SCALE_COUNTS = parseCounts('scale', [4, 8, 16, 64]);
+const SCALE_COUNTS = parseCounts('scale', [4]);
 const ONLY_CASES = new Set((argValue('only') ?? 'all').split(',').map((v) => v.trim()).filter(Boolean));
 const INPUT_DELAY_OVERRIDE = argValue('inputDelay');
 const PEER_BATCH_OVERRIDE = argValue('peerBatch');
@@ -163,6 +164,99 @@ function appUrl(params: Record<string, string | number | boolean | undefined>): 
   }
   sp.set('prodQa', String(Date.now()));
   return `${TARGET}/?${sp.toString()}`;
+}
+
+interface BrokerMetrics {
+  process?: {
+    rssBytes?: number;
+    cpuRecentPercent?: number;
+  };
+  sessions?: {
+    total?: number;
+    peerSessions?: number;
+    peers?: number;
+    peerWatchers?: number;
+  };
+  sockets?: {
+    total?: number;
+    open?: number;
+    maxBufferedAmount?: number;
+  };
+  peer?: {
+    configuredForwardDelayMs?: number;
+    configuredForwardJitterMs?: number;
+    forwardAttempts?: number;
+    forwarded?: number;
+    droppedBufferedAmount?: number;
+    maxBufferedAmountObserved?: number;
+    forwardLatencyMs?: {
+      sampleCount?: number;
+      p50?: number;
+      p95?: number;
+      p99?: number;
+      max?: number;
+    };
+  };
+}
+
+function brokerMetricsUrl(): string | null {
+  try {
+    const url = new URL(BROKER);
+    if (url.protocol === 'wss:') url.protocol = 'https:';
+    else if (url.protocol === 'ws:') url.protocol = 'http:';
+    else return null;
+    url.pathname = '/metrics';
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchBrokerMetrics(): Promise<BrokerMetrics | null> {
+  const url = brokerMetricsUrl();
+  if (!url) return null;
+  try {
+    const response = await fetch(url, { cache: 'no-store' });
+    if (!response.ok) return null;
+    return await response.json() as BrokerMetrics;
+  } catch {
+    return null;
+  }
+}
+
+function metricDelta(after: number | undefined, before: number | undefined): number | null {
+  if (typeof after !== 'number' || typeof before !== 'number') return null;
+  return after - before;
+}
+
+function fmtDelta(value: number | null, fallback: number | undefined): string {
+  if (value !== null) return String(value);
+  return typeof fallback === 'number' ? String(fallback) : '-';
+}
+
+function printBrokerMetrics(label: string, after: BrokerMetrics | null, before: BrokerMetrics | null = null): void {
+  if (!after) {
+    process.stdout.write(`[broker-metrics] ${label}: unavailable (deploy broker /metrics to enable)\n`);
+    return;
+  }
+  const latency = after.peer?.forwardLatencyMs;
+  const forwarded = metricDelta(after.peer?.forwarded, before?.peer?.forwarded);
+  const dropped = metricDelta(after.peer?.droppedBufferedAmount, before?.peer?.droppedBufferedAmount);
+  const attempts = metricDelta(after.peer?.forwardAttempts, before?.peer?.forwardAttempts);
+  const configuredDelay = `${after.peer?.configuredForwardDelayMs ?? '-'}/${after.peer?.configuredForwardJitterMs ?? '-'}`;
+  const rssMb = typeof after.process?.rssBytes === 'number' ? (after.process.rssBytes / 1024 / 1024).toFixed(1) : '-';
+  process.stdout.write(
+    `[broker-metrics] ${label}: attempts=${fmtDelta(attempts, after.peer?.forwardAttempts)}`
+    + ` forwarded=${fmtDelta(forwarded, after.peer?.forwarded)}`
+    + ` drops=${fmtDelta(dropped, after.peer?.droppedBufferedAmount)}`
+    + ` latency p50/p95/p99=${latency?.p50 ?? '-'}/${latency?.p95 ?? '-'}/${latency?.p99 ?? '-'}ms max=${latency?.max ?? '-'}ms`
+    + ` configuredDelay=${configuredDelay}ms`
+    + ` cpu=${after.process?.cpuRecentPercent ?? '-'}% rss=${rssMb}MB`
+    + ` sockets=${after.sockets?.open ?? '-'}/${after.sockets?.total ?? '-'} maxBuf=${after.sockets?.maxBufferedAmount ?? '-'} observedMaxBuf=${after.peer?.maxBufferedAmountObserved ?? '-'}`
+    + ` sessions=${after.sessions?.peerSessions ?? '-'}/${after.sessions?.total ?? '-'} peers=${after.sessions?.peers ?? '-'} watchers=${after.sessions?.peerWatchers ?? '-'}\n`,
+  );
 }
 
 function coopUrl(session: string, slot: number): string {
@@ -471,6 +565,7 @@ function openBrokerPeer(session: string, slot: number, players: number): Promise
 
 async function runBrokerScale(players: number): Promise<void> {
   const session = `scale${players}-${randomBytes(4).toString('hex')}`;
+  const metricsBefore = await fetchBrokerMetrics();
   const peers = await Promise.all(Array.from({ length: players }, (_, slot) => openBrokerPeer(session, slot, players)));
   const intervalMs = Math.max(20, Math.round((1000 * SCALE_BATCH) / SCALE_RATE_HZ));
   let frame = 0;
@@ -509,11 +604,13 @@ async function runBrokerScale(players: number): Promise<void> {
   }
   for (const peer of peers) peer.ws.close();
   process.stdout.write(`[scale] ${players}P PASS frames=${sentFrames} payloads=${sentPayloads} recv=${Math.min(...peerTotals)}..${Math.max(...peerTotals)}\n`);
+  printBrokerMetrics(`${players}P scale`, await fetchBrokerMetrics(), metricsBefore);
 }
 
 async function main(): Promise<void> {
   const shouldRun = (name: string): boolean => ONLY_CASES.has('all') || ONLY_CASES.has(name);
   process.stdout.write(`prod multiplayer smoke target=${TARGET} broker=${BROKER} duration=${BROWSER_DURATION_MS}ms scale=${SCALE_COUNTS.join(',')} only=${Array.from(ONLY_CASES).join(',')}\n`);
+  const metricsBefore = await fetchBrokerMetrics();
   const browser = await chromium.launch();
   try {
     if (shouldRun('coop')) await runCoop2(browser);
@@ -521,11 +618,12 @@ async function main(): Promise<void> {
     if (shouldRun('late')) await runDeathmatchLate2(browser);
     if (shouldRun('allhuman4')) await runDeathmatchAllHuman4(browser);
     if (shouldRun('aifill4')) await runDeathmatchAiFill(browser, 4);
-    if (shouldRun('aifill8')) await runDeathmatchAiFill(browser, 8);
+    if (ONLY_CASES.has('aifill8')) await runDeathmatchAiFill(browser, 8);
     if (shouldRun('scale')) for (const count of SCALE_COUNTS) await runBrokerScale(count);
   } finally {
     await browser.close().catch(() => undefined);
   }
+  printBrokerMetrics('full smoke', await fetchBrokerMetrics(), metricsBefore);
   process.stdout.write('Production multiplayer smoke PASS\n');
 }
 
