@@ -281,6 +281,58 @@ async function main(): Promise<void> {
       try { opp2.close(); } catch { /* ignore */ }
       try { specWs.close(); } catch { /* ignore */ }
 
+      // ── Event lobby route for booth kiosks ─────────────────────────
+      const eventPage = await ctx.newPage();
+      await eventPage.goto(`${VITE_BASE}/event`, { waitUntil: 'load' });
+      await eventPage.waitForFunction(
+        () => document.body.innerText.includes('BTC PRAGUE') && document.body.innerText.includes('BOOTH 1'),
+        undefined,
+        { timeout: LOBBY_RENDER_TIMEOUT_MS },
+      );
+      const eventLobby = await eventPage.evaluate(() => {
+        const text = document.body.innerText;
+        return {
+          heading: text.includes('BTC PRAGUE') && text.includes('BOOTH 1'),
+          booth2: text.includes('BOOTH 2'),
+          booth3: text.includes('BOOTH 3'),
+          solo: text.includes('PLAY SOLO'),
+          coop: text.includes('HOST CO-OP'),
+          dm: text.includes('HOST DEATHMATCH'),
+          code: !!document.querySelector('input[placeholder="SESSION CODE"]'),
+        };
+      });
+      reportCheck(checks, 'event lobby kiosk route', eventLobby.heading && eventLobby.booth2 && !eventLobby.booth3 && eventLobby.solo && eventLobby.coop && eventLobby.dm && eventLobby.code, JSON.stringify(eventLobby));
+      await eventPage.fill('input[placeholder="SESSION CODE"]', 'prg12345');
+      await eventPage.locator('button').filter({ hasText: 'JOIN CODE' }).click();
+      await eventPage.waitForURL((url) => {
+        return url.pathname === '/'
+          && url.searchParams.get('mode') === 'coop-campaign'
+          && url.searchParams.get('session') === 'prg12345'
+          && url.searchParams.get('slot') === '1'
+          && url.searchParams.has('peer');
+      }, { timeout: LOBBY_RENDER_TIMEOUT_MS });
+      reportCheck(checks, 'event lobby short code joins co-op', true, eventPage.url());
+      await eventPage.close().catch(() => undefined);
+
+      const privatePage = await ctx.newPage();
+      await privatePage.goto(`${VITE_BASE}/event?lobby=FRIENDS&stations=1`, { waitUntil: 'load' });
+      await privatePage.waitForFunction(
+        () => document.body.innerText.includes('FRIENDS') && document.body.innerText.includes('PRIVATE LOBBY'),
+        undefined,
+        { timeout: LOBBY_RENDER_TIMEOUT_MS },
+      );
+      const privateLobby = await privatePage.evaluate(() => {
+        const text = document.body.innerText;
+        return {
+          heading: text.includes('FRIENDS') && text.includes('PRIVATE LOBBY'),
+          privateCopy: text.includes('Start a private lobby'),
+          boothStrip: text.includes('[BOOTH'),
+          code: !!document.querySelector('input[placeholder="SESSION CODE"]'),
+        };
+      });
+      reportCheck(checks, 'private lobby route override', privateLobby.heading && privateLobby.privateCopy && !privateLobby.boothStrip && privateLobby.code, JSON.stringify(privateLobby));
+      await privatePage.close().catch(() => undefined);
+
       // ── Deathmatch route exposes real N-player human lobby ─────────
       const dmPage = await ctx.newPage();
       await dmPage.goto(`${VITE_BASE}/duel?deathmatch=1`, { waitUntil: 'load' });
