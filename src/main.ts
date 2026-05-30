@@ -10,7 +10,7 @@ import { getFlavour } from './flavour.js';
 import { lockInDifficulty, getStoredDifficulty, setStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadCriticalCampaignAssets, setRenderMode, getRenderModeKind, drawAsciiHud, type CriticalAssetReport } from './render.js';
-import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderDuelLobby, renderDuelConnecting, simulateStart } from './ui.js';
+import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderDuelLobby, renderDuelConnecting, renderEventLobby, simulateStart } from './ui.js';
 import { postHeartbeat } from './faucet.js';
 import { currentMode, getStoredMode, isStoredDefenderMode, type RunMode } from './mode.js';
 import { deathmatchActive } from './deathmatch.js';
@@ -2435,6 +2435,9 @@ async function boot(): Promise<void> {
       // game's solo path.
       document.body.dataset.surface = 'duel';
       renderDuelLobby();
+    } else if (path === '/event') {
+      document.body.dataset.surface = 'event';
+      renderEventLobby(state);
     } else if (path === '/sanctum-preview' || path === '/sanctum') {
       // Legacy standalone Sanctum surfaces — the parallel game-loop
       // approach didn't feel like Pallasite, so the 600bn experience

@@ -1092,12 +1092,195 @@ function mountAttractUtilityChips(overlay: HTMLElement, rerender: () => void): v
   }
 }
 
+interface EventLobbyConfig {
+  enabled: boolean;
+  lobbyName: string;
+  booth: number;
+  boothCount: number;
+}
+
+const EVENT_LOBBY_KEY = 'pallasite:eventLobby';
+const DEFAULT_EVENT_LOBBY: EventLobbyConfig = {
+  enabled: false,
+  lobbyName: 'BTC PRAGUE',
+  booth: 1,
+  boothCount: 2,
+};
+
+function normaliseEventLobby(raw: unknown): EventLobbyConfig {
+  const obj = raw && typeof raw === 'object' ? raw as Partial<EventLobbyConfig> & { eventName?: string } : {};
+  const boothCountRaw = Math.floor(Number(obj.boothCount ?? DEFAULT_EVENT_LOBBY.boothCount));
+  const boothCount = Math.max(1, Math.min(12, Number.isFinite(boothCountRaw) ? boothCountRaw : DEFAULT_EVENT_LOBBY.boothCount));
+  const boothRaw = Math.floor(Number(obj.booth ?? DEFAULT_EVENT_LOBBY.booth));
+  const lobbyName = obj.lobbyName ?? obj.eventName;
+  return {
+    enabled: obj.enabled === true,
+    lobbyName: typeof lobbyName === 'string' && lobbyName.trim() ? lobbyName.trim().slice(0, 32) : DEFAULT_EVENT_LOBBY.lobbyName,
+    booth: Math.max(1, Math.min(boothCount, Number.isFinite(boothRaw) ? boothRaw : DEFAULT_EVENT_LOBBY.booth)),
+    boothCount,
+  };
+}
+
+function getEventLobbyConfig(): EventLobbyConfig {
+  try {
+    const raw = localStorage.getItem(EVENT_LOBBY_KEY);
+    if (!raw) return { ...DEFAULT_EVENT_LOBBY };
+    return normaliseEventLobby(JSON.parse(raw));
+  } catch {
+    return { ...DEFAULT_EVENT_LOBBY };
+  }
+}
+
+function setEventLobbyConfig(next: Partial<EventLobbyConfig>): EventLobbyConfig {
+  const cfg = normaliseEventLobby({ ...getEventLobbyConfig(), ...next });
+  try { localStorage.setItem(EVENT_LOBBY_KEY, JSON.stringify(cfg)); } catch { /* ignore */ }
+  return cfg;
+}
+
+function eventLobbyEnabled(): boolean {
+  return getEventLobbyConfig().enabled;
+}
+
+function eventLobbyConfigForRoute(): EventLobbyConfig {
+  const cfg = getEventLobbyConfig();
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const lobbyName = params.get('lobby') ?? params.get('event');
+    const booth = params.get('booth') ?? params.get('station');
+    const boothCount = params.get('booths') ?? params.get('stations');
+    return normaliseEventLobby({
+      ...cfg,
+      ...(lobbyName ? { lobbyName } : {}),
+      ...(booth ? { booth } : {}),
+      ...(boothCount ? { boothCount } : {}),
+    });
+  } catch {
+    return cfg;
+  }
+}
+
+function renderEventLobbyAction(parent: HTMLElement, label: string, hint: string, onClick: () => void): HTMLButtonElement {
+  const btn = el('button', { parent }) as HTMLButtonElement;
+  btn.style.cssText = [
+    'display:flex', 'flex-direction:column', 'align-items:flex-start', 'gap:4px',
+    'width:min(520px, 92vw)',
+    'padding:14px 16px',
+    'background:rgba(20,12,36,0.72)',
+    'border:1.5px solid rgba(255,216,74,0.5)',
+    'border-radius:8px',
+    'color:#fff5d8',
+    'cursor:pointer',
+    'text-align:left',
+  ].join(';');
+  const head = el('span', { parent: btn, text: label });
+  head.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:1.35rem;letter-spacing:0.16em;color:#ffd84a;";
+  const body = el('span', { parent: btn, text: hint });
+  body.style.cssText = 'font-size:0.78rem;letter-spacing:0.04em;color:rgba(220,210,255,0.72);line-height:1.35;';
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+export function renderEventLobby(state: GameState): void {
+  const cfg = eventLobbyConfigForRoute();
+  const stationLabel = cfg.boothCount > 1 ? `BOOTH ${cfg.booth}` : 'PRIVATE LOBBY';
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+
+  const utility = el('div', { parent: overlay });
+  utility.style.cssText = [
+    'position:absolute', 'top:max(14px, env(safe-area-inset-top))', 'right:14px',
+    'display:flex', 'gap:8px', 'flex-wrap:wrap', 'justify-content:flex-end', 'z-index:5',
+  ].join(';');
+  const chipCss = 'font:bold 11px ui-monospace,monospace;letter-spacing:0.14em;padding:6px 12px;background:rgba(20,12,36,0.78);border:1px solid rgba(255,216,74,0.5);color:#ffd84a;border-radius:3px;cursor:pointer;';
+  const settings = el('button', { parent: utility, text: 'SETTINGS' });
+  settings.style.cssText = chipCss;
+  settings.addEventListener('click', () => renderSettings(() => renderEventLobby(state)));
+  const normal = el('button', { parent: utility, text: 'NORMAL MENU' });
+  normal.style.cssText = chipCss;
+  normal.addEventListener('click', () => {
+    if (state.session) renderTitle(state);
+    else renderAuth(state, () => renderTitle(state));
+  });
+
+  const titleLogo = el('img', { parent: overlay });
+  titleLogo.className = 'title-logo';
+  (titleLogo as HTMLImageElement).src = '/logo.webp';
+  (titleLogo as HTMLImageElement).alt = 'PALLASITE';
+  (titleLogo as HTMLImageElement).decoding = 'async';
+
+  const kicker = el('p', { parent: overlay, text: `${cfg.lobbyName} · ${stationLabel}` });
+  kicker.style.cssText = 'font-size:1rem;color:#8cffb4;letter-spacing:0.28em;text-shadow:0 0 8px rgba(140,255,180,0.4);margin:-12px 0 0;';
+  const intro = el('p', { parent: overlay, text: cfg.boothCount > 1 ? 'Walk up, press one button, or scan the QR on this booth.' : 'Start a private lobby, or join one with a short code.' });
+  intro.style.cssText = 'font-size:0.88rem;color:rgba(220,210,255,0.76);letter-spacing:0.08em;text-align:center;max-width:520px;line-height:1.45;margin:0;';
+
+  const actions = el('div', { parent: overlay });
+  actions.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:10px;margin:8px auto 0;width:100%;';
+
+  renderEventLobbyAction(actions, 'PLAY SOLO', 'Fast kiosk start. Guest mode, free-run campaign, no menu setup.', () => {
+    void (async () => {
+      void audio.unlockAudio();
+      tryEnterFullscreen();
+      setStoredMode('campaign');
+      setStoredDailyPref(false);
+      if (!state.session) {
+        try { state.session = await auth.createGuestSession(`${stationLabel} Pilot`); }
+        catch (err) { console.warn('[event] guest create failed:', err); }
+      }
+      lockInDifficulty(getStoredDifficulty());
+      gateBehindOnboarding(() => onStartCb?.());
+    })();
+  });
+
+  renderEventLobbyAction(actions, 'HOST CO-OP', 'Shows a QR and short session code for a second pilot to join.', () => {
+    window.location.assign(`/duel?coop=1&event=1&booth=${encodeURIComponent(String(cfg.booth))}`);
+  });
+
+  renderEventLobbyAction(actions, 'HOST DEATHMATCH', 'Create a booth match. Empty slots can be AI-filled until real pilots arrive.', () => {
+    window.location.assign(`/duel?deathmatch=1&event=1&booth=${encodeURIComponent(String(cfg.booth))}`);
+  });
+
+  const join = el('div', { parent: overlay });
+  join.style.cssText = 'display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap;width:min(520px,92vw);margin-top:6px;';
+  const code = el('input', { parent: join }) as HTMLInputElement;
+  code.type = 'text';
+  code.inputMode = 'text';
+  code.autocapitalize = 'characters';
+  code.autocomplete = 'off';
+  code.placeholder = 'SESSION CODE';
+  code.maxLength = 16;
+  code.style.cssText = 'flex:1 1 180px;min-width:0;padding:12px 14px;font:0.95rem/1.4 ui-monospace,monospace;letter-spacing:0.16em;text-transform:uppercase;background:rgba(15,8,32,0.7);color:#ffd84a;border:1px solid rgba(255,216,74,0.45);border-radius:6px;outline:none;';
+  const joinBtn = el('button', { className: 'menu-btn secondary', parent: join, text: 'JOIN CODE' });
+  const status = el('p', { parent: overlay });
+  status.style.cssText = 'min-height:1.1em;margin:0;font-size:0.74rem;color:rgba(255,138,168,0.9);letter-spacing:0.08em;text-align:center;';
+  const joinCode = (): void => {
+    const session = code.value.trim().replace(/\s+/g, '').toLowerCase();
+    if (!/^[a-z0-9_-]{4,128}$/i.test(session)) {
+      status.textContent = 'Enter the short code under the host QR.';
+      return;
+    }
+    const url = buildDuelInviteUrl(session, 1, 2, undefined, 'coop-campaign');
+    window.location.assign(url);
+  };
+  joinBtn.addEventListener('click', joinCode);
+  code.addEventListener('keydown', (e) => { if (e.key === 'Enter') joinCode(); });
+
+  if (cfg.boothCount > 1) {
+    const boothStrip = el('p', { parent: overlay, text: Array.from({ length: cfg.boothCount }, (_, i) => i + 1 === cfg.booth ? `[BOOTH ${i + 1}]` : `BOOTH ${i + 1}`).join('   ') });
+    boothStrip.style.cssText = 'font:0.68rem ui-monospace,monospace;color:rgba(180,140,255,0.58);letter-spacing:0.08em;text-align:center;margin:4px 0 0;';
+  }
+}
+
 export function renderAttract(state: GameState): void {
   // 600bn flavour gets its own bespoke attract screen — sacred number
   // wordmark, single PLAY to drop straight into the Sanctum, no auth
   // step in the way (claim flow at game-over handles sign-in if needed).
   if (getFlavour() === '600bn') {
     renderSanctumAttract(state);
+    return;
+  }
+  if (eventLobbyEnabled()) {
+    renderEventLobby(state);
     return;
   }
   clearOverlay();
@@ -8206,6 +8389,113 @@ export function renderSettings(onBack: () => void): void {
   // Quick reference for the in-game mute key
   const note = el('p', { parent: panel, text: 'Tap M in-game to toggle mute. Music ducks while paused.' });
   note.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.7);letter-spacing:0.06em;margin:0;text-align:center;';
+
+  // ── EVENT LOBBY ────────────────────────────────────────────────────────
+  // Operator-only kiosk/private-lobby mode. BTC Prague defaults to two booth
+  // stations, but the name and station count can be changed for future events
+  // or a one-station friend lobby.
+  const eventHeading = el('p', { parent: overlay, text: 'LOBBY MODE' });
+  eventHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
+  const eventPanel = el('div', { parent: overlay });
+  eventPanel.style.cssText = 'display:flex;flex-direction:column;gap:10px;align-items:stretch;min-width:340px;max-width:480px;';
+  const eventStateRow = el('div', { parent: eventPanel });
+  eventStateRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;';
+  el('label', { parent: eventStateRow, text: 'LOBBY' })
+    .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
+  const eventStateBtns = el('div', { parent: eventStateRow });
+  eventStateBtns.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;';
+  const eventOnBtn = el('button', { className: 'menu-btn secondary', parent: eventStateBtns, text: 'ON' }) as HTMLButtonElement;
+  const eventOffBtn = el('button', { className: 'menu-btn secondary', parent: eventStateBtns, text: 'OFF' }) as HTMLButtonElement;
+
+  const eventNameRow = el('div', { parent: eventPanel });
+  eventNameRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;';
+  el('label', { parent: eventNameRow, text: 'NAME' })
+    .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
+  const eventNameInput = el('input', { parent: eventNameRow }) as HTMLInputElement;
+  eventNameInput.type = 'text';
+  eventNameInput.maxLength = 32;
+  eventNameInput.value = getEventLobbyConfig().lobbyName;
+  eventNameInput.style.cssText = 'min-width:0;padding:8px 10px;font:0.82rem/1.4 ui-monospace,monospace;letter-spacing:0.1em;text-transform:uppercase;background:rgba(15,8,32,0.65);color:#ffd84a;border:1px solid rgba(255,216,74,0.35);border-radius:6px;outline:none;';
+
+  const eventCountRow = el('div', { parent: eventPanel });
+  eventCountRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;';
+  el('label', { parent: eventCountRow, text: 'STATIONS' })
+    .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
+  const eventCountBtns = el('div', { parent: eventCountRow });
+  eventCountBtns.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;';
+  const countBtns = new Map<number, HTMLButtonElement>();
+
+  const eventBoothRow = el('div', { parent: eventPanel });
+  eventBoothRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;';
+  el('label', { parent: eventBoothRow, text: 'THIS SCREEN' })
+    .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
+  const eventBoothBtns = el('div', { parent: eventBoothRow });
+  eventBoothBtns.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;';
+  const boothBtns = new Map<number, HTMLButtonElement>();
+  for (const count of [1, 2, 4, 6]) {
+    const btn = el('button', { className: 'menu-btn secondary', parent: eventCountBtns, text: String(count) }) as HTMLButtonElement;
+    btn.style.cssText += 'font-size:0.72rem;padding:6px 10px;letter-spacing:0.12em;min-width:36px;';
+    btn.addEventListener('click', () => {
+      setEventLobbyConfig({ enabled: true, boothCount: count });
+      paintEventLobbySettings();
+    });
+    countBtns.set(count, btn);
+  }
+  const eventActions = el('div', { parent: eventPanel });
+  eventActions.style.cssText = 'display:flex;gap:8px;justify-content:center;flex-wrap:wrap;';
+  const openEventBtn = el('button', { className: 'menu-btn secondary', parent: eventActions, text: 'OPEN EVENT LOBBY' });
+  openEventBtn.style.cssText += 'font-size:0.78rem;padding:7px 14px;letter-spacing:0.12em;';
+  const eventHint = el('p', { parent: eventPanel });
+  eventHint.style.cssText = 'font-size:0.7rem;color:rgba(180,140,255,0.6);letter-spacing:0.04em;margin:0;text-align:center;line-height:1.4;';
+
+  const paintEventSegment = (btn: HTMLButtonElement, on: boolean): void => {
+    btn.style.background = on ? 'rgba(255,216,74,0.18)' : 'rgba(20,12,36,0.6)';
+    btn.style.color = on ? '#ffd84a' : 'rgba(220,210,255,0.7)';
+    btn.style.borderColor = on ? '#ffd84a' : 'rgba(180,140,255,0.45)';
+  };
+  function paintEventLobbySettings(): void {
+    const cfg = getEventLobbyConfig();
+    eventNameInput.value = cfg.lobbyName;
+    paintEventSegment(eventOnBtn, cfg.enabled);
+    paintEventSegment(eventOffBtn, !cfg.enabled);
+    for (const [count, btn] of countBtns) paintEventSegment(btn, cfg.enabled && cfg.boothCount === count);
+    eventBoothBtns.replaceChildren();
+    boothBtns.clear();
+    for (let booth = 1; booth <= cfg.boothCount; booth++) {
+      const btn = el('button', { className: 'menu-btn secondary', parent: eventBoothBtns, text: cfg.boothCount === 1 ? 'PRIVATE' : String(booth) }) as HTMLButtonElement;
+      btn.style.cssText += 'font-size:0.72rem;padding:6px 10px;letter-spacing:0.12em;min-width:36px;';
+      btn.addEventListener('click', () => {
+        setEventLobbyConfig({ enabled: true, booth });
+        paintEventLobbySettings();
+      });
+      boothBtns.set(booth, btn);
+      paintEventSegment(btn, cfg.enabled && cfg.booth === booth);
+    }
+    eventHint.textContent = cfg.enabled
+      ? `Boots into ${cfg.lobbyName} ${cfg.boothCount > 1 ? `booth ${cfg.booth}` : 'private lobby'}. Use NORMAL MENU on the kiosk to bypass.`
+      : 'Off for normal players. Turn on for booth screens, other events, or a private lobby.';
+  }
+  eventOnBtn.addEventListener('click', () => {
+    setEventLobbyConfig({ enabled: true, lobbyName: eventNameInput.value || DEFAULT_EVENT_LOBBY.lobbyName });
+    paintEventLobbySettings();
+  });
+  eventOffBtn.addEventListener('click', () => {
+    setEventLobbyConfig({ enabled: false });
+    paintEventLobbySettings();
+  });
+  eventNameInput.addEventListener('change', () => {
+    setEventLobbyConfig({ enabled: true, lobbyName: eventNameInput.value || DEFAULT_EVENT_LOBBY.lobbyName });
+    paintEventLobbySettings();
+  });
+  eventNameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      setEventLobbyConfig({ enabled: true, lobbyName: eventNameInput.value || DEFAULT_EVENT_LOBBY.lobbyName });
+      paintEventLobbySettings();
+      e.preventDefault();
+    }
+  });
+  openEventBtn.addEventListener('click', () => renderEventLobby((window as unknown as { __pallasiteState?: GameState }).__pallasiteState ?? ({} as GameState)));
+  paintEventLobbySettings();
 
   // Ship skins -- earned cosmetics drawn in render.ts. Locked entries show
   // their unlock criterion; unlocked ones are click-to-select.
