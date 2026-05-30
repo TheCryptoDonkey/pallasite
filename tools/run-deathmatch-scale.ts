@@ -8,7 +8,8 @@
  *
  * Run:
  *   pnpm run scale:deathmatch
- *   pnpm run scale:deathmatch -- --players=4,8,16,32 --duration=12000
+ *   pnpm run scale:deathmatch -- --players=4 --duration=12000
+ *   pnpm run scale:deathmatch -- --players=8,16,32 --duration=12000  # stress only
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -21,7 +22,7 @@ const VITE_READY_TIMEOUT_MS = 30_000;
 const REACH_PLAYING_TIMEOUT_MS = 20_000;
 const WEBGL_READY_TIMEOUT_MS = 12_000;
 const DEFAULT_DURATION_MS = 10_000;
-const DEFAULT_PLAYER_COUNTS = [4, 8, 16, 32];
+const DEFAULT_PLAYER_COUNTS = [4];
 const MAX_PLAYERS = 64;
 const THEME_IDS = new Set(['none', 'crt', 'synthwave', 'thermal', 'gameboy', 'gameboycolor', 'hologram', 'blueprint', 'ascii', 'handdrawn', 'vhs', 'nightvision', 'comic', 'bitdepth']);
 

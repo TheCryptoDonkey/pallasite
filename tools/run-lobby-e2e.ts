@@ -333,7 +333,7 @@ async function main(): Promise<void> {
       reportCheck(checks, 'private lobby route override', privateLobby.heading && privateLobby.privateCopy && !privateLobby.boothStrip && privateLobby.code, JSON.stringify(privateLobby));
       await privatePage.close().catch(() => undefined);
 
-      // ── Deathmatch route exposes real N-player human lobby ─────────
+      // ── Deathmatch route exposes the 2P/4P product lobby ───────────
       const dmPage = await ctx.newPage();
       await dmPage.goto(`${VITE_BASE}/duel?deathmatch=1`, { waitUntil: 'load' });
       await dmPage.waitForFunction(
@@ -347,12 +347,14 @@ async function main(): Promise<void> {
         return {
           heading: text.includes('DEATHMATCH'),
           waitingForPilots: text.includes('WAITING FOR 3 PILOT'),
+          available2p: buttons.some(b => b.textContent === '2P'),
           selected4p: buttons.some(b => b.textContent === '4P' && b.className === 'menu-btn'),
+          noStressPresets: !['8P', '16P', '64P'].some(label => buttons.some(b => b.textContent === label)),
           slotLinks: ['P2', 'P3', 'P4'].every(label => buttons.some(b => b.textContent === label)),
           rules: text.includes('FFA'),
         };
       });
-      reportCheck(checks, 'deathmatch lobby route', dm.heading && dm.waitingForPilots && dm.selected4p && dm.slotLinks && dm.rules, JSON.stringify(dm));
+      reportCheck(checks, 'deathmatch lobby route', dm.heading && dm.waitingForPilots && dm.available2p && dm.selected4p && dm.noStressPresets && dm.slotLinks && dm.rules, JSON.stringify(dm));
       await dmPage.evaluate(() => {
         const p3 = Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'P3');
         if (!p3) throw new Error('P3 slot button not found');

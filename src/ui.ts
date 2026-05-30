@@ -12280,7 +12280,7 @@ export function renderDuelLobby(): void {
   const subtitle = el('p', { parent: overlay, text: coopLobby ? 'CO-OP CAMPAIGN' : deathmatchLobby ? 'DEATHMATCH' : 'DUEL / DEATHMATCH' });
   subtitle.style.cssText = 'font-size:1.2rem;color:var(--hud-yellow);letter-spacing:0.3em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:-8px 0 4px;';
 
-  const tag = el('p', { parent: overlay, text: coopLobby ? '2 PILOTS · 25 WAVES · SHARED SCORE' : deathmatchLobby ? '2 TO 64 PILOTS · FREE-FOR-ALL' : '2 TO 64 PILOTS · ONE ARENA' });
+  const tag = el('p', { parent: overlay, text: coopLobby ? '2 PILOTS · 25 WAVES · SHARED SCORE' : deathmatchLobby ? '2 OR 4 PILOTS · FREE-FOR-ALL' : '2 OR 4 PILOTS · ONE ARENA' });
   tag.style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.85);letter-spacing:0.22em;margin:0 0 14px;font-family:ui-monospace,monospace;';
 
   const rules = el('p', { parent: overlay });
@@ -12288,7 +12288,7 @@ export function renderDuelLobby(): void {
   rules.innerHTML = coopLobby
     ? 'Campaign waves together over deterministic lockstep. Shared co-op leaderboard, no sats payouts.'
     : deathmatchLobby
-    ? 'Shared arena, deterministic seed, frame-perfect lockstep. Host 2, 4, 8, 16, or 64 pilots; empty slots become AI until humans join.'
+    ? 'Shared arena, deterministic seed, frame-perfect lockstep. Host 2 or 4 pilots; empty slots become AI until humans join.'
     : 'Shared arena, deterministic seed, frame-perfect lockstep. ' +
       'Deathmatch rounds use time, kill-cap, and elimination rules. No sats, no stakes — bragging rights only.';
 
@@ -12498,7 +12498,7 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby
     renderInviteQr();
     renderSessionStatus();
   };
-  for (const count of [2, 4, 8, 16, 64]) {
+  for (const count of [2, 4]) {
     const btn = el('button', { className: `menu-btn${count === playerCount ? '' : ' secondary'}`, parent: sizeRow, text: `${count}P` });
     sizeButtons.set(count, btn);
     btn.addEventListener('click', () => {
@@ -12681,7 +12681,7 @@ function lobbyTipStrip(parent: HTMLElement, coopLobby = false, deathmatchLobby =
     : deathmatchLobby
     ? [
         'You enter as slot 0. READY fills empty slots with AI, and late pilots take over their slot when they arrive.',
-        'Use the 2P, 4P, 8P, 16P, and 64P presets to create real human deathmatch sessions.',
+        'Use the 2P and 4P presets for real human deathmatch sessions.',
         'Every pilot gets a separate invite link; copy the bundle or send one slot link at a time.',
         'Deathmatch is free-for-all: every other pilot is a valid target.',
         'Rounds end on the time cap, kill cap, or last pilot standing.',
