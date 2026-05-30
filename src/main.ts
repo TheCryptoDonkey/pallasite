@@ -323,7 +323,7 @@ function peerInputDelayFrames(players: number, aiFilledSession = false): number 
   const configured = boundedPlayerCount(mpParams.get('inputDelay'), NaN, 0, 60);
   if (Number.isFinite(configured)) return configured;
   if (urlCoopCampaignModeActive()) return 24;
-  if (aiFilledSession) return 40;
+  if (aiFilledSession) return 56;
   if (urlDeathmatchModeActive() && players <= 2) return 30;
   if (urlDeathmatchModeActive() && players <= 4) return 36;
   if (urlDeathmatchModeActive()) return Math.min(56, 44 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
@@ -349,10 +349,10 @@ const PEER_STALL_OVERLAY_FRAMES = 60;
  *  a few real-time seconds to refill the gap; tearing down at 2s killed
  *  recoverable duels in production. */
 const PEER_STALL_DISCONNECT_FRAMES = 600;
-/** When lockstep stalls, resend a compact window around the exact read frame
- *  the sim is blocked on. Replaying only the latest tail can miss the hole;
- *  replaying a large tail clogs the production relay. */
-const PEER_RESEND_BEHIND_FRAMES = 4;
+/** When lockstep stalls, resend a bounded window around the exact read frame
+ *  the sim is blocked on. Startup joins can miss an early frame while the
+ *  other peer is already far ahead, so this must cover more than a tiny tail. */
+const PEER_RESEND_BEHIND_FRAMES = 96;
 const PEER_RESEND_AHEAD_FRAMES = 8;
 /** Cap the bulk resend cadence. Live play sends each frame once; the history
  *  replay only needs to run often enough to backfill a real hole. */
@@ -370,7 +370,7 @@ function peerResendAfterStallFrames(): number {
 /** Extra deterministic handoff room after the broker's late AI-slot takeover
  *  frame. A late human has to replay buffered history from frame 0 before the
  *  existing peers can require their live inputs without stalling. */
-const PEER_LATE_TAKEOVER_CLIENT_GRACE_FRAMES = 180;
+const PEER_LATE_TAKEOVER_CLIENT_GRACE_FRAMES = 300;
 /** Count of consecutive frames the lockstep loop has been unable to
  *  advance (remote input missing). Reset every time a frame ticks. Only
  *  meaningful while a peer is active. */
@@ -506,6 +506,16 @@ function currentHumanSlotConfig(): HumanSlotConfig | null {
     humanSlots: humanSlots.slice(),
     takeovers: (live?.takeovers ?? []).map(t => ({ slot: t.slot, frame: t.frame })),
   };
+}
+
+function localPeerStartupPrefillThrough(activeDelay: number): number {
+  if (!urlDeathmatchModeActive()) return -1;
+  if (!aiFillDeathmatch) return activeDelay;
+  const cfg = currentHumanSlotConfig();
+  if (cfg && !cfg.humanSlots.includes(mpSlot)) return -1;
+  const takeover = cfg?.takeovers.find(t => t.slot === mpSlot);
+  if (!takeover) return activeDelay;
+  return takeover.frame + PEER_LATE_TAKEOVER_CLIENT_GRACE_FRAMES + activeDelay;
 }
 
 function syncDeathmatchAiSlotsForFrame(readFrame: number): void {
@@ -1347,23 +1357,23 @@ function loop(now: number): void {
   const frameDeltaS = Math.min(MAX_CATCHUP_STEPS * FIXED_STEP_S, Math.max(0, (now - lastFrame) / 1000));
   stepAccumulator += frameDeltaS;
   lastFrame = now;
-  // Replay catch-up: a late-joining peerwatch or AI-slot takeover receives
-  // a long replay burst (up to PEER_FRAME_BUFFER frames) from the broker, but the
-  // real-time stepAccumulator above can only afford one or two sim
-  // steps per rAF, so it'd never close the gap. When the spectator's
-  // own state.frame is well behind the latest input it's holding, top
-  // up the accumulator with extra steps so the inner while-loop can
-  // walk multiple frames per rAF until live. Capped so a slow client
-  // doesn't burn the rest of the frame budget rendering. Has no effect
-  // on solo or ordinary duel, so the hot path stays identical for
-  // non-replay sessions.
-  if ((spectator || (peer && aiFillDeathmatch)) && inputLog) {
-    let latest = Infinity;
+  // Peer catch-up: a late-joining peerwatch, AI-slot takeover, or slow-starting
+  // 4P tab can receive remote input faster than its local sim is advancing.
+  // The real-time accumulator can only afford one or two sim steps per rAF, so
+  // the slow client may remain permanently behind and hold strict lockstep. If
+  // remote human slots are far ahead of this client, top up the accumulator with
+  // extra fixed steps so it can produce its own missing frames and catch live.
+  if ((spectator || peer) && inputLog) {
+    let latest = spectator ? Infinity : (peer?.lastReceivedFrame() ?? -1);
     for (let i = 0; i < inputLog.players; i++) {
       if (state.players[i]?.ai) continue;
-      latest = Math.min(latest, inputLog.latest(i));
+      if (peer && !spectator) {
+        if (i !== mpSlot) latest = Math.max(latest, inputLog.latest(i));
+      } else {
+        latest = Math.min(latest, inputLog.latest(i));
+      }
     }
-    if (latest === Infinity) latest = -1;
+    if (!Number.isFinite(latest)) latest = -1;
     const behind = latest - state.frame;
     if (behind > 30) {
       // Up to 4 extra sim steps per rAF — 5× live rate. 540 frames of
@@ -1417,6 +1427,14 @@ function loop(now: number): void {
         // slots (PEER_INPUT_DELAY=5 × a couple of jitter frames) so
         // the extra capacity is essentially free.
         inputLog = new InputLog(state.players.length, 4096);
+        const prefillThrough = peer && !spectator ? localPeerStartupPrefillThrough(activeDelay) : -1;
+        if (prefillThrough >= 0) {
+          const emptyEncoded = encodePlayerInput(EMPTY_INPUT);
+          for (let f = 0; f <= prefillThrough; f++) {
+            inputLog.record(f, mpSlot, emptyEncoded);
+            peer?.sendFrame(f, emptyEncoded);
+          }
+        }
       }
       // 1) Sample LOCAL slot(s) and send once per sim frame. The receiver's
       //    lockstep needs our frame N in its inputLog before it can pass the

@@ -402,6 +402,8 @@ export function startGame(s: GameState, forcedSeed?: number, opts?: StartGameOpt
   resetRunAchievements();
   s.bossDefeated = false;
   s.warpTargetWave = 1;
+  s.frame = 0;
+  s.hitStopSteps = 0;
   s.elapsed = 0;
   s.toast = null;
   s.toastUntil = 0;
