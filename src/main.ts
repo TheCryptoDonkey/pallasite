@@ -474,6 +474,7 @@ function exitMultiplayerUrlSession(): void {
   state.deathmatchFeed = [];
   delete document.body.dataset.peerStall;
   delete document.body.dataset.peerDesync;
+  (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
 }
 
 (window as unknown as { __pallasiteExitMultiplayerSession?: () => void }).__pallasiteExitMultiplayerSession = exitMultiplayerUrlSession;
@@ -837,7 +838,8 @@ function startRunNow(): void {
   // 600bn flavour sets phase='sanctum' and doesn't want the warp/wave
   // pipeline kicking in over the top.
   if (modeUsesWaveStart()) state.phase = 'wavestart';
-  // Couch mode forces retro in fit(); re-run fit now that players[] is updated.
+  // Couch and deathmatch can change the effective camera/layout once the run
+  // has real players/world size, so re-fit after startGame mutates state.
   if (couchMode || currentMode() === 'deathmatch') (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
   clearOverlay();
   audio.setMusicDuck(1);
@@ -1796,11 +1798,14 @@ async function boot(): Promise<void> {
         overlay3d.style.width = vw + 'px';
         overlay3d.style.height = vh + 'px';
       }
-      // Couch mode forces retro so the full world is visible and both ships
-      // stay on screen — the portrait follow camera tracks only one ship.
-      if (state.players.length >= 2 && !deathmatchFollow) {
+      // Local couch mode shares one screen, so keep the full world visible.
+      // Remote peer clients each have their own local slot/camera; forcing
+      // them into the shared-screen 16:9 strip in portrait makes the game feel
+      // flattened and can make the two views look incorrectly out of sync.
+      if (couchMode && state.players.length >= 2 && !deathmatchFollow) {
         // Fall through to retro branch below.
       } else {
+        applyDisplayMode('modern');
         setRenderMode({ kind: 'modern', vw, vh, dpr, scale, tx, ty, insets, follow, defender: defenderActive, localSlot: mpSlot });
         return;
       }
@@ -1817,6 +1822,7 @@ async function boot(): Promise<void> {
     canvas.style.width = w + 'px';
     canvas.style.height = h + 'px';
     canvas.style.imageRendering = 'pixelated';
+    applyDisplayMode('retro');
     const ctx = canvas.getContext('2d')!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     if (overlay3d) {

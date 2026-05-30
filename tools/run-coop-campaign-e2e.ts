@@ -16,6 +16,7 @@ const BROKER_PORT = 8796;
 const VITE_BASE = `http://localhost:${VITE_PORT}`;
 const BROKER_URL = `ws://localhost:${BROKER_PORT}`;
 const PLAYERS = 2;
+const PORTRAIT_VIEWPORT = { width: 390, height: 844 } as const;
 
 function startVite(): ChildProcess {
   const p = spawn('pnpm', ['exec', 'vite', '--force', '--host', '127.0.0.1', '--port', String(VITE_PORT), '--strictPort'], {
@@ -68,9 +69,20 @@ async function probe(page: Page): Promise<{
   aiPlayers: number;
   sats: number[];
   inputCounts: number[];
+  display: {
+    bodyDisplay: string | null;
+    cssW: number;
+    cssH: number;
+    backingW: number;
+    backingH: number;
+    innerW: number;
+    innerH: number;
+  };
 }> {
   return page.evaluate((players) => {
     const s = (window as any).__pallasiteState;
+    const c = document.getElementById('game') as HTMLCanvasElement | null;
+    const rect = c?.getBoundingClientRect();
     const probeLog = (window as any).__pallasiteInputLogProbe as ((from: number, to: number) => Array<[number, number, number]> | null) | undefined;
     const counts = new Array(players).fill(0);
     const rows = probeLog ? probeLog(0, 120) : null;
@@ -87,6 +99,15 @@ async function probe(page: Page): Promise<{
       aiPlayers: Array.isArray(s?.players) ? s.players.filter((p: any) => p?.ai === true).length : -1,
       sats: Array.isArray(s?.players) ? s.players.map((p: any) => Number(p?.sats ?? 0)) : [],
       inputCounts: counts,
+      display: {
+        bodyDisplay: document.body.dataset.display ?? null,
+        cssW: rect?.width ?? 0,
+        cssH: rect?.height ?? 0,
+        backingW: c?.width ?? 0,
+        backingH: c?.height ?? 0,
+        innerW: window.innerWidth,
+        innerH: window.innerHeight,
+      },
     };
   }, PLAYERS);
 }
@@ -112,7 +133,11 @@ async function main(): Promise<void> {
     const pages: Page[] = [];
     const gotos: Array<Promise<unknown>> = [];
     for (let slot = 0; slot < PLAYERS; slot++) {
-      const ctx = await browser.newContext({ serviceWorkers: 'block' });
+      const ctx = await browser.newContext({
+        serviceWorkers: 'block',
+        viewport: PORTRAIT_VIEWPORT,
+        deviceScaleFactor: 2,
+      });
       const page = await ctx.newPage();
       page.on('pageerror', (e) => process.stderr.write(`[P${slot + 1}] ${e.message}\n`));
       page.on('console', (msg) => {
@@ -145,6 +170,11 @@ async function main(): Promise<void> {
       throw e;
     }
 
+    await Promise.all(pages.map((page) => page.evaluate(() => {
+      (window as any).__pallasiteFit?.();
+    })));
+    await wait(250);
+
     await Promise.all([
       pages[0].keyboard.down('ArrowUp'),
       pages[1].keyboard.down('ArrowRight'),
@@ -159,10 +189,14 @@ async function main(): Promise<void> {
     const probes = await Promise.all(pages.map(probe));
     for (let i = 0; i < probes.length; i++) {
       const p = probes[i];
-      process.stdout.write(`P${i + 1}: frame=${p.frame} phase=${p.phase} players=${p.players} ai=${p.aiPlayers} sats=${p.sats.join('/')} stall=${p.stall ?? '-'} desync=${p.desync} inputs=${p.inputCounts.join('/')}\n`);
+      const d = p.display;
+      process.stdout.write(`P${i + 1}: frame=${p.frame} phase=${p.phase} players=${p.players} ai=${p.aiPlayers} sats=${p.sats.join('/')} stall=${p.stall ?? '-'} desync=${p.desync} inputs=${p.inputCounts.join('/')} display=${d.bodyDisplay} css=${Math.round(d.cssW)}x${Math.round(d.cssH)} backing=${d.backingW}x${d.backingH}\n`);
     }
     for (let i = 0; i < probes.length; i++) {
       const p = probes[i];
+      const d = p.display;
+      const cssAspect = d.cssH > 0 ? d.cssW / d.cssH : 0;
+      const backingAspect = d.backingH > 0 ? d.backingW / d.backingH : 0;
       if (!p.peerActive) throw new Error(`P${i + 1} peer inactive`);
       if (p.phase !== 'playing') throw new Error(`P${i + 1} not playing`);
       if (p.frame < 80) throw new Error(`P${i + 1} did not advance far enough`);
@@ -172,6 +206,9 @@ async function main(): Promise<void> {
       if (p.stall) throw new Error(`P${i + 1} stalled`);
       if (p.desync) throw new Error(`P${i + 1} desynced`);
       if (p.inputCounts.some((count) => count < 70)) throw new Error(`P${i + 1} missing input history`);
+      if (d.bodyDisplay !== 'modern') throw new Error(`P${i + 1} portrait co-op fell out of modern display: ${d.bodyDisplay}`);
+      if (Math.abs(cssAspect - backingAspect) > 0.02) throw new Error(`P${i + 1} canvas stretched: css=${cssAspect.toFixed(3)} backing=${backingAspect.toFixed(3)}`);
+      if (Math.abs(d.cssW - d.innerW) > 2 || Math.abs(d.cssH - d.innerH) > 2) throw new Error(`P${i + 1} portrait canvas not filling viewport: css=${d.cssW}x${d.cssH} viewport=${d.innerW}x${d.innerH}`);
     }
     process.stdout.write('Co-op campaign lockstep PASS\n');
   } finally {
