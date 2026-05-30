@@ -34,6 +34,7 @@ const HARNESSES: Harness[] = [
 
 const VITE_READY_TIMEOUT_MS = 30_000;
 const HARNESS_TIMEOUT_MS = 60_000;
+const NAVIGATION_TIMEOUT_MS = 60_000;
 
 async function startVite(): Promise<ChildProcess> {
   // detached: true puts the child in its own process group so a SIGTERM to
@@ -87,7 +88,7 @@ async function runOne(browser: Browser, h: Harness): Promise<Result> {
   });
 
   const t0 = Date.now();
-  await page.goto(`${BASE}${h.path}`, { waitUntil: 'load' });
+  await page.goto(`${BASE}${h.path}`, { waitUntil: 'commit', timeout: NAVIGATION_TIMEOUT_MS });
 
   let verdict = '';
   let detail = '';
