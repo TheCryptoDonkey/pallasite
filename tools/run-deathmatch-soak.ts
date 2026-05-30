@@ -52,7 +52,7 @@ const BROKER_RATE_HZ = intArg('brokerRate', 60, 5, 60);
 const BROKER_BATCH_SIZE = intArg('brokerBatch', 4, 1, 16);
 const FORWARD_DELAY_MS = intArg('delay', 60, 0, 1_000);
 const FORWARD_JITTER_MS = intArg('jitter', 120, 0, 2_000);
-const INPUT_DELAY_FRAMES = intArg('inputDelay', 36, 0, 60);
+const INPUT_DELAY_FRAMES = intArg('inputDelay', 30, 0, 60);
 
 function startVite(): ChildProcess {
   const p = spawn('pnpm', ['exec', 'vite', '--force', '--host', '127.0.0.1', '--port', String(VITE_PORT), '--strictPort'], {
@@ -110,6 +110,7 @@ interface BrokerMetrics {
     configuredForwardJitterMs?: number;
     forwardAttempts?: number;
     forwarded?: number;
+    forwardedBytes?: number;
     droppedBufferedAmount?: number;
     maxBufferedAmountObserved?: number;
     forwardLatencyMs?: { p50?: number; p95?: number; p99?: number; max?: number };
@@ -144,9 +145,11 @@ function printBrokerMetrics(label: string, after: BrokerMetrics | null, before: 
   const latency = after.peer?.forwardLatencyMs;
   const configuredDelay = `${after.peer?.configuredForwardDelayMs ?? '-'}/${after.peer?.configuredForwardJitterMs ?? '-'}`;
   const rssMb = typeof after.process?.rssBytes === 'number' ? (after.process.rssBytes / 1024 / 1024).toFixed(1) : '-';
+  const bytes = metricDelta(after.peer?.forwardedBytes, before?.peer?.forwardedBytes);
   process.stdout.write(
     `[broker-metrics] ${label}: attempts=${fmtMetric(metricDelta(after.peer?.forwardAttempts, before?.peer?.forwardAttempts), after.peer?.forwardAttempts)}`
     + ` forwarded=${fmtMetric(metricDelta(after.peer?.forwarded, before?.peer?.forwarded), after.peer?.forwarded)}`
+    + ` bytes=${fmtMetric(bytes, after.peer?.forwardedBytes)}`
     + ` drops=${fmtMetric(metricDelta(after.peer?.droppedBufferedAmount, before?.peer?.droppedBufferedAmount), after.peer?.droppedBufferedAmount)}`
     + ` latency p50/p95/p99=${latency?.p50 ?? '-'}/${latency?.p95 ?? '-'}/${latency?.p99 ?? '-'}ms max=${latency?.max ?? '-'}ms`
     + ` configuredDelay=${configuredDelay}ms`
@@ -195,6 +198,7 @@ interface BrowserProbe {
     wsRecvFramePayloadCount: number;
     bufferedAmount: number;
     readyState: number;
+    binaryFramesActive: boolean;
   } | null;
 }
 
@@ -225,6 +229,7 @@ async function probeBrowser(page: Page, players: number): Promise<BrowserProbe> 
           wsRecvFramePayloadCount: Number(raw.wsRecvFramePayloadCount ?? 0),
           bufferedAmount: Number(raw.bufferedAmount ?? -1),
           readyState: Number(raw.readyState ?? -1),
+          binaryFramesActive: raw.binaryFramesActive === true,
         };
       }
     } catch {
@@ -258,7 +263,7 @@ function deathmatchParams(session: string, players: number, slot?: number, spect
   });
   if (spectate) {
     params.set('spectate', session);
-    params.set('peer', `${BROKER_URL}/?s=${encodeURIComponent(session)}&r=peerwatch`);
+    params.set('peer', `${BROKER_URL}/?s=${encodeURIComponent(session)}&r=peerwatch&binaryFrames=1`);
   } else {
     params.set('peer', BROKER_URL);
     params.set('session', session);
@@ -351,7 +356,7 @@ async function runBrowserCase(browser: Browser, players: number): Promise<void> 
     const p = probes[i];
     const c = p.wireCounters;
     const wire = c
-      ? ` wire=${c.wsSentFrameCount}/${c.wsSentFramePayloadCount} recv=${c.wsRecvFrameCount}/${c.wsRecvFramePayloadCount} buf=${c.bufferedAmount}`
+      ? ` wire=${c.wsSentFrameCount}/${c.wsSentFramePayloadCount} recv=${c.wsRecvFrameCount}/${c.wsRecvFramePayloadCount} binary=${c.binaryFramesActive ? 'yes' : 'no'} buf=${c.bufferedAmount}`
       : ' wire=-';
     process.stdout.write(`  P${i + 1}: frame=${p.frame} phase=${p.phase} stall=${p.stall ?? '-'} desync=${p.desync} inputs=${p.inputCounts.join('/')}${wire}\n`);
     if (!p.peerActive) throw new Error(`${players}P P${i + 1} peer inactive`);
@@ -366,6 +371,7 @@ async function runBrowserCase(browser: Browser, players: number): Promise<void> 
       if (!c) throw new Error(`${players}P P${i + 1} missing wire counters`);
       if (c.wsSentFrameCount < 120) throw new Error(`${players}P P${i + 1} sent too few logical frames: ${c.wsSentFrameCount}`);
       if (c.wsSentFramePayloadCount <= 0) throw new Error(`${players}P P${i + 1} sent no frame payloads`);
+      if (!c.binaryFramesActive) throw new Error(`${players}P P${i + 1} did not negotiate binary frame wire`);
       if (players > 8 && c.wsSentFramePayloadCount >= Math.floor(c.wsSentFrameCount * 0.85)) {
         throw new Error(`${players}P P${i + 1} batching ineffective: frames=${c.wsSentFrameCount} payloads=${c.wsSentFramePayloadCount}`);
       }

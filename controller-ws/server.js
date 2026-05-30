@@ -32,18 +32,18 @@
  *   - 2..64 clients per session, each one a full game runtime.
  *   - Connect with r=peer; slot is NOT chosen by the URL.
  *   - Each client sends `{type:'hello-peer', session, slot, version:1, players}`
- *     as the first frame. The broker binds the ws to that slot.
+ *     as the first frame. Add `binaryFrames:true` to opt in to the compact
+ *     binary frame/hash hot path once all required peers support it.
  *   - A duplicate slot replaces the older socket for the same slot; an
  *     out-of-range slot gets `{type:'session-error', code:'invalid-slot'}`.
  *   - When a peer binds, every other peer gets
  *     `{type:'peer-joined', slot:<joined>}`; the new peer gets one for
  *     every already-bound slot.
- *   - `{type:'frame'|'frames'|'hash', ...}` from one peer is fanned
- *     verbatim to every OTHER peer (never echoed back). `frames` is a
- *     consecutive input window: `{type:'frames', slot, base, inputs}`.
- *     Every such
- *     message is ALSO fanned out to every peerwatch socket on the
- *     session (see below).
+ *   - `{type:'frame'|'frames'|'hash', ...}` or the negotiated binary
+ *     equivalents from one peer are fanned to every OTHER peer (never
+ *     echoed back). `frames` is a consecutive input window:
+ *     `{type:'frames', slot, base, inputs}`. Every such message is ALSO
+ *     fanned out to every peerwatch socket on the session (see below).
  *   - On socket close, the surviving peers get
  *     `{type:'peer-left', slot:<departed>, reason}`.
  *   - Backpressure: if the receiving socket's send buffer exceeds
@@ -55,6 +55,9 @@
  *   - Subscribe-only role. Watchers receive every frame/hash that
  *     either peer sends, plus peer-joined / peer-left notifications,
  *     but anything they send is silently dropped.
+ *   - Add `binaryFrames=1` to the peerwatch URL to receive compact binary
+ *     frame/hash payloads when the peer session has negotiated them. Legacy
+ *     watchers get JSON downgraded by the broker.
  *   - Any number of watchers per session; orphan-sweep keeps the
  *     session alive while watchers OR peers are connected.
  *   - On connect, broker immediately sends `{type:'peerwatch-ready', players}`
@@ -105,6 +108,11 @@ const MAX_PEER_PLAYERS = parseInt(process.env.MAX_PEER_PLAYERS ?? '64', 10);
  *  inputs and start sending its own future frames before the existing peers
  *  require that slot in their lockstep input logs. */
 const PEER_LATE_TAKEOVER_DELAY_FRAMES = parseInt(process.env.PEER_LATE_TAKEOVER_DELAY_FRAMES ?? '90', 10);
+const PEER_BINARY_MAGIC = 0x50; // 'P'
+const PEER_BINARY_VERSION = 1;
+const PEER_BINARY_FRAME = 1;
+const PEER_BINARY_FRAMES = 2;
+const PEER_BINARY_HASH = 3;
 
 // SESSION_RE accepts controller pairing codes (4 letters) AND the
 // longer stream ids used by the live frame relay (player master pubkey,
@@ -161,6 +169,7 @@ server.on('upgrade', (req, socket, head) => {
   const session = url.searchParams.get('s');
   const role = url.searchParams.get('r');
   const wantsMulti = url.searchParams.get('multi') === '1';
+  const wantsBinaryFrames = url.searchParams.get('binaryFrames') === '1' || url.searchParams.get('binary') === '1';
   if (!session || !SESSION_RE.test(session) || !role || !ROLES.has(role)) {
     socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
     socket.destroy();
@@ -172,11 +181,11 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
   wss.handleUpgrade(req, socket, head, (ws) => {
-    attach(ws, session, role, wantsMulti);
+    attach(ws, session, role, wantsMulti, wantsBinaryFrames);
   });
 });
 
-function attach(ws, session, role, wantsMulti) {
+function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false) {
   let slot = sessions.get(session);
   if (!slot) {
     slot = {
@@ -253,6 +262,7 @@ function attach(ws, session, role, wantsMulti) {
   }
   // Peerwatch role: subscribe-only spectator of a peer session.
   if (role === 'peerwatch') {
+    ws._peerBinaryFrames = wantsBinaryFrames === true;
     attachPeerWatcher(slot, session, ws);
     return;
   }
@@ -483,6 +493,27 @@ function sameSlots(a, b) {
   return true;
 }
 
+function peerRequiredSlots(slot) {
+  if (slot.peerHumanSlots && slot.peerHumanSlots.length > 0) return slot.peerHumanSlots;
+  return Array.from({ length: slot.peerCount || 2 }, (_, i) => i);
+}
+
+function peerBinaryReady(slot) {
+  const required = peerRequiredSlots(slot);
+  if (required.length <= 0) return false;
+  for (const i of required) {
+    const peer = slot.peers[i];
+    if (!peer || peer.readyState !== peer.OPEN || peer._peerBinaryFrames !== true) return false;
+  }
+  return true;
+}
+
+function peerJoinedPayload(slot, joinedSlot) {
+  const msg = { type: 'peer-joined', slot: joinedSlot };
+  if (peerBinaryReady(slot)) msg.binaryFrames = true;
+  return JSON.stringify(msg);
+}
+
 function sessionConfigPayload(slot) {
   if (!slot.peerHumanSlots) return null;
   const takeovers = [];
@@ -494,13 +525,15 @@ function sessionConfigPayload(slot) {
       takeovers.push({ slot: takeoverSlot, frame });
     }
   }
-  return JSON.stringify({
+  const msg = {
     type: 'session-config',
     players: slot.peerCount || 2,
     aiFill: true,
     humanSlots: slot.peerHumanSlots,
     takeovers,
-  });
+  };
+  if (peerBinaryReady(slot)) msg.binaryFrames = true;
+  return JSON.stringify(msg);
 }
 
 function sendSessionConfig(target, slot) {
@@ -535,7 +568,8 @@ function replayRecentPeerFrames(target, slot) {
   if (!target || target.readyState !== target.OPEN) return;
   try {
     for (const entry of slot.recentFrames) {
-      target.send(typeof entry === 'string' ? entry : entry.payload);
+      const payload = typeof entry === 'string' ? entry : peerPayloadForTarget(target, entry.payload, entry.msg);
+      target.send(payload, { binary: Buffer.isBuffer(payload) });
     }
   } catch { /* socket may already be closed */ }
 }
@@ -554,10 +588,11 @@ function attachPeerWatcher(slot, session, ws) {
       players: slot.peerCount || 2,
       aiFill: !!slot.peerHumanSlots,
       humanSlots: slot.peerHumanSlots,
+      binaryFrames: ws._peerBinaryFrames === true && peerBinaryReady(slot) ? true : undefined,
     }));
     sendSessionConfig(ws, slot);
     for (let i = 0; i < (slot.peerCount || 2); i++) {
-      if (slot.peers[i]) ws.send(JSON.stringify({ type: 'peer-joined', slot: i }));
+      if (slot.peers[i]) ws.send(peerJoinedPayload(slot, i));
     }
     // Replay buffered frame history so the spectator can pass its
     // lockstep stall check at frame 5. Without this, a peerwatch that
@@ -590,7 +625,7 @@ function fanOutToWatchers(slot, payload, msg = null, fromSlot = -1) {
   if (!slot.peerWatchers || slot.peerWatchers.size === 0) return;
   let watcherIndex = 0;
   for (const w of slot.peerWatchers) {
-    sendPeerPayload(w, payload, peerForwardDelayMs(msg, fromSlot, 97 + watcherIndex));
+    sendPeerPayload(w, msg ? peerPayloadForTarget(w, payload, msg) : payload, peerForwardDelayMs(msg, fromSlot, 97 + watcherIndex));
     watcherIndex++;
   }
 }
@@ -619,10 +654,81 @@ function peerFrameLatestFrame(msg) {
   return Number.isFinite(Number(msg.frame)) ? Math.floor(Number(msg.frame)) : -1;
 }
 
+function decodePeerBinaryPayload(data) {
+  const buf = Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data);
+  if (buf.length < 9 || buf[0] !== PEER_BINARY_MAGIC || buf[1] !== PEER_BINARY_VERSION) return null;
+  const kind = buf[2];
+  const slot = buf[3];
+  const frameOrBase = buf.readUInt32LE(4);
+  if (kind === PEER_BINARY_FRAME) {
+    if (buf.length !== 12) return null;
+    return { type: 'frame', frame: frameOrBase, slot, input: buf.readUInt32LE(8) };
+  }
+  if (kind === PEER_BINARY_HASH) {
+    if (buf.length !== 12) return null;
+    return { type: 'hash', frame: frameOrBase, slot, hash: buf.readUInt32LE(8) };
+  }
+  if (kind === PEER_BINARY_FRAMES) {
+    const count = buf[8];
+    if (count <= 0 || buf.length !== 9 + count * 4) return null;
+    const inputs = [];
+    for (let i = 0; i < count; i++) inputs.push(buf.readUInt32LE(9 + i * 4));
+    return { type: 'frames', slot, base: frameOrBase, inputs };
+  }
+  return null;
+}
+
+function encodePeerBinaryPayload(msg) {
+  if (!msg || typeof msg.type !== 'string') return null;
+  const slot = Math.max(0, Math.min(255, Math.floor(Number(msg.slot) || 0)));
+  if (msg.type === 'frame') {
+    const buf = Buffer.allocUnsafe(12);
+    buf[0] = PEER_BINARY_MAGIC;
+    buf[1] = PEER_BINARY_VERSION;
+    buf[2] = PEER_BINARY_FRAME;
+    buf[3] = slot;
+    buf.writeUInt32LE(Math.max(0, Math.floor(Number(msg.frame) || 0)) >>> 0, 4);
+    buf.writeUInt32LE(Math.max(0, Math.floor(Number(msg.input) || 0)) >>> 0, 8);
+    return buf;
+  }
+  if (msg.type === 'hash') {
+    const buf = Buffer.allocUnsafe(12);
+    buf[0] = PEER_BINARY_MAGIC;
+    buf[1] = PEER_BINARY_VERSION;
+    buf[2] = PEER_BINARY_HASH;
+    buf[3] = slot;
+    buf.writeUInt32LE(Math.max(0, Math.floor(Number(msg.frame) || 0)) >>> 0, 4);
+    buf.writeUInt32LE(Math.max(0, Math.floor(Number(msg.hash) || 0)) >>> 0, 8);
+    return buf;
+  }
+  if (msg.type === 'frames' && Array.isArray(msg.inputs) && msg.inputs.length > 0) {
+    const count = Math.min(255, msg.inputs.length);
+    const buf = Buffer.allocUnsafe(9 + count * 4);
+    buf[0] = PEER_BINARY_MAGIC;
+    buf[1] = PEER_BINARY_VERSION;
+    buf[2] = PEER_BINARY_FRAMES;
+    buf[3] = slot;
+    buf.writeUInt32LE(Math.max(0, Math.floor(Number(msg.base) || 0)) >>> 0, 4);
+    buf[8] = count;
+    for (let i = 0; i < count; i++) {
+      buf.writeUInt32LE(Math.max(0, Math.floor(Number(msg.inputs[i]) || 0)) >>> 0, 9 + i * 4);
+    }
+    return buf;
+  }
+  return null;
+}
+
+function peerPayloadForTarget(target, payload, msg) {
+  const binaryPayload = Buffer.isBuffer(payload);
+  if (binaryPayload && target && target._peerBinaryFrames !== true) return JSON.stringify(msg);
+  if (!binaryPayload && target && target._peerBinaryFrames === true) return encodePeerBinaryPayload(msg) || payload;
+  return payload;
+}
+
 function rememberPeerFramePayload(slot, payload, msg) {
   const count = peerFramePayloadCount(msg);
   if (count <= 0) return;
-  slot.recentFrames.push({ payload, count });
+  slot.recentFrames.push({ payload: Buffer.isBuffer(payload) ? Buffer.from(payload) : String(payload), msg, count });
   slot.recentFrameCount = (slot.recentFrameCount || 0) + count;
   const frameBufferLimit = Math.max(1, (slot.peerCount || 2)) * PEER_FRAME_BUFFER_PER_PLAYER;
   while (slot.recentFrameCount > frameBufferLimit && slot.recentFrames.length > 0) {
@@ -646,9 +752,9 @@ function sendPeerPayload(target, payload, delayMs = 0) {
       return;
     }
     try {
-      target.send(payload, { binary: false });
+      target.send(payload, { binary: Buffer.isBuffer(payload) });
       peerForwardSent++;
-      peerForwardBytes += Buffer.byteLength(String(payload));
+      peerForwardBytes += Buffer.isBuffer(payload) ? payload.length : Buffer.byteLength(String(payload));
       recordPeerForwardLatency(performance.now() - queuedAt);
     } catch {
       peerForwardErrors++;
@@ -664,21 +770,29 @@ function attachPeer(slot, session, ws) {
   // ignored (the client also won't send them before its connect promise
   // resolves on peer-joined).
   ws._peerSlot = -1;
+  ws._peerBinaryFrames = false;
 
   ws.on('message', (data, isBinary) => {
-    if (isBinary) return; // peer protocol is text JSON
     let msg;
-    try { msg = JSON.parse(data.toString()); } catch { return; }
+    let payload;
+    if (isBinary) {
+      msg = decodePeerBinaryPayload(data);
+      if (!msg || ws._peerBinaryFrames !== true) return;
+      payload = Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data);
+    } else {
+      try { msg = JSON.parse(data.toString()); } catch { return; }
+      payload = data.toString();
+    }
     if (!msg || typeof msg.type !== 'string') return;
 
     if (msg.type === 'hello-peer') {
+      if (isBinary) return;
       handlePeerHello(slot, ws, msg);
       return;
     }
     if (ws._peerSlot < 0) return;
 
     if (msg.type === 'frame' || msg.type === 'frames' || msg.type === 'hash') {
-      const payload = data.toString();
       if (msg.type === 'frame' || msg.type === 'frames') {
         const latest = peerFrameLatestFrame(msg);
         if (latest > (slot.peerLatestFrame ?? -1)) slot.peerLatestFrame = latest;
@@ -686,7 +800,7 @@ function attachPeer(slot, session, ws) {
       for (let i = 0; i < (slot.peerCount || 2); i++) {
         if (i === ws._peerSlot) continue;
         const target = slot.peers[i];
-        sendPeerPayload(target, payload, peerForwardDelayMs(msg, ws._peerSlot, i));
+        sendPeerPayload(target, peerPayloadForTarget(target, payload, msg), peerForwardDelayMs(msg, ws._peerSlot, i));
       }
       // Buffer frames (only — not hashes) so a late-joining peerwatch
       // can replay them on attach. Hashes are 1/60 the rate and a
@@ -812,6 +926,7 @@ function handlePeerHello(slot, ws, msg) {
 
   slot.peers[requested] = ws;
   ws._peerSlot = requested;
+  ws._peerBinaryFrames = msg.binaryFrames === true;
 
   if (nextHumanSlots) {
     slot.peerHumanSlots = nextHumanSlots;
@@ -831,15 +946,17 @@ function handlePeerHello(slot, ws, msg) {
   // Watchers always see a peer-joined the moment a slot is bound, even
   // if the other peer isn't there yet — they may have connected first
   // and need to know when the game becomes startable.
-  fanOutToWatchers(slot, JSON.stringify({ type: 'peer-joined', slot: requested }));
+  fanOutToWatchers(slot, peerJoinedPayload(slot, requested), { type: 'peer-joined', slot: requested });
 
   for (let i = 0; i < (slot.peerCount || 2); i++) {
     if (i === requested) continue;
     if (slot.peerHumanSlots && !slot.peerHumanSlots.includes(i)) continue;
     const other = slot.peers[i];
     if (other && other.readyState === other.OPEN) {
-      try { other.send(JSON.stringify({ type: 'peer-joined', slot: requested })); } catch {}
-      try { ws.send(JSON.stringify({ type: 'peer-joined', slot: i })); } catch {}
+      const joinedRequested = peerJoinedPayload(slot, requested);
+      const joinedOther = peerJoinedPayload(slot, i);
+      try { other.send(joinedRequested); } catch {}
+      try { ws.send(joinedOther); } catch {}
     }
   }
   // If more peers are still absent, do nothing. Each arrival triggers this

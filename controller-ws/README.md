@@ -28,6 +28,14 @@ from one is forwarded verbatim to the other. The server also sends
 `{"type":"peer-up"}` / `{"type":"peer-down"}` JSON frames whenever
 the pair state changes, so clients can show a connection indicator.
 
+Shared-arena peer sessions keep lobby/session control messages as JSON.
+Clients can add `binaryFrames:true` to `hello-peer`; once all required human
+peers support it, the broker marks `peer-joined` / `session-config` with
+`binaryFrames:true` and accepts compact binary `frame`, `frames`, and `hash`
+payloads on the hot path. Peerwatch clients can request the same hot path with
+`binaryFrames=1` in the URL; otherwise the broker downgrades frame payloads
+back to JSON for compatibility.
+
 There is no auth beyond the session id. Discoverability is the only
 defence — a 32-bit random id displayed via QR for ~30s gives any
 attacker a ~1-in-4-billion guess window. Brute force is infeasible

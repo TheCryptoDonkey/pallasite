@@ -12235,7 +12235,7 @@ function buildDuelInviteUrl(session: string, partnerSlot: number, players = 2, r
  *  half-handshake peer and the spectator never resolves). */
 function buildSpectateUrl(session: string, players = 2, rules?: Partial<DeathmatchRules>, kind: LobbyMatchKind = players > 2 ? 'deathmatch' : 'duel'): string {
   const base = defaultBrokerWsUrl().replace(/\/$/, '');
-  const peerWatchUrl = `${base}/?s=${encodeURIComponent(session)}&r=peerwatch`;
+  const peerWatchUrl = `${base}/?s=${encodeURIComponent(session)}&r=peerwatch&binaryFrames=1`;
   const origin = window.location.origin;
   const params = new URLSearchParams({
     spectate: session,
@@ -12420,7 +12420,7 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby
   // leave the badge in WAITING and let READY work as before. The watch is
   // a purely informational channel — nothing about the duel flow depends
   // on it succeeding.
-  const watchUrl = `${defaultBrokerWsUrl().replace(/\/$/, '')}/?s=${encodeURIComponent(session)}&r=peerwatch`;
+  const watchUrl = `${defaultBrokerWsUrl().replace(/\/$/, '')}/?s=${encodeURIComponent(session)}&r=peerwatch&binaryFrames=1`;
   let watchSocket: WebSocket | null = null;
   try {
     watchSocket = new WebSocket(watchUrl);
