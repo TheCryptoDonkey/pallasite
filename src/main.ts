@@ -323,7 +323,7 @@ let spectator: SpectatorPeer | null = null;
 function peerInputDelayFrames(players: number, aiFilledSession = false): number {
   const configured = boundedPlayerCount(mpParams.get('inputDelay'), NaN, 0, 60);
   if (Number.isFinite(configured)) return configured;
-  if (urlCoopCampaignModeActive()) return 36;
+  if (urlCoopCampaignModeActive()) return 24;
   if (aiFilledSession) return 40;
   if (urlDeathmatchModeActive()) return Math.min(56, 44 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
   return Math.min(32, 22 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
@@ -1905,7 +1905,8 @@ async function boot(): Promise<void> {
     // Surface a "Connecting" placeholder so the player isn't staring at a
     // blank canvas while peer.connect() blocks on the partner's arrival.
     // simulateStart's clearOverlay() removes this once peer-joined fires.
-    renderDuelConnecting(mpSlot, requestedPeerPlayers, false);
+    const connectKind = urlCoopCampaignModeActive() ? 'coop-campaign' : urlDeathmatchModeActive() ? 'deathmatch' : 'duel';
+    renderDuelConnecting(mpSlot, requestedPeerPlayers, false, connectKind);
     try {
       await peer.connect({
         url: mpUrl,
@@ -1956,7 +1957,8 @@ async function boot(): Promise<void> {
   // with theirs from frame 0.
   if (spectateMode && mpUrl && spectateSession) {
     spectator = new SpectatorPeer();
-    renderDuelConnecting(0, requestedPeerPlayers, true);
+    const connectKind = urlCoopCampaignModeActive() ? 'coop-campaign' : urlDeathmatchModeActive() ? 'deathmatch' : 'duel';
+    renderDuelConnecting(0, requestedPeerPlayers, true, connectKind);
     try {
       await spectator.connect({ url: mpUrl, session: spectateSession, players: requestedPeerPlayers, aiFill: aiFillDeathmatch });
       setPeerActive(true);
