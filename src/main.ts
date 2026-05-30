@@ -314,16 +314,18 @@ let peer: Peer | null = null;
 let spectator: SpectatorPeer | null = null;
 /** Input-delay in sim frames when a peer is wired. Co-op must stay close to
  *  solo campaign feel, so it uses only a modest production jitter buffer. The
- *  product deathmatch envelope is 4P; keep that path tight and reserve larger
- *  buffers for explicit stress arenas where fan-out pressure dominates feel.
+ *  product all-human deathmatch envelope is 4P; keep that path tight. AI-filled
+ *  sessions keep a larger replay/handoff buffer because late human takeovers
+ *  must catch up from broker history before existing peers require that slot.
  *  The value must be immutable for a session: late-join replay re-simulates
  *  from frame 0, so changing delay when human slots join would desync. */
 function peerInputDelayFrames(players: number, aiFilledSession = false): number {
   const configured = boundedPlayerCount(mpParams.get('inputDelay'), NaN, 0, 60);
   if (Number.isFinite(configured)) return configured;
   if (urlCoopCampaignModeActive()) return 24;
-  if (urlDeathmatchModeActive() && players <= 4) return 30;
   if (aiFilledSession) return 40;
+  if (urlDeathmatchModeActive() && players <= 2) return 30;
+  if (urlDeathmatchModeActive() && players <= 4) return 36;
   if (urlDeathmatchModeActive()) return Math.min(56, 44 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
   return Math.min(32, 22 + Math.ceil(Math.log2(Math.max(2, players))) * 2);
 }

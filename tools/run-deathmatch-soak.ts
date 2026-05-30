@@ -52,7 +52,7 @@ const BROKER_RATE_HZ = intArg('brokerRate', 60, 5, 60);
 const BROKER_BATCH_SIZE = intArg('brokerBatch', 4, 1, 16);
 const FORWARD_DELAY_MS = intArg('delay', 60, 0, 1_000);
 const FORWARD_JITTER_MS = intArg('jitter', 120, 0, 2_000);
-const INPUT_DELAY_FRAMES = intArg('inputDelay', 30, 0, 60);
+const INPUT_DELAY_FRAMES = intArg('inputDelay', 36, 0, 60);
 
 function startVite(): ChildProcess {
   const p = spawn('pnpm', ['exec', 'vite', '--force', '--host', '127.0.0.1', '--port', String(VITE_PORT), '--strictPort'], {

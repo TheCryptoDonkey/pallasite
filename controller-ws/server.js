@@ -107,7 +107,7 @@ const MAX_PEER_PLAYERS = parseInt(process.env.MAX_PEER_PLAYERS ?? '64', 10);
  *  handoff window. This gives the late client time to replay buffered
  *  inputs and start sending its own future frames before the existing peers
  *  require that slot in their lockstep input logs. */
-const PEER_LATE_TAKEOVER_DELAY_FRAMES = parseInt(process.env.PEER_LATE_TAKEOVER_DELAY_FRAMES ?? '90', 10);
+const PEER_LATE_TAKEOVER_DELAY_FRAMES = parseInt(process.env.PEER_LATE_TAKEOVER_DELAY_FRAMES ?? '120', 10);
 const PEER_BINARY_MAGIC = 0x50; // 'P'
 const PEER_BINARY_VERSION = 1;
 const PEER_BINARY_FRAME = 1;
