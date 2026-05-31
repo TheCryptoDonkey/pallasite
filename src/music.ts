@@ -503,8 +503,8 @@ export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequent
         } catch { return; }
         if (energy <= 4) {
           triedAudioKick = true;
-          logMusic('web-audio silent shortly after play — kicking context (suspend→resume)');
-          void kickAudioContext().then(() => replayCurrent());
+          logMusic('web-audio silent shortly after play — re-establishing (tab-swap equivalent)');
+          void reestablishWebAudio();
         }
       }, 600);
     }
@@ -678,6 +678,20 @@ function replayCurrent(): void {
     try { void e.el.play().catch(() => undefined); } catch { /* ignore */ }
   }
 }
+/**
+ * Faithfully reproduce the tab-swap the user found re-wakes silent Web Audio
+ * output. The swap is two things, not one: the visibility handlers cycle the
+ * AudioContext (suspend→resume) AND pause+replay the media elements
+ * (musicSetPaused). Cycling the context ALONE wasn't enough — the element
+ * pause/replay is the load-bearing half, because re-playing the element is what
+ * re-establishes a MediaElementSource that was outputting zeroes. So do both.
+ */
+async function reestablishWebAudio(): Promise<void> {
+  musicSetPaused(true);        // pause + mute all elements (≡ tab hidden)
+  await kickAudioContext();    // ctx suspend → resume (≡ the visibility cycle)
+  musicSetPaused(false);       // unmute all + replay the current track (≡ tab visible)
+  replayCurrent();             // belt-and-braces in case the current track was the stray
+}
 function maybeSelfHealWebAudioSilence(entry: Loaded, ctx: AudioContext): void {
   if (forcedDirectBySilence) return;
   const t = entry.el.currentTime;
@@ -700,8 +714,8 @@ function maybeSelfHealWebAudioSilence(entry: Loaded, ctx: AudioContext): void {
     // Stage 1: do what the tab-swap does — cycle the context to re-establish the
     // silent MediaElementSource output, keeping the equalizer-capable path.
     triedAudioKick = true;
-    logMusic('web-audio output silent — kicking context (suspend→resume) like a tab-swap');
-    void kickAudioContext().then(() => replayCurrent());
+    logMusic('web-audio output silent — re-establishing (tab-swap: pause+ctx-cycle+replay)');
+    void reestablishWebAudio();
     return;
   }
   // Stage 2: kick didn't help — fall back to direct (audible, no equalizer).
