@@ -82,30 +82,34 @@ const TRACKS: Record<string, Track> = {
   // Selected via the music player; see ALBUMS below. Filenames are the
   // laundered opus/m4a pairs; a couple of ids keep their working names
   // while their player-facing labels are re-themed (see TRACK_INFO).
+  // startAt (seconds) drops gameplay into each track's most energetic ~55s
+  // window — the "good minute" a player actually hears per level — derived from
+  // the loudness envelope (tools/derive-startat). Freeplay ignores it and plays
+  // from the top. Tracks already hot from bar one carry no startAt.
   'relaykeep-title':      { src: '/music/relaykeep-title.opus',      id: 'relaykeep-title' },
-  'the-drift':            { src: '/music/the-drift.opus',            id: 'the-drift' },
+  'the-drift':            { src: '/music/the-drift.opus',            id: 'the-drift',            startAt: 129 },
   'eternal-vigilance':    { src: '/music/eternal-vigilance.opus',    id: 'eternal-vigilance' },
-  'space-invaders-march': { src: '/music/space-invaders-march.opus', id: 'space-invaders-march' },
-  'alien-swarm-rising':   { src: '/music/alien-swarm-rising.opus',   id: 'alien-swarm-rising' },
-  'defenders-resolve':    { src: '/music/defenders-resolve.opus',    id: 'defenders-resolve' },
-  'blasterz':             { src: '/music/blasterz.opus',             id: 'blasterz' },
-  'planetary-defense':    { src: '/music/planetary-defense.opus',    id: 'planetary-defense' },
-  'smart-bombz':          { src: '/music/smart-bombz.opus',          id: 'smart-bombz' },
-  'the-survivor':         { src: '/music/the-survivor.opus',         id: 'the-survivor' },
+  'space-invaders-march': { src: '/music/space-invaders-march.opus', id: 'space-invaders-march', startAt: 98 },
+  'alien-swarm-rising':   { src: '/music/alien-swarm-rising.opus',   id: 'alien-swarm-rising',   startAt: 260 },
+  'defenders-resolve':    { src: '/music/defenders-resolve.opus',    id: 'defenders-resolve',    startAt: 68 },
+  'blasterz':             { src: '/music/blasterz.opus',             id: 'blasterz',             startAt: 94 },
+  'planetary-defense':    { src: '/music/planetary-defense.opus',    id: 'planetary-defense',    startAt: 93 },
+  'smart-bombz':          { src: '/music/smart-bombz.opus',          id: 'smart-bombz',          startAt: 53 },
+  'the-survivor':         { src: '/music/the-survivor.opus',         id: 'the-survivor',         startAt: 59 },
   'rescue-run':           { src: '/music/rescue-run.opus',           id: 'rescue-run' },
   'wave-after-wave':      { src: '/music/wave-after-wave.opus',      id: 'wave-after-wave' },
   'mutant-invasion':      { src: '/music/mutant-invasion.opus',      id: 'mutant-invasion' },
   'the-swarm':            { src: '/music/the-swarm.opus',            id: 'the-swarm' },
-  'cosmic-high-score':    { src: '/music/cosmic-high-score.opus',    id: 'cosmic-high-score' },
+  'cosmic-high-score':    { src: '/music/cosmic-high-score.opus',    id: 'cosmic-high-score',    startAt: 124 },
   'laser-barrage':        { src: '/music/laser-barrage.opus',        id: 'laser-barrage' },
   'missile-command':      { src: '/music/missile-command.opus',      id: 'missile-command' },
-  'the-fury':             { src: '/music/the-fury.opus',             id: 'the-fury' },
+  'the-fury':             { src: '/music/the-fury.opus',             id: 'the-fury',             startAt: 74 },
   'the-tempest':          { src: '/music/the-tempest.opus',          id: 'the-tempest' },
-  'the-siege':            { src: '/music/the-siege.opus',            id: 'the-siege' },
+  'the-siege':            { src: '/music/the-siege.opus',            id: 'the-siege',            startAt: 102 },
   'the-descent':          { src: '/music/the-descent.opus',          id: 'the-descent' },
-  '600b-hole':            { src: '/music/600b-hole.opus',            id: '600b-hole' },
+  '600b-hole':            { src: '/music/600b-hole.opus',            id: '600b-hole',            startAt: 99 },
   'phoenix-reborn':       { src: '/music/phoenix-reborn.opus',       id: 'phoenix-reborn' },
-  'hyperspace-chase':     { src: '/music/hyperspace-chase.opus',     id: 'hyperspace-chase' },
+  'hyperspace-chase':     { src: '/music/hyperspace-chase.opus',     id: 'hyperspace-chase',     startAt: 36 },
 };
 
 interface FadeProfile {
@@ -136,6 +140,12 @@ interface Loaded {
 const loaded = new Map<string, Loaded>();
 let currentId: string | null = null;
 let lastAppliedKey = '';  // memoised state→track key so musicSetTrackForState is O(1) per frame
+// Freeplay (the SOUNDTRACK music player) is "a different beast": play full
+// songs from the top and roll through the whole album, rather than the
+// gameplay behaviour of dropping into each track's best ~minute (startAt) and
+// looping it. The flag flips the play path between the two. Only ever true
+// while the player overlay is open (bracketed by musicSetFreeplay).
+let freeplayActive = false;
 
 const DEFAULT_FADE_MS = 800;
 
@@ -356,22 +366,29 @@ function load(track: Track): Loaded {
   // Honour startAt — seek into the track once metadata arrives so the
   // first play starts mid-track. timeupdate watches for the natural
   // loop point so subsequent loops also skip back to startAt instead
-  // of replaying the slow intro.
+  // of replaying the slow intro. Both are suppressed in freeplay, where
+  // the player wants the whole song from the top (see freeplayActive).
   if (track.startAt && track.startAt > 0) {
     const target = track.startAt;
     el.addEventListener('loadedmetadata', () => {
-      if (el.currentTime < target) {
+      if (!freeplayActive && el.currentTime < target) {
         try { el.currentTime = target; } catch { /* ignore */ }
       }
     });
     if (track.loop !== false) {
       el.addEventListener('timeupdate', () => {
-        if (el.duration > 0 && el.currentTime >= el.duration - 0.1) {
+        if (!freeplayActive && el.duration > 0 && el.currentTime >= el.duration - 0.1) {
           try { el.currentTime = target; } catch { /* ignore */ }
         }
       });
     }
   }
+  // Freeplay jukebox: in the player, tracks play loop:false (see startNew) so
+  // they end naturally; on 'ended' advance to the next track in the album so
+  // the whole album plays through. No-op in gameplay (freeplayActive false).
+  el.addEventListener('ended', () => {
+    if (freeplayActive && currentId === track.id) advanceFreeplay();
+  });
   loaded.set(track.id, entry);
   return entry;
 }
@@ -466,9 +483,22 @@ export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequent
     const trim = track.trim ?? 1;
     try { entry.el.muted = false; } catch { /* ignore */ }
     if (entry.direct) setDirectVolume(entry, 0);
-    // Stings (loop:false) always play from 0 on re-trigger.
-    if (track.loop === false) {
-      try { entry.el.currentTime = 0; } catch { /* will play from 0 anyway */ }
+    // Position + loop, set per play so a cached element can't carry a stale
+    // mode across the gameplay ↔ freeplay boundary:
+    //   • Freeplay → full song from the top, loop OFF (so 'ended' fires and
+    //     the jukebox advances through the album).
+    //   • Gameplay → loop per track; stings restart at 0; looping beds with a
+    //     startAt drop straight into their good ~minute.
+    if (freeplayActive) {
+      entry.el.loop = false;
+      try { entry.el.currentTime = 0; } catch { /* play from 0 anyway */ }
+    } else {
+      entry.el.loop = track.loop !== false;
+      if (track.loop === false) {
+        try { entry.el.currentTime = 0; } catch { /* play from 0 anyway */ }
+      } else if (track.startAt && track.startAt > 0) {
+        try { entry.el.currentTime = track.startAt; } catch { /* ignore */ }
+      }
     }
     // Verify-state retry. Safari can resolve play() while leaving the
     // element paused (autoplay-race: AudioContext was still
@@ -732,6 +762,37 @@ export function setActiveAlbum(id: string): void {
   musicForceRefresh();
 }
 
+/** The album's tracks as a play-through order for the freeplay jukebox:
+ *  title → waves (1→N, each distinct bed once) → bonus → credits. Shared
+ *  stings aren't part of an album, so they're not in the jukebox. */
+function albumOrder(albumId: string): string[] {
+  const a = ALBUMS[albumId] ?? ALBUMS.pallasite;
+  const ids: string[] = [];
+  const push = (id?: string): void => { if (id && !ids.includes(id)) ids.push(id); };
+  push(a.title);
+  for (const w of Object.keys(a.waves).map(Number).sort((x, y) => x - y)) push(a.waves[w]);
+  push(a.bonus);
+  push(a.completed);
+  return ids;
+}
+
+/** Freeplay jukebox: when a track ends in the player, roll on to the next
+ *  track in the active album (wrapping), so the whole album plays through. */
+function advanceFreeplay(): void {
+  const order = albumOrder(activeAlbumId);
+  if (!order.length) return;
+  const i = currentId ? order.indexOf(currentId) : -1;
+  const next = order[(i + 1) % order.length];
+  if (next) musicPreviewPlay(next);
+}
+
+/** Bracket the SOUNDTRACK player's "freeplay" mode (full songs from the top,
+ *  album plays through) on open / close. While off, music behaves as in
+ *  gameplay (startAt good-minute + loop). See freeplayActive. */
+export function musicSetFreeplay(on: boolean): void {
+  freeplayActive = on;
+}
+
 /** Map (phase, wave) to a track id. */
 function trackForState(state: GameState): string | null {
   // 600bn flavour overrides for the Sanctum wave — the-cult plays
@@ -934,10 +995,13 @@ export function musicSetTrackForState(state: GameState): void {
       const entry = loaded.get(currentId);
       if (entry && !entry.failed) {
         if (entry.direct) refreshDirectVolumes();
-        if (entry.el.paused) {
+        if (entry.el.paused && !freeplayActive) {
+          // Don't auto-replay in freeplay: a paused track there means it
+          // ended (the jukebox 'ended' handler is advancing) or the user hit
+          // STOP — replaying would fight either case.
           logMusic(`verify: ${currentId} was paused — replaying (readyState=${entry.el.readyState}, ctx=${ctx.state}, direct=${entry.direct})`);
           try { void entry.el.play().catch((e: unknown) => logMusic(`verify play() rejected: ${currentId}: ${(e as Error)?.name ?? String(e)}`)); } catch { /* ignore */ }
-        } else if (entry.el.readyState === 0) {
+        } else if (!entry.el.paused && entry.el.readyState === 0) {
           // iOS PWA "play() resolved, no data ever loaded" race. The element
           // thinks it's playing (paused=false) but readyState=0 means no
           // network buffer arrived — the original verify pass only retried
