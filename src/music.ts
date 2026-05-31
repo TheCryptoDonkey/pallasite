@@ -10,10 +10,11 @@
  * waves-1-8 tracks now and add the rest as they're laundered.
  */
 
-import { getMasterVolume, getMusicDestination, getMusicDuckFactor, getMusicVolume, isMuted } from './audio.js';
+import { getMasterVolume, getMusicAnalyser, getMusicDestination, getMusicDuckFactor, getMusicVolume, isMuted } from './audio.js';
 import type { GameState } from './types.js';
 import { getFlavour } from './flavour.js';
 import { isSanctumMode } from './mode.js';
+import { mobileRuntimeActive } from './visual-style.js';
 
 /** Override hook for flavour-specific wave music. When 600bn flavour
  *  is active, wave 1 swaps to the-cult.opus instead of slow-orbit.
@@ -113,14 +114,30 @@ function urlFlag(name: string): string | null {
   catch { return null; }
 }
 
-/** Play music directly through HTMLAudioElement instead of routing it through
- *  MediaElementAudioSourceNode. SFX can prove AudioContext unlock while the
- *  media-element source still outputs silence, especially on Safari/iOS but
- *  also after repeated Chrome autoplay recovery. Direct media playback is the
- *  reliable path; ?webaudioMusic=1 keeps the old route for debugging. */
+/** Music output routing.
+ *
+ *  DESKTOP → Web Audio path (MediaElementSource → musicBus → masterGain). This
+ *  is what feeds the equalizer/visualiser analyser tap and what the gain-bus
+ *  crossfade + duck schedule act on. Direct output (below) bypasses all of that,
+ *  which is why the equalizer goes dead and ducking stops working under it.
+ *
+ *  MOBILE/iOS → DIRECT playback (HTMLAudioElement.volume). Their
+ *  MediaElementSource path can output silence even after the AudioContext is
+ *  unlocked (Safari/iOS especially), so direct is the validated reliable path.
+ *
+ *  SELF-HEAL → if the Web Audio path is ever detected silent at runtime on
+ *  desktop (the "silent after repeated Chrome autoplay recovery" edge case that
+ *  motivated forcing direct everywhere in 5399fa6), `forcedDirectBySilence`
+ *  latches for the session and we rebuild onto the direct path — so this can
+ *  never be worse than the all-direct behaviour, only better (equalizer back).
+ *
+ *  Overrides: ?webaudioMusic=1 forces Web Audio; ?directMusic=1 forces direct. */
+let forcedDirectBySilence = false;
 function directMusicOutputActive(): boolean {
   if (urlFlag('webaudioMusic') === '1') return false;
-  return true;
+  if (urlFlag('directMusic') === '1') return true;
+  if (mobileRuntimeActive()) return true;
+  return forcedDirectBySilence;
 }
 
 let trustedMediaGestureSeen = false;
@@ -135,6 +152,24 @@ if (typeof window !== 'undefined') {
 
 function mediaPlaybackGestureReady(): boolean {
   return trustedMediaGestureSeen;
+}
+
+// Lightweight, rate-limited music diagnostics. Music failures were historically
+// swallowed by empty catches, which is exactly why "music is broken" has been
+// impossible to put a finger on. These surface the failure reason on
+// console.warn (and a window event the ?dbg=audio overlay can pick up),
+// rate-limited per message so a repeating failure logs once every couple of
+// seconds rather than every frame.
+const musicLogAt = new Map<string, number>();
+function logMusic(msg: string): void {
+  const now = typeof performance !== 'undefined' ? performance.now() : 0;
+  const last = musicLogAt.get(msg) ?? -Infinity;
+  if (now - last < 2000) return;
+  if (musicLogAt.size > 64) musicLogAt.clear();
+  musicLogAt.set(msg, now);
+  // eslint-disable-next-line no-console
+  console.warn('[music]', msg);
+  try { window.dispatchEvent(new CustomEvent('pallasite:music-diag', { detail: { msg } })); } catch { /* ignore */ }
 }
 
 function directTargetVolume(trim = 1): number {
@@ -414,11 +449,20 @@ export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequent
     // Capped so a genuinely unplayable track doesn't spin forever.
     const attemptPlay = (attempts: number): void => {
       if (currentId !== id) return;
-      try { void entry.el.play().catch(() => undefined); } catch { /* ignore */ }
+      try {
+        void entry.el.play().catch((err: unknown) => {
+          // NotAllowedError = autoplay/gesture block; AbortError = load race.
+          logMusic(`play() rejected: ${id} (try ${attempts}): ${(err as Error)?.name ?? String(err)}`);
+        });
+      } catch (err) {
+        logMusic(`play() threw: ${id}: ${(err as Error)?.name ?? String(err)}`);
+      }
       window.setTimeout(() => {
         if (currentId !== id) return;
         if (entry.el.paused && !entry.failed && attempts < 4) {
           attemptPlay(attempts + 1);
+        } else if (entry.el.paused && !entry.failed) {
+          logMusic(`stuck paused: ${id} after ${attempts + 1} tries (readyState=${entry.el.readyState}, gesture=${mediaPlaybackGestureReady()}, direct=${entry.direct})`);
         }
       }, 250);
     };
@@ -574,6 +618,41 @@ let lastPhase: string | null = null;
 let lastVerifyMs = 0;
 const VERIFY_INTERVAL_MS = 1000;
 
+// Web Audio silence self-heal (desktop). If a track is "playing" via the Web
+// Audio path (element advancing, context running) but the analyser tapped off
+// musicBus sees no signal for ~2 verify ticks, the MediaElementSource is
+// outputting zeroes — the desktop "silent after repeated autoplay recovery"
+// case. Latch onto the direct path for the rest of the session and rebuild, so
+// the worst case is exactly the all-direct behaviour (no equalizer) rather than
+// silence. Only ever runs in Web Audio mode, so it's a no-op on mobile.
+let webAudioSilentSince = 0;
+let lastVerifyCurrentTime = -1;
+function maybeSelfHealWebAudioSilence(entry: Loaded, ctx: AudioContext): void {
+  if (forcedDirectBySilence) return;
+  const t = entry.el.currentTime;
+  const advancing = t > 0.25 && Math.abs(t - lastVerifyCurrentTime) > 0.05;
+  lastVerifyCurrentTime = t;
+  if (ctx.state !== 'running' || !advancing) { webAudioSilentSince = 0; return; }
+  let energy = 0;
+  try {
+    const an = getMusicAnalyser();
+    const buf = new Uint8Array(an.frequencyBinCount);
+    an.getByteFrequencyData(buf);
+    for (let i = 0; i < buf.length; i++) energy += buf[i];
+  } catch { webAudioSilentSince = 0; return; }
+  if (energy > 4) { webAudioSilentSince = 0; return; }  // real signal present
+  const now = performance.now();
+  if (webAudioSilentSince === 0) { webAudioSilentSince = now; return; }
+  if (now - webAudioSilentSince < 1800) return;         // require sustained silence
+  webAudioSilentSince = 0;
+  forcedDirectBySilence = true;
+  logMusic('web-audio output silent while playing — self-healing onto direct playback (equalizer disabled) for this session');
+  const resumeId = currentId;
+  musicResetElements();
+  musicForceRefresh();
+  if (resumeId) crossfadeTo(resumeId, 200);
+}
+
 export function musicSetTrackForState(state: GameState): void {
   if (directMusicOutputActive()) refreshDirectVolumes();
   // Title rotation hook — on phase TRANSITION into 'title', pick a
@@ -617,15 +696,20 @@ export function musicSetTrackForState(state: GameState): void {
       if (entry && !entry.failed) {
         if (entry.direct) refreshDirectVolumes();
         if (entry.el.paused) {
-          try { void entry.el.play().catch(() => undefined); } catch { /* ignore */ }
+          logMusic(`verify: ${currentId} was paused — replaying (readyState=${entry.el.readyState}, ctx=${ctx.state}, direct=${entry.direct})`);
+          try { void entry.el.play().catch((e: unknown) => logMusic(`verify play() rejected: ${currentId}: ${(e as Error)?.name ?? String(e)}`)); } catch { /* ignore */ }
         } else if (entry.el.readyState === 0) {
           // iOS PWA "play() resolved, no data ever loaded" race. The element
           // thinks it's playing (paused=false) but readyState=0 means no
           // network buffer arrived — the original verify pass only retried
           // on paused=true so this silent failure mode slipped through.
           // Force an explicit load() then a fresh play() to break the stall.
+          logMusic(`verify: ${currentId} readyState=0 while 'playing' — forcing load()+play()`);
           try { entry.el.load(); } catch { /* ignore */ }
           try { void entry.el.play().catch(() => undefined); } catch { /* ignore */ }
+        } else if (!entry.direct) {
+          // Element genuinely playing via Web Audio — make sure it's audible.
+          maybeSelfHealWebAudioSilence(entry, ctx);
         }
       }
     }
