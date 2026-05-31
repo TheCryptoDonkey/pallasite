@@ -7735,8 +7735,14 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
   el('h2', { parent: overlay, text: 'SOUNDTRACK' });
-  const sub = el('p', { parent: overlay, text: 'Two albums. Switch any time.' });
+  const sub = el('p', { parent: overlay, text: 'Two albums. Tune the dial.' });
   sub.style.cssText = 'font-size:0.95rem;letter-spacing:0.2em;color:var(--hud-yellow);margin:-12px 0 6px;';
+
+  // OutRun-style car-stereo tuner — the album selector. Mounted here so it sits
+  // directly above the EQ analyser (which reads as the radio's graphic EQ).
+  // Populated at the foot of this function, once buildList()/shownAlbum exist.
+  const radioMount = el('div', { parent: overlay });
+  radioMount.style.cssText = 'width:100%;max-width:480px;margin:0 0 6px;';
 
   // Spectral analyser, sticky at the top of the overlay so it stays in
   // view while the user scrolls through the track list. Log-scale bands
@@ -7957,23 +7963,10 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
   const stop = el('button', { className: 'menu-btn secondary', parent: buttons, text: 'STOP' });
   const back = el('button', { className: 'menu-btn', parent: buttons, text: 'BACK' });
 
-  // ── Album switcher ───────────────────────────────────────────────
-  // Albums are swappable soundtracks. Picking one here BOTH browses its
-  // setlist AND sets the album the game actually plays (setActiveAlbum),
-  // so the chip you tap is the score you'll hear in-game. The shared
-  // stings/system beds surface under whichever album is selected.
+  // Albums are swappable soundtracks. The OutRun tuner (mounted above the EQ,
+  // built at the foot of this function) BOTH browses an album's setlist AND
+  // sets the album the game plays.
   let shownAlbum = getActiveAlbumId();
-  const albumRow = el('div', { parent: overlay });
-  albumRow.style.cssText = 'display:flex;gap:8px;justify-content:center;flex-wrap:wrap;width:100%;max-width:460px;margin:2px 0 6px;';
-  const albumChips: Array<{ id: string; el: HTMLElement }> = [];
-  const paintAlbumChips = (): void => {
-    for (const c of albumChips) {
-      const on = c.id === shownAlbum;
-      c.el.style.borderColor = on ? 'rgba(255,216,74,0.85)' : 'rgba(180,140,255,0.3)';
-      c.el.style.background = on ? 'rgba(255,216,74,0.12)' : 'rgba(180,140,255,0.04)';
-      c.el.style.color = on ? '#ffd84a' : 'rgba(220,210,255,0.7)';
-    }
-  };
 
   const list = el('div', { parent: overlay });
   list.style.cssText = 'display:flex;flex-direction:column;gap:8px;width:100%;max-width:460px;';
@@ -8064,25 +8057,118 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
     paint();
   };
 
-  for (const a of listAlbums()) {
-    const chip = el('button', { parent: albumRow, text: a.label });
-    chip.style.cssText = [
-      'flex:1', 'min-width:130px', 'padding:9px 10px',
-      'font-family:monospace', 'font-size:0.82rem', 'letter-spacing:0.14em',
-      'border-radius:8px', 'border:1px solid rgba(180,140,255,0.3)',
-      'background:rgba(180,140,255,0.04)', 'color:rgba(220,210,255,0.7)',
+  // ── OutRun car-stereo tuner ──────────────────────────────────────
+  // Albums are radio "stations": ◄ TUNE ► (or tapping a preset) flips the
+  // in-game album, the LCD seeks to the station's frequency, and the list
+  // below re-builds. The sticky EQ analyser above doubles as the radio's
+  // graphic EQ, completing the head-unit look.
+  const tunerAlbums = listAlbums();
+  const FREQ: Record<string, string> = { pallasite: '88.5', relay: '99.3' };
+  const freqOf = (id: string): string => FREQ[id] ?? (87.5 + Math.max(0, tunerAlbums.findIndex((a) => a.id === id)) * 5.7).toFixed(1);
+  const labelOf = (id: string): string => tunerAlbums.find((a) => a.id === id)?.label ?? id;
+
+  const bezel = el('div', { parent: radioMount });
+  bezel.style.cssText = [
+    'position:relative', 'border-radius:12px', 'padding:10px 12px 11px',
+    'background:linear-gradient(180deg,#1a1024 0%,#0a0612 70%,#140a1e 100%)',
+    'border:1px solid rgba(255,170,90,0.35)',
+    'box-shadow:0 0 0 1px rgba(0,0,0,0.6) inset,0 0 18px rgba(255,120,180,0.18),0 6px 18px rgba(0,0,0,0.5)',
+  ].join(';');
+
+  // Top control row: ◄ TUNE · F M · TUNE ►
+  const ctrlRow = el('div', { parent: bezel });
+  ctrlRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;';
+  const mkTuneBtn = (txt: string): HTMLButtonElement => {
+    const b = el('button', { parent: ctrlRow, text: txt }) as HTMLButtonElement;
+    b.style.cssText = [
+      'font-family:monospace', 'font-size:0.8rem', 'letter-spacing:0.16em', 'padding:6px 12px',
+      'border-radius:7px', 'color:#ffd0a0',
+      'background:linear-gradient(180deg,rgba(60,40,30,0.9),rgba(30,18,14,0.9))',
+      'border:1px solid rgba(255,170,90,0.5)', 'box-shadow:0 1px 0 rgba(255,210,170,0.25) inset',
       'cursor:pointer', '-webkit-tap-highlight-color:transparent', 'touch-action:manipulation',
     ].join(';');
-    albumChips.push({ id: a.id, el: chip });
-    onTap(chip, () => {
-      void audio.unlockAudio();
-      shownAlbum = a.id;
-      setActiveAlbum(a.id);   // the album you pick is the one the game plays
-      paintAlbumChips();
-      buildList();
-    });
+    return b;
+  };
+  const tuneL = mkTuneBtn('◄ TUNE');
+  const fmBadge = el('span', { parent: ctrlRow, text: 'F M' });
+  fmBadge.style.cssText = "font-family:monospace;font-size:0.7rem;letter-spacing:0.3em;color:#ff6fae;text-shadow:0 0 8px rgba(255,111,174,0.8);";
+  const tuneR = mkTuneBtn('TUNE ►');
+
+  // LCD station display: frequency + album name.
+  const lcd = el('div', { parent: bezel });
+  lcd.style.cssText = [
+    'display:flex', 'align-items:baseline', 'gap:10px', 'justify-content:center', 'flex-wrap:wrap',
+    'padding:8px 12px', 'border-radius:8px',
+    'background:radial-gradient(ellipse at 50% 40%,rgba(10,30,30,0.95),rgba(2,8,10,0.98))',
+    'border:1px solid rgba(120,240,255,0.25)', 'box-shadow:0 0 14px rgba(0,0,0,0.7) inset',
+  ].join(';');
+  const freqEl = el('span', { parent: lcd });
+  freqEl.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:1.5rem;letter-spacing:0.08em;color:#8ef0ff;text-shadow:0 0 10px rgba(142,240,255,0.85);min-width:4ch;text-align:right;";
+  const mhz = el('span', { parent: lcd, text: 'MHz' });
+  mhz.style.cssText = 'font-family:monospace;font-size:0.6rem;letter-spacing:0.16em;color:rgba(142,240,255,0.6);';
+  const nameEl = el('span', { parent: lcd });
+  nameEl.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:1.5rem;letter-spacing:0.22em;color:#ffd84a;text-shadow:0 0 10px rgba(255,216,74,0.7);white-space:nowrap;";
+
+  // Preset dots.
+  const dotsRow = el('div', { parent: bezel });
+  dotsRow.style.cssText = 'display:flex;align-items:center;justify-content:center;gap:18px;margin-top:8px;';
+  const dotEls: Array<{ id: string; dot: HTMLElement; lab: HTMLElement; cell: HTMLElement }> = [];
+  for (const a of tunerAlbums) {
+    const cell = el('div', { parent: dotsRow });
+    cell.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;';
+    const dot = el('span', { parent: cell, text: '◦' });
+    dot.style.cssText = 'font-size:0.9rem;';
+    const lab = el('span', { parent: cell, text: a.label });
+    lab.style.cssText = 'font-family:monospace;font-size:0.66rem;letter-spacing:0.14em;';
+    dotEls.push({ id: a.id, dot, lab, cell });
   }
-  paintAlbumChips();
+
+  let sweepTimer: number | null = null;
+  const paintRadio = (): void => {
+    nameEl.textContent = labelOf(shownAlbum);
+    if (sweepTimer === null) freqEl.textContent = freqOf(shownAlbum);
+    for (const d of dotEls) {
+      const on = d.id === shownAlbum;
+      d.dot.textContent = on ? '●' : '◦';
+      d.dot.style.color = on ? '#ff6fae' : 'rgba(180,140,255,0.5)';
+      d.dot.style.textShadow = on ? '0 0 8px rgba(255,111,174,0.9)' : 'none';
+      d.lab.style.color = on ? '#fff5d8' : 'rgba(180,140,255,0.55)';
+    }
+  };
+  // Dial-seek flourish: scramble the frequency digits, then settle on target.
+  const sweepToFreq = (target: string): void => {
+    if (sweepTimer !== null) { clearInterval(sweepTimer); sweepTimer = null; }
+    let ticks = 0;
+    sweepTimer = window.setInterval(() => {
+      if (!document.body.contains(freqEl)) { if (sweepTimer !== null) clearInterval(sweepTimer); sweepTimer = null; return; }
+      ticks += 1;
+      if (ticks >= 10) {
+        freqEl.textContent = target;
+        if (sweepTimer !== null) clearInterval(sweepTimer);
+        sweepTimer = null;
+        return;
+      }
+      freqEl.textContent = (87.5 + Math.random() * 20).toFixed(1);
+    }, 35);
+  };
+  const selectAlbum = (id: string): void => {
+    void audio.unlockAudio();
+    const changed = id !== shownAlbum;
+    shownAlbum = id;
+    setActiveAlbum(id);   // the station you tune to is the one the game plays
+    if (changed) sweepToFreq(freqOf(id));
+    paintRadio();
+    buildList();
+  };
+  const tune = (dir: 1 | -1): void => {
+    const i = Math.max(0, tunerAlbums.findIndex((a) => a.id === shownAlbum));
+    selectAlbum(tunerAlbums[(i + dir + tunerAlbums.length) % tunerAlbums.length].id);
+  };
+  onTap(tuneL, () => tune(-1));
+  onTap(tuneR, () => tune(1));
+  for (const d of dotEls) onTap(d.cell, () => selectAlbum(d.id));
+
+  paintRadio();
   buildList();
 
   onTap(stop, () => { musicStop(250); paint(); });
