@@ -57,7 +57,7 @@ import {
 import { renderLegalFooter, openTermsModal } from './legal.js';
 import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow, getSanctumStats } from './game.js';
 import * as audio from './audio.js';
-import { listTracks, currentTrackId, musicPreviewPlay, musicForceRefresh, musicStop, musicNotifyClaimSuccess, musicWarmUpAll, musicResetElements, getMusicDebugSnapshot, listAlbums, getActiveAlbumId, setActiveAlbum } from './music.js';
+import { listTracks, currentTrackId, musicPreviewPlay, musicForceRefresh, musicStop, musicNotifyClaimSuccess, musicWarmUpAll, musicResetElements, getMusicDebugSnapshot, listAlbums, getActiveAlbumId, setActiveAlbum, musicSetFreeplay } from './music.js';
 import { getMusicAnalyser } from './audio.js';
 import { fetchProfile, getCachedProfile, bestName } from './profile.js';
 import { type Difficulty, getStoredDifficulty, setStoredDifficulty, lockInDifficulty } from './difficulty.js';
@@ -7732,6 +7732,9 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
 function renderMusicPlayer(state: GameState, onBack: () => void): void {
   void state;
   clearOverlay();
+  // Freeplay: full songs from the top, album plays through (vs gameplay's
+  // good-minute clips). Reset on BACK.
+  musicSetFreeplay(true);
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
   el('h2', { parent: overlay, text: 'SOUNDTRACK' });
@@ -8171,8 +8174,22 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
   paintRadio();
   buildList();
 
+  // Follow the jukebox: when freeplay auto-advances to the next album track,
+  // move the active-row highlight with it. Cheap per-frame id check; stops
+  // itself once the overlay is gone.
+  let lastActiveRow = currentTrackId();
+  const syncActiveRow = (): void => {
+    if (!document.body.contains(list)) return;
+    const a = currentTrackId();
+    if (a !== lastActiveRow) { lastActiveRow = a; paint(); }
+    requestAnimationFrame(syncActiveRow);
+  };
+  requestAnimationFrame(syncActiveRow);
+
   onTap(stop, () => { musicStop(250); paint(); });
   onTap(back, () => {
+    // Leave freeplay so gameplay music resumes its good-minute behaviour.
+    musicSetFreeplay(false);
     // Restore state-driven music. Force-refresh invalidates the memo so the
     // next musicSetTrackForState tick (the game loop runs every frame) will
     // re-resolve the current phase and crossfade back to pallasite-idle.
