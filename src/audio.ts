@@ -198,6 +198,33 @@ export function resumePlayback(): void {
   }
 }
 
+/**
+ * Cycle the AudioContext suspend→resume to re-establish Web Audio output.
+ *
+ * On desktop Chrome a MediaElementAudioSourceNode created while the context is
+ * still settling (e.g. the elements rebuilt synchronously right after an async
+ * resume() during the first-gesture unlock) can output silent zeros until the
+ * context is cycled — which is exactly what switching to another app/tab and
+ * back does (the visibility handlers suspend then resume). This performs that
+ * cycle programmatically on the already-activated context, so the user doesn't
+ * have to do the tab-swap by hand. No gesture needed: the context is already
+ * user-activated (SFX prove it), so resuming a context WE suspended is allowed.
+ */
+export async function kickAudioContext(): Promise<void> {
+  const c = ctx;
+  if (!c || c.state === 'closed') return;
+  try {
+    if (c.state === 'running') {
+      intentionalSuspend = true;  // stop the onstatechange auto-resume racing us
+      await c.suspend();
+    }
+    intentionalSuspend = false;
+    await c.resume();
+  } catch {
+    intentionalSuspend = false;
+  }
+}
+
 export function setMuted(value: boolean): void {
   settings.muted = value;
   saveSettings();

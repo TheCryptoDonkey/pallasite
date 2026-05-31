@@ -3196,7 +3196,7 @@ function setupAudioDebugOverlay(): void {
   const panel = document.createElement('div');
   panel.style.cssText = [
     'position:fixed', 'top:8px', 'left:8px',
-    'z-index:99999', 'pointer-events:none',
+    'z-index:99999', 'pointer-events:auto', 'cursor:pointer',
     'background:rgba(0,0,0,0.75)', 'color:#7fffea',
     'padding:6px 8px', 'border-radius:4px',
     'font:11px/1.35 ui-monospace,monospace',
@@ -3204,7 +3204,31 @@ function setupAudioDebugOverlay(): void {
     'border:1px solid rgba(127,255,234,0.4)',
     'white-space:pre',
   ].join(';');
+  panel.title = 'tap to copy';
   document.body.appendChild(panel);
+  // Tap to copy the whole panel to the clipboard — the diagnostic is otherwise
+  // un-selectable over the game canvas, so there was no easy way to paste it.
+  panel.addEventListener('click', () => {
+    const text = panel.textContent ?? '';
+    const done = (): void => {
+      const prev = panel.style.borderColor;
+      panel.style.borderColor = '#7fffaa';
+      const note = '\n\n[copied ✓]';
+      const base = text;
+      panel.textContent = base + note;
+      window.setTimeout(() => { panel.style.borderColor = prev; }, 900);
+    };
+    try {
+      void navigator.clipboard?.writeText(text).then(done, () => {
+        // Fallback for non-secure contexts / clipboard denial.
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); done(); } catch { /* ignore */ }
+        ta.remove();
+      });
+    } catch { /* ignore */ }
+  });
 
   let lastFailMsg = '';
   let lastDiagMsg = '';
