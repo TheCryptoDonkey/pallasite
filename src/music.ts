@@ -76,6 +76,36 @@ const TRACKS: Record<string, Track> = {
   'vacuum':          { src: '/music/vacuum.opus',          id: 'vacuum' },
   // ── Bonus levels (single-room detours) ───────────────────────────
   'the-cult':        { src: '/music/the-cult.opus',        id: 'the-cult' },  // 600bn Sanctum bed
+
+  // ── RELAY VAULT album (Defend The Relay / Echo Seven laundered set) ──
+  // A second, switchable soundtrack covering title + all 25 waves + credits.
+  // Selected via the music player; see ALBUMS below. Filenames are the
+  // laundered opus/m4a pairs; a couple of ids keep their working names
+  // while their player-facing labels are re-themed (see TRACK_INFO).
+  'relaykeep-title':      { src: '/music/relaykeep-title.opus',      id: 'relaykeep-title' },
+  'the-drift':            { src: '/music/the-drift.opus',            id: 'the-drift' },
+  'eternal-vigilance':    { src: '/music/eternal-vigilance.opus',    id: 'eternal-vigilance' },
+  'space-invaders-march': { src: '/music/space-invaders-march.opus', id: 'space-invaders-march' },
+  'alien-swarm-rising':   { src: '/music/alien-swarm-rising.opus',   id: 'alien-swarm-rising' },
+  'defenders-resolve':    { src: '/music/defenders-resolve.opus',    id: 'defenders-resolve' },
+  'blasterz':             { src: '/music/blasterz.opus',             id: 'blasterz' },
+  'planetary-defense':    { src: '/music/planetary-defense.opus',    id: 'planetary-defense' },
+  'smart-bombz':          { src: '/music/smart-bombz.opus',          id: 'smart-bombz' },
+  'the-survivor':         { src: '/music/the-survivor.opus',         id: 'the-survivor' },
+  'rescue-run':           { src: '/music/rescue-run.opus',           id: 'rescue-run' },
+  'wave-after-wave':      { src: '/music/wave-after-wave.opus',      id: 'wave-after-wave' },
+  'mutant-invasion':      { src: '/music/mutant-invasion.opus',      id: 'mutant-invasion' },
+  'the-swarm':            { src: '/music/the-swarm.opus',            id: 'the-swarm' },
+  'cosmic-high-score':    { src: '/music/cosmic-high-score.opus',    id: 'cosmic-high-score' },
+  'laser-barrage':        { src: '/music/laser-barrage.opus',        id: 'laser-barrage' },
+  'missile-command':      { src: '/music/missile-command.opus',      id: 'missile-command' },
+  'the-fury':             { src: '/music/the-fury.opus',             id: 'the-fury' },
+  'the-tempest':          { src: '/music/the-tempest.opus',          id: 'the-tempest' },
+  'the-siege':            { src: '/music/the-siege.opus',            id: 'the-siege' },
+  'the-descent':          { src: '/music/the-descent.opus',          id: 'the-descent' },
+  '600b-hole':            { src: '/music/600b-hole.opus',            id: '600b-hole' },
+  'phoenix-reborn':       { src: '/music/phoenix-reborn.opus',       id: 'phoenix-reborn' },
+  'hyperspace-chase':     { src: '/music/hyperspace-chase.opus',     id: 'hyperspace-chase' },
 };
 
 interface FadeProfile {
@@ -485,10 +515,11 @@ export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequent
     }
     attemptPlay(0);
     // Fast startup recovery: a MediaElementSource created during the gesture
-    // unlock can be born silent on desktop Chrome and only wake on a context
-    // suspend→resume (the tab-swap the user found). Rather than wait for the
-    // once-a-second verify pass to notice, check ~600ms after play and kick the
-    // context immediately if the analyser is dead while the element is running.
+    // unlock can be born silent on desktop Chrome and stay dead even through a
+    // context suspend→resume — only a real tab-swap revived it. Rather than wait
+    // for the once-a-second verify pass to notice, check ~600ms after play and
+    // rebuild the source fresh (see reestablishWebAudio) if the analyser is dead
+    // while the element is running.
     if (!entry.direct && !triedAudioKick) {
       window.setTimeout(() => {
         if (currentId !== id || forcedDirectBySilence || triedAudioKick) return;
@@ -503,7 +534,7 @@ export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequent
         } catch { return; }
         if (energy <= 4) {
           triedAudioKick = true;
-          logMusic('web-audio silent shortly after play — re-establishing (tab-swap equivalent)');
+          logMusic('web-audio silent shortly after play — rebuilding source fresh');
           void reestablishWebAudio();
         }
       }, 600);
@@ -598,6 +629,109 @@ export function musicNotifyClaimSuccess(): void {
   pendingPostClaimTrack = 'banked-coin';
 }
 
+// ── Albums — switchable soundtracks ─────────────────────────────────
+// An album is a full set of *musical beds* covering the campaign arc:
+// title, every wave (1→25), and the end-credits/completion screen, plus
+// an optional bonus-level bed. The SFX-grade stings (death/hull-breached,
+// warp riser, banked-sat) are deliberately NOT part of an album — they
+// stay shared across all albums so the game's signature cues always land.
+// The active album is a client-side presentation preference (music never
+// feeds the deterministic sim), so switching it has no lockstep impact.
+interface Album {
+  id: string;
+  label: string;
+  /** Title-screen bed. Pallasite rotates a pool instead (see titlePool). */
+  title: string;
+  /** Optional title rotation pool — pallasite keeps its multi-track idle
+   *  rotation; other albums use the single `title` track. */
+  titlePool?: readonly string[];
+  /** Completion / end-credits bed. */
+  completed: string;
+  /** Bonus-level bed (W9→W10). Falls back to the shared 'hyperspace'. */
+  bonus?: string;
+  /** wave (1-indexed) → track id. Must cover 1..25. */
+  waves: Record<number, string>;
+}
+
+const ALBUMS: Record<string, Album> = {
+  // The original, curated pallasite score — each bed hand-matched to a
+  // meteorite/threat. Waves reference the existing WAVE_TRACKS table so the
+  // two never drift.
+  pallasite: {
+    id: 'pallasite',
+    label: 'PALLASITE',
+    title: 'pallasite-idle',
+    titlePool: TITLE_POOL,
+    completed: 'banked',
+    bonus: 'hyperspace',
+    waves: WAVE_TRACKS,
+  },
+  // Defend The Relay laundered set — a second full soundtrack, energy-arced
+  // to the same act structure. 21 distinct wave beds (a few reused, as the
+  // pallasite album does) + title + credits + bonus = all 24 tracks placed.
+  relay: {
+    id: 'relay',
+    label: 'RELAY VAULT',
+    title: 'relaykeep-title',
+    completed: 'phoenix-reborn',
+    bonus: 'hyperspace-chase',
+    waves: {
+       1: 'the-drift',            //  1 Krasnojarsk — calm opener
+       2: 'eternal-vigilance',    //  2 Brenham
+       3: 'space-invaders-march', //  3 Esquel — rhythmic
+       4: 'alien-swarm-rising',   //  4 Fukang — elites incoming
+       5: 'defenders-resolve',    //  5 Imilac — heist, heroic
+       6: 'blasterz',             //  6 Mineo — iron, action
+       7: 'planetary-defense',    //  7 Zaisho — tanks
+       8: 'smart-bombz',          //  8 Marjalahti — mines
+       9: 'the-survivor',         //  9 Omolon — breather
+      10: 'rescue-run',           // 10 Springwater — snipers
+      11: 'wave-after-wave',      // 11 Glorieta — two wells
+      12: 'mutant-invasion',      // 12 Seymchan — reclassified
+      13: 'the-swarm',            // 13 Albin — edges open
+      14: 'planetary-defense',    // 14 Brahin — tanks anchor (reuse)
+      15: 'eternal-vigilance',    // 15 Ahumada — defensive (reuse)
+      16: 'cosmic-high-score',    // 16 Itzawisis — seam peak
+      17: 'laser-barrage',        // 17 Eagle Station — past halfway
+      18: 'missile-command',      // 18 Newport — lanes tighten
+      19: 'rescue-run',           // 19 Otinapa — snipers brake (reuse)
+      20: 'the-fury',             // 20 Conception Jct — chain hard
+      21: 'the-tempest',          // 21 Quijingue — anomalous storm
+      22: 'the-swarm',            // 22 Phillips County — trust no orbit (reuse)
+      23: 'the-siege',            // 23 Admire — six wells, siege
+      24: 'the-descent',          // 24 Hambleton — last orbit, ominous
+      25: '600b-hole',            // 25 EVENT HORIZON — the boss
+    },
+  },
+};
+
+const ALBUM_KEY = 'pallasite:music-album';
+let activeAlbumId: string = (() => {
+  try {
+    const stored = localStorage.getItem(ALBUM_KEY);
+    return stored && ALBUMS[stored] ? stored : 'pallasite';
+  } catch { return 'pallasite'; }
+})();
+function activeAlbum(): Album { return ALBUMS[activeAlbumId] ?? ALBUMS.pallasite; }
+
+export interface AlbumInfo { id: string; label: string; }
+export function listAlbums(): readonly AlbumInfo[] {
+  return Object.values(ALBUMS).map((a) => ({ id: a.id, label: a.label }));
+}
+export function getActiveAlbumId(): string { return activeAlbumId; }
+
+/** Switch the active in-game album. Persists the choice and invalidates the
+ *  track memo so the next loop tick re-resolves the current phase and
+ *  crossfades into the new album's bed. No-op for an unknown / unchanged id. */
+export function setActiveAlbum(id: string): void {
+  if (!ALBUMS[id] || id === activeAlbumId) return;
+  activeAlbumId = id;
+  try { localStorage.setItem(ALBUM_KEY, id); } catch { /* ignore */ }
+  // Prime the new album's first-heard beds so the crossfade isn't cold.
+  for (const cid of criticalTrackIds()) preloadTrack(cid);
+  musicForceRefresh();
+}
+
 /** Map (phase, wave) to a track id. */
 function trackForState(state: GameState): string | null {
   // 600bn flavour overrides for the Sanctum wave — the-cult plays
@@ -606,14 +740,16 @@ function trackForState(state: GameState): string | null {
   if (override) return override;
   switch (state.phase) {
     case 'title':
-      return currentTitleTrack;
+      // Pallasite rotates its idle pool (pickTitleTrack); other albums use
+      // their single title bed.
+      return activeAlbum().titlePool ? currentTitleTrack : activeAlbum().title;
     case 'paused':
       // 'paused' should keep the wave track ducked, not switch — see musicSetTrackForState
       return 'pallasite-idle';
     case 'gameover':
       return 'hull-breached';
     case 'completed':
-      return 'banked';
+      return activeAlbum().completed;
     case 'warp':
       // Distinct riser bed during the inter-wave warp tunnel — the wave-band
       // track returns on the next 'wavestart' tick.
@@ -625,7 +761,7 @@ function trackForState(state: GameState): string | null {
       // crossfade machinery here drives it via the music gain bus so
       // looping vs not doesn't actually matter — the track plays for
       // the bonus duration and crossfades out when wave 10 starts).
-      return 'hyperspace';
+      return activeAlbum().bonus ?? 'hyperspace';
     case 'sanctum':
       // 600bn Sanctum bed — the-cult plays through the full 240s
       // four-phase arc. Lazy-preloaded when getFlavour()==='600bn'
@@ -634,7 +770,7 @@ function trackForState(state: GameState): string | null {
     case 'wavestart':
     case 'playing': {
       const w = state.wave;
-      const picked = WAVE_TRACKS[w];
+      const picked = activeAlbum().waves[w];
       if (picked) return picked;
       // Legacy band fallbacks — used if a future wave > 25 ever lands.
       if (w >= 1 && w <= 8)   return 'slow-orbit';
@@ -661,36 +797,63 @@ const VERIFY_INTERVAL_MS = 1000;
 // Audio path (element advancing, context running) but the analyser tapped off
 // musicBus sees no signal, the MediaElementSource is outputting zeroes — the
 // desktop "silent until you swap tabs and back" case. Recovery is staged:
-//   1) First KICK the context (suspend→resume) — exactly what the tab-swap the
-//      user found does — which re-establishes the silent source while KEEPING
-//      the Web Audio path (equalizer stays alive).
-//   2) Only if it's STILL silent after the kick, latch onto the direct path for
-//      the rest of the session (audible music, no equalizer). Worst case is
+//   1) First REBUILD the source from scratch on the live context (dispose the
+//      silent element + nodes, recreate via load()) — a source created while the
+//      context is running isn't born-silent. This keeps the Web Audio path so
+//      the equalizer stays alive. (The old approach merely suspend→resumed the
+//      context to mimic the tab-swap, but some Chrome builds ignored it.)
+//   2) Only if it's STILL silent after the rebuild, latch onto the direct path
+//      for the rest of the session (audible music, no equalizer). Worst case is
 //      therefore the all-direct behaviour, never silence.
 // Only ever runs in Web Audio mode, so it's a no-op on mobile.
 let webAudioSilentSince = 0;
 let lastVerifyCurrentTime = -1;
 let triedAudioKick = false;
-function replayCurrent(): void {
-  if (!currentId) return;
-  const e = loaded.get(currentId);
-  if (e && !e.failed && e.el.paused) {
-    try { void e.el.play().catch(() => undefined); } catch { /* ignore */ }
+/** Tear down a cached track's element + Web Audio nodes and recreate them
+ *  FRESH on the (now-running) context, resuming playback in place. The new
+ *  MediaElementSource is created while the context is live, so unlike the
+ *  original it can't be born-silent — this is the equalizer-preserving cure
+ *  for the desktop "silent until you tab-swap" bug. */
+function rebuildSourceFresh(id: string): void {
+  const track = TRACKS[id];
+  if (!track) return;
+  const old = loaded.get(id);
+  let resumeAt = 0;
+  if (old) {
+    try { resumeAt = old.el.currentTime; } catch { /* ignore */ }
+    try { old.el.pause(); } catch { /* ignore */ }
+    if (old.volumeRaf !== null) { try { cancelAnimationFrame(old.volumeRaf); } catch { /* ignore */ } }
+    try { old.src?.disconnect(); } catch { /* ignore */ }
+    try { old.gain?.disconnect(); } catch { /* ignore */ }
+    loaded.delete(id);
   }
+  const fresh = load(track);   // fresh Audio + MediaElementSource on the live ctx
+  try { fresh.el.currentTime = resumeAt; } catch { /* ignore */ }
+  if (fresh.gain) {
+    const ctx = getMusicDestination().context as AudioContext;
+    try {
+      fresh.gain.gain.cancelScheduledValues(ctx.currentTime);
+      fresh.gain.gain.value = track.trim ?? 1;
+    } catch { /* ignore */ }
+  } else if (fresh.direct) {
+    setDirectVolume(fresh, directTargetVolume(track.trim ?? 1));
+  }
+  try { void fresh.el.play().catch(() => undefined); } catch { /* ignore */ }
 }
+
 /**
- * Faithfully reproduce the tab-swap the user found re-wakes silent Web Audio
- * output. The swap is two things, not one: the visibility handlers cycle the
- * AudioContext (suspend→resume) AND pause+replay the media elements
- * (musicSetPaused). Cycling the context ALONE wasn't enough — the element
- * pause/replay is the load-bearing half, because re-playing the element is what
- * re-establishes a MediaElementSource that was outputting zeroes. So do both.
+ * Recover a desktop Web Audio track outputting digital silence. The earlier
+ * approach replicated the tab-swap (pause → context suspend/resume → replay),
+ * but on some Chrome builds the born-silent MediaElementSource stays dead — only
+ * a real visibility change revived it. So instead make sure the context is
+ * running, then REBUILD the source from scratch: a source created on a live
+ * context isn't born-silent. Keeps the Web Audio path, so the equalizer survives.
  */
 async function reestablishWebAudio(): Promise<void> {
-  musicSetPaused(true);        // pause + mute all elements (≡ tab hidden)
-  await kickAudioContext();    // ctx suspend → resume (≡ the visibility cycle)
-  musicSetPaused(false);       // unmute all + replay the current track (≡ tab visible)
-  replayCurrent();             // belt-and-braces in case the current track was the stray
+  const id = currentId;
+  if (!id) return;
+  await kickAudioContext();    // ensure the context is running before we recreate
+  rebuildSourceFresh(id);      // dispose the silent source + recreate it fresh
 }
 function maybeSelfHealWebAudioSilence(entry: Loaded, ctx: AudioContext): void {
   if (forcedDirectBySilence) return;
@@ -711,16 +874,18 @@ function maybeSelfHealWebAudioSilence(entry: Loaded, ctx: AudioContext): void {
   if (now - webAudioSilentSince < 600) return;          // ~2 verify ticks of silence
   webAudioSilentSince = 0;
   if (!triedAudioKick) {
-    // Stage 1: do what the tab-swap does — cycle the context to re-establish the
-    // silent MediaElementSource output, keeping the equalizer-capable path.
+    // Stage 1: rebuild the silent MediaElementSource from scratch on the live
+    // context — keeps the equalizer-capable Web Audio path (a fresh source
+    // isn't born-silent, unlike the context-cycle which some Chrome builds
+    // ignored entirely).
     triedAudioKick = true;
-    logMusic('web-audio output silent — re-establishing (tab-swap: pause+ctx-cycle+replay)');
+    logMusic('web-audio output silent — rebuilding source fresh (live-context recreate)');
     void reestablishWebAudio();
     return;
   }
-  // Stage 2: kick didn't help — fall back to direct (audible, no equalizer).
+  // Stage 2: rebuild didn't help — fall back to direct (audible, no equalizer).
   forcedDirectBySilence = true;
-  logMusic('still silent after context kick — self-healing onto direct playback (equalizer disabled) for this session');
+  logMusic('still silent after source rebuild — self-healing onto direct playback (equalizer disabled) for this session');
   const resumeId = currentId;
   musicResetElements();
   musicForceRefresh();
@@ -739,7 +904,7 @@ export function musicSetTrackForState(state: GameState): void {
   // ~2s cold-fetch on slow networks would otherwise leave the new
   // wave's first beat silent.
   if (lastPhase !== 'warp' && state.phase === 'warp') {
-    const upcoming = WAVE_TRACKS[state.warpTargetWave ?? state.wave + 1];
+    const upcoming = activeAlbum().waves[state.warpTargetWave ?? state.wave + 1];
     if (upcoming) preloadTrack(upcoming);
   }
   lastPhase = state.phase;
@@ -810,14 +975,27 @@ export function musicSetTrackForState(state: GameState): void {
  *  first crossfade. Used to preload all 24 tracks, but the new music
  *  set runs to ~63MB and most players never reach the late waves, so
  *  this now primes only the title + wave-1 + the cinematic stings. */
-const CRITICAL_TRACKS: readonly string[] = [
-  'pallasite-idle',   // title — first thing the user hears
-  'slow-orbit',       // wave 1 — first crossfade after IGNITE
+// Shared stings whose cue window is too tight for a cold fetch — primed
+// regardless of which album is active (they aren't part of any album).
+const SHARED_CRITICAL: readonly string[] = [
   'warp-transition',  // 1.3s window between waves
-  'hyperspace',       // 1.3s window on ship hyperjump
   'hull-breached',    // death sting, must land instantly
-  'banked',           // victory sting, must land instantly
+  'banked-coin',      // post-claim title sting
 ];
+
+/** Album-aware critical preload set: shared stings + the active album's
+ *  first-heard beds (title, wave 1, bonus, completion). Deliberately small —
+ *  everything else lazy-loads on first crossfade so we don't ship ~60MB up
+ *  front for late-wave beds most players never reach. */
+function criticalTrackIds(): string[] {
+  const a = activeAlbum();
+  const ids = new Set<string>(SHARED_CRITICAL);
+  ids.add(a.title);              // title — first thing the user hears
+  ids.add(a.waves[1]);           // wave 1 — first crossfade after IGNITE
+  ids.add(a.completed);          // victory sting, must land instantly
+  ids.add(a.bonus ?? 'hyperspace'); // 1.3s window on the W9→W10 detour
+  return [...ids].filter((id) => !!TRACKS[id]);
+}
 /** Flavour-gated additions to the critical preload set. The 600bn Sanctum
  *  has a single bed (the-cult) that needs to land instantly when the player
  *  taps PLAY — no fallback track to fade in behind it. Only preloaded on
@@ -826,7 +1004,7 @@ const FLAVOUR_CRITICAL: Record<string, readonly string[]> = {
   '600bn': ['the-cult'],
 };
 export function preloadAllTracks(): void {
-  for (const id of CRITICAL_TRACKS) {
+  for (const id of criticalTrackIds()) {
     const track = TRACKS[id];
     if (track) try { load(track); } catch { /* ignore */ }
   }
@@ -879,8 +1057,8 @@ export function musicResetElements(): void {
  * activated — later phase changes load fresh elements outside any
  * gesture, iOS rejects their .play(), and the wave bands fall silent.
  *
- * The set is the CRITICAL_TRACKS list + flavour additions, NOT every
- * track in TRACKS. The original implementation warmed all 25 tracks on
+ * The set is the active album's criticalTrackIds() + flavour additions, NOT
+ * every track in TRACKS. The original implementation warmed all 25 tracks on
  * the first user gesture, which kicked 25 simultaneous decoder+fetch
  * starts and choked iOS PWA hard enough to break the click handler
  * that initiated the unlock (PLAY / IGNITE became unresponsive). Wave
@@ -895,7 +1073,7 @@ export function musicResetElements(): void {
  */
 export function musicWarmUpAll(skipId?: string): void {
   const flavourCritical = FLAVOUR_CRITICAL[getFlavour()] ?? [];
-  const warmSet = new Set<string>([...CRITICAL_TRACKS, ...flavourCritical]);
+  const warmSet = new Set<string>([...criticalTrackIds(), ...flavourCritical]);
   for (const id of warmSet) {
     if (id === skipId) continue;
     try {
@@ -936,6 +1114,10 @@ export interface TrackInfo {
   hint: string;
   wave: number | null;
   category: 'sting' | 'wave' | 'bonus';
+  /** Which album this track belongs to in the player. Undefined = the
+   *  original pallasite album (kept implicit so the existing rows need no
+   *  edit). 'relay' tags the Defend The Relay vault tracks. */
+  album?: 'pallasite' | 'relay';
 }
 
 const TRACK_INFO: TrackInfo[] = [
@@ -967,6 +1149,36 @@ const TRACK_INFO: TrackInfo[] = [
   { id: 'perihelion',      label: 'PERIHELION',      hint: 'Newport · close to sun', wave: 18, category: 'wave' },
   { id: 'apophis',         label: 'APOPHIS',         hint: 'Admire · existential', wave: 23, category: 'wave' },
   { id: 'event-horizon',   label: 'EVENT HORIZON',   hint: 'Final arena · boss',  wave: 25, category: 'wave' },
+
+  // ── RELAY VAULT album (Defend The Relay) ─────────────────────────
+  // Title + credits (system), bonus bed, then the wave setlist. A couple
+  // of labels are re-themed off their working filenames to stay clear of
+  // other games' marks (missile-command → SALVO, space-invaders-march →
+  // PHALANX); the file ids are unchanged.
+  { id: 'relaykeep-title',      label: 'RELAYKEEP',      hint: 'Title theme',          wave: null, category: 'sting', album: 'relay' },
+  { id: 'phoenix-reborn',       label: 'PHOENIX REBORN', hint: 'End credits',          wave: null, category: 'sting', album: 'relay' },
+  { id: 'hyperspace-chase',     label: 'HYPERSPACE CHASE', hint: 'Bonus level · W9 → W10', wave: null, category: 'bonus', album: 'relay' },
+  { id: 'the-drift',            label: 'THE DRIFT',         hint: 'Krasnojarsk',         wave:  1, category: 'wave', album: 'relay' },
+  { id: 'eternal-vigilance',    label: 'ETERNAL VIGILANCE', hint: 'Brenham',             wave:  2, category: 'wave', album: 'relay' },
+  { id: 'space-invaders-march', label: 'PHALANX',           hint: 'Esquel · rhythmic',   wave:  3, category: 'wave', album: 'relay' },
+  { id: 'alien-swarm-rising',   label: 'ALIEN SWARM',       hint: 'Fukang · elites',     wave:  4, category: 'wave', album: 'relay' },
+  { id: 'defenders-resolve',    label: "DEFENDER'S RESOLVE", hint: 'Imilac · heist',     wave:  5, category: 'wave', album: 'relay' },
+  { id: 'blasterz',             label: 'BLASTERZ',          hint: 'Mineo · iron',        wave:  6, category: 'wave', album: 'relay' },
+  { id: 'planetary-defense',    label: 'PLANETARY DEFENCE', hint: 'Zaisho · tanks',      wave:  7, category: 'wave', album: 'relay' },
+  { id: 'smart-bombz',          label: 'SMART BOMBZ',       hint: 'Marjalahti · mines',  wave:  8, category: 'wave', album: 'relay' },
+  { id: 'the-survivor',         label: 'THE SURVIVOR',      hint: 'Omolon · breather',   wave:  9, category: 'wave', album: 'relay' },
+  { id: 'rescue-run',           label: 'RESCUE RUN',        hint: 'Springwater · snipers', wave: 10, category: 'wave', album: 'relay' },
+  { id: 'wave-after-wave',      label: 'WAVE AFTER WAVE',   hint: 'Glorieta · wells',    wave: 11, category: 'wave', album: 'relay' },
+  { id: 'mutant-invasion',      label: 'MUTANT INVASION',   hint: 'Seymchan',            wave: 12, category: 'wave', album: 'relay' },
+  { id: 'the-swarm',            label: 'THE SWARM',         hint: 'Albin · edges open',  wave: 13, category: 'wave', album: 'relay' },
+  { id: 'cosmic-high-score',    label: 'COSMIC HIGH SCORE', hint: 'Itzawisis · seam',    wave: 16, category: 'wave', album: 'relay' },
+  { id: 'laser-barrage',        label: 'LASER BARRAGE',     hint: 'Eagle Station',       wave: 17, category: 'wave', album: 'relay' },
+  { id: 'missile-command',      label: 'SALVO',             hint: 'Newport · lanes',     wave: 18, category: 'wave', album: 'relay' },
+  { id: 'the-fury',             label: 'THE FURY',          hint: 'Conception · chain',  wave: 20, category: 'wave', album: 'relay' },
+  { id: 'the-tempest',          label: 'THE TEMPEST',       hint: 'Quijingue · anomalous', wave: 21, category: 'wave', album: 'relay' },
+  { id: 'the-siege',            label: 'THE SIEGE',         hint: 'Admire · six wells',  wave: 23, category: 'wave', album: 'relay' },
+  { id: 'the-descent',          label: 'THE DESCENT',       hint: 'Hambleton · last orbit', wave: 24, category: 'wave', album: 'relay' },
+  { id: '600b-hole',            label: '600B HOLE',         hint: 'Event Horizon · boss', wave: 25, category: 'wave', album: 'relay' },
 ];
 
 export function listTracks(): readonly TrackInfo[] { return TRACK_INFO; }
