@@ -2981,6 +2981,63 @@ function recordGhostSample(s: GameState): void {
   }
 }
 
+/**
+ * Opaque capture of the module-global simulation state that lives OUTSIDE
+ * GameState yet evolves every tick — the Sanctum/arena spawn cursors and the
+ * replay/ghost sampling cursors. Rollback netcode (src/rollback.ts) must
+ * snapshot and restore these alongside the GameState clone, or a re-simulated
+ * frame would spawn / sample on a different schedule and desync. The RNG
+ * (seed.ts getRngState/setRngState) and the entity-id counter
+ * (getEntityIdCounter/setEntityIdCounter) are captured separately via their
+ * own accessors.
+ *
+ * Mirrors the getEntityIdCounter/setEntityIdCounter pattern: one opaque blob
+ * keeps the rollback module decoupled from this file's private field set.
+ */
+export interface SimModuleState {
+  sanctumCouncilQueue: CouncilMemberRecord[];
+  sanctumCouncilSpawned: string[];
+  sanctumCouncilDefeated: number;
+  sanctumNextCouncilSpawn: number;
+  sanctumNextFillerSpawn: number;
+  arenaSpawnTimer: number;
+  lastReplayRecordedAt: number;
+  lastGhostSampleRunMs: number;
+  lastGhostPoseRunMs: number;
+}
+
+export function getSimModuleState(): SimModuleState {
+  return {
+    // Copy the array container (elements are read-only roster refs) so live
+    // push/pop on the queue can't mutate a stored snapshot.
+    sanctumCouncilQueue: sanctumCouncilQueue.slice(),
+    // Serialise the Set as an array; setSimModuleState rebuilds it.
+    sanctumCouncilSpawned: [...sanctumCouncilSpawned],
+    sanctumCouncilDefeated,
+    sanctumNextCouncilSpawn,
+    sanctumNextFillerSpawn,
+    arenaSpawnTimer,
+    lastReplayRecordedAt,
+    lastGhostSampleRunMs,
+    lastGhostPoseRunMs,
+  };
+}
+
+export function setSimModuleState(m: SimModuleState): void {
+  // Fresh array container so subsequent restores from the same snapshot
+  // (a deeper rollback) keep the stored copy pristine.
+  sanctumCouncilQueue = m.sanctumCouncilQueue.slice();
+  sanctumCouncilSpawned.clear();
+  for (const n of m.sanctumCouncilSpawned) sanctumCouncilSpawned.add(n);
+  sanctumCouncilDefeated = m.sanctumCouncilDefeated;
+  sanctumNextCouncilSpawn = m.sanctumNextCouncilSpawn;
+  sanctumNextFillerSpawn = m.sanctumNextFillerSpawn;
+  arenaSpawnTimer = m.arenaSpawnTimer;
+  lastReplayRecordedAt = m.lastReplayRecordedAt;
+  lastGhostSampleRunMs = m.lastGhostSampleRunMs;
+  lastGhostPoseRunMs = m.lastGhostPoseRunMs;
+}
+
 /** Tear down sirens / heartbeat / ambient — shared by the direct game-over path
  *  and the post-replay transition so audio stops at the right moment. */
 function stopGameplayAudio(): void {

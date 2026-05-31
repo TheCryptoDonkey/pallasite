@@ -67,25 +67,58 @@ on a clean local link. In production (broker forward = 0, RTT 60–120 ms) expec
 coop e2e, n-player e2e (incl. all AI-fill/late-takeover scenarios), soak,
 spectate-latejoin.
 
-## Phase 2 — rollback netcode (NEXT, the real "zero lag")
+## Phase 2 — rollback netcode (IN PROGRESS, the real "zero lag")
 
 Run local input at delay 0–1 (instant own-ship response); predict remote inputs
 (repeat-last); on a misprediction, restore a snapshot and re-simulate forward.
 For inertial Asteroids movement, remote mispredictions are visually tiny.
 
-**Prerequisites — essentially met:**
+**Prerequisites — met:**
 - Determinism audited (B3 verifiable replay; `docs/b3-verifiable-replay.md`).
 - RNG is a single 32-bit number with `get/setRngState` (`src/seed.ts`).
 - Per-frame `InputLog` ring already exists, with "(later) rollback" hooks.
 - Sim is ~0.5 ms → re-simming 10–15 frames ≈ 5–8 ms, well inside budget.
 
-**To build:**
-1. Fast full `GameState` snapshot/restore (currently only the lossy
-   `serializeForCanary` slice exists). Allocation-light ring of snapshots over
-   the rollback window. Must round-trip every field `updateGame` touches +
-   module RNG state.
-2. Prediction (repeat-last-input) for un-received remote frames.
-3. Misprediction detect on real-input arrival → restore + re-sim. Reuse the
-   existing desync-canary hash to assert re-sim correctness.
-4. Cap rollback window; on overrun, fall back to the Phase-1 delay path.
-5. Adaptive delay stays as the floor/fallback when prediction is disabled.
+### Stage A — snapshot/restore foundation (DONE, 2026-05-31)
+
+The bedrock: a fast, complete, byte-exact snapshot/restore of the whole
+simulation, with **zero change to live behaviour** (not yet wired into the
+loop). Shipped:
+
+- **`src/rollback.ts`** — `snapshotSim(state, out?)` / `restoreSim(state, snap)`
+  + a frame-keyed `SnapshotRing` (default cap 16). Captures the sim-relevant
+  subset of `GameState` (omitting only the cosmetic pools + non-sim output
+  sinks — exactly what the canary omits) into pooled, reused entity buffers
+  (alloc-light hot path); restore allocates fresh live objects so a stored
+  snapshot stays pristine across repeated restores. **Restore ordering is
+  load-bearing:** after deep-restoring `state`, it sets the module RNG
+  (`setRngState`), entity-id counter (`setEntityIdCounter`), and the
+  sanctum/arena/sampling-cursor globals (`setSimModuleState`) — the values
+  `gameRng()`/`nextStreamEntityId()`/spawners actually read.
+- **`src/game.ts`** — added `SimModuleState` + `getSimModuleState`/
+  `setSimModuleState` (the 9 non-mirrored module globals, incl. `arenaSpawnTimer`
+  which the deathmatch arena depends on).
+- **`rollback-harness.html`** (registered in `tools/run-harnesses.ts`, runs under
+  `pnpm test`) — proves byte-identity: A1 baseline, A2 restore-then-re-sim
+  reproduces the tail, A3 rewind exactness incl. module globals, A4
+  `structuredClone` oracle agreement, A5 ring eviction. **ROLLBACK-PASS.**
+
+Verified: typecheck + prod build clean, all 5 harnesses PASS, deathmatch soak
+PASS (desync=false, zero drift).
+
+### Stage B — live-loop rollback (NEXT)
+
+Wire the foundation into `src/main.ts`, behind a default-off `?rollback=1`,
+excluding aiFill/spectator (same fragile-startup exclusion as Phase 1):
+
+1. Per-slot read delay: local at 0–1 (instant own ship), remote predicted.
+2. Prediction (repeat-last-input) for un-received remote frames, **with the
+   edge bits (5 hyperspace, 6 shield) masked** so a held prediction can't
+   re-fire them every frame.
+3. Misprediction detect on real-input arrival → `restoreSim` + re-sim. Reuse the
+   desync-canary hash to assert re-sim correctness.
+4. **Canary on confirmed frames only** — predicted/tentative frames must never
+   be hashed or compared, or peers raise false desync alarms.
+5. Cap the rollback window (≈ ring cap); on overrun, fall back to the Phase-1
+   delay path (predicting↔stalling state machine).
+6. Adaptive delay stays as the floor/fallback when prediction is disabled.

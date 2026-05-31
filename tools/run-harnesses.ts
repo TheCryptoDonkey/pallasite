@@ -30,6 +30,7 @@ const HARNESSES: Harness[] = [
   { name: 'lockstep',    path: '/lockstep-harness.html',    initialTitle: 'lockstep harness' },
   { name: 'peer',        path: '/peer-harness.html',        initialTitle: 'peer harness' },
   { name: 'regression',  path: '/regression-harness.html',  initialTitle: 'regression harness' },
+  { name: 'rollback',    path: '/rollback-harness.html',    initialTitle: 'rollback harness' },
 ];
 
 const VITE_READY_TIMEOUT_MS = 30_000;

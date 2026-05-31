@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>rollback harness</title>
+<style>html,body{margin:0;background:#06080f;color:#8cffb4;font:14px/1.6 ui-monospace,monospace;padding:24px}</style>
+</head>
+<body>
+<pre id="out">running rollback snapshot/restore check...</pre>
+<script type="module">
+// Phase-2 Stage-A foundation harness. Proves the rollback snapshot/restore
+// (src/rollback.ts) is BYTE-IDENTICAL: capturing the sim at frame F, perturbing
+// it, restoring, and re-simulating forward reproduces the exact canary-hash
+// sequence of an uninterrupted run. This is the bedrock the live-loop rollback
+// (predict remote inputs, re-sim on misprediction) is built on — if a single
+// sim-relevant field were missed, or the module RNG / entity-id / spawn-cursor
+// globals were not restored, the re-sim would desync and an assertion here fails
+// with the offending field named.
+//
+// Uses the PRODUCTION canary (hashState from peer-canary.ts) as the arbiter of
+// "identical", so a pass here is a pass under the same criterion the live desync
+// canary uses. Math.random is never reset, so the cosmetic pools we deliberately
+// omit from snapshots cannot leak into a pass.
+import {
+  makeInitialState, startGame, updateGame, tryActivateShield, tryHyperspace,
+  getEntityIdCounter, setEntityIdCounter, getSimModuleState, setSimModuleState,
+} from '/src/game.ts';
+import { getRngState, setRngState } from '/src/seed.ts';
+import { snapshotSim, restoreSim, SnapshotRing } from '/src/rollback.ts';
+import { hashState, serializeForCanary } from '/src/peer-canary.ts';
+import { setRenderMode } from '/src/render.ts';
+
+const STEPS = 6000;            // ~100s of sim at 60Hz (matches determinism harness)
+const SEED = 0x1234abcd;
+const RING_CAP = 16;
+const K = 8;                   // perturbation frames between snapshot and restore
+const Fs = [1, 17, 600, 1500, 3001, 5999];      // restore points (straddle ring eviction, hit-stop, waves)
+const ORACLE_FS = [50, 777, 2500];              // points cross-checked against a structuredClone oracle
+
+const RETRO_MODE = {
+  kind: 'retro', vw: 1280, vh: 720, dpr: 1, scale: 1, tx: 0, ty: 0,
+  insets: { top: 0, right: 0, bottom: 0, left: 0 },
+};
+
+// Deterministic input script — identical to the determinism harness so the two
+// share a baseline and this run exercises buffs, edge actions, and hit-stop.
+function applyInput(s, step) {
+  const k = s.players[0].keys;
+  k['ArrowUp'] = (step % 3) !== 0;
+  k['ArrowLeft'] = (step % 7) < 2;
+  k['ArrowRight'] = (step % 11) < 3;
+  k['Space'] = (step % 5) === 0;
+}
+function stepSim(s, i) {
+  applyInput(s, i);
+  if (i % 240 === 120) tryActivateShield(s, s.elapsed, s.players[0]);
+  if (i % 600 === 360) tryHyperspace(s, s.elapsed, s.players[0]);
+  updateGame(s);   // hit-stop lives inside: when set it decrements and returns
+}
+function freshSim() {
+  setRenderMode(RETRO_MODE);
+  const s = makeInitialState();
+  startGame(s, SEED);
+  return s;
+}
+function cleanStateAt(stepIdx) {
+  const s = freshSim();
+  for (let i = 0; i <= stepIdx; i++) stepSim(s, i);
+  return s;
+}
+
+// Field-level diff over the production canary slice — names the first divergence
+// so a forgotten/aliased field localises immediately (mirrors peer-harness's
+// diffLeaves intent).
+function serializeObj(s) { return JSON.parse(serializeForCanary(s)); }
+function findDiff(a, b, path) {
+  if (a === b) return null;
+  const ta = typeof a, tb = typeof b;
+  if (ta !== tb || a === null || b === null || ta !== 'object') {
+    return (path || '(root)') + ': ' + JSON.stringify(a) + ' vs ' + JSON.stringify(b);
+  }
+  if (Array.isArray(a) !== Array.isArray(b)) return (path || '(root)') + ': array/object mismatch';
+  const ka = Object.keys(a), kb = Object.keys(b);
+  if (ka.length !== kb.length) return (path || '(root)') + ': length ' + ka.length + ' vs ' + kb.length;
+  for (const k of ka) {
+    const d = findDiff(a[k], b[k], path ? path + '/' + k : k);
+    if (d) return d;
+  }
+  return null;
+}
+
+const out = document.getElementById('out');
+const failures = [];
+let verdict;
+try {
+  const t0 = performance.now();
+
+  // ── Assertion 1: baseline. Clean run; record per-frame canary hash AND hold
+  //    a fresh snapshot at each restore point. ───────────────────────────────
+  const baseline = new Array(STEPS);
+  const held = new Map();
+  const FsSet = new Set(Fs);
+  {
+    const s = freshSim();
+    for (let i = 0; i < STEPS; i++) {
+      stepSim(s, i);
+      baseline[i] = hashState(s);
+      if (FsSet.has(i)) held.set(i, snapshotSim(s));   // standalone snapshot (own buffers)
+    }
+  }
+
+  // A throwaway sim to restore INTO — restoreSim overwrites it wholesale, so its
+  // prior contents never matter.
+  const s2 = freshSim();
+
+  // ── Assertion 3: rewind exactness. Restore each held snapshot and confirm it
+  //    reproduces frame F exactly, INCLUDING the module RNG + entity-id globals
+  //    (not just the GameState mirrors). ───────────────────────────────────────
+  for (const F of Fs) {
+    const snap = held.get(F);
+    restoreSim(s2, snap);
+    if (hashState(s2) !== baseline[F]) failures.push('A3 rewind hash mismatch at F=' + F + ' (' + hashState(s2) + ' vs ' + baseline[F] + ')');
+    if (getRngState() !== snap.rng) failures.push('A3 module RNG not restored at F=' + F);
+    if (getEntityIdCounter() !== snap.nextEntityId) failures.push('A3 module entity-id not restored at F=' + F);
+  }
+
+  // ── Assertion 2: restore-then-re-sim reproduces the tail (the core property).
+  //    Restore F, then re-run F+1..STEPS and assert every hash matches baseline.
+  for (const F of Fs) {
+    restoreSim(s2, held.get(F));
+    let bad = -1;
+    for (let i = F + 1; i < STEPS; i++) {
+      stepSim(s2, i);
+      if (hashState(s2) !== baseline[i]) { bad = i; break; }
+    }
+    if (bad >= 0) {
+      const diff = findDiff(serializeObj(s2), serializeObj(cleanStateAt(bad)), '');
+      failures.push('A2 re-sim diverged at F=' + F + ', step=' + bad + ' — field ' + diff);
+      break;
+    }
+  }
+
+  // ── Assertion 4: structuredClone oracle. Cross-check the hand-written clone
+  //    against a full structuredClone rewind at sampled points. Both must
+  //    reproduce the pre-perturbation hash, catching any aliasing / mis-copy in
+  //    the fast path that the independent-baseline assertions might not localise.
+  for (const F of ORACLE_FS) {
+    const s = freshSim();
+    for (let i = 0; i <= F; i++) stepSim(s, i);
+    const hBefore = hashState(s);
+
+    const hand = snapshotSim(s);                         // hand-written clone
+    const oRng = getRngState(), oEid = getEntityIdCounter(), oMod = getSimModuleState();
+    const oState = structuredClone({ ...s, session: null, profile: null });  // full deep oracle copy
+
+    for (let i = F + 1; i <= F + K; i++) stepSim(s, i);  // perturb
+    restoreSim(s, hand);
+    const hHand = hashState(s);
+
+    for (let i = F + 1; i <= F + K; i++) stepSim(s, i);  // perturb again
+    Object.assign(s, oState);                            // oracle rewind...
+    setRngState(oRng); setEntityIdCounter(oEid); setSimModuleState(oMod);  // ...+ module globals
+    const hOracle = hashState(s);
+
+    if (hHand !== hBefore) failures.push('A4 hand-clone rewind != baseline at F=' + F + ' (' + hHand + ' vs ' + hBefore + ')');
+    if (hOracle !== hBefore) failures.push('A4 oracle rewind != baseline at F=' + F + ' (' + hOracle + ' vs ' + hBefore + ')');
+    if (hHand !== hOracle) failures.push('A4 hand != oracle at F=' + F);
+  }
+
+  // ── Assertion 5: ring eviction. Drive a SnapshotRing past capacity; confirm
+  //    the newest CAP frames are present, older frames evicted, and a restore
+  //    from the ring reproduces that frame's hash. ─────────────────────────────
+  {
+    const ring = new SnapshotRing(RING_CAP);
+    const s = freshSim();
+    const N = RING_CAP + 30;
+    const frameHash = new Map();
+    for (let i = 0; i < N; i++) {
+      stepSim(s, i);
+      frameHash.set(s.frame, hashState(s));
+      ring.capture(s);
+    }
+    const newest = ring.newestFrame();
+    if (!ring.has(newest)) failures.push('A5 newest frame ' + newest + ' missing from ring');
+    if (!ring.has(newest - RING_CAP + 1)) failures.push('A5 oldest-resident frame ' + (newest - RING_CAP + 1) + ' missing');
+    if (ring.has(newest - RING_CAP)) failures.push('A5 evicted frame ' + (newest - RING_CAP) + ' still present');
+    if (ring.get(newest - RING_CAP) !== null) failures.push('A5 get(evicted) returned non-null');
+    if (!ring.restoreTo(s, newest)) failures.push('A5 restoreTo(newest) returned false');
+    else if (hashState(s) !== frameHash.get(newest)) failures.push('A5 restoreTo(newest) hash mismatch (' + hashState(s) + ' vs ' + frameHash.get(newest) + ')');
+    if (ring.restoreTo(s, newest - RING_CAP)) failures.push('A5 restoreTo(evicted) unexpectedly succeeded');
+  }
+
+  const ms = Math.round(performance.now() - t0);
+  if (failures.length === 0) {
+    verdict = 'ROLLBACK-PASS';
+    out.textContent = 'ROLLBACK-PASS\n\n' +
+      STEPS + ' steps, seed 0x' + SEED.toString(16) + '. snapshot/restore is byte-identical.\n\n' +
+      '  A1 baseline + held snapshots at ' + Fs.join(', ') + '\n' +
+      '  A2 restore-then-re-sim reproduces the tail at every restore point\n' +
+      '  A3 rewind exactness (incl. module RNG + entity-id globals)\n' +
+      '  A4 structuredClone oracle agrees at ' + ORACLE_FS.join(', ') + '\n' +
+      '  A5 ring(' + RING_CAP + ') eviction + restore correct\n\n' +
+      'final baseline hash = ' + baseline[STEPS - 1] + '\n' + ms + 'ms';
+  } else {
+    verdict = 'ROLLBACK-FAIL';
+    out.textContent = 'ROLLBACK-FAIL\n\n' + failures.length + ' failure(s):\n\n  ' +
+      failures.join('\n  ') + '\n\n' + ms + 'ms';
+  }
+} catch (e) {
+  verdict = 'ROLLBACK-ERROR';
+  out.textContent = 'ROLLBACK-ERROR\n\n' + ((e && e.stack) || e);
+}
+document.title = verdict;
+</script>
+</body>
+</html>
