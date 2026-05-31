@@ -106,19 +106,41 @@ loop). Shipped:
 Verified: typecheck + prod build clean, all 5 harnesses PASS, deathmatch soak
 PASS (desync=false, zero drift).
 
-### Stage B — live-loop rollback (NEXT)
+### Stage B — live-loop rollback (DONE, 2026-05-31)
 
-Wire the foundation into `src/main.ts`, behind a default-off `?rollback=1`,
-excluding aiFill/spectator (same fragile-startup exclusion as Phase 1):
+Wired the foundation into `src/main.ts` behind a default-off `?rollback=1`,
+excluding aiFill/spectator (same fragile-startup exclusion as Phase 1). When the
+flag is off, every new branch is bypassed and the loop is byte-identical to
+Phase 1 (verified by the off-path soak + all e2e suites). What shipped:
 
-1. Per-slot read delay: local at 0–1 (instant own ship), remote predicted.
-2. Prediction (repeat-last-input) for un-received remote frames, **with the
-   edge bits (5 hyperspace, 6 shield) masked** so a held prediction can't
-   re-fire them every frame.
-3. Misprediction detect on real-input arrival → `restoreSim` + re-sim. Reuse the
-   desync-canary hash to assert re-sim correctness.
-4. **Canary on confirmed frames only** — predicted/tentative frames must never
-   be hashed or compared, or peers raise false desync alarms.
-5. Cap the rollback window (≈ ring cap); on overrun, fall back to the Phase-1
-   delay path (predicting↔stalling state machine).
-6. Adaptive delay stays as the floor/fallback when prediction is disabled.
+1. **Per-slot read delay** (`rollbackReadFrame`): the local slot reads at
+   `state.frame − ROLLBACK_LOCAL_DELAY` (0 = instant own ship); remote slots read
+   the live frame and are predicted when absent.
+2. **Prediction** (`predictRemoteInput`): repeat-last-input with the edge bits
+   (5 hyperspace, 6 shield) masked so a held prediction can't re-fire them. The
+   InputLog still holds only real inputs; predictions live in a side map.
+3. **Misprediction detect + rollback**: the drain compares each real input
+   against the value we predicted; the earliest miss triggers `restoreSim` to
+   that frame's ring snapshot and a re-sim to the live frontier
+   (`rollbackSimulateStep`, shared by the live frame so they can't diverge).
+4. **Canary on confirmed frames only**: hashes are computed tentatively during
+   (re-)simulation and promoted/sent only once a frame is confirmed
+   (`currentConfirmedFrame`, `promoteConfirmedHashes`); a partner hash for a
+   not-yet-confirmed frame is buffered (`pendingPartnerHashes`), never dropped.
+5. **Window bound = fallback**: never predict more than `ROLLBACK_WINDOW` (14,
+   < ring cap 16) past the confirmed frontier; on overrun, fall back to the
+   Phase-1 stall path until the slow peer catches up.
+6. Adaptive delay stays as the floor/fallback (still computed; the read site
+   just uses the per-slot rollback frames instead).
+
+**Results:** 4P deathmatch soak with rollback on and *varied* inputs (so
+predictions miss): **desync=false**, 58–63 rollbacks/client, avg depth ~8, max
+depth 12–13 (within the window), mispredict ~13%, sim p99 ~4ms (the re-sim
+cost), long-tasks 0. Off-path soak byte-identical; coop / n-player (incl.
+aiFill + late-takeover) / spectate e2e all green; typecheck + prod build clean.
+Soak knob: `pnpm test:deathmatch:soak --rollback=1`.
+
+### Remaining
+
+Rollback is behind `?rollback=1`. Next: bake-in time, then decide on enabling by
+default (Stage C) once it has soaked in real sessions.
