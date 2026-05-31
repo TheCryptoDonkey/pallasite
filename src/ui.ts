@@ -57,7 +57,7 @@ import {
 import { renderLegalFooter, openTermsModal } from './legal.js';
 import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow, getSanctumStats } from './game.js';
 import * as audio from './audio.js';
-import { listTracks, currentTrackId, musicPreviewPlay, musicForceRefresh, musicStop, musicNotifyClaimSuccess, musicWarmUpAll, musicResetElements, getMusicDebugSnapshot } from './music.js';
+import { listTracks, currentTrackId, musicPreviewPlay, musicForceRefresh, musicStop, musicNotifyClaimSuccess, musicWarmUpAll, musicResetElements, getMusicDebugSnapshot, listAlbums, getActiveAlbumId, setActiveAlbum } from './music.js';
 import { getMusicAnalyser } from './audio.js';
 import { fetchProfile, getCachedProfile, bestName } from './profile.js';
 import { type Difficulty, getStoredDifficulty, setStoredDifficulty, lockInDifficulty } from './difficulty.js';
@@ -7734,8 +7734,8 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
-  el('h2', { parent: overlay, text: 'PALLASITE TRACKS' });
-  const sub = el('p', { parent: overlay, text: 'Drift through the score.' });
+  el('h2', { parent: overlay, text: 'SOUNDTRACK' });
+  const sub = el('p', { parent: overlay, text: 'Two albums. Switch any time.' });
   sub.style.cssText = 'font-size:0.95rem;letter-spacing:0.2em;color:var(--hud-yellow);margin:-12px 0 6px;';
 
   // Spectral analyser, sticky at the top of the overlay so it stays in
@@ -7957,12 +7957,23 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
   const stop = el('button', { className: 'menu-btn secondary', parent: buttons, text: 'STOP' });
   const back = el('button', { className: 'menu-btn', parent: buttons, text: 'BACK' });
 
-  // Group tracks by category — stings (system + cinematic), bonus levels
-  // (off-rail detours — W9→W10 hyperspace, 600bn the-cult), then wave tracks.
-  const tracks = listTracks();
-  const stings = tracks.filter((t) => t.category === 'sting');
-  const bonusTracks = tracks.filter((t) => t.category === 'bonus');
-  const waveTracks = tracks.filter((t) => t.category === 'wave');
+  // ── Album switcher ───────────────────────────────────────────────
+  // Albums are swappable soundtracks. Picking one here BOTH browses its
+  // setlist AND sets the album the game actually plays (setActiveAlbum),
+  // so the chip you tap is the score you'll hear in-game. The shared
+  // stings/system beds surface under whichever album is selected.
+  let shownAlbum = getActiveAlbumId();
+  const albumRow = el('div', { parent: overlay });
+  albumRow.style.cssText = 'display:flex;gap:8px;justify-content:center;flex-wrap:wrap;width:100%;max-width:460px;margin:2px 0 6px;';
+  const albumChips: Array<{ id: string; el: HTMLElement }> = [];
+  const paintAlbumChips = (): void => {
+    for (const c of albumChips) {
+      const on = c.id === shownAlbum;
+      c.el.style.borderColor = on ? 'rgba(255,216,74,0.85)' : 'rgba(180,140,255,0.3)';
+      c.el.style.background = on ? 'rgba(255,216,74,0.12)' : 'rgba(180,140,255,0.04)';
+      c.el.style.color = on ? '#ffd84a' : 'rgba(220,210,255,0.7)';
+    }
+  };
 
   const list = el('div', { parent: overlay });
   list.style.cssText = 'display:flex;flex-direction:column;gap:8px;width:100%;max-width:460px;';
@@ -8028,13 +8039,51 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
     rows.push({ id: t.id, el: row, glyph });
   };
 
-  renderHeader('STINGS · SYSTEM');
-  for (const t of stings) addRow(t);
-  renderHeader('BONUS LEVELS');
-  for (const t of bonusTracks) addRow(t);
-  renderHeader('WAVE TRACKS (1 → 25)');
-  for (const t of waveTracks) addRow(t);
-  paint();
+  // (Re)build the track list for the currently-shown album. Stings/system
+  // (title + cinematic), bonus levels (off-rail detours), then the wave
+  // setlist. Called on first render and whenever the album chip changes.
+  const buildList = (): void => {
+    list.replaceChildren();
+    rows.length = 0;
+    const tracks = listTracks().filter((t) => (t.album ?? 'pallasite') === shownAlbum);
+    const stings = tracks.filter((t) => t.category === 'sting');
+    const bonusTracks = tracks.filter((t) => t.category === 'bonus');
+    const waveTracks = tracks.filter((t) => t.category === 'wave');
+    if (stings.length) {
+      renderHeader(shownAlbum === 'pallasite' ? 'STINGS · SYSTEM' : 'TITLE · CREDITS');
+      for (const t of stings) addRow(t);
+    }
+    if (bonusTracks.length) {
+      renderHeader('BONUS LEVELS');
+      for (const t of bonusTracks) addRow(t);
+    }
+    if (waveTracks.length) {
+      renderHeader('WAVE TRACKS (1 → 25)');
+      for (const t of waveTracks) addRow(t);
+    }
+    paint();
+  };
+
+  for (const a of listAlbums()) {
+    const chip = el('button', { parent: albumRow, text: a.label });
+    chip.style.cssText = [
+      'flex:1', 'min-width:130px', 'padding:9px 10px',
+      'font-family:monospace', 'font-size:0.82rem', 'letter-spacing:0.14em',
+      'border-radius:8px', 'border:1px solid rgba(180,140,255,0.3)',
+      'background:rgba(180,140,255,0.04)', 'color:rgba(220,210,255,0.7)',
+      'cursor:pointer', '-webkit-tap-highlight-color:transparent', 'touch-action:manipulation',
+    ].join(';');
+    albumChips.push({ id: a.id, el: chip });
+    onTap(chip, () => {
+      void audio.unlockAudio();
+      shownAlbum = a.id;
+      setActiveAlbum(a.id);   // the album you pick is the one the game plays
+      paintAlbumChips();
+      buildList();
+    });
+  }
+  paintAlbumChips();
+  buildList();
 
   onTap(stop, () => { musicStop(250); paint(); });
   onTap(back, () => {
@@ -8389,6 +8438,39 @@ export function renderSettings(onBack: () => void): void {
   // Quick reference for the in-game mute key
   const note = el('p', { parent: panel, text: 'Tap M in-game to toggle mute. Music ducks while paused.' });
   note.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.7);letter-spacing:0.06em;margin:0;text-align:center;';
+
+  // ── SOUNDTRACK album switch ─────────────────────────────────────────────
+  // The full track player lives behind a logo long-press (easy to miss), so
+  // surface the album switch here in Settings where it's actually findable.
+  const albumWrap = el('div', { parent: panel });
+  albumWrap.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:14px;border-top:1px solid rgba(180,140,255,0.2);padding-top:14px;flex-wrap:wrap;';
+  const albumLab = el('span', { parent: albumWrap, text: 'SOUNDTRACK' });
+  albumLab.style.cssText = 'font-size:0.95rem;color:rgba(180,140,255,0.95);letter-spacing:0.22em;';
+  const albumBtnRow = el('div', { parent: albumWrap });
+  albumBtnRow.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+  const albumButtons: Array<{ id: string; el: HTMLButtonElement }> = [];
+  function paintAlbums(): void {
+    const active = getActiveAlbumId();
+    for (const b of albumButtons) {
+      const on = b.id === active;
+      b.el.style.cssText = [
+        'background:' + (on ? 'rgba(255,216,74,0.16)' : 'transparent'),
+        'border:2px solid ' + (on ? '#ffd84a' : 'rgba(180,140,255,0.4)'),
+        'color:' + (on ? '#ffd84a' : 'rgba(220,210,255,0.85)'),
+        "font-family:'VT323',ui-monospace,monospace",
+        'font-size:0.95rem', 'padding:6px 14px', 'letter-spacing:0.14em',
+        'cursor:pointer', 'border-radius:6px',
+      ].join(';');
+    }
+  }
+  for (const a of listAlbums()) {
+    const b = el('button', { parent: albumBtnRow, text: a.label }) as HTMLButtonElement;
+    albumButtons.push({ id: a.id, el: b });
+    b.addEventListener('click', () => { void audio.unlockAudio(); setActiveAlbum(a.id); paintAlbums(); });
+  }
+  paintAlbums();
+  const albumNote = el('p', { parent: panel, text: 'Switch the in-game music album. Long-press the logo for the full track player.' });
+  albumNote.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.7);letter-spacing:0.06em;margin:0;text-align:center;';
 
   // ── EVENT LOBBY ────────────────────────────────────────────────────────
   // Operator-only kiosk/private-lobby mode. BTC Prague defaults to two booth
