@@ -468,6 +468,18 @@ export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequent
     };
     rampEntryTo(entry, trim, effectiveFadeMs);
     if (!mediaPlaybackGestureReady()) return;
+    // In Web Audio mode the element only makes sound while the shared
+    // AudioContext is running. The menu preview resumes it explicitly, but the
+    // in-game auto-crossfade used to rely on it already being live — so if the
+    // context had drifted to 'suspended' (Chrome can do this after focus/idle
+    // churn), the track would play() silently in-game while the menu (which
+    // resumes) worked fine. Resume on every play so both paths behave the same.
+    if (!entry.direct) {
+      const c = getMusicDestination().context as AudioContext;
+      if (c.state !== 'running' && c.state !== 'closed') {
+        try { void c.resume().catch((e: unknown) => logMusic(`ctx.resume rejected: ${(e as Error)?.name ?? String(e)}`)); } catch { /* ignore */ }
+      }
+    }
     attemptPlay(0);
   };
   // Mark currentId immediately so memoisation in musicSetTrackForState matches
