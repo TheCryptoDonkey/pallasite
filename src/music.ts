@@ -10,7 +10,7 @@
  * waves-1-8 tracks now and add the rest as they're laundered.
  */
 
-import { getMasterVolume, getMusicAnalyser, getMusicDestination, getMusicDuckFactor, getMusicVolume, isMuted } from './audio.js';
+import { getMasterVolume, getMusicAnalyser, getMusicDestination, getMusicDuckFactor, getMusicVolume, isMuted, kickAudioContext } from './audio.js';
 import type { GameState } from './types.js';
 import { getFlavour } from './flavour.js';
 import { isSanctumMode } from './mode.js';
@@ -479,8 +479,35 @@ export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequent
       if (c.state !== 'running' && c.state !== 'closed') {
         try { void c.resume().catch((e: unknown) => logMusic(`ctx.resume rejected: ${(e as Error)?.name ?? String(e)}`)); } catch { /* ignore */ }
       }
+      // Warm the analyser now (not at check time) so the silence probe below
+      // reads real signal rather than an uninitialised buffer on its first call.
+      try { getMusicAnalyser(); } catch { /* ignore */ }
     }
     attemptPlay(0);
+    // Fast startup recovery: a MediaElementSource created during the gesture
+    // unlock can be born silent on desktop Chrome and only wake on a context
+    // suspend→resume (the tab-swap the user found). Rather than wait for the
+    // once-a-second verify pass to notice, check ~600ms after play and kick the
+    // context immediately if the analyser is dead while the element is running.
+    if (!entry.direct && !triedAudioKick) {
+      window.setTimeout(() => {
+        if (currentId !== id || forcedDirectBySilence || triedAudioKick) return;
+        const e = loaded.get(id);
+        if (!e || e.direct || e.el.paused || e.el.currentTime < 0.2) return;
+        let energy = 0;
+        try {
+          const an = getMusicAnalyser();
+          const buf = new Uint8Array(an.frequencyBinCount);
+          an.getByteFrequencyData(buf);
+          for (let i = 0; i < buf.length; i++) energy += buf[i];
+        } catch { return; }
+        if (energy <= 4) {
+          triedAudioKick = true;
+          logMusic('web-audio silent shortly after play — kicking context (suspend→resume)');
+          void kickAudioContext().then(() => replayCurrent());
+        }
+      }, 600);
+    }
   };
   // Mark currentId immediately so memoisation in musicSetTrackForState matches
   // and a duplicate call during the gap is a no-op.
@@ -632,13 +659,25 @@ const VERIFY_INTERVAL_MS = 1000;
 
 // Web Audio silence self-heal (desktop). If a track is "playing" via the Web
 // Audio path (element advancing, context running) but the analyser tapped off
-// musicBus sees no signal for ~2 verify ticks, the MediaElementSource is
-// outputting zeroes — the desktop "silent after repeated autoplay recovery"
-// case. Latch onto the direct path for the rest of the session and rebuild, so
-// the worst case is exactly the all-direct behaviour (no equalizer) rather than
-// silence. Only ever runs in Web Audio mode, so it's a no-op on mobile.
+// musicBus sees no signal, the MediaElementSource is outputting zeroes — the
+// desktop "silent until you swap tabs and back" case. Recovery is staged:
+//   1) First KICK the context (suspend→resume) — exactly what the tab-swap the
+//      user found does — which re-establishes the silent source while KEEPING
+//      the Web Audio path (equalizer stays alive).
+//   2) Only if it's STILL silent after the kick, latch onto the direct path for
+//      the rest of the session (audible music, no equalizer). Worst case is
+//      therefore the all-direct behaviour, never silence.
+// Only ever runs in Web Audio mode, so it's a no-op on mobile.
 let webAudioSilentSince = 0;
 let lastVerifyCurrentTime = -1;
+let triedAudioKick = false;
+function replayCurrent(): void {
+  if (!currentId) return;
+  const e = loaded.get(currentId);
+  if (e && !e.failed && e.el.paused) {
+    try { void e.el.play().catch(() => undefined); } catch { /* ignore */ }
+  }
+}
 function maybeSelfHealWebAudioSilence(entry: Loaded, ctx: AudioContext): void {
   if (forcedDirectBySilence) return;
   const t = entry.el.currentTime;
@@ -652,13 +691,22 @@ function maybeSelfHealWebAudioSilence(entry: Loaded, ctx: AudioContext): void {
     an.getByteFrequencyData(buf);
     for (let i = 0; i < buf.length; i++) energy += buf[i];
   } catch { webAudioSilentSince = 0; return; }
-  if (energy > 4) { webAudioSilentSince = 0; return; }  // real signal present
+  if (energy > 4) { webAudioSilentSince = 0; triedAudioKick = false; return; }  // real signal present
   const now = performance.now();
   if (webAudioSilentSince === 0) { webAudioSilentSince = now; return; }
-  if (now - webAudioSilentSince < 1800) return;         // require sustained silence
+  if (now - webAudioSilentSince < 600) return;          // ~2 verify ticks of silence
   webAudioSilentSince = 0;
+  if (!triedAudioKick) {
+    // Stage 1: do what the tab-swap does — cycle the context to re-establish the
+    // silent MediaElementSource output, keeping the equalizer-capable path.
+    triedAudioKick = true;
+    logMusic('web-audio output silent — kicking context (suspend→resume) like a tab-swap');
+    void kickAudioContext().then(() => replayCurrent());
+    return;
+  }
+  // Stage 2: kick didn't help — fall back to direct (audible, no equalizer).
   forcedDirectBySilence = true;
-  logMusic('web-audio output silent while playing — self-healing onto direct playback (equalizer disabled) for this session');
+  logMusic('still silent after context kick — self-healing onto direct playback (equalizer disabled) for this session');
   const resumeId = currentId;
   musicResetElements();
   musicForceRefresh();
