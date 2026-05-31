@@ -38,6 +38,7 @@ import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
 import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges, ensureLocalEdges, EMPTY_INPUT, isPeerActive, setPeerActive } from './netcode.js';
 import { hashState, PEER_HASH_PERIOD, serializeForCanary } from './peer-canary.js';
+import { SnapshotRing, restoreSim } from './rollback.js';
 import { WebSocketPeer, SpectatorPeer, type HumanSlotConfig, type Peer, type PeerSlot } from './peer.js';
 import type { DeathmatchRules, GameState } from './types.js';
 import { DOWN_DOUBLE_TAP_WINDOW_MS, WORLD_W, WORLD_H } from './types.js';
@@ -499,6 +500,20 @@ function browserPerfSnapshot(): unknown {
       inputDelay: lastActivePeerInputDelay,
       negotiatedInputDelay,
     },
+    rollback: {
+      active: rollbackActive,
+      windowFrames: ROLLBACK_WINDOW,
+      localDelay: ROLLBACK_LOCAL_DELAY,
+      rollbacks: rollbackCount,
+      avgDepth: rollbackCount > 0 ? Number((rollbackDepthTotal / rollbackCount).toFixed(2)) : 0,
+      maxDepth: rollbackMaxDepth,
+      resimSteps: rollbackResimSteps,
+      predictedCells: predictedCellCount,
+      mispredicts: mispredictCount,
+      mispredictRate: predictedCellCount > 0 ? Number((mispredictCount / predictedCellCount).toFixed(4)) : 0,
+      confirmedFrame: rollbackActive ? currentConfirmedFrame() : -1,
+      confirmedLagFrames: rollbackActive ? Math.max(0, state.frame - currentConfirmedFrame()) : 0,
+    },
     longTask: {
       count: peerPerfLongTaskCount,
       totalMs: Number(peerPerfLongTaskMs.toFixed(3)),
@@ -551,6 +566,55 @@ const localCanaryHashes = new Map<number, number>();
  *  body[data-peer-desync] for any in-HUD indicator the renderer wants
  *  to show; v1 does NOT resync. -1 = never. */
 let peerDesyncFrame = -1;
+
+// ── Rollback netcode (Phase 2 Stage B) ───────────────────────────────────────
+// Default OFF. When `?rollback=1` and the session qualifies (a real two-human
+// peer link, not spectator, not aiFill, no static ?inputDelay=), the local
+// player's own input runs at delay 0 (instant ship response) while remote
+// inputs are PREDICTED (repeat-last); a misprediction restores a snapshot and
+// re-simulates forward. The canary is computed on CONFIRMED frames only so a
+// predicted/tentative frame is never compared between peers. When rollback is
+// off, every branch below is bypassed and the loop is byte-identical to Phase 1.
+const ROLLBACK_REQUESTED = mpParams.get('rollback') === '1';
+const ROLLBACK_FORCE_OFF = mpParams.get('rollback') === '0';
+/** Local own-ship input delay under rollback (0 = instant; 1 buffers a frame). */
+const ROLLBACK_LOCAL_DELAY = mpParams.get('localDelay') === '1' ? 1 : 0;
+/** Max frames we predict ahead of the confirmed frontier (and the deepest a
+ *  rollback re-sim can reach). Must be < the snapshot ring capacity so the
+ *  rollback target is always still resident. */
+const ROLLBACK_WINDOW = 14;
+const ROLLBACK_RING_CAP = 16;
+/** Edge bits (hyperspaceEdge=5, shieldEdge=6) are one-frame rising-edge pulses;
+ *  a held prediction must clear them or it would re-fire warp/shield every
+ *  predicted frame. */
+const ROLLBACK_EDGE_MASK = (1 << 5) | (1 << 6);
+/** Resolved once after connect (never per-frame), so the excluded path stays
+ *  byte-stable. */
+let rollbackActive = false;
+let rollbackRing: SnapshotRing | null = null;
+/** (frame*players + slot) → the edge-masked encoded value we PREDICTED and
+ *  applied for that remote cell, kept until the real input arrives so we can
+ *  detect a misprediction. The InputLog itself only ever holds real inputs. */
+const predictedInput = new Map<number, number>();
+/** Per-slot high-water mark: the highest frame for which this slot has a
+ *  contiguous run of REAL inputs in the log. confirmedFrame = min over human
+ *  slots. AI slots are excluded (their inputs are synthesised deterministically). */
+let confirmedThrough: number[] = [];
+/** Canary hashes computed during (re-)simulation at PEER_HASH_PERIOD frames,
+ *  held tentatively until the frame is confirmed, then promoted + sent. */
+const pendingHashes = new Map<number, number>();
+/** Partner hashes that arrived for a frame we have not yet confirmed locally;
+ *  re-checked as our confirmed frontier advances (rollback can confirm a frame
+ *  slightly after the partner does). */
+const pendingPartnerHashes = new Map<number, number>();
+let lastPromotedHashFrame = -1;
+// Soak/debug stats.
+let rollbackCount = 0;
+let rollbackDepthTotal = 0;
+let rollbackMaxDepth = 0;
+let rollbackResimSteps = 0;
+let mispredictCount = 0;
+let predictedCellCount = 0;
 /** Per-slot keyboard mirror that is NOT touched by the lockstep apply pass.
  *  In peer mode the apply pass overwrites `players[i].keys` with the log
  *  entry from N frames ago, which would clobber the live keyboard state and
@@ -619,6 +683,19 @@ function exitMultiplayerUrlSession(): void {
   peerDisconnectDeclared = false;
   peerDesyncFrame = -1;
   localCanaryHashes.clear();
+  rollbackActive = false;
+  rollbackRing = null;
+  confirmedThrough = [];
+  predictedInput.clear();
+  pendingHashes.clear();
+  pendingPartnerHashes.clear();
+  lastPromotedHashFrame = -1;
+  rollbackCount = 0;
+  rollbackDepthTotal = 0;
+  rollbackMaxDepth = 0;
+  rollbackResimSteps = 0;
+  mispredictCount = 0;
+  predictedCellCount = 0;
   for (let i = 0; i < localKeys.length; i++) {
     localKeys[i] = {};
     localHeading[i] = null;
@@ -790,6 +867,158 @@ function resendPeerInputRange(fromFrame: number, throughFrame: number, now: numb
     peerResendCount++;
     peerResendFrameCount += sent;
   }
+}
+
+// ── Rollback helpers ─────────────────────────────────────────────────────────
+
+/** Resolve whether rollback runs this session. Called once, right after
+ *  setPeerActive(true). Excludes spectator, aiFill (its fragile late-takeover
+ *  startup is tuned to the static tier), and any static ?inputDelay= override.
+ *  Resolved once and never recomputed so the excluded path stays byte-stable. */
+function resolveRollbackActive(): void {
+  rollbackActive =
+    ROLLBACK_REQUESTED && !ROLLBACK_FORCE_OFF &&
+    !!peer && !spectator &&
+    !aiFillDeathmatch &&
+    mpParams.get('inputDelay') === null;
+  rollbackRing = rollbackActive ? new SnapshotRing(ROLLBACK_RING_CAP) : null;
+  confirmedThrough = [];
+  predictedInput.clear();
+  pendingHashes.clear();
+  pendingPartnerHashes.clear();
+  lastPromotedHashFrame = -1;
+}
+
+/** Per-slot read frame under rollback: the local slot reads (nearly) the live
+ *  frame for instant response; remote slots read the current sim frame and are
+ *  predicted when their real input has not yet arrived. */
+function rollbackReadFrame(slot: number): number {
+  if (slot === mpSlot) return state.frame - ROLLBACK_LOCAL_DELAY;
+  return state.frame;
+}
+
+/** Predict a remote slot's absent input: repeat its last known input with the
+ *  edge bits cleared (a held prediction must not re-fire warp/shield). */
+function predictRemoteInput(slot: number, frame: number): number {
+  const empty = (encodePlayerInput(EMPTY_INPUT) & ~ROLLBACK_EDGE_MASK) >>> 0;
+  if (!inputLog) return empty;
+  const floor = Math.max(0, frame - ROLLBACK_WINDOW - 2);
+  for (let f = frame - 1; f >= floor; f--) {
+    const enc = inputLog.get(f, slot);
+    if (enc >= 0) return (enc & ~ROLLBACK_EDGE_MASK) >>> 0;
+  }
+  return empty;
+}
+
+function predictKey(frame: number, slot: number): number {
+  return frame * (inputLog ? inputLog.players : 1) + slot;
+}
+
+function markPredicted(frame: number, slot: number, enc: number): void {
+  const key = predictKey(frame, slot);
+  if (!predictedInput.has(key)) predictedCellCount++;
+  predictedInput.set(key, enc);
+}
+
+/** Walk a slot's confirmed high-water mark forward over any now-contiguous real
+ *  inputs in the log. */
+function advanceConfirmed(slot: number): void {
+  if (!inputLog || slot >= confirmedThrough.length) return;
+  let hw = confirmedThrough[slot];
+  while (inputLog.get(hw + 1, slot) >= 0) hw++;
+  confirmedThrough[slot] = hw;
+}
+
+/** Highest frame for which every human slot has a real input (min over human
+ *  slots of confirmedThrough). -1 when any human slot has nothing yet. */
+function currentConfirmedFrame(): number {
+  let c = Infinity;
+  for (let i = 0; i < state.players.length; i++) {
+    if (state.players[i].ai) continue;
+    if (i >= confirmedThrough.length) return -1;
+    c = Math.min(c, confirmedThrough[i]);
+  }
+  return Number.isFinite(c) ? c : -1;
+}
+
+/** Advance the sim one frame under rollback: apply each slot's input (predicting
+ *  absent remote inputs), step, snapshot, and tentatively hash on canary
+ *  periods. Shared by the live frame and the rollback re-sim so they can never
+ *  diverge. Local input is read from the log (already sampled this frame); this
+ *  does NOT re-sample. */
+function rollbackSimulateStep(appliedSink: number[] | null): void {
+  if (!inputLog || !rollbackRing) return;
+  for (let i = 0; i < state.players.length; i++) {
+    const rf = rollbackReadFrame(i);
+    let enc = rf >= 0 ? inputLog.get(rf, i) : -1;
+    const remoteHuman = i !== mpSlot && !state.players[i].ai;
+    if (enc < 0 && rf >= 0 && remoteHuman) {
+      enc = predictRemoteInput(i, rf);
+      markPredicted(rf, i, enc);
+    } else if (enc >= 0 && remoteHuman) {
+      const key = predictKey(rf, i);
+      if (predictedInput.has(key)) predictedInput.delete(key);
+    }
+    if (appliedSink) appliedSink.push(enc);
+    if (state.players[i].ai) continue;
+    const input = enc >= 0 ? decodePlayerInput(enc) : EMPTY_INPUT;
+    applyPlayerInput(state.players[i], input);
+    if (state.phase === 'playing') {
+      if (input.hyperspaceEdge) tryHyperspace(state, state.elapsed, state.players[i]);
+      if (input.shieldEdge) tryActivateShield(state, state.elapsed, state.players[i]);
+    }
+  }
+  updateGame(state);
+  rollbackRing.capture(state);
+  if (state.frame > 0 && (state.frame % PEER_HASH_PERIOD) === 0) {
+    pendingHashes.set(state.frame, hashState(state));
+  }
+}
+
+/** Restore to the earliest mispredicted frame and re-simulate forward to the
+ *  live frontier, re-applying real inputs where present and re-predicting where
+ *  still absent. Bounded by the rollback window. */
+function rollbackTo(targetFrame: number): void {
+  if (!rollbackRing) return;
+  const snap = rollbackRing.get(targetFrame);
+  if (!snap) {
+    // Should not happen: the window bound keeps the target resident. Accept the
+    // current state rather than corrupt it; the canary flags any divergence.
+    // eslint-disable-next-line no-console
+    console.warn(`[rollback] snapshot for frame ${targetFrame} evicted; skipping`);
+    return;
+  }
+  const frontier = state.frame;
+  restoreSim(state, snap);   // state.frame === targetFrame
+  let depth = 0;
+  while (state.frame < frontier && depth <= ROLLBACK_WINDOW + 2) {
+    rollbackSimulateStep(null);
+    depth++;
+  }
+  rollbackCount++;
+  rollbackResimSteps += depth;
+  const reached = frontier - targetFrame;
+  rollbackDepthTotal += reached;
+  if (reached > rollbackMaxDepth) rollbackMaxDepth = reached;
+}
+
+/** Promote tentative canary hashes for newly-confirmed periods: send them to the
+ *  partner and store locally for the compare. Once a frame is confirmed its hash
+ *  is final (no later rollback can reach it). */
+function promoteConfirmedHashes(): void {
+  if (!peer) return;
+  const cf = currentConfirmedFrame();
+  for (let f = lastPromotedHashFrame + 1; f <= cf; f++) {
+    if (f > 0 && (f % PEER_HASH_PERIOD) === 0) {
+      const h = pendingHashes.get(f);
+      if (h !== undefined) {
+        localCanaryHashes.set(f, h);
+        peer.sendHash(f, h);
+        pendingHashes.delete(f);
+      }
+    }
+  }
+  if (cf > lastPromotedHashFrame) lastPromotedHashFrame = cf;
 }
 
 /** Timestamp of the most recent ArrowDown keydown — used for double-tap detection. */
@@ -1604,6 +1833,10 @@ function loop(now: number): void {
     // or compute differently from identical inputs?". Empty array on a
     // hit-stop frame or non-peer mode (no apply step ran).
     let appliedThisStep: number[] = [];
+    // Set true when the rollback path already advanced the sim this iteration
+    // (it owns updateGame + snapshot + canary), so the shared tail below skips
+    // its own updateGame/canary. Stays false for every non-rollback path.
+    let rollbackAdvanced = false;
     // Solo and couch take the pre-M2 direct path: keydown handlers already
     // dispatched the edge actions synchronously and players[i].keys still
     // holds the live input -- updateGame reads it as it always did. The
@@ -1659,76 +1892,139 @@ function loop(now: number): void {
       }
       // 2) Drain remote frames into the log. Duel: the OTHER slot only.
       //    Spectator: whichever slot each delivery is tagged with (both).
+      //    Under rollback, reconcile each arriving real input against any
+      //    prediction we applied for that (frame,slot) and note the earliest
+      //    miss so we can restore + re-simulate from there.
+      let rollbackTarget = -1;
       if (spectator) {
         const drained = spectator.drainFrames();
         for (const d of drained) inputLog.record(d.frame, d.slot, d.input);
         if (duelDebugMode && drained.length > 0) try { window.dispatchEvent(new CustomEvent('pallasite:peer-frame-drain', { detail: { count: drained.length } })); } catch { /* ignore */ }
       } else if (peer) {
         const drained = peer.drainFrames();
-        for (const d of drained) inputLog.record(d.frame, d.slot, d.input);
+        for (const d of drained) {
+          if (rollbackActive) {
+            const key = predictKey(d.frame, d.slot);
+            const pred = predictedInput.get(key);
+            if (pred !== undefined) {
+              predictedInput.delete(key);
+              // Compare with edge bits masked (we never predict edges). A real
+              // edge press on a predicted frame always counts as a miss.
+              const realMasked = (d.input & ~ROLLBACK_EDGE_MASK) >>> 0;
+              const predMasked = (pred & ~ROLLBACK_EDGE_MASK) >>> 0;
+              const mis = realMasked !== predMasked || (d.input & ROLLBACK_EDGE_MASK) !== 0;
+              if (mis) {
+                mispredictCount++;
+                if (rollbackTarget < 0 || d.frame < rollbackTarget) rollbackTarget = d.frame;
+              }
+            }
+          }
+          inputLog.record(d.frame, d.slot, d.input);
+        }
         if (duelDebugMode && drained.length > 0) try { window.dispatchEvent(new CustomEvent('pallasite:peer-frame-drain', { detail: { count: drained.length } })); } catch { /* ignore */ }
       }
-      // 3) Stall check in any peer-driven mode: every slot's input for
-      //    the read frame must be present. The read frame can be negative
-      //    in the first `activeDelay` frames (pre-roll); EMPTY_INPUT is
-      //    used and the sim coasts.
-      const readFrame = state.frame - activeDelay;
-      syncDeathmatchAiSlotsForFrame(readFrame);
-      let stalled = false;
-      if (peerActive && readFrame >= 0) {
+
+      if (rollbackActive && rollbackRing) {
+        // ── Rollback advance ────────────────────────────────────────────────
+        // Local input runs at delay 0 (instant); remote inputs are predicted
+        // when absent and corrected by re-simulation when the real value lands.
+        if (confirmedThrough.length !== state.players.length) {
+          confirmedThrough = new Array(state.players.length).fill(-1);
+        }
         for (let i = 0; i < state.players.length; i++) {
+          if (!state.players[i].ai) advanceConfirmed(i);
+        }
+        const confirmed = currentConfirmedFrame();
+        // Seed the ring with the pre-frame-0 state so a frame-0 misprediction
+        // has a restore point (the per-step capture only records AFTER updateGame).
+        if (rollbackRing.newestFrame() < 0) rollbackRing.capture(state);
+        // Re-simulate from the earliest mispredicted frame to the live frontier.
+        if (rollbackTarget >= 0) rollbackTo(rollbackTarget);
+        // Window bound: never predict more than ROLLBACK_WINDOW frames past the
+        // confirmed frontier — keeps every rollback target resident in the ring.
+        // On overrun, fall back to the Phase-1 stall (wait for the slow peer).
+        if (state.frame - confirmed >= ROLLBACK_WINDOW) {
+          lockstepBlockedThisTick = true;
+          peerPerfLockstepBlockedTicks++;
+          if (peerStallFrames >= peerResendAfterStallFrames()) {
+            const base = confirmed + 1;
+            resendPeerInputRange(base - PEER_RESEND_BEHIND_FRAMES, Math.min(state.frame - 1, base + PEER_RESEND_AHEAD_FRAMES), now);
+          }
+          stepAccumulator = Math.min(stepAccumulator, FIXED_STEP_S);
+          break;
+        }
+        // Advance the live frame (predicting absent remote inputs), then promote
+        // any now-confirmed canary hashes to the partner.
+        rollbackSimulateStep(null);
+        if (simStepStartedAt > 0) recordPeerPerfSample(peerPerfSim, performance.now() - simStepStartedAt);
+        promoteConfirmedHashes();
+        rollbackAdvanced = true;
+      } else {
+        // 3) Stall check in any peer-driven mode: every slot's input for
+        //    the read frame must be present. The read frame can be negative
+        //    in the first `activeDelay` frames (pre-roll); EMPTY_INPUT is
+        //    used and the sim coasts.
+        const readFrame = state.frame - activeDelay;
+        syncDeathmatchAiSlotsForFrame(readFrame);
+        let stalled = false;
+        if (peerActive && readFrame >= 0) {
+          for (let i = 0; i < state.players.length; i++) {
+            if (state.players[i].ai) continue;
+            if (inputLog.get(readFrame, i) < 0) { stalled = true; break; }
+          }
+        }
+        if (stalled) {
+          // The local frame was sent when it was first sampled. If the stall is
+          // sustained, replay a compact committed prefix; the partner may be
+          // blocked on state.frame - delay rather than on the newest frame.
+          lockstepBlockedThisTick = true;
+          peerPerfLockstepBlockedTicks++;
+          if (peerStallFrames >= peerResendAfterStallFrames()) {
+            const resendFrom = readFrame - PEER_RESEND_BEHIND_FRAMES;
+            const resendThrough = Math.min(state.frame - 1, readFrame + PEER_RESEND_AHEAD_FRAMES);
+            resendPeerInputRange(resendFrom, resendThrough, now);
+          }
+          // Drop accumulated wall-clock backlog while lockstep waits. Replaying
+          // all banked time after recovery creates burst sends, visible judder,
+          // and usually another relay stall; resume at live pace instead.
+          stepAccumulator = Math.min(stepAccumulator, FIXED_STEP_S);
+          break;  // hold the accumulator; next rAF retries
+        }
+        // 4) Apply + edge dispatch. Record each slot's applied encoded
+        // input for this step so the desync hunter can compare what each
+        // peer actually fed into the sim.
+        for (let i = 0; i < state.players.length; i++) {
+          const encoded = readFrame >= 0 ? inputLog.get(readFrame, i) : -1;
+          appliedThisStep.push(encoded);
           if (state.players[i].ai) continue;
-          if (inputLog.get(readFrame, i) < 0) { stalled = true; break; }
-        }
-      }
-      if (stalled) {
-        // The local frame was sent when it was first sampled. If the stall is
-        // sustained, replay a compact committed prefix; the partner may be
-        // blocked on state.frame - delay rather than on the newest frame.
-        lockstepBlockedThisTick = true;
-        peerPerfLockstepBlockedTicks++;
-        if (peerStallFrames >= peerResendAfterStallFrames()) {
-          const resendFrom = readFrame - PEER_RESEND_BEHIND_FRAMES;
-          const resendThrough = Math.min(state.frame - 1, readFrame + PEER_RESEND_AHEAD_FRAMES);
-          resendPeerInputRange(resendFrom, resendThrough, now);
-        }
-        // Drop accumulated wall-clock backlog while lockstep waits. Replaying
-        // all banked time after recovery creates burst sends, visible judder,
-        // and usually another relay stall; resume at live pace instead.
-        stepAccumulator = Math.min(stepAccumulator, FIXED_STEP_S);
-        break;  // hold the accumulator; next rAF retries
-      }
-      // 4) Apply + edge dispatch. Record each slot's applied encoded
-      // input for this step so the desync hunter can compare what each
-      // peer actually fed into the sim.
-      for (let i = 0; i < state.players.length; i++) {
-        const encoded = readFrame >= 0 ? inputLog.get(readFrame, i) : -1;
-        appliedThisStep.push(encoded);
-        if (state.players[i].ai) continue;
-        const input = encoded >= 0 ? decodePlayerInput(encoded) : EMPTY_INPUT;
-        applyPlayerInput(state.players[i], input);
-        if (state.phase === 'playing') {
-          if (input.hyperspaceEdge) tryHyperspace(state, state.elapsed, state.players[i]);
-          if (input.shieldEdge) tryActivateShield(state, state.elapsed, state.players[i]);
-        }
-        // E2E diagnostic: when wire-trace is on, record what the apply step
-        // actually consumed for each slot at each frame. Lets the runner see
-        // whether the remote slot's input was 0 at apply time (suggesting
-        // the wire frame arrived too late) or non-zero (suggesting the bug
-        // is elsewhere). Keep this off the hot path when not in wire-trace
-        // mode -- the ring write is a few words, not free.
-        if (applyTraceReadFrame && applyTraceSlot && applyTraceEncoded && applyTraceTime) {
-          applyTraceReadFrame[applyTraceHead] = readFrame;
-          applyTraceSlot[applyTraceHead] = i;
-          applyTraceEncoded[applyTraceHead] = encoded;
-          applyTraceTime[applyTraceHead] = performance.now();
-          applyTraceHead = (applyTraceHead + 1) % APPLY_TRACE_CAP;
-          applyTraceCount++;
+          const input = encoded >= 0 ? decodePlayerInput(encoded) : EMPTY_INPUT;
+          applyPlayerInput(state.players[i], input);
+          if (state.phase === 'playing') {
+            if (input.hyperspaceEdge) tryHyperspace(state, state.elapsed, state.players[i]);
+            if (input.shieldEdge) tryActivateShield(state, state.elapsed, state.players[i]);
+          }
+          // E2E diagnostic: when wire-trace is on, record what the apply step
+          // actually consumed for each slot at each frame. Lets the runner see
+          // whether the remote slot's input was 0 at apply time (suggesting
+          // the wire frame arrived too late) or non-zero (suggesting the bug
+          // is elsewhere). Keep this off the hot path when not in wire-trace
+          // mode -- the ring write is a few words, not free.
+          if (applyTraceReadFrame && applyTraceSlot && applyTraceEncoded && applyTraceTime) {
+            applyTraceReadFrame[applyTraceHead] = readFrame;
+            applyTraceSlot[applyTraceHead] = i;
+            applyTraceEncoded[applyTraceHead] = encoded;
+            applyTraceTime[applyTraceHead] = performance.now();
+            applyTraceHead = (applyTraceHead + 1) % APPLY_TRACE_CAP;
+            applyTraceCount++;
+          }
         }
       }
     }
-    updateGame(state);
-    if (simStepStartedAt > 0) recordPeerPerfSample(peerPerfSim, performance.now() - simStepStartedAt);
+    // The rollback path (when it advanced this iteration) already ran
+    // updateGame, captured a snapshot, recorded sim perf, and promoted its
+    // confirmed-frame canary — so the shared tail below is skipped for it.
+    if (!rollbackAdvanced) updateGame(state);
+    if (!rollbackAdvanced && simStepStartedAt > 0) recordPeerPerfSample(peerPerfSim, performance.now() - simStepStartedAt);
     // ── Desync canary ────────────────────────────────────────────────
     // Every PEER_HASH_PERIOD sim steps, hash the gameplay-relevant slice
     // of GameState and send to the partner. We retain our own hash so a
@@ -1738,7 +2034,7 @@ function loop(now: number): void {
     // state EVERY frame so the test runner can find the exact frame
     // (not just the nearest canary period) where peers first diverge.
     // Memory bound to a ring so even long runs don't blow up.
-    if (desyncHuntEnabled && peerActive && (peer || spectator) && state.frame > 0) {
+    if (!rollbackAdvanced && desyncHuntEnabled && peerActive && (peer || spectator) && state.frame > 0) {
       const history = (window as unknown as { __pallasiteCanaryHistory?: Map<number, string> }).__pallasiteCanaryHistory;
       if (history) {
         history.set(state.frame, serializeForCanary(state, appliedThisStep));
@@ -1750,7 +2046,7 @@ function loop(now: number): void {
         }
       }
     }
-    if (peerActive && peer && !spectator && state.frame > 0 && (state.frame % PEER_HASH_PERIOD) === 0) {
+    if (!rollbackAdvanced && peerActive && peer && !spectator && state.frame > 0 && (state.frame % PEER_HASH_PERIOD) === 0) {
       const h = hashState(state);
       localCanaryHashes.set(state.frame, h);
       peer.sendHash(state.frame, h);
@@ -1830,14 +2126,34 @@ function loop(now: number): void {
   // observed we set a sticky flag — v1 doesn't try to resync, it just
   // surfaces an indicator the renderer / debug HUD can pick up.
   if (isPeerActive() && peer && peerDesyncFrame < 0) {
+    const markDesync = (frame: number, local: number, hash: number): void => {
+      peerDesyncFrame = frame;
+      // eslint-disable-next-line no-console
+      console.warn(`[peer] desync at frame ${frame}: local=${local.toString(16)} remote=${hash.toString(16)}`);
+      document.body.dataset.peerDesync = String(frame);
+    };
     for (const { frame, hash } of peer.drainHashes()) {
       const local = localCanaryHashes.get(frame);
-      if (local !== undefined && local !== hash) {
-        peerDesyncFrame = frame;
-        // eslint-disable-next-line no-console
-        console.warn(`[peer] desync at frame ${frame}: local=${local.toString(16)} remote=${hash.toString(16)}`);
-        document.body.dataset.peerDesync = String(frame);
-        break;
+      if (local !== undefined) {
+        if (local !== hash) { markDesync(frame, local, hash); break; }
+      } else if (rollbackActive) {
+        // Under rollback we emit a frame's hash only once it is CONFIRMED, which
+        // can lag the partner's. Buffer the partner's hash and re-check below as
+        // our confirmed frontier advances, rather than dropping it.
+        pendingPartnerHashes.set(frame, hash);
+      }
+    }
+    if (rollbackActive && peerDesyncFrame < 0) {
+      for (const [frame, hash] of pendingPartnerHashes) {
+        const local = localCanaryHashes.get(frame);
+        if (local !== undefined) {
+          pendingPartnerHashes.delete(frame);
+          if (local !== hash) { markDesync(frame, local, hash); break; }
+        } else if (frame < lastPromotedHashFrame - PEER_HASH_PERIOD * 5) {
+          // We have confirmed well past this frame without ever computing its
+          // hash (e.g. pruned) — it can never match; drop it.
+          pendingPartnerHashes.delete(frame);
+        }
       }
     }
   } else if (!isPeerActive() && document.body.dataset.peerDesync) {
@@ -2135,6 +2451,10 @@ async function boot(): Promise<void> {
         await captureNegotiatedInputDelay(() => peer?.getNegotiatedInputDelay?.() ?? null);
       }
       setPeerActive(true);
+      // Resolve rollback eligibility once, now the transport + slot are bound.
+      // Synchronous (no async boundary), so the aiFill startup timing the
+      // negotiation await is carefully kept clear of is unaffected here too.
+      resolveRollbackActive();
       // Replay hook: after a successful reconnect (NOT the initial connect),
       // re-send our local slot's most recent input frames so the partner
       // can backfill the input log over the drop. The remote does the same
@@ -2185,6 +2505,9 @@ async function boot(): Promise<void> {
         await captureNegotiatedInputDelay(() => spectator?.getNegotiatedInputDelay?.() ?? null);
       }
       setPeerActive(true);
+      // Spectators never run rollback (resolveRollbackActive requires a peer and
+      // !spectator); call it anyway to keep the rollback state cleared.
+      resolveRollbackActive();
       // eslint-disable-next-line no-console
       console.log('[spectate] watching', spectateSession, 'via', mpUrl);
       // Auto-IGNITE so the read-only sim starts at the same wall time the

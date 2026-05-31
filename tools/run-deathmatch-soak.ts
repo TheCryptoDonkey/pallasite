@@ -57,6 +57,9 @@ const FORWARD_JITTER_MS = intArg('jitter', 120, 0, 2_000);
 // force the legacy static delay instead (bypasses adaptation via the URL knob).
 const INPUT_DELAY_FRAMES = intArg('inputDelay', -1, -1, 60);
 const FORCED_INPUT_DELAY = INPUT_DELAY_FRAMES >= 0;
+// Exercise the Phase-2 rollback netcode (local input at delay 0, predicted
+// remote inputs, re-sim on misprediction). Off by default; pass --rollback=1.
+const ROLLBACK = argValue('rollback') === '1';
 
 function startVite(): ChildProcess {
   const p = spawn('pnpm', ['exec', 'vite', '--force', '--host', '127.0.0.1', '--port', String(VITE_PORT), '--strictPort'], {
@@ -242,6 +245,20 @@ interface BrowserPerfProbe {
     inputDelay?: number;
     negotiatedInputDelay?: number | null;
   };
+  rollback?: {
+    active?: boolean;
+    windowFrames?: number;
+    localDelay?: number;
+    rollbacks?: number;
+    avgDepth?: number;
+    maxDepth?: number;
+    resimSteps?: number;
+    predictedCells?: number;
+    mispredicts?: number;
+    mispredictRate?: number;
+    confirmedFrame?: number;
+    confirmedLagFrames?: number;
+  };
   longTask?: { count?: number; totalMs?: number; maxMs?: number };
   workerMainLagFrames?: number;
 }
@@ -308,6 +325,9 @@ function browserPerfLine(perf: BrowserPerfProbe | null): string {
     + ` render${fmtMs(perf.render?.p95)}/${fmtMs(perf.render?.p99)}ms`
     + ` lock=${perf.lockstep?.blockedTicks ?? 0}/${perf.lockstep?.catchupTicks ?? 0}`
     + ` delay=${perf.lockstep?.inputDelay ?? '-'}f(neg${perf.lockstep?.negotiatedInputDelay ?? '-'})`
+    + (perf.rollback?.active
+      ? ` rb=on/${perf.rollback.rollbacks ?? 0}rb,d${perf.rollback.avgDepth ?? 0}/${perf.rollback.maxDepth ?? 0},mis${((perf.rollback.mispredictRate ?? 0) * 100).toFixed(1)}%,lag${perf.rollback.confirmedLagFrames ?? 0}`
+      : '')
     + ` long=${perf.longTask?.count ?? 0}/${fmtMs(perf.longTask?.maxMs)}ms`
     + ` lag=${perf.workerMainLagFrames ?? 0}`;
 }
@@ -328,6 +348,16 @@ function assertBrowserPerf(players: number, label: string, perf: BrowserPerfProb
     const staticTier = players <= 2 ? 30 : players <= 4 ? 36 : 56;
     if (eff >= staticTier) throw new Error(`${players}P ${label} adaptive delay ${eff}f did not improve on static tier ${staticTier}f`);
   }
+  // Players run rollback; the spectator is deliberately excluded (it has no
+  // local slot to give an instant response to), so don't assert it active.
+  if (ROLLBACK && label !== 'spectator') {
+    const rb = perf.rollback;
+    if (!rb?.active) throw new Error(`${players}P ${label} rollback requested but inactive`);
+    if ((rb.localDelay ?? -1) !== 0) throw new Error(`${players}P ${label} rollback local delay ${rb.localDelay} (expected 0 for instant response)`);
+    const win = rb.windowFrames ?? 14;
+    if ((rb.maxDepth ?? 0) > win) throw new Error(`${players}P ${label} rollback depth ${rb.maxDepth} exceeded window ${win}`);
+    if ((rb.confirmedLagFrames ?? 0) > win + 2) throw new Error(`${players}P ${label} confirmed lag ${rb.confirmedLagFrames}f exceeded window ${win}f`);
+  }
 }
 
 function deathmatchParams(session: string, players: number, slot?: number, spectate = false): string {
@@ -344,6 +374,7 @@ function deathmatchParams(session: string, players: number, slot?: number, spect
   // Only pin the input delay when explicitly forced; otherwise let the broker
   // negotiate it adaptively from the measured link.
   if (FORCED_INPUT_DELAY) params.set('inputDelay', String(INPUT_DELAY_FRAMES));
+  if (ROLLBACK) params.set('rollback', '1');
   if (spectate) {
     params.set('spectate', session);
     params.set('peer', `${BROKER_URL}/?s=${encodeURIComponent(session)}&r=peerwatch&binaryFrames=1`);
@@ -357,9 +388,31 @@ function deathmatchParams(session: string, players: number, slot?: number, spect
 
 async function driveBrowserInputs(pages: Page[], durationMs: number): Promise<void> {
   const keys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'Space'];
-  await Promise.all(pages.map((page, i) => page.keyboard.down(keys[i % keys.length])));
-  await wait(durationMs);
-  await Promise.all(pages.map((page, i) => page.keyboard.up(keys[i % keys.length]).catch(() => undefined)));
+  if (!ROLLBACK) {
+    // Steady single-key hold — the established input pattern.
+    await Promise.all(pages.map((page, i) => page.keyboard.down(keys[i % keys.length])));
+    await wait(durationMs);
+    await Promise.all(pages.map((page, i) => page.keyboard.up(keys[i % keys.length]).catch(() => undefined)));
+    return;
+  }
+  // Rollback mode: vary each player's input on a short cycle so remote
+  // predictions MISS and the rollback re-sim path is actually exercised. A
+  // constant held key would always predict correctly (zero rollbacks). The
+  // confirmed-frame canary must still hold — desync is hard-asserted afterwards.
+  const startAt = Date.now();
+  const held: (string | null)[] = pages.map(() => null);
+  let tick = 0;
+  while (Date.now() - startAt < durationMs) {
+    await Promise.all(pages.map(async (page, i) => {
+      if (held[i]) await page.keyboard.up(held[i]!).catch(() => undefined);
+      const next = keys[(i + tick) % keys.length];
+      await page.keyboard.down(next).catch(() => undefined);
+      held[i] = next;
+    }));
+    tick++;
+    await wait(140);
+  }
+  await Promise.all(pages.map((page, i) => (held[i] ? page.keyboard.up(held[i]!).catch(() => undefined) : Promise.resolve())));
 }
 
 async function runBrowserCase(browser: Browser, players: number): Promise<void> {
@@ -367,7 +420,7 @@ async function runBrowserCase(browser: Browser, players: number): Promise<void> 
   const pages: Page[] = [];
   const contexts: import('playwright').BrowserContext[] = [];
   const metricsBefore = await fetchBrokerMetrics();
-  process.stdout.write(`\n[browser ${players}P] session=${session} delay=${FORWARD_DELAY_MS}+${FORWARD_JITTER_MS}ms inputDelay=${FORCED_INPUT_DELAY ? INPUT_DELAY_FRAMES + 'f' : 'adapt'}\n`);
+  process.stdout.write(`\n[browser ${players}P] session=${session} delay=${FORWARD_DELAY_MS}+${FORWARD_JITTER_MS}ms inputDelay=${FORCED_INPUT_DELAY ? INPUT_DELAY_FRAMES + 'f' : 'adapt'} rollback=${ROLLBACK ? 'on' : 'off'}\n`);
 
   for (let slot = 0; slot < players; slot++) {
     const ctx = await primeContext(browser);
