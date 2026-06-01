@@ -20,7 +20,7 @@ async function waitPhase(page: Page, phase: string): Promise<void> {
 }
 function station(page: Page) {
   return page.evaluate(() => {
-    const s = (window as unknown as { __pallasiteState?: { ufos: Array<{ alive: boolean }>; players: Array<{ ship: { alive: boolean }; lives: number }>; asteroids: Array<{ alive: boolean; isVein: boolean; stationPart?: string; pos: { x: number; y: number } }> } }).__pallasiteState!;
+    const s = (window as unknown as { __pallasiteState?: { enemyBullets: Array<{ alive: boolean; homing?: boolean }>; players: Array<{ ship: { alive: boolean }; lives: number }>; asteroids: Array<{ alive: boolean; isVein: boolean; stationPart?: string; pos: { x: number; y: number } }> } }).__pallasiteState!;
     const live = s.asteroids.filter((a) => a.alive);
     const arms = live.filter((a) => a.stationPart === 'arm');
     const ems = live.filter((a) => a.stationPart === 'emitter');
@@ -28,7 +28,7 @@ function station(page: Page) {
     const looseRocks = live.filter((a) => !a.stationPart && !a.isVein);
     return {
       core: core.length, arms: arms.length, emitters: ems.length, loose: looseRocks.length,
-      ufos: s.ufos.filter((u) => u.alive).length,
+      missiles: s.enemyBullets.filter((b) => b.alive && b.homing).length,
       shipAlive: s.players[0].ship.alive, lives: s.players[0].lives,
     };
   });

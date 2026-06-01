@@ -124,7 +124,7 @@ function makeBullet(): Bullet {
   return {
     pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, radius: 0, alive: false, id: undefined,
     ttl: 0, pierceLeft: 0, caromHit: false, wrapped: false, hasLanded: false, owner: -1,
-    shard: undefined,
+    shard: undefined, homing: undefined,
   };
 }
 function copyBullet(s: Bullet, d: Bullet): void {
@@ -132,7 +132,9 @@ function copyBullet(s: Bullet, d: Bullet): void {
   d.radius = s.radius; d.alive = s.alive; d.id = s.id;
   d.ttl = s.ttl; d.pierceLeft = s.pierceLeft; d.caromHit = s.caromHit;
   d.wrapped = s.wrapped; d.hasLanded = s.hasLanded; d.owner = s.owner;
-  d.shard = s.shard;  // render-only flag, copied for fidelity
+  // `homing` steers the missile (gameplay) so it MUST survive snapshot/restore
+  // or a rollback would desync; `shard` is render-only, copied for fidelity.
+  d.shard = s.shard; d.homing = s.homing;
 }
 
 function makeUfo(): Ufo {
