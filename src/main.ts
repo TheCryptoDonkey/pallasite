@@ -2233,7 +2233,13 @@ async function boot(): Promise<void> {
   // Safari only fires the prefixed one.
   const onFullscreenToggle = (): void => {
     applyDisplayMode(getDisplayMode());
-    fit();
+    // Multi-pass refit, not a single fit(): exiting fullscreen (Esc) fires
+    // fullscreenchange while the browser still reports the OLD (fullscreen)
+    // innerWidth/innerHeight for a beat, so a lone fit() sizes the canvas to a
+    // stale viewport and never corrects — leaving a tiny centred window. The
+    // staggered passes land on the settled windowed dimensions (same fix as
+    // the orientationchange race).
+    scheduleRefit();
   };
   document.addEventListener('fullscreenchange', onFullscreenToggle);
   document.addEventListener('webkitfullscreenchange', onFullscreenToggle);

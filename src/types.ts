@@ -133,6 +133,16 @@ export interface Asteroid extends Entity {
    *  UFO swarm a moment after appearing. Vapourises clean on break (no
    *  fragments) with a jackpot drop. The unique Lightning-arcade moment. */
   isVein: boolean;
+  /** Vein only — the radius at first hit, captured lazily so the rock can
+   *  visibly shrink as its HP is chipped down (radius derives deterministically
+   *  from hp/hpMax, so co-op lockstep stays bit-identical). Captured on first
+   *  hit rather than at spawn so set-piece overrides (e.g. the wave-16 lode's
+   *  ×1.5) are already baked in. Undefined until the vein takes its first hit. */
+  veinBaseRadius?: number;
+  /** Set-piece boss veins only — true if the rock hits back, spitting a shard
+   *  at the firing pilot every VEIN_RETALIATE_PER_N_HITS landed hits. Set at
+   *  spawn; ordinary veins (the drive-by event) leave it unset and never shoot. */
+  veinRetaliates?: boolean;
   /** Permanent terrain: collides as cover but does not take damage, split,
    *  score, or count as wave-clear material. Used by deathmatch cover rocks. */
   terrain?: boolean;
@@ -197,6 +207,9 @@ export interface Bullet extends Entity {
   /** Index into GameState.players of the player who fired this bullet;
    *  -1 for UFO / enemy bullets which are never credited to a player. */
   owner: number;
+  /** True for a boss-vein retaliation projectile — rendered as a spinning
+   *  pallasite chunk (a shard of the rock) rather than the default fire bolt. */
+  shard?: boolean;
 }
 
 export type UfoType = 'cruiser' | 'elite' | 'tank' | 'sniper' | 'boss';
@@ -303,6 +316,26 @@ export const VEIN_HP_BASE = 100;
 export const VEIN_HP_EASY_MUL = 0.6;
 export const VEIN_HP_HARD_MUL = 3.0;
 export const VEIN_RADIUS_MUL = 1.4;
+/** As a vein is chipped down it shrinks from its spawn radius toward this
+ *  fraction at the final hit, so the megalith visibly wears to a glowing
+ *  core. Kept well above zero so the hitbox stays comfortably shootable. */
+export const VEIN_MIN_RADIUS_SCALE = 0.62;
+/** Stationary set-piece boss veins (W16 lode, W20 eye) hit back. The retaliation
+ *  is REACTIVE, not on a timer: every VEIN_RETALIATE_PER_N_HITS landed hits, the
+ *  rock spits one fat shard straight at the firing pilot. So the harder you pour
+ *  in fire, the more comes back — you can't just sit and grind, you have to
+ *  weave the shard while chipping. A single chunky aimed shard reads far better
+ *  than a constant fan. Only veins flagged veinRetaliates attack; the drive-by
+ *  vein event never does. Deterministic — cadence off the landed-hit count, aim
+ *  off player position, no RNG — so co-op lockstep is unaffected. */
+// Cadence + speed scale with difficulty: easy gets a slow shard only every 5th
+// hit (gentle nudge to move), hard gets a fast one every OTHER hit (a real
+// dodge-while-you-fire dance). Keyed by string literals so types.ts needn't
+// import the Difficulty type (avoids a module cycle).
+export const VEIN_RETALIATE_PER_N_HITS: Record<'easy' | 'normal' | 'hard', number> = { easy: 5, normal: 3, hard: 2 };
+export const VEIN_SHARD_SPEED: Record<'easy' | 'normal' | 'hard', number> = { easy: 185, normal: 230, hard: 280 };
+export const VEIN_SHARD_TTL_MS = 3200;
+export const VEIN_SHARD_RADIUS = 9;             // chunky — bigger hitbox + reads as a thrown rock shard
 export const VEIN_SATS_PER_HIT = 0;    // score-only drip; the jackpot is the sat moment
 export const VEIN_SCORE_PER_HIT = 35;
 export const VEIN_JACKPOT_SATS = 4;
@@ -1034,6 +1067,30 @@ export function waveSubtitle(wave: number): string | null {
 /** Lookup the brand-voice tactical tagline for a wave (1-indexed). Null for waves outside the table. */
 export function waveTagline(wave: number): string | null {
   return WAVE_LORE[wave - 1]?.tagline ?? null;
+}
+
+/**
+ * Signature-moment banner titles. The hand-authored set-piece waves
+ * (see WAVE_SET_PIECES in game.ts) get a punchy gold wordmark in place of
+ * the plain "WAVE N" headline, so the campaign's tentpole beats read as
+ * events rather than just another wave. Keyed by wave number; waves absent
+ * from this map fall back to the standard banner. The title lives here in
+ * types — not on the set-piece itself — so the renderer can read it without
+ * importing the gameplay module (which would form an import cycle).
+ */
+export const WAVE_SET_PIECE_BANNERS: Readonly<Record<number, string>> = {
+  5: 'PALLASITE HEIST',
+  8: 'THE GAUNTLET',
+  9: 'GOLD RUSH',
+  12: 'BULLET CURTAIN',
+  16: 'MOTHER LODE',
+  20: 'THE MAELSTROM',
+  24: 'THE APPROACH',
+};
+
+/** The signature-moment banner title for a wave, or null for a standard wave. */
+export function waveSetPieceBanner(wave: number): string | null {
+  return WAVE_SET_PIECE_BANNERS[wave] ?? null;
 }
 
 /** Convenience: just the names, derived from WAVE_LORE so the two stay in lock-step. */
