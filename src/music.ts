@@ -12,6 +12,7 @@
 
 import { getMasterVolume, getMusicAnalyser, getMusicDestination, getMusicDuckFactor, getMusicVolume, isMuted, kickAudioContext } from './audio.js';
 import type { GameState } from './types.js';
+import { FINAL_WAVE } from './types.js';
 import { getFlavour } from './flavour.js';
 import { isSanctumMode } from './mode.js';
 import { mobileRuntimeActive } from './visual-style.js';
@@ -1109,6 +1110,7 @@ export function musicResetElements(): void {
     try { entry.gain?.disconnect(); } catch { /* ignore */ }
   }
   loaded.clear();
+  warmedIds.clear();
   currentId = null;
   lastAppliedKey = '';
 }
@@ -1135,34 +1137,59 @@ export function musicResetElements(): void {
  * that's about to be played normally — otherwise we'd race the
  * gesture-bound startNew against our own pause.
  */
+/** Tracks every element we've kicked an in-gesture play() on, so the
+ *  incremental warm in musicWarmUpAll advances through the album instead of
+ *  re-warming the same few. On iOS the first in-gesture play() unlocks the
+ *  element for the whole session (even though we immediately pause it), so an
+ *  attempt is enough to mark it. */
+const warmedIds = new Set<string>();
+/** How many EXTRA (non-critical) wave beds to unlock per gesture. Small so we
+ *  never recreate the 25-at-once decode storm that used to choke iOS and break
+ *  the unlock click; spread across gestures the whole album warms in seconds. */
+const WARM_INCREMENT = 5;
+
+function warmOne(id: string, skipId: string | undefined): void {
+  if (!id || id === skipId || !TRACKS[id]) return;
+  warmedIds.add(id);
+  try {
+    const entry = load(TRACKS[id]);
+    const track = TRACKS[id];
+    entry.el.muted = true;
+    const p = entry.el.play();
+    const cleanup = (): void => {
+      // If musicSetTrackForState picked this track between the muted play() and
+      // the cleanup resolving, DO NOT pause it — that would kill the real play
+      // we just kicked off, leaving the wave silent (the wave-1-silence bug).
+      if (currentId === id) { try { entry.el.muted = false; } catch { /* ignore */ } return; }
+      try { entry.el.pause(); } catch { /* ignore */ }
+      // Restore to startAt (not 0) so the next real play picks up mid-track for
+      // tracks that opt into it (slow-orbit).
+      try { entry.el.currentTime = track.startAt ?? 0; } catch { /* ignore */ }
+      try { entry.el.muted = false; } catch { /* ignore */ }
+    };
+    if (p && typeof p.then === 'function') p.then(cleanup, cleanup);
+    else cleanup();
+  } catch { /* ignore */ }
+}
+
 export function musicWarmUpAll(skipId?: string): void {
   const flavourCritical = FLAVOUR_CRITICAL[getFlavour()] ?? [];
-  const warmSet = new Set<string>([...criticalTrackIds(), ...flavourCritical]);
-  for (const id of warmSet) {
-    if (id === skipId) continue;
-    try {
-      const entry = load(TRACKS[id]);
-      const track = TRACKS[id];
-      entry.el.muted = true;
-      const p = entry.el.play();
-      const cleanup = (): void => {
-        // If musicSetTrackForState picked this track between the muted
-        // play() and the cleanup callback resolving, DO NOT pause it —
-        // that would kill the real play we just kicked off, leaving
-        // the wave silent. This was the wave-1-silence bug.
-        if (currentId === id) {
-          try { entry.el.muted = false; } catch { /* ignore */ }
-          return;
-        }
-        try { entry.el.pause(); } catch { /* ignore */ }
-        // Restore to startAt (not 0) so the next real play picks up
-        // mid-track for tracks that opt into it (slow-orbit).
-        try { entry.el.currentTime = track.startAt ?? 0; } catch { /* ignore */ }
-        try { entry.el.muted = false; } catch { /* ignore */ }
-      };
-      if (p && typeof p.then === 'function') p.then(cleanup, cleanup);
-      else cleanup();
-    } catch { /* ignore */ }
+  // Warm the critical set — title + wave 1 + completion + bonus. Rebuilds clear
+  // warmedIds, so recovery still primes fresh elements without replaying the
+  // same already-unlocked tracks on every later gesture.
+  for (const id of new Set<string>([...criticalTrackIds(), ...flavourCritical])) {
+    if (!warmedIds.has(id)) warmOne(id, skipId);
+  }
+  // Then unlock the REST of the active album's wave beds a few at a time, in
+  // wave order, per gesture. THIS is the iOS "later waves fall silent" fix: only
+  // wave 1 used to be warmed, so every other wave's crossfade play() fired
+  // outside a gesture and iOS rejected it. Each game input is a gesture, so the
+  // whole album unlocks within the first wave or two without the decode storm.
+  const a = activeAlbum();
+  let budget = WARM_INCREMENT;
+  for (let w = 2; w <= FINAL_WAVE && budget > 0; w++) {
+    const id = a.waves[w];
+    if (id && !warmedIds.has(id) && id !== skipId) { warmOne(id, skipId); budget--; }
   }
 }
 
