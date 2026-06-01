@@ -1040,7 +1040,7 @@ export const WAVE_LORE: readonly WaveLore[] = [
   { name: 'MINEO',           subtitle: 'Sicily, 1826 — observed fall',                      tagline: 'Iron takes two. Aim true.' },
   { name: 'ZAISHO',          subtitle: 'Japan, 1898 — observed fall, just 330 g',           tagline: 'Tanks roll. Three hits each.' },
   { name: 'MARJALAHTI',      subtitle: 'Finland, 1902 — observed fall, 45 kg',              tagline: 'Mines arm. Mind the well.' },
-  { name: 'OMOLON',          subtitle: 'Russia, 1981 — largest observed pallasite fall',    tagline: 'Breather. Bank the chain.' },
+  { name: 'OMOLON',          subtitle: 'Russia, 1981 — largest observed pallasite fall',    tagline: 'The ring seals. Blast a way out.' },
   { name: 'SPRINGWATER',     subtitle: 'Saskatchewan, 1931 — type locality of farringtonite', tagline: 'Snipers calibrate. Keep moving.' },
   { name: 'GLORIETA MTN',    subtitle: 'New Mexico, 1884 — variable olivine content',       tagline: 'Two wells. Plot a clean line.' },
   { name: 'SEYMCHAN',        subtitle: 'Russia, 1967 — reclassified iron to pallasite',     tagline: 'Reclassified threats. Re-read the field.' },
