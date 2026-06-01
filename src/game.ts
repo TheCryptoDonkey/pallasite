@@ -36,7 +36,8 @@ import {
   COIN_RADIUS, COIN_TTL_MS,
   POINTS_PER_SIZE, SATS_PER_SIZE, RADIUS_PER_SIZE,
   VEIN_HP_BASE, VEIN_HP_EASY_MUL, VEIN_HP_HARD_MUL,
-  VEIN_RADIUS_MUL, VEIN_SATS_PER_HIT, VEIN_SCORE_PER_HIT,
+  VEIN_RADIUS_MUL, VEIN_MIN_RADIUS_SCALE, VEIN_SATS_PER_HIT, VEIN_SCORE_PER_HIT,
+  VEIN_RETALIATE_PER_N_HITS, VEIN_SHARD_SPEED, VEIN_SHARD_TTL_MS, VEIN_SHARD_RADIUS,
   VEIN_JACKPOT_SATS, VEIN_JACKPOT_SCORE, VEIN_SPAWN_CHANCE,
   VEIN_SPAWN_MIN_WAVE, VEIN_SPAWN_MAX_WAVE, VEIN_SWARM_DELAY_MS,
   VEIN_POWERUP_PER_N_HITS, VEIN_NOVA_DAMAGE,
@@ -673,10 +674,15 @@ function randomEdgePosition(): EdgeSpawn {
 }
 
 /**
- * Hand-authored set piece for a specific wave. Three slots used so far —
- * one heist, one bullet curtain, one boss-intro reuse — each replaces the
- * default procedural fill at fixed wave numbers to give the campaign a
- * memorable beat between the procedural waves.
+ * Hand-authored set piece for a specific wave — the campaign's "signature
+ * moments". Each replaces the default procedural fill at a fixed wave to give
+ * the run a memorable, talked-about beat between the procedural waves. Seven
+ * slots: the Heist (5), Gauntlet (8), Gold Rush (9), Bullet Curtain (12),
+ * Mother Lode (16), Maelstrom (20) and Approach (24) — spaced to escalate
+ * toward the wave-25 boss. The on-screen gold banner title for each lives in
+ * WAVE_SET_PIECE_BANNERS (types.ts). All spawn randomness routes through
+ * gameRng so co-op lockstep stays bit-identical; the only Math.random in the
+ * spawn path is cosmetic (rotation/hue/shape, excluded from the desync canary).
  */
 interface WaveSetPiece {
   /** Custom wave setup — replaces the default asteroid spawn loop. */
@@ -700,8 +706,6 @@ interface WaveSetPiece {
    *  drops them straight onto the pallasite + into the mine ring.
    *  Returned `rot` defaults to -PI/2 (facing up). */
   playerSpawn?: { x: number; y: number; rot?: number };
-  /** Display tag shown on the wavestart banner. */
-  banner?: string;
 }
 
 const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
@@ -744,7 +748,65 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
       for (let i = 0; i < 3; i++) s.asteroids.push(spawnAsteroid('large', s.wave, undefined, undefined, 'chondrite'));
     },
     suppressDefaultMines: true,
-    banner: 'PALLASITE HEIST',
+  },
+
+  // Wave 8 — The Gauntlet. Mines arm for the first time this wave, so we
+  // make their debut a designed corridor rather than scattered wells: three
+  // pairs narrow into a funnel, wide at the bottom mouth where the player
+  // spawns and tightening to a throat at the top. The walls' overlapping
+  // gravity make the centre the only clean line — and it still bites if you
+  // drift. The prize (a knot of pallasite, flanked by two iron tanks) sits at
+  // the head, so the reward is across the most dangerous ground.
+  8: {
+    playerSpawn: { x: WORLD_W / 2, y: WORLD_H - 70 },
+    setup(s) {
+      const cx = WORLD_W / 2;
+      // Funnel rows: bottom gap ~540px, throat ~260px. Each `half` is the
+      // x-offset of the pair from centre at that height.
+      const rows = [
+        { y: 545, half: 270 },
+        { y: 360, half: 200 },
+        { y: 185, half: 130 },
+      ];
+      for (const r of rows) {
+        s.mines.push(makeMine({ x: cx - r.half, y: r.y }));
+        s.mines.push(makeMine({ x: cx + r.half, y: r.y }));
+      }
+      // Reward at the head of the funnel — three pallasite drifting slowly
+      // down the throat so they linger in the kill zone, plus two iron tanks
+      // sweeping in so clearing the head is a fight, not a free harvest.
+      for (let i = 0; i < 3; i++) {
+        s.asteroids.push(spawnAsteroid('large', s.wave, { x: cx - 120 + i * 120, y: 110 }, { x: 0, y: 18 }, 'pallasite'));
+      }
+      s.asteroids.push(spawnAsteroid('large', s.wave, { x: cx - 230, y: 80 }, { x: 22, y: 22 }, 'iron'));
+      s.asteroids.push(spawnAsteroid('large', s.wave, { x: cx + 230, y: 80 }, { x: -22, y: 22 }, 'iron'));
+    },
+    suppressDefaultMines: true,
+    suppressDefaultUfos: true,
+  },
+
+  // Wave 9 — Gold Rush. The exhale after the Gauntlet, and the curtain-up on
+  // Act II. No mines, no UFOs — a slow ring of pure pallasite drifting gently
+  // inward, raining sats, with one fat vein at the top of the ring as the
+  // jackpot that caps the rush. A deliberate pace-breaking reward beat: the
+  // moment the player remembers fondly right before Act II tightens the screws.
+  9: {
+    setup(s) {
+      const cx = WORLD_W / 2, cy = WORLD_H / 2;
+      const N = 8;
+      for (let i = 0; i < N; i++) {
+        const ang = (Math.PI * 2 * i) / N - Math.PI / 2;  // slot 0 at the top
+        const r = 250;                                    // clears the centre — player spawns safe
+        const pos = { x: cx + Math.cos(ang) * r, y: cy + Math.sin(ang) * r };
+        const vel = { x: -Math.cos(ang) * 12, y: -Math.sin(ang) * 12 };  // gentle inward drift
+        const rich = i === 0;  // top slot is the jackpot vein
+        const a = spawnAsteroid('large', s.wave, pos, vel, 'pallasite', rich ? { vein: true } : undefined);
+        if (rich) { a.hp = 60; a.hpMax = 60; }
+        s.asteroids.push(a);
+      }
+    },
+    suppressDefaultMines: true,
+    suppressDefaultUfos: true,
   },
 
   // Wave 12 — Bullet Curtain. No asteroids. Cruisers respawn as they die,
@@ -775,7 +837,97 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
     },
     suppressDefaultMines: true,
     suppressDefaultUfos: true,
-    banner: 'BULLET CURTAIN',
+  },
+
+  // Wave 16 — Mother Lode. The pallasite-seam tagline made literal: one
+  // colossal vein dominates the centre, far beefier and bigger than the heist
+  // vault, pinned by two gravity wells so you can't simply park on it and
+  // grind. The harvest is a committed orbit — dipping in and out of the pull
+  // to land shots — and it showers sats the whole way down. Two iron escorts
+  // drift the flanks for incidental pressure.
+  16: {
+    playerSpawn: { x: WORLD_W / 2, y: WORLD_H - 90 },
+    setup(s) {
+      const cx = WORLD_W / 2, cy = WORLD_H / 2;
+      const d = currentDifficulty();
+      const hp = d === 'easy' ? 180 : d === 'hard' ? 420 : 300;
+      const lode = spawnAsteroid('large', s.wave, { x: cx, y: cy - 20 }, { x: 0, y: 0 }, 'pallasite', { vein: true });
+      lode.hp = hp;
+      lode.hpMax = hp;
+      lode.radius *= 1.5;  // a true mega — reads as the mountain it is
+      lode.veinRetaliates = true;  // hits back — the more you fire, the more comes back
+      s.asteroids.push(lode);
+      // Two wells pinning the lode left and right.
+      s.mines.push(makeMine({ x: cx - 200, y: cy }));
+      s.mines.push(makeMine({ x: cx + 200, y: cy }));
+      // Iron escorts drifting in from the edges.
+      for (let i = 0; i < 2; i++) s.asteroids.push(spawnAsteroid('large', s.wave, undefined, undefined, 'iron'));
+    },
+    suppressDefaultMines: true,
+    suppressDefaultUfos: true,
+  },
+
+  // Wave 20 — The Maelstrom. The five-wells tagline as a set-piece: a pentagon
+  // of mines rings a pallasite prize at the dead centre, with stony debris
+  // caught in the swirl. Every approach to the eye crosses at least one
+  // gravity well, so reaching it is a problem of timing and braking, not just
+  // aim. Act III's signature gauntlet — the gravity-well showcase.
+  20: {
+    playerSpawn: { x: WORLD_W / 2, y: WORLD_H - 70 },
+    setup(s) {
+      const cx = WORLD_W / 2, cy = WORLD_H / 2;
+      const ringR = 200;
+      const N = 5;
+      for (let i = 0; i < N; i++) {
+        const ang = (Math.PI * 2 * i) / N - Math.PI / 2;  // point-up pentagon
+        s.mines.push(makeMine({ x: cx + Math.cos(ang) * ringR, y: cy + Math.sin(ang) * ringR }));
+      }
+      // The eye of the storm — a vein prize reachable only by threading the
+      // pentagon. Difficulty-scaled so it's a real commitment.
+      const d = currentDifficulty();
+      const hp = d === 'easy' ? 120 : d === 'hard' ? 280 : 180;
+      const eye = spawnAsteroid('large', s.wave, { x: cx, y: cy }, { x: 0, y: 0 }, 'pallasite', { vein: true });
+      eye.hp = hp;
+      eye.hpMax = hp;
+      eye.veinRetaliates = true;  // the eye fires back
+      s.asteroids.push(eye);
+      // Stony debris drawn into the swirl — keeps the player moving while they
+      // pick their entry window.
+      for (let i = 0; i < 4; i++) s.asteroids.push(spawnAsteroid('large', s.wave, undefined, undefined, 'stony'));
+    },
+    suppressDefaultMines: true,
+    suppressDefaultUfos: true,
+  },
+
+  // Wave 24 — The Approach. The last orbit before the horizon: the boss's
+  // vanguard. A formation wall of iron (tanky) and chondrite (splits into a
+  // swarm) sweeps down from the top edge while two cruisers escort the flanks,
+  // and a four-corner mine perimeter denies the safe edges so the player has
+  // to hold the middle against the wall. No prize, no breather — just the
+  // weight of what's coming. Punch through the wall and the gate opens.
+  24: {
+    playerSpawn: { x: WORLD_W / 2, y: WORLD_H - 80 },
+    setup(s) {
+      // The wall — a rank of heavy rocks descending in formation. The y-stagger
+      // on alternating columns reads as a deliberate echelon, not random scatter.
+      const cols = 6;
+      for (let i = 0; i < cols; i++) {
+        const x = 140 + i * ((WORLD_W - 280) / (cols - 1));
+        const type: AsteroidType = i % 2 === 0 ? 'iron' : 'chondrite';
+        s.asteroids.push(spawnAsteroid('large', s.wave, { x, y: -40 - (i % 2) * 60 }, { x: 0, y: 55 }, type));
+      }
+      // Two cruiser escorts sweeping in from the sides — the boss's outriders.
+      s.ufos.push(makeEdgeUfo('cruiser', 1));
+      s.ufos.push(makeEdgeUfo('cruiser', -1));
+      s.ufoSpawnedThisWave = true;
+      // Four-corner mine perimeter — denies the easy edges.
+      s.mines.push(makeMine({ x: 200, y: 160 }));
+      s.mines.push(makeMine({ x: WORLD_W - 200, y: 160 }));
+      s.mines.push(makeMine({ x: 200, y: WORLD_H - 160 }));
+      s.mines.push(makeMine({ x: WORLD_W - 200, y: WORLD_H - 160 }));
+    },
+    suppressDefaultMines: true,
+    suppressDefaultUfos: true,  // our own escorts are placed in setup; no timer spawns
   },
 };
 
@@ -1834,8 +1986,11 @@ export function cheatJumpToBonus(s: GameState): void {
 const POWERUP_TYPES_NOSTR: PowerUpType[] = ['rapid', 'satboost', 'nova', 'trident', 'magnet'];
 const POWERUP_TYPES_GUEST: PowerUpType[] = ['rapid', 'nova', 'trident', 'magnet'];  // satboost has nothing to boost in guest mode
 
-/** Maybe drop a power-up at the given position. Called from UFO kills. */
-function maybeDropPowerUp(s: GameState, x: number, y: number, force?: PowerUpType): void {
+/** Maybe drop a power-up at the given position. Called from UFO kills. An
+ *  explicit `vel` overrides the default gentle random scatter — used by the
+ *  boss-vein milestone drop to fling the pickup well clear of the rock so a
+ *  camper has to leave their spot to collect it. */
+function maybeDropPowerUp(s: GameState, x: number, y: number, force?: PowerUpType, vel?: Vec2): void {
   let type: PowerUpType;
   if (force) {
     type = force;
@@ -1849,7 +2004,7 @@ function maybeDropPowerUp(s: GameState, x: number, y: number, force?: PowerUpTyp
   s.powerups.push({
     id: nextStreamEntityId(),
     pos: { x, y },
-    vel: { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed },
+    vel: vel ? { x: vel.x, y: vel.y } : { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed },
     radius: POWERUP_RADIUS,
     alive: true,
     type,
@@ -2221,6 +2376,31 @@ function ufoRadialShoot(s: GameState, u: Ufo): void {
   audio.ufoShoot();
 }
 
+/** A single fat pallasite shard broken off the vein's rim straight at `target`
+ *  (the firing pilot's position at this instant). Aimed, no spread — the player
+ *  dodges by moving. Fired reactively from the hit handler every Nth landed hit,
+ *  so the more fire you pour in, the more comes back. `speed` scales with
+ *  difficulty. Deterministic (no RNG). */
+function veinRetaliateShard(s: GameState, a: Asteroid, target: Vec2, speed: number): void {
+  const ang = Math.atan2(target.y - a.pos.y, target.x - a.pos.x);
+  const c = Math.cos(ang), sn = Math.sin(ang);
+  s.enemyBullets.push({
+    pos: { x: a.pos.x + c * a.radius, y: a.pos.y + sn * a.radius },  // emanate from the rim
+    vel: { x: c * speed, y: sn * speed },
+    radius: VEIN_SHARD_RADIUS,
+    alive: true,
+    id: nextStreamEntityId(),
+    ttl: VEIN_SHARD_TTL_MS,
+    pierceLeft: 0,
+    caromHit: false,
+    wrapped: false,
+    hasLanded: false,
+    owner: -1,
+    shard: true,  // rendered as a spinning rock chunk, not a fire bolt
+  });
+  audio.ufoShoot();
+}
+
 // ── Mines ─────────────────────────────────────────────────────────────────────
 
 function makeMine(pos: Vec2, hp: number = MINE_HP_BASE): Mine {
@@ -2557,7 +2737,7 @@ function spawnWaveClearStreak(s: GameState): void {
   }
 }
 
-function spawnParticles(s: GameState, x: number, y: number, count: number, colour: string, speed = 100, ttl = 600): void {
+function spawnParticles(s: GameState, x: number, y: number, count: number, colour: string, speed = 100, ttl = 600, opts?: { dir?: Vec2; spread?: number }): void {
   // Scale request down when the buffer is filling up — at the cap, requests
   // are reduced to ~25% of nominal so big visual moments still register but
   // don't compound.
@@ -2567,8 +2747,14 @@ function spawnParticles(s: GameState, x: number, y: number, count: number, colou
     : headroom < count
       ? Math.max(1, Math.floor(headroom * 0.6))
       : count;
+  // Optional directional spray: aim the cone along `dir` with a half-angle of
+  // `spread`/2 either side. Without `dir`, particles puff out omnidirectionally
+  // (full 2π). Used for impact chips that should eject off the surface back the
+  // way the shot came, rather than blooming evenly from a point.
+  const baseAngle = opts?.dir ? Math.atan2(opts.dir.y, opts.dir.x) : 0;
+  const spread = opts?.dir ? (opts.spread ?? Math.PI * 0.8) : Math.PI * 2;
   for (let i = 0; i < effective; i++) {
-    const angle = Math.random() * Math.PI * 2;
+    const angle = baseAngle + (Math.random() - 0.5) * spread;
     const v = speed * (0.4 + Math.random() * 0.8);
     s.particles.push({
       pos: { x, y },
@@ -4389,11 +4575,10 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
     breakAsteroid(s, a, opts);
     return;
   }
-  // Vein streams sats per hit. Signed-in players get real sats credited
-  // live; guests get a score-only payout. Either way, a yellow burst
-  // flies toward the ship so the reward reads instantly. Every Nth
-  // landed hit drops a helpful power-up (rapid / trident / satboost)
-  // near the vein so the player has tools to sustain the long fight.
+  // Vein streams sats/score per hit, throws a shower of chips off the impact
+  // point on the rim (so the bite reads at the surface, not in the centre of a
+  // huge rock), and visibly wears the megalith down to a glowing core as its HP
+  // drops. Power-ups drop on landed-hit milestones to sustain the long fight.
   if (a.isVein) {
     if (s.session && !isCoopCampaignMode()) {
       p.sats += VEIN_SATS_PER_HIT;
@@ -4401,28 +4586,53 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
       p.score += VEIN_SCORE_PER_HIT;
     }
     audio.coinPickup();
-    // Per-hit feedback: a brighter, larger burst plus a white sparkle
-    // ring so the bullet visibly bites the megalith rather than
-    // disappearing into it. The HP ring (drawAsteroid) carries the
-    // running progress; this is the per-impact punch.
-    spawnParticles(s, a.pos.x, a.pos.y, 14, '#ffd84a', 240, 540);
-    spawnParticles(s, a.pos.x, a.pos.y, 6, '#fff5d8', 280, 360);
-    bumpTrauma(s, 0.04);
-    // Power-up drop on hit milestones — the long engagement deserves
-    // tools. hp started at a.hpMax; after this hit a.hp is one less,
-    // so hits-landed = hpMax - a.hp. Using the asteroid's own hpMax
-    // (rather than the global veinScaledHp()) so set-piece veins with
-    // a custom HP — wave 5 heist vault, etc — drop power-ups on their
-    // own milestones.
+    // Capture the spawn radius on first hit (after any set-piece override) so
+    // the rock can wear to a glowing core as HP drops. Derived purely from
+    // hp/hpMax — no RNG in this path, so co-op lockstep stays bit-identical.
+    // Collision + render both read a.radius, so the hitbox shrinks with it.
+    if (a.veinBaseRadius == null) a.veinBaseRadius = a.radius;
+    const hpFrac = Math.max(0, Math.min(1, a.hp / a.hpMax));
+    a.radius = a.veinBaseRadius * (VEIN_MIN_RADIUS_SCALE + (1 - VEIN_MIN_RADIUS_SCALE) * hpFrac);
+    let nx = (opts?.bulletPos?.x ?? a.pos.x) - a.pos.x;
+    let ny = (opts?.bulletPos?.y ?? a.pos.y) - a.pos.y;
+    const nlen = Math.hypot(nx, ny) || 1;
+    nx /= nlen; ny /= nlen;
+    // Chip at the TRUE contact point — the bullet's own position when the hit
+    // registered — not a forced inner circle. The collision radius can sit
+    // inside the lumpy visible silhouette, so a computed rim floated chips off
+    // the rock; the real impact point lands them where the shot actually bit.
+    const rimX = opts?.bulletPos?.x ?? (a.pos.x + nx * a.radius);
+    const rimY = opts?.bulletPos?.y ?? (a.pos.y + ny * a.radius);
+    const out: Vec2 = { x: nx, y: ny };
+    spawnParticles(s, rimX, rimY, 12, '#ffd84a', 250, 520, { dir: out, spread: Math.PI * 0.85 });
+    spawnParticles(s, rimX, rimY, 5, '#fff5d8', 320, 360, { dir: out, spread: Math.PI * 1.0 });
+    spawnParticles(s, rimX, rimY, 4, '#9be15d', 200, 460, { dir: out, spread: Math.PI * 0.75 });
+    bumpTrauma(s, 0.05);
     const hitsLanded = a.hpMax - a.hp;
+    // Reactive defence — a boss vein breaks a fat shard off straight back at the
+    // firing pilot every Nth landed hit. The more you pour in, the more comes
+    // back, so you can't sit and grind: weave the shard while you chip. Cadence
+    // + speed soften on easy, sharpen on hard.
+    if (a.veinRetaliates && hitsLanded > 0) {
+      const diff = currentDifficulty();
+      if (hitsLanded % VEIN_RETALIATE_PER_N_HITS[diff] === 0) {
+        veinRetaliateShard(s, a, p.ship.pos, VEIN_SHARD_SPEED[diff]);
+      }
+    }
     if (hitsLanded > 0 && hitsLanded % VEIN_POWERUP_PER_N_HITS === 0) {
       const pool: PowerUpType[] = s.session && !isCoopCampaignMode()
         ? ['rapid', 'trident', 'satboost']
         : ['rapid', 'trident'];
       const pick = pool[Math.floor(gameRng() * pool.length)];
-      const dropX = a.pos.x + (gameRng() - 0.5) * 120;
-      const dropY = a.pos.y + (gameRng() - 0.5) * 120;
-      maybeDropPowerUp(s, dropX, dropY, pick);
+      // Fling the pickup OUT, biased away from the shooter, so it sails clear of
+      // the rock and the player must break off to chase it down — a gentle pull
+      // off the camp spot (it decelerates to rest ~300px out). ±60° of jitter
+      // keeps the lane varied; all deterministic.
+      let ax = a.pos.x - p.ship.pos.x, ay = a.pos.y - p.ship.pos.y;
+      const al = Math.hypot(ax, ay) || 1;
+      const base = Math.atan2(ay / al, ax / al) + (gameRng() - 0.5) * (Math.PI * 0.7);
+      const launch = 210;
+      maybeDropPowerUp(s, a.pos.x, a.pos.y, pick, { x: Math.cos(base) * launch, y: Math.sin(base) * launch });
     }
     return;
   }

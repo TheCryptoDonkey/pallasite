@@ -10,7 +10,7 @@ import type {
   GameState, Ship, Asteroid, AsteroidType, Bullet, Coin, Particle, Ufo, Mine, PowerUp, ReplaySnapshot, Debris, Shockwave, HyperspaceEffect,
 } from './types.js';
 import {
-  WORLD_W, WORLD_H, WARP_MS, WAVE_CLEAR_GRACE_MS, waveName, waveSubtitle, waveTagline, POWERUP_CONFIG,
+  WORLD_W, WORLD_H, WARP_MS, WAVE_CLEAR_GRACE_MS, waveName, waveSubtitle, waveTagline, waveSetPieceBanner, POWERUP_CONFIG,
   REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS, COMBO_MAX,
   intertitleForWave, INTERTITLE_MS,
 } from './types.js';
@@ -2611,11 +2611,9 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   // hasn't finished loading yet (or the player has the renderer turned
   // off via prefers-reduced-motion / WebGL unavailable).
   const asteroidTier = getVisualStyle('asteroid');
-  // Veins now flow through the mesh path too — the WebGL overlay paints
-  // a regular pallasite mesh which reads as a chunky 3D vault, far more
-  // "massive" than the 2D gold-halo vector circle that used to leak
-  // through underneath. The bespoke gold halo is sacrificed in mesh tier;
-  // shaded/vector tiers still get the original treatment below.
+  // MESH-tier veins render as a chunky 3D pallasite vault in the WebGL overlay.
+  // The 2D vein treatment below — halo, gold cracks, HP ring — is the
+  // vector/shaded fallback used on lower tiers or while the overlay loads.
   if (asteroidTier === 'mesh' && isWebGLOverlayReady() && !a.councilMember && (a.depth ?? 3) === 3) return;
   // SHADED-tier asteroids get the "tumbling through space" treatment:
   // drop shadow under, camera-fixed rim light + terminator shading on
@@ -3606,6 +3604,99 @@ function drawBullet(ctx: CanvasRenderingContext2D, b: Bullet, friendly: boolean)
   const bulletShaded = getVisualStyle('bullet') !== 'vector';
   ctx.save();
 
+  // Boss-vein retaliation: a tumbling pallasite shard (a chunk torn off the
+  // rock), not a fire bolt. Drawn entirely in 2D so it reads the same in
+  // vector / shaded / mesh (the overlay doesn't render bullets). Built up in
+  // layers for depth: streak trail → outer glow → gradient-lit rocky body →
+  // rim light → translucent olivine crystal facets → bright gem core +
+  // specular. Lumpiness + facet picks are seeded off the bullet id so each
+  // shard is distinct but stable; the tumble is driven off ttl.
+  if (b.shard) {
+    const sid = b.id ?? 0;
+    const vr = b.radius * 1.5;              // visual body radius — chunky, a touch over the hitbox
+    ctx.shadowBlur = 0;
+
+    // 1) Motion streak — a tapering gold-dust trail behind the shard.
+    const trail = vr * 3.4;
+    const tg = ctx.createLinearGradient(b.pos.x, b.pos.y, b.pos.x - ux * trail, b.pos.y - uy * trail);
+    tg.addColorStop(0, 'rgba(255, 214, 120, 0.5)');
+    tg.addColorStop(1, 'rgba(255, 214, 120, 0)');
+    ctx.strokeStyle = tg;
+    ctx.lineCap = 'round';
+    ctx.lineWidth = vr * 0.8;
+    ctx.beginPath();
+    ctx.moveTo(b.pos.x, b.pos.y);
+    ctx.lineTo(b.pos.x - ux * trail, b.pos.y - uy * trail);
+    ctx.stroke();
+
+    // 2) Outer glow halo — additive bloom so it pops against any backdrop.
+    //    Tighter + dimmer than the rock so the body reads, not just the glow.
+    ctx.globalCompositeOperation = 'lighter';
+    const halo = ctx.createRadialGradient(b.pos.x, b.pos.y, vr * 0.5, b.pos.x, b.pos.y, vr * 1.8);
+    halo.addColorStop(0, 'rgba(255, 200, 90, 0.34)');
+    halo.addColorStop(1, 'rgba(255, 170, 60, 0)');
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(b.pos.x, b.pos.y, vr * 1.8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+
+    ctx.translate(b.pos.x, b.pos.y);
+    ctx.rotate(b.ttl * 0.02 + sid * 1.3);   // tumble (render-only, determinism-irrelevant)
+
+    // Stable lumpy silhouette.
+    const pts = 9;
+    const vx: number[] = [], vy: number[] = [];
+    for (let i = 0; i < pts; i++) {
+      const ang = (Math.PI * 2 * i) / pts;
+      const rr = vr * (0.74 + 0.42 * (((i * 7 + sid * 3) % 5) / 5));
+      vx.push(Math.cos(ang) * rr); vy.push(Math.sin(ang) * rr);
+    }
+    const tracePoly = (): void => {
+      ctx.beginPath();
+      for (let i = 0; i < pts; i++) (i ? ctx.lineTo(vx[i], vy[i]) : ctx.moveTo(vx[i], vy[i]));
+      ctx.closePath();
+    };
+
+    // 3) Rocky body — radial gradient lit from the upper-left for 3D form.
+    const bg = ctx.createRadialGradient(-vr * 0.38, -vr * 0.42, vr * 0.1, 0, 0, vr * 1.2);
+    bg.addColorStop(0, '#ecd98e');          // lit crest
+    bg.addColorStop(0.5, '#8d7b42');        // mid matrix
+    bg.addColorStop(1, '#2c2613');          // shadowed underside
+    tracePoly();
+    ctx.fillStyle = bg;
+    ctx.shadowColor = 'rgba(255, 206, 90, 0.8)';
+    ctx.shadowBlur = 7;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // 4) Translucent olivine crystal facets — the pallasite gemstone showing
+    //    through the iron matrix. Two triangles fanned from the core.
+    ctx.fillStyle = 'rgba(155, 225, 93, 0.55)';
+    ctx.beginPath();
+    ctx.moveTo(vx[0], vy[0]); ctx.lineTo(0, 0); ctx.lineTo(vx[3], vy[3]); ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = 'rgba(214, 255, 138, 0.4)';
+    ctx.beginPath();
+    ctx.moveTo(vx[5], vy[5]); ctx.lineTo(0, 0); ctx.lineTo(vx[7], vy[7]); ctx.closePath();
+    ctx.fill();
+
+    // 5) Rim light — bright catch along the lit edge.
+    tracePoly();
+    ctx.strokeStyle = 'rgba(255, 234, 156, 0.85)';
+    ctx.lineWidth = 1.3;
+    ctx.stroke();
+
+    // 6) Bright olivine gem core + sharp specular highlight.
+    ctx.fillStyle = '#eaffc0';
+    ctx.beginPath(); ctx.arc(0, 0, vr * 0.26, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+    ctx.beginPath(); ctx.arc(-vr * 0.3, -vr * 0.33, vr * 0.15, 0, Math.PI * 2); ctx.fill();
+
+    ctx.restore();
+    return;
+  }
+
   if (bulletShaded) {
     // SHADED tier — additive trail with linear gradient + head halo +
     // beefier core line. The gradient costs a per-bullet allocation but
@@ -4475,12 +4566,26 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState): void {
   // spill off both edges of the screen on phones.
   const isBnWave = (getFlavour() === '600bn' || isSanctumMode()) && s.wave === 1;
   const maxW = overlayWorldWidth() - 40;  // 20 world px margin each side
-  const headline = isBnWave ? 'THE $600B WAVE' : `WAVE ${s.wave}`;
+  // Signature-moment waves (the hand-authored set pieces) swap the plain
+  // "WAVE N" headline for a gold wordmark — "THE GAUNTLET", "MOTHER LODE"
+  // — so the tentpole beats announce themselves as events. The wave number
+  // is kept as a small kicker above so the player never loses their place.
+  const setPieceBanner = isBnWave ? null : waveSetPieceBanner(s.wave);
+  const goldTitle = isBnWave || setPieceBanner != null;
+  if (setPieceBanner) {
+    ctx.letterSpacing = '0.30em' as unknown as string;
+    fitFontToWidth(ctx, `WAVE ${s.wave}`, px => `bold ${px}px ui-monospace, monospace`, 22, maxW);
+    ctx.fillStyle = '#7da5d4';
+    ctx.shadowColor = '#5b9dff';
+    ctx.shadowBlur = 8;
+    ctx.fillText(`WAVE ${s.wave}`, WORLD_W / 2, WORLD_H / 2 - 92);
+  }
+  const headline = isBnWave ? 'THE $600B WAVE' : (setPieceBanner ?? `WAVE ${s.wave}`);
   ctx.letterSpacing = '0em' as unknown as string;
   fitFontToWidth(ctx, headline, px => `bold ${px}px ui-monospace, monospace`, isBnWave ? 64 : 72, maxW);
-  ctx.fillStyle = isBnWave ? '#ffd84a' : '#5b9dff';
-  ctx.shadowColor = isBnWave ? '#ff8a3a' : '#5b9dff';
-  ctx.shadowBlur = isBnWave ? 26 : 22;
+  ctx.fillStyle = goldTitle ? '#ffd84a' : '#5b9dff';
+  ctx.shadowColor = goldTitle ? '#ff8a3a' : '#5b9dff';
+  ctx.shadowBlur = goldTitle ? 26 : 22;
   ctx.fillText(headline, WORLD_W / 2, WORLD_H / 2 - 30);
 
   // Sub-name — pallasite specimen for campaign waves, council label

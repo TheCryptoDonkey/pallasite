@@ -100,7 +100,7 @@ function makeAsteroid(): Asteroid {
     pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, radius: 0, alive: false, id: undefined,
     size: 'large', type: 'stony', depth: 3, councilMember: undefined,
     hp: 0, hpMax: 0, hitFlash: 0, rot: 0, rotVel: 0, shape: EMPTY_SHAPE, hue: 0,
-    isVein: false, terrain: undefined, gravity: undefined,
+    isVein: false, veinBaseRadius: undefined, veinRetaliates: undefined, terrain: undefined, gravity: undefined,
   };
 }
 function copyAsteroid(s: Asteroid, d: Asteroid): void {
@@ -110,6 +110,11 @@ function copyAsteroid(s: Asteroid, d: Asteroid): void {
   d.hp = s.hp; d.hpMax = s.hpMax; d.hitFlash = s.hitFlash; d.rot = s.rot; d.rotVel = s.rotVel;
   d.shape = s.shape;  // ref-copy: generated at spawn, never mutated
   d.hue = s.hue; d.isVein = s.isVein; d.terrain = s.terrain; d.gravity = s.gravity;
+  // Vein gameplay state — base radius drives the live collision/render radius
+  // (shrink), veinRetaliates gates the defensive shard. Both affect the sim, so
+  // they must survive snapshot/restore or a rollback mid-vein-fight would
+  // desync. Always assigned (incl. undefined).
+  d.veinBaseRadius = s.veinBaseRadius; d.veinRetaliates = s.veinRetaliates;
 }
 
 function makeBullet(): Bullet {
