@@ -143,6 +143,17 @@ export interface Asteroid extends Entity {
    *  at the firing pilot every VEIN_RETALIATE_PER_N_HITS landed hits. Set at
    *  spawn; ordinary veins (the drive-by event) leave it unset and never shoot. */
   veinRetaliates?: boolean;
+  /** EAGLE STATION (wave 17) only — which part of the placer's rig this entity
+   *  is, so render + gameplay can treat it specially. 'core' = the destructible
+   *  reactor (a retaliating vein at centre); 'arm' = an indestructible terrain
+   *  beam that rotates and blocks fire; 'emitter' = a destructible pod at an arm
+   *  tip that places anomalous rocks until killed. Undefined for everything else
+   *  (incl. the rocks the emitters place). */
+  stationPart?: 'core' | 'arm' | 'emitter';
+  /** Station arm/emitter only — the part's base angle (radians) around the core.
+   *  The live angle is stationSlot + the rig's elapsed-driven spin; the tick
+   *  drives position from it each frame (deterministic — no RNG). */
+  stationSlot?: number;
   /** Permanent terrain: collides as cover but does not take damage, split,
    *  score, or count as wave-clear material. Used by deathmatch cover rocks. */
   terrain?: boolean;
@@ -336,6 +347,24 @@ export const VEIN_RETALIATE_PER_N_HITS: Record<'easy' | 'normal' | 'hard', numbe
 export const VEIN_SHARD_SPEED: Record<'easy' | 'normal' | 'hard', number> = { easy: 185, normal: 230, hard: 280 };
 export const VEIN_SHARD_TTL_MS = 3200;
 export const VEIN_SHARD_RADIUS = 9;             // chunky — bigger hitbox + reads as a thrown rock shard
+
+/** EAGLE STATION (wave 17) — the placer's rig, reimagined as a DRONE BAY. A
+ *  reactor core at centre, ringed by three rotating terrain arms (solid cover)
+ *  tipped with emitter pods that launch UFO drones at you until knocked out —
+ *  while ambient asteroids of mixed types drift through. Kill the pods to choke
+ *  the drone stream, then break the core. All driven off the sim clock + the
+ *  deterministic RNG, so co-op lockstep is unaffected. */
+export const STATION_ARMS = 3;
+export const STATION_ARM_R = 132;               // arm-beam distance from the core (just clears the core rim)
+export const STATION_EMITTER_R = 196;           // emitter-pod distance — the arm tip
+export const STATION_ROT_SPEED = (Math.PI * 2) / 19000;  // rad/ms — ~19s per rev (slow enough to target parts)
+export const STATION_EMITTER_HP = 4;            // hits to knock out an emitter pod
+// A pod launches a UFO drone every STATION_EMIT_MS (one pod per cycle) up to a
+// live cap, so the threat tracks + shoots + can be shot down. Cadence eases on
+// easy, sharpens on hard.
+export const STATION_EMIT_MS: Record<'easy' | 'normal' | 'hard', number> = { easy: 4200, normal: 3100, hard: 2300 };
+export const STATION_UFO_CAP: Record<'easy' | 'normal' | 'hard', number> = { easy: 2, normal: 3, hard: 4 };
+export const STATION_AMBIENT_MS = 5200;         // an ambient rock of a random type drifts through this often
 export const VEIN_SATS_PER_HIT = 0;    // score-only drip; the jackpot is the sat moment
 export const VEIN_SCORE_PER_HIT = 35;
 export const VEIN_JACKPOT_SATS = 4;
@@ -1048,7 +1077,7 @@ export const WAVE_LORE: readonly WaveLore[] = [
   { name: 'BRAHIN',          subtitle: 'Belarus, 1810 — over 1 tonne recovered',            tagline: 'Tanks anchor. Strip them down.' },
   { name: 'AHUMADA',         subtitle: 'Chihuahua, Mexico, 1909 — 53 kg main mass',         tagline: 'Conserve the chain.' },
   { name: 'ITZAWISIS',       subtitle: 'Namibia, 1946 — Eagle Station group, 350 g',        tagline: 'Pallasite seam. Press it.' },
-  { name: 'EAGLE STATION',   subtitle: 'Kentucky, 1880 — type specimen of its group',       tagline: 'Past halfway. Lanes thin.' },
+  { name: 'EAGLE STATION',   subtitle: 'Kentucky, 1880 — type specimen of its group',       tagline: 'The placer’s rig. Break the core.' },
   { name: 'NEWPORT',         subtitle: 'Arkansas, 1923 — only stony-iron of the state',     tagline: 'Four wells. Lanes tighten.' },
   { name: 'OTINAPA',         subtitle: 'Durango, Mexico — main group pallasite',            tagline: 'Snipers brake on you. Brake first.' },
   { name: 'CONCEPTION JCT',  subtitle: 'Missouri, 2006 — anomalous main group, 17 kg',      tagline: 'Five wells. Chain hard.' },
@@ -1084,6 +1113,7 @@ export const WAVE_SET_PIECE_BANNERS: Readonly<Record<number, string>> = {
   9: 'GOLD RUSH',
   12: 'BULLET CURTAIN',
   16: 'MOTHER LODE',
+  17: 'THE PLACER',
   20: 'THE MAELSTROM',
   24: 'THE APPROACH',
 };

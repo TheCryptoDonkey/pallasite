@@ -100,7 +100,8 @@ function makeAsteroid(): Asteroid {
     pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, radius: 0, alive: false, id: undefined,
     size: 'large', type: 'stony', depth: 3, councilMember: undefined,
     hp: 0, hpMax: 0, hitFlash: 0, rot: 0, rotVel: 0, shape: EMPTY_SHAPE, hue: 0,
-    isVein: false, veinBaseRadius: undefined, veinRetaliates: undefined, terrain: undefined, gravity: undefined,
+    isVein: false, veinBaseRadius: undefined, veinRetaliates: undefined,
+    stationPart: undefined, stationSlot: undefined, terrain: undefined, gravity: undefined,
   };
 }
 function copyAsteroid(s: Asteroid, d: Asteroid): void {
@@ -115,12 +116,15 @@ function copyAsteroid(s: Asteroid, d: Asteroid): void {
   // they must survive snapshot/restore or a rollback mid-vein-fight would
   // desync. Always assigned (incl. undefined).
   d.veinBaseRadius = s.veinBaseRadius; d.veinRetaliates = s.veinRetaliates;
+  // EAGLE STATION part tagging — drives rig render + the tick's rotation/placing.
+  d.stationPart = s.stationPart; d.stationSlot = s.stationSlot;
 }
 
 function makeBullet(): Bullet {
   return {
     pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, radius: 0, alive: false, id: undefined,
     ttl: 0, pierceLeft: 0, caromHit: false, wrapped: false, hasLanded: false, owner: -1,
+    shard: undefined,
   };
 }
 function copyBullet(s: Bullet, d: Bullet): void {
@@ -128,6 +132,7 @@ function copyBullet(s: Bullet, d: Bullet): void {
   d.radius = s.radius; d.alive = s.alive; d.id = s.id;
   d.ttl = s.ttl; d.pierceLeft = s.pierceLeft; d.caromHit = s.caromHit;
   d.wrapped = s.wrapped; d.hasLanded = s.hasLanded; d.owner = s.owner;
+  d.shard = s.shard;  // render-only flag, copied for fidelity
 }
 
 function makeUfo(): Ufo {
