@@ -712,7 +712,7 @@ function getSixHundredBnClockTexture(): THREE.CanvasTexture {
   return tex;
 }
 
-function build600bnCoinMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.Material } {
+function build600bnCoinMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.MeshPhongMaterial } {
   const r = u.radius * 1.6;             // 1.6× matches the 2D oversized badge
   const h = r * 0.38;                    // thick coin — visible depth when it tumbles
   const group = new THREE.Group();
@@ -776,10 +776,10 @@ function build600bnCoinMesh(u: Ufo): { group: THREE.Group; geometry: THREE.Buffe
  *  saucer) rather than a flat top-down disc. Per-frame rotation
  *  (banking / direction tracking / wobble) operates on the outer
  *  wrapper so the tilt survives. */
-function buildUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.Material } {
+function buildUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.MeshPhongMaterial } {
   if (getFlavour() === '600bn') return build600bnCoinMesh(u);
 
-  let built: { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.Material };
+  let built: { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.MeshPhongMaterial };
   switch (u.type) {
     case 'elite':  built = buildEliteUfoMesh(u); break;
     case 'tank':   built = buildTankUfoMesh(u); break;
@@ -843,7 +843,7 @@ function buildAbductorBeam(bodyR: number, glow: number, topZ: number, height: nu
 /** Cruiser — the canonical Roswell saucer. Two-tier hull, dome,
  *  antenna spike + glowing tip, rotating rim of 10 port-holes,
  *  abductor beam. Reads as "basic enemy scout". */
-function buildCruiserUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.Material } {
+function buildCruiserUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.MeshPhongMaterial } {
   const palette = UFO_PALETTE[u.type];
   const group = new THREE.Group();
   const bodyR = u.radius * palette.scale;
@@ -935,7 +935,7 @@ function buildCruiserUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.Buff
 /** Elite — angular aggressor. Hexagonal hull, 6 outward spikes around
  *  the rim, single sensor eye on top (no dome), twin underbelly
  *  weapon pods. Reads as "this one is sharper". */
-function buildEliteUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.Material } {
+function buildEliteUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.MeshPhongMaterial } {
   const palette = UFO_PALETTE[u.type];
   const group = new THREE.Group();
   const bodyR = u.radius * palette.scale;
@@ -1052,7 +1052,7 @@ function buildEliteUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.Buffer
  *  armour pauldrons, central turret on top with 4 protruding gun
  *  barrels. No dome — armoured cap instead. Reads as "this one shoots
  *  hard and doesn't budge". */
-function buildTankUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.Material } {
+function buildTankUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.MeshPhongMaterial } {
   const palette = UFO_PALETTE[u.type];
   const group = new THREE.Group();
   const bodyR = u.radius * palette.scale;
@@ -1184,7 +1184,7 @@ function buildTankUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferG
  *  +X axis (forward), long thin barrel forward, twin fins, sensor
  *  optic at the muzzle, tail thruster. Reads as "this thing aims and
  *  shoots from far away". */
-function buildSniperUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.Material } {
+function buildSniperUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.MeshPhongMaterial } {
   const palette = UFO_PALETTE[u.type];
   const group = new THREE.Group();
   const bodyR = u.radius * palette.scale;
@@ -1310,7 +1310,7 @@ function buildSniperUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.Buffe
 /** Boss — massive multi-tier carrier. Large saucer base with 18
  *  port-holes, double-tier dome with inner core, crown of 4 spires,
  *  triple-cone abductor beam. The wave-25 finale silhouette. */
-function buildBossUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.Material } {
+function buildBossUfoMesh(u: Ufo): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.MeshPhongMaterial } {
   const palette = UFO_PALETTE[u.type];
   const group = new THREE.Group();
   const bodyR = u.radius * palette.scale;
@@ -1841,6 +1841,143 @@ function buildShieldDome(shipRadius: number): {
   return { group, sphereMat, edgeMat };
 }
 
+// ── EAGLE STATION (wave 17) rig meshes ───────────────────────────────────────
+// Built from primitives so the whole rig reads as ARTIFICIAL against the organic
+// rocks. Each part is its own entity (core = vein, arm = terrain, emitter =
+// small rock), so the rig spins because the entities' positions/rotations do;
+// the meshes just track them. Animation material refs live on group.userData.
+const STATION_METAL = { color: 0x6d7684, shininess: 90, specular: 0xaab3c2 };
+const STATION_ENERGY = 0x9be15d;   // anomalous olivine-green reactor light
+const STATION_HOT = 0xffb24a;      // emitter pod glow
+
+function newMesh(geo: THREE.BufferGeometry, mat: THREE.Material): THREE.Mesh {
+  const m = new THREE.Mesh(geo, mat);
+  m.frustumCulled = false;
+  return m;
+}
+
+const STATION_DARK = { color: 0x3b414e, shininess: 60, specular: 0x6a7384 };  // shadowed underplate
+
+/** The reactor core — the weak point. A multi-ring gimbal field generator
+ *  caging a faceted energy crystal, wrapped in a metal containment hub with
+ *  pylons, and lit from within by a green point-light that washes the arms.
+ *  Built at the vein radius; scales with the HP-shrink so it collapses as it
+ *  dies. The crystal + corona + light all ramp + go white-hot as it fails. */
+function buildStationCore(radius: number): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.MeshPhongMaterial } {
+  const group = new THREE.Group();
+  const metal = new THREE.MeshPhongMaterial(STATION_METAL);
+  const dark = new THREE.MeshPhongMaterial(STATION_DARK);
+  // Containment hub — a faceted metal shell the crystal sits inside.
+  const hub = newMesh(new THREE.DodecahedronGeometry(radius * 0.5, 0), dark);
+  group.add(hub);
+  // Triple gimbal — thick inner rings.
+  const ringGeo = new THREE.TorusGeometry(radius * 0.92, radius * 0.11, 12, 40);
+  const r1 = newMesh(ringGeo, metal);
+  const r2 = newMesh(ringGeo, metal); r2.rotation.x = Math.PI / 2;
+  const r3 = newMesh(ringGeo, metal); r3.rotation.y = Math.PI / 2;
+  group.add(r1, r2, r3);
+  // Outer field ring — a thin wide hoop, the "generator".
+  const fieldGeo = new THREE.TorusGeometry(radius * 1.22, radius * 0.045, 8, 48);
+  const field = newMesh(fieldGeo, metal); field.rotation.x = Math.PI / 2.4;
+  group.add(field);
+  // Containment pylons — four stubby cones aimed inward at the crystal.
+  const pylonGeo = new THREE.ConeGeometry(radius * 0.14, radius * 0.4, 6);
+  for (let i = 0; i < 4; i++) {
+    const ang = (Math.PI / 2) * i + Math.PI / 4;
+    const py = newMesh(pylonGeo, metal);
+    py.position.set(Math.cos(ang) * radius * 0.78, Math.sin(ang) * radius * 0.78, 0);
+    py.rotation.z = -ang - Math.PI / 2;  // tip toward centre
+    group.add(py);
+  }
+  // Energy crystal — sharp octahedron, emissive.
+  const coreGeo = new THREE.OctahedronGeometry(radius * 0.58, 0);
+  const energyMat = new THREE.MeshPhongMaterial({ color: 0x14240c, emissive: STATION_ENERGY, emissiveIntensity: 1.3, shininess: 140, specular: 0xffffff });
+  const crystal = newMesh(coreGeo, energyMat);
+  group.add(crystal);
+  // Corona — a soft additive glow shell so the reactor blooms.
+  const coronaMat = new THREE.MeshBasicMaterial({ color: STATION_ENERGY, transparent: true, opacity: 0.28, blending: THREE.AdditiveBlending, depthWrite: false });
+  const corona = newMesh(new THREE.SphereGeometry(radius * 0.86, 16, 12), coronaMat);
+  group.add(corona);
+  // Reactor light — casts green across the metal arms for real drama.
+  const light = new THREE.PointLight(STATION_ENERGY, 2.0, radius * 6, 2);
+  group.add(light);
+  group.userData.energyMat = energyMat;
+  group.userData.crystal = crystal;
+  group.userData.coronaMat = coronaMat;
+  group.userData.coreLight = light;
+  return { group, geometry: coreGeo, material: energyMat };
+}
+
+/** A rotating arm — a greebled gunmetal spar: main beam, panel ribs, a pipe
+ *  run, an inner gimbal joint and an outer pod housing, with an emissive power
+ *  conduit + warning stripes. Bridges core → emitter pod. */
+function buildStationArm(): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.MeshPhongMaterial } {
+  const group = new THREE.Group();
+  const metal = new THREE.MeshPhongMaterial(STATION_METAL);
+  const dark = new THREE.MeshPhongMaterial(STATION_DARK);
+  const beamGeo = new THREE.BoxGeometry(150, 18, 22);
+  group.add(newMesh(beamGeo, metal));
+  // Underplate (darker, slightly larger) for depth.
+  const under = newMesh(new THREE.BoxGeometry(150, 10, 30), dark); under.position.y = -10; group.add(under);
+  // Panel ribs.
+  const ribGeo = new THREE.BoxGeometry(6, 30, 32);
+  for (const x of [-52, -20, 14, 46]) { const rib = newMesh(ribGeo, metal); rib.position.x = x; group.add(rib); }
+  // Pipe run along the top edge.
+  const pipe = newMesh(new THREE.CylinderGeometry(3.2, 3.2, 150, 8), dark);
+  pipe.rotation.z = Math.PI / 2; pipe.position.set(0, 8, -11);
+  group.add(pipe);
+  // Inner gimbal joint (toward the core) + outer pod housing (toward the tip).
+  group.add((() => { const j = newMesh(new THREE.CylinderGeometry(15, 15, 26, 10), dark); j.rotation.x = Math.PI / 2; j.position.x = -70; return j; })());
+  group.add((() => { const h = newMesh(new THREE.BoxGeometry(26, 30, 30), metal); h.position.x = 68; return h; })());
+  // Emissive conduit + two warning stripes.
+  const conduitMat = new THREE.MeshPhongMaterial({ color: 0x0d160a, emissive: STATION_ENERGY, emissiveIntensity: 0.8 });
+  const conduit = newMesh(new THREE.BoxGeometry(140, 4, 8), conduitMat); conduit.position.set(0, 10, 0); group.add(conduit);
+  const stripeMat = new THREE.MeshPhongMaterial({ color: 0x141414, emissive: 0xffb24a, emissiveIntensity: 0.5 });
+  for (const x of [-34, 34]) { const st = newMesh(new THREE.BoxGeometry(5, 19, 23), stripeMat); st.position.x = x; group.add(st); }
+  group.userData.conduitMat = conduitMat;
+  return { group, geometry: beamGeo, material: metal };
+}
+
+/** An emitter pod — the placer head: a ringed barrel cowl with fins and a hot
+ *  emissive lens at the muzzle (+X / outward), plus a soft glow corona. */
+function buildStationEmitter(radius: number): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.MeshPhongMaterial } {
+  const group = new THREE.Group();
+  const metal = new THREE.MeshPhongMaterial(STATION_METAL);
+  const dark = new THREE.MeshPhongMaterial(STATION_DARK);
+  // Barrel cowl (mouth → +X) + a back plate.
+  const cowl = newMesh(new THREE.CylinderGeometry(radius * 1.05, radius * 1.5, radius * 2.2, 10, 1, true), metal);
+  cowl.rotation.z = Math.PI / 2;
+  group.add(cowl);
+  const back = newMesh(new THREE.CylinderGeometry(radius * 1.5, radius * 1.5, radius * 0.3, 10), dark);
+  back.rotation.z = Math.PI / 2; back.position.x = -radius * 1.0;
+  group.add(back);
+  // Barrel rings (torus bands around the cowl).
+  const bandGeo = new THREE.TorusGeometry(radius * 1.2, radius * 0.13, 8, 16);
+  for (const x of [-radius * 0.4, radius * 0.4]) { const b = newMesh(bandGeo, dark); b.rotation.y = Math.PI / 2; b.position.x = x; group.add(b); }
+  // Fins.
+  const finGeo = new THREE.BoxGeometry(radius * 1.4, radius * 0.2, radius * 1.0);
+  for (let i = 0; i < 3; i++) { const f = newMesh(finGeo, metal); f.rotation.x = (Math.PI / 3) * i; group.add(f); }
+  // Hot emissive lens at the muzzle.
+  const lensGeo = new THREE.IcosahedronGeometry(radius * 1.0, 1);
+  const emitterMat = new THREE.MeshPhongMaterial({ color: 0x2a1500, emissive: STATION_HOT, emissiveIntensity: 1.1, shininess: 110, specular: 0xffd9a0 });
+  const lens = newMesh(lensGeo, emitterMat);
+  lens.position.x = radius * 1.05;
+  group.add(lens);
+  const coronaMat = new THREE.MeshBasicMaterial({ color: STATION_HOT, transparent: true, opacity: 0.32, blending: THREE.AdditiveBlending, depthWrite: false });
+  const corona = newMesh(new THREE.SphereGeometry(radius * 0.9, 12, 8), coronaMat);
+  corona.position.x = radius * 1.05;
+  group.add(corona);
+  group.userData.emitterMat = emitterMat;
+  group.userData.emitterCorona = coronaMat;
+  return { group, geometry: lensGeo, material: emitterMat };
+}
+
+function buildStationPart(a: Asteroid): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.MeshPhongMaterial } {
+  if (a.stationPart === 'core') return buildStationCore(a.radius);
+  if (a.stationPart === 'emitter') return buildStationEmitter(a.radius);
+  return buildStationArm();
+}
+
 export function renderOverlay(opts: {
   asteroids: ReadonlyArray<Asteroid>;
   ufos: ReadonlyArray<Ufo>;
@@ -1896,7 +2033,11 @@ export function renderOverlay(opts: {
     if (!a.alive || a.id == null) continue;
     let entry = handle.asteroidMeshes.get(a.id);
     if (!entry) {
-      if (a.councilMember) {
+      if (a.stationPart) {
+        const built = buildStationPart(a);
+        scene.add(built.group);
+        entry = { mesh: built.group, geometry: built.geometry, material: built.material, lastSeenFrame: frameCounter, builtRadius: a.radius };
+      } else if (a.councilMember) {
         const built = buildCouncilMedallionMesh(a);
         scene.add(built.mesh);
         entry = { mesh: built.mesh, geometry: built.geometry, material: built.material, lastSeenFrame: frameCounter, builtRadius: a.radius };
@@ -1950,7 +2091,51 @@ export function renderOverlay(opts: {
       const s = a.radius / entry.builtRadius;
       entry.mesh.scale.set(s, s, s);
     }
-    if (a.councilMember) {
+    if (a.stationPart) {
+      const ud = entry.mesh.userData;
+      const flash = Math.max(0, Math.min(1, a.hitFlash));
+      if (a.stationPart === 'core') {
+        // The reactor sits flat; its crystal tumbles and the light throbs. As HP
+        // drops it DESTABILISES — strobes faster, the emissive ramps up and
+        // shifts hot toward white, so the core's health reads with no HP bar.
+        entry.mesh.rotation.set(0, 0, 0);
+        const crystal = ud.crystal as THREE.Object3D | undefined;
+        const instab = a.hpMax > 0 ? 1 - Math.max(0, Math.min(1, a.hp / a.hpMax)) : 0;
+        if (crystal) crystal.rotation.set(frameCounter * (0.011 + instab * 0.03), frameCounter * (0.014 + instab * 0.03), 0);
+        const throb = Math.sin(frameCounter * (0.07 + instab * 0.18));
+        const em = ud.energyMat as THREE.MeshPhongMaterial | undefined;
+        if (em) {
+          em.emissiveIntensity = 1.0 + instab * 0.8 + (0.4 + instab * 0.6) * throb + flash * 1.5;
+          // Shift olivine-green toward overloading white-hot as it fails.
+          em.emissive.setRGB(0.6 * instab + flash, 0.88 + 0.12 * flash, 0.36 + 0.5 * instab + flash);
+        }
+        const corona = ud.coronaMat as THREE.MeshBasicMaterial | undefined;
+        if (corona) {
+          corona.opacity = 0.22 + instab * 0.22 + 0.1 * throb + flash * 0.3;
+          corona.color.setRGB(0.6 * instab + flash, 0.88, 0.36 + 0.5 * instab);
+        }
+        const light = ud.coreLight as THREE.PointLight | undefined;
+        if (light) {
+          light.intensity = 1.8 + instab * 1.6 + 0.5 * throb + flash * 2;
+          light.color.setRGB(0.6 * instab + flash, 0.88, 0.36 + 0.5 * instab);
+        }
+      } else {
+        // Arms + pods orient along their radial (negated for the Y-flip).
+        entry.mesh.rotation.set(0, 0, -a.rot);
+        const em = ud.emitterMat as THREE.MeshPhongMaterial | undefined;
+        const lit = a.hpMax > 0 ? 0.3 + 0.7 * Math.max(0, Math.min(1, a.hp / a.hpMax)) : 1;  // dims as the pod breaks
+        const pod = lit * (0.8 + 0.5 * Math.sin(frameCounter * 0.09 + (a.stationSlot ?? 0) * 3));
+        if (em) {
+          em.emissiveIntensity = pod + flash * 2.6;
+          // Pop the orange toward white-hot on a hit/spit so it reads clearly.
+          em.emissive.setRGB(1.0, 0.7 + 0.3 * flash, 0.29 + 0.7 * flash);
+        }
+        const pc = ud.emitterCorona as THREE.MeshBasicMaterial | undefined;
+        if (pc) pc.opacity = 0.18 * lit + flash * 0.85;  // flares bright when the pod is hit / spits
+        const conduit = ud.conduitMat as THREE.MeshPhongMaterial | undefined;  // arm flash
+        if (conduit) conduit.emissiveIntensity = 0.8 + flash * 1.6;
+      }
+    } else if (a.councilMember) {
       // Medallion rotation: Y axis does the full face↔back flip so
       // both sides come round; X and Z axes WOBBLE within ±17° / ±9°
       // (bounded sin) so the portrait + back text always read right-

@@ -38,6 +38,7 @@ import {
   VEIN_HP_BASE, VEIN_HP_EASY_MUL, VEIN_HP_HARD_MUL,
   VEIN_RADIUS_MUL, VEIN_MIN_RADIUS_SCALE, VEIN_SATS_PER_HIT, VEIN_SCORE_PER_HIT,
   VEIN_RETALIATE_PER_N_HITS, VEIN_SHARD_SPEED, VEIN_SHARD_TTL_MS, VEIN_SHARD_RADIUS,
+  STATION_ARMS, STATION_ARM_R, STATION_EMITTER_R, STATION_ROT_SPEED, STATION_EMIT_MS, STATION_UFO_CAP, STATION_AMBIENT_MS, STATION_EMITTER_HP,
   VEIN_JACKPOT_SATS, VEIN_JACKPOT_SCORE, VEIN_SPAWN_CHANCE,
   VEIN_SPAWN_MIN_WAVE, VEIN_SPAWN_MAX_WAVE, VEIN_SWARM_DELAY_MS,
   VEIN_POWERUP_PER_N_HITS, VEIN_NOVA_DAMAGE,
@@ -902,6 +903,102 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
       s.mines.push(makeMine({ x: cx + 200, y: cy }));
       // Iron escorts drifting in from the edges.
       for (let i = 0; i < 2; i++) s.asteroids.push(spawnAsteroid('large', s.wave, undefined, undefined, 'iron'));
+    },
+    suppressDefaultMines: true,
+    suppressDefaultUfos: true,
+  },
+
+  // Wave 17 — EAGLE STATION · "The Placer". Act III's opener and the campaign's
+  // first ARTIFICIAL structure: the rig that's been seeding your hunt. A reactor
+  // core (a retaliating vein) sits at centre, ringed by three slowly-rotating
+  // terrain arms — solid, so they sweep across and block your fire — each tipped
+  // with an emitter pod that keeps placing anomalous rocks into the field until
+  // you knock it out. Break the core to bring the whole rig down. Pure geometry
+  // + the deterministic RNG drive it, so co-op lockstep is unaffected.
+  17: {
+    playerSpawn: { x: WORLD_W / 2, y: WORLD_H - 90 },
+    setup(s) {
+      const cx = WORLD_W / 2, cy = WORLD_H / 2;
+      const d = currentDifficulty();
+      // Core reactor — the weak point. No shard-retaliation here: the threat is
+      // the rocks the pods throw, so stacking retaliation on top read as "too
+      // hard". Just a destructible reactor you chip through the rotating arms.
+      const coreHp = d === 'easy' ? 90 : d === 'hard' ? 220 : 140;
+      const core = spawnAsteroid('large', s.wave, { x: cx, y: cy }, { x: 0, y: 0 }, 'pallasite', { vein: true });
+      core.hp = coreHp;
+      core.hpMax = coreHp;
+      core.stationPart = 'core';
+      s.asteroids.push(core);
+      // Three arms (indestructible terrain beams) + emitter pods at their tips,
+      // evenly spaced. The tick drives their live positions from stationSlot +
+      // the rig's spin; seed them at the slot so frame 1 already looks right.
+      for (let i = 0; i < STATION_ARMS; i++) {
+        const slot = (Math.PI * 2 * i) / STATION_ARMS - Math.PI / 2;
+        const arm = spawnAsteroid('large', s.wave, { x: cx + Math.cos(slot) * STATION_ARM_R, y: cy + Math.sin(slot) * STATION_ARM_R }, { x: 0, y: 0 }, 'iron', { terrain: true });
+        arm.stationPart = 'arm';
+        arm.stationSlot = slot;
+        s.asteroids.push(arm);
+        const em = spawnAsteroid('small', s.wave, { x: cx + Math.cos(slot) * STATION_EMITTER_R, y: cy + Math.sin(slot) * STATION_EMITTER_R }, { x: 0, y: 0 }, 'pallasite');
+        em.hp = STATION_EMITTER_HP;
+        em.hpMax = STATION_EMITTER_HP;
+        em.stationPart = 'emitter';
+        em.stationSlot = slot;
+        s.asteroids.push(em);
+      }
+    },
+    tick(s, dt) {
+      const cx = WORLD_W / 2, cy = WORLD_H / 2;
+      const spin = s.elapsed * STATION_ROT_SPEED;
+      // Rail the arms + emitters around the core on their slots (the rig spins).
+      for (const a of s.asteroids) {
+        if (!a.alive || (a.stationPart !== 'arm' && a.stationPart !== 'emitter')) continue;
+        const ang = (a.stationSlot ?? 0) + spin;
+        const rad = a.stationPart === 'arm' ? STATION_ARM_R : STATION_EMITTER_R;
+        a.pos.x = cx + Math.cos(ang) * rad;
+        a.pos.y = cy + Math.sin(ang) * rad;
+        a.vel.x = 0;
+        a.vel.y = 0;
+        a.rot = ang;  // orient the beam/pod along its radial for the renderer
+      }
+      const d = currentDifficulty();
+      const prev = s.elapsed - dt * 1000;
+      // Drone bay: each cycle a live pod LAUNCHES a UFO drone (up to a live cap),
+      // emerging from the pod with a burst. The drones track + shoot + can be
+      // shot down; kill the pods to choke the stream. Stateless boundary test.
+      const emitMs = STATION_EMIT_MS[d];
+      if (Math.floor(s.elapsed / emitMs) > Math.floor(prev / emitMs)) {
+        const drones = s.ufos.filter(u => u.alive && u.type !== 'boss').length;
+        const emitters = s.asteroids.filter(a => a.alive && a.stationPart === 'emitter');
+        if (emitters.length > 0 && drones < STATION_UFO_CAP[d]) {
+          const em = emitters[Math.floor(gameRng() * emitters.length)];
+          const dir: 1 | -1 = em.pos.x < cx ? 1 : -1;            // head inward across the field
+          const utype: UfoType = gameRng() < 0.5 ? 'cruiser' : 'sniper';
+          const u = makeEdgeUfo(utype, dir);
+          u.pos.x = em.pos.x; u.pos.y = em.pos.y;                // emerge AT the pod
+          u.vel.y = (cy < em.pos.y ? -1 : 1) * 30;
+          s.ufos.push(u);
+          s.ufoSpawnedThisWave = true;
+          if (drones === 0) audio.ufoSirenStart();
+          em.hitFlash = 1;                                       // bay flares as it launches
+          spawnShockwave(s, em.pos.x, em.pos.y, em.radius * 1.9, '#ffb24a');
+          spawnParticles(s, em.pos.x, em.pos.y, 16, '#ffb24a', 300, 420);
+          spawnParticles(s, em.pos.x, em.pos.y, 7, '#fff5d8', 360, 300);
+        }
+      }
+      // Ambient debris: a rock of a random type drifts through now and then so
+      // the field isn't dead between drone launches.
+      if (Math.floor(s.elapsed / STATION_AMBIENT_MS) > Math.floor(prev / STATION_AMBIENT_MS)) {
+        const loose = s.asteroids.filter(a => a.alive && a.stationPart == null && !a.isVein).length;
+        if (loose < 5) {
+          const types: AsteroidType[] = ['iron', 'pallasite', 'stony', 'chondrite'];
+          const t = types[Math.floor(gameRng() * types.length)];
+          s.asteroids.push(spawnAsteroid(gameRng() < 0.5 ? 'large' : 'medium', s.wave, undefined, undefined, t));
+        }
+      }
+    },
+    isCleared(s) {
+      // The rig falls when the core dies — drones + ambient rocks don't gate it.
+      return !s.asteroids.some(a => a.alive && a.stationPart === 'core');
     },
     suppressDefaultMines: true,
     suppressDefaultUfos: true,
@@ -1878,7 +1975,7 @@ function resolveDeathmatchTerrainContact(ship: Ship, terrain: Asteroid): boolean
   }
   ship.vel.x *= 0.92;
   ship.vel.y *= 0.92;
-  confineToDeathmatch(ship.pos, ship.vel, ship.radius, 0.25);
+  if (deathmatchActive()) confineToDeathmatch(ship.pos, ship.vel, ship.radius, 0.25);
   return true;
 }
 
@@ -4106,7 +4203,7 @@ export function updateGame(s: GameState): void {
       for (const a of asteroids) {
         if (!a.alive || (a.depth ?? 3) !== 3) continue;
         if (circlesHit(p.ship, a)) {
-          if (deathmatch && a.terrain) {
+          if (a.terrain) {
             if (resolveDeathmatchTerrainContact(p.ship, a)) p.ship.shieldHitFlash = 1;
             continue;
           }
@@ -4164,7 +4261,11 @@ export function updateGame(s: GameState): void {
       for (const a of asteroids) {
         if (!a.alive || (a.depth ?? 3) !== 3) continue;
         if (circlesHit(p.ship, a)) {
-          if (deathmatch && a.terrain) {
+          // Terrain (deathmatch cover AND the EAGLE STATION arms) is SOLID, not
+          // lethal — you bounce off it, you don't die on it. Previously this
+          // cover-bounce was deathmatch-only, so the campaign station arms
+          // instakilled on touch.
+          if (a.terrain) {
             resolveDeathmatchTerrainContact(p.ship, a);
             continue;
           }
@@ -4311,7 +4412,11 @@ export function updateGame(s: GameState): void {
         // and sats are voided — either way the dash would be pointless.
         const hasGoodies = s.coins.some(c => c.alive)
           || s.powerups.some(p => p.alive && !p.collected);
-        if (hasGoodies && !s.cheatedThisRun) {
+        // EAGLE STATION (17) always holds the grace beat even with nothing to
+        // scoop / on a cheated run, so the rig's big detonation actually plays
+        // out on THIS wave instead of bleeding into the warp / next level.
+        const bossHold = s.wave === 17;
+        if ((hasGoodies && !s.cheatedThisRun) || bossHold) {
           s.waveClearAt = now;
           for (const p of s.players) {
             p.ship.invulnerableUntil = Math.max(
@@ -4557,9 +4662,17 @@ function runAsteroidCollisions(s: GameState): void {
 function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; isWrap?: boolean; bulletVel?: Vec2; bulletPos?: Vec2; p?: PlayerState }): void {
   const p = opts?.p ?? s.players[0];
   if (a.terrain) {
-    a.hitFlash = 0.45;
-    const cfg = ASTEROID_TYPE_CONFIG[a.type];
-    spawnParticles(s, opts?.bulletPos?.x ?? a.pos.x, opts?.bulletPos?.y ?? a.pos.y, 5, cfg.glow, 90, 260);
+    a.hitFlash = 0.55;
+    const px = opts?.bulletPos?.x ?? a.pos.x, py = opts?.bulletPos?.y ?? a.pos.y;
+    if (a.stationPart === 'arm') {
+      // Armoured clang — a bright cold-metal spark spray that reads as
+      // "deflected; this is a shield, not the weak point".
+      spawnParticles(s, px, py, 9, '#cfe0ff', 220, 240);
+      spawnParticles(s, px, py, 4, '#ffffff', 300, 160);
+    } else {
+      const cfg = ASTEROID_TYPE_CONFIG[a.type];
+      spawnParticles(s, px, py, 5, cfg.glow, 90, 260);
+    }
     audio.hit();
     return;
   }
@@ -4644,9 +4757,17 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
     const rimX = opts?.bulletPos?.x ?? (a.pos.x + nx * a.radius);
     const rimY = opts?.bulletPos?.y ?? (a.pos.y + ny * a.radius);
     const out: Vec2 = { x: nx, y: ny };
-    spawnParticles(s, rimX, rimY, 12, '#ffd84a', 250, 520, { dir: out, spread: Math.PI * 0.85 });
-    spawnParticles(s, rimX, rimY, 5, '#fff5d8', 320, 360, { dir: out, spread: Math.PI * 1.0 });
-    spawnParticles(s, rimX, rimY, 4, '#9be15d', 200, 460, { dir: out, spread: Math.PI * 0.75 });
+    if (a.stationPart === 'core') {
+      // The reactor vents anomalous energy when struck — bright green + white
+      // sparks so the core reads unmistakably as THE weak point you're hurting.
+      spawnParticles(s, rimX, rimY, 13, '#9be15d', 240, 520, { dir: out, spread: Math.PI * 0.9 });
+      spawnParticles(s, rimX, rimY, 6, '#eaffc0', 320, 360, { dir: out, spread: Math.PI * 1.0 });
+      spawnParticles(s, rimX, rimY, 4, '#ffffff', 280, 240, { dir: out, spread: Math.PI * 0.7 });
+    } else {
+      spawnParticles(s, rimX, rimY, 12, '#ffd84a', 250, 520, { dir: out, spread: Math.PI * 0.85 });
+      spawnParticles(s, rimX, rimY, 5, '#fff5d8', 320, 360, { dir: out, spread: Math.PI * 1.0 });
+      spawnParticles(s, rimX, rimY, 4, '#9be15d', 200, 460, { dir: out, spread: Math.PI * 0.75 });
+    }
     bumpTrauma(s, 0.05);
     const hitsLanded = a.hpMax - a.hp;
     // Reactive defence — a boss vein breaks a fat shard off straight back at the
@@ -4674,6 +4795,16 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
       const launch = 210;
       maybeDropPowerUp(s, a.pos.x, a.pos.y, pick, { x: Math.cos(base) * launch, y: Math.sin(base) * launch });
     }
+    return;
+  }
+  if (a.stationPart === 'emitter') {
+    // Emitter pod taking damage — hot orange sparks off the impact point so a
+    // breakable weak point reads clearly (vs the arm's cold clang).
+    const px = opts?.bulletPos?.x ?? a.pos.x, py = opts?.bulletPos?.y ?? a.pos.y;
+    spawnParticles(s, px, py, 8, '#ffb24a', 200, 300);
+    spawnParticles(s, px, py, 4, '#ffe6b0', 260, 220);
+    bumpTrauma(s, 0.03);
+    audio.hit();
     return;
   }
   const cfg = ASTEROID_TYPE_CONFIG[a.type];
@@ -4709,6 +4840,60 @@ function volatileBlast(s: GameState, x: number, y: number, size: AsteroidSize): 
   }
   bumpTrauma(s, size === 'large' ? 0.3 : 0.18);
   audio.explosion(size === 'large' ? 1.1 : 0.8);
+}
+
+/** EAGLE STATION core destroyed — the rig comes apart in a big multi-stage
+ *  detonation: the core blooms, every other rig part (arms + pods) blows with
+ *  it, and a fat scatter of collectible loot is flung out so the clear-grace
+ *  window becomes a proper scoop-the-spoils beat before the warp. */
+function stationCoreFinale(s: GameState, core: Asteroid, p: PlayerState): void {
+  p.runStats.veinsBroken += 1;
+  markAchievement(s, 'first-vein');
+  if (s.session && !isCoopCampaignMode()) p.sats += VEIN_JACKPOT_SATS * 2;
+  p.score += VEIN_JACKPOT_SCORE * 2;
+  bumpTrauma(s, 0.9);
+  hitStop(s, 320);
+  audio.pulseDuck(0.5, 320);
+  haptic('rumble');
+  audio.explosion(1.9);
+  // Core bloom — stacked shockwaves + a chromatic particle storm.
+  spawnShockwave(s, core.pos.x, core.pos.y, core.radius * 1.5, '#9be15d');
+  spawnShockwave(s, core.pos.x, core.pos.y, core.radius * 2.4, '#eaffc0');
+  spawnParticles(s, core.pos.x, core.pos.y, 64, '#9be15d', 440, 1150);
+  spawnParticles(s, core.pos.x, core.pos.y, 32, '#eaffc0', 340, 920);
+  spawnParticles(s, core.pos.x, core.pos.y, 24, '#ffffff', 520, 700);
+  // The rest of the rig blows apart — arms (cold metal) + pods (hot).
+  for (const part of s.asteroids) {
+    if (!part.alive || part.stationPart == null || part === core) continue;
+    part.alive = false;
+    const hot = part.stationPart === 'emitter';
+    spawnShockwave(s, part.pos.x, part.pos.y, part.radius * 1.4, hot ? '#ffb24a' : '#cfe0ff');
+    spawnParticles(s, part.pos.x, part.pos.y, 20, hot ? '#ffb24a' : '#aab3c2', 320, 760);
+    spawnParticles(s, part.pos.x, part.pos.y, 9, '#ffffff', 380, 520);
+  }
+  // Loot scatter — signed-in solo gets sat coins, everyone gets a dust shower,
+  // so the clear-grace window always has goodies to scoop.
+  if (s.session && !isCoopCampaignMode()) spawnCoins(s, core.pos.x, core.pos.y, VEIN_JACKPOT_SATS * 3, 6, 'sat');
+  spawnCoins(s, core.pos.x, core.pos.y, 0, 11, 'dust');
+  recordStreamEvent('vc', core.pos.x, core.pos.y);
+  toastNow(s, s.session && !isCoopCampaignMode() ? `STATION DOWN · +${VEIN_JACKPOT_SATS * 2} sats` : `STATION DOWN · +${VEIN_JACKPOT_SCORE * 2}`);
+  maybeExtraLife(s, p);
+}
+
+/** An emitter pod knocked out — it bursts (and so stops placing rocks). A
+ *  smaller cousin of the core finale: orange shockwave + spark storm + a kick
+ *  of trauma, plus a little dust loot for disabling a placer. */
+function stationEmitterDestroyed(s: GameState, em: Asteroid, p: PlayerState): void {
+  bumpTrauma(s, 0.14);
+  hitStop(s, 70);
+  audio.explosion(0.7);
+  spawnShockwave(s, em.pos.x, em.pos.y, em.radius * 2.6, '#ffb24a');
+  spawnParticles(s, em.pos.x, em.pos.y, 24, '#ffb24a', 340, 720);
+  spawnParticles(s, em.pos.x, em.pos.y, 11, '#ffe6b0', 400, 520);
+  spawnParticles(s, em.pos.x, em.pos.y, 6, '#ffffff', 440, 380);
+  p.score += 250;
+  spawnCoins(s, em.pos.x, em.pos.y, 0, 3, 'dust');  // a small reward for cutting off the flow
+  toastNow(s, 'POD DESTROYED');
 }
 
 function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boolean; isCarom?: boolean; isWrap?: boolean; bulletVel?: Vec2; p?: PlayerState }): void {
@@ -4766,6 +4951,16 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
     return;
   }
   a.alive = false;
+  // EAGLE STATION core down — the whole rig detonates and scatters loot.
+  if (a.stationPart === 'core') {
+    stationCoreFinale(s, a, p);
+    return;
+  }
+  // Emitter pod knocked out — it explodes (and stops placing rocks).
+  if (a.stationPart === 'emitter') {
+    stationEmitterDestroyed(s, a, p);
+    return;
+  }
   // Vein collapse: jackpot, big bloom, no fragments. Vapourises clean.
   if (a.isVein) {
     p.runStats.veinsBroken += 1;

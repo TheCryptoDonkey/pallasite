@@ -2602,6 +2602,123 @@ function drawTypeTell(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   }
 }
 
+/** EAGLE STATION rig — 2D render for vector/shaded tiers (mesh uses the overlay).
+ *  Each part draws itself at its world position; arms/pods orient along a.rot.
+ *  Health is read visually: the core destabilises (greens shift hot, flickers,
+ *  shrinks) as its HP drops; emitter glow dims as the pod breaks; arms are inert
+ *  metal. A white hit-flash fires on every strike so you can SEE you're landing. */
+function drawStationPart(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): void {
+  const flash = Math.max(0, Math.min(1, a.hitFlash));
+  ctx.save();
+  ctx.translate(a.pos.x, a.pos.y);
+  if (a.stationPart === 'core') {
+    const r = a.radius;
+    const hpFrac = a.hpMax > 0 ? Math.max(0, Math.min(1, a.hp / a.hpMax)) : 1;
+    // As it's damaged the reactor destabilises: light strobes faster, the gem
+    // shifts from olivine-green toward an overloading white-hot, cracks widen.
+    const instab = 1 - hpFrac;
+    const flicker = instab > 0.3 ? 0.7 + 0.3 * Math.sin(now * (0.01 + instab * 0.05)) : 1;
+    const pulse = (0.7 + 0.3 * Math.sin(now * 0.004)) * flicker;
+    const hot = Math.round(138 + instab * 110);  // green→white-hot blue channel
+    // Outer corona — a soft energy halo so the core reads as the live target.
+    const halo = ctx.createRadialGradient(0, 0, r * 0.4, 0, 0, r * 1.5);
+    halo.addColorStop(0, `rgba(155, 225, 93, ${0.25 * pulse})`);
+    halo.addColorStop(1, 'rgba(155, 225, 93, 0)');
+    ctx.fillStyle = halo;
+    ctx.beginPath(); ctx.arc(0, 0, r * 1.5, 0, Math.PI * 2); ctx.fill();
+    // Metal gimbal cage — outer ring + crossed bars + bolt nodes.
+    ctx.strokeStyle = '#8a93a3';
+    ctx.lineWidth = 4.5;
+    ctx.shadowColor = '#aab3c2';
+    ctx.shadowBlur = 4;
+    ctx.beginPath(); ctx.arc(0, 0, r * 0.95, 0, Math.PI * 2); ctx.stroke();
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.95, 0); ctx.lineTo(r * 0.95, 0);
+    ctx.moveTo(0, -r * 0.95); ctx.lineTo(0, r * 0.95);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#aab3c2';
+    for (let i = 0; i < 4; i++) { const ang = i * Math.PI / 2; ctx.beginPath(); ctx.arc(Math.cos(ang) * r * 0.95, Math.sin(ang) * r * 0.95, 3.5, 0, Math.PI * 2); ctx.fill(); }
+    // Reactor glow + faceted crystal (colour + spin scale with instability).
+    const g = ctx.createRadialGradient(0, 0, r * 0.08, 0, 0, r * 0.66);
+    g.addColorStop(0, `rgba(${190 + Math.round(instab * 60)}, 255, ${hot}, ${pulse})`);
+    g.addColorStop(0.6, `rgba(155, 225, 93, ${0.55 * pulse})`);
+    g.addColorStop(1, 'rgba(120, 180, 60, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(0, 0, r * 0.66, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(${190 + Math.round(instab * 60)}, 255, ${hot}, ${0.5 * pulse})`;
+    ctx.strokeStyle = '#eaffc0';
+    ctx.lineWidth = 1.5;
+    ctx.shadowColor = '#9be15d';
+    ctx.shadowBlur = 12 + instab * 14;
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const ang = (Math.PI * 2 * i) / 6 + now * (0.0006 + instab * 0.002);
+      const x = Math.cos(ang) * r * 0.42, y = Math.sin(ang) * r * 0.42;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    if (flash > 0.01) { ctx.shadowBlur = 0; ctx.fillStyle = `rgba(255,255,255,${0.55 * flash})`; ctx.beginPath(); ctx.arc(0, 0, r * 0.7, 0, Math.PI * 2); ctx.fill(); }
+  } else if (a.stationPart === 'arm') {
+    ctx.rotate(a.rot);
+    const L = 150, W = 20;
+    const bg = ctx.createLinearGradient(0, -W / 2, 0, W / 2);
+    bg.addColorStop(0, '#838c9a'); bg.addColorStop(0.5, '#6d7684'); bg.addColorStop(1, '#4a5160');
+    ctx.fillStyle = bg;
+    ctx.strokeStyle = '#2c323d';
+    ctx.lineWidth = 1.5;
+    ctx.fillRect(-L / 2, -W / 2, L, W);
+    ctx.strokeRect(-L / 2, -W / 2, L, W);
+    // Panel seams + ribs.
+    ctx.strokeStyle = '#454d5b';
+    ctx.lineWidth = 1;
+    for (const x of [-60, -24, 12, 48]) { ctx.beginPath(); ctx.moveTo(x, -W / 2); ctx.lineTo(x, W / 2); ctx.stroke(); }
+    ctx.fillStyle = '#9aa3b0';
+    for (const x of [-46, -8, 30]) ctx.fillRect(x - 3, -W / 2 - 6, 7, W + 12);
+    // Green power conduit.
+    ctx.strokeStyle = '#9be15d';
+    ctx.lineWidth = 3;
+    ctx.shadowColor = '#9be15d';
+    ctx.shadowBlur = 8;
+    ctx.beginPath(); ctx.moveTo(-L / 2 + 6, 0); ctx.lineTo(L / 2 - 6, 0); ctx.stroke();
+    if (flash > 0.01) { ctx.shadowBlur = 0; ctx.fillStyle = `rgba(207,224,255,${0.6 * flash})`; ctx.fillRect(-L / 2, -W / 2, L, W); }
+  } else {
+    // emitter pod — glow dims as HP drops (pod breaking).
+    ctx.rotate(a.rot);
+    const r = a.radius;
+    const hpFrac = a.hpMax > 0 ? Math.max(0, Math.min(1, a.hp / a.hpMax)) : 1;
+    const lit = 0.25 + 0.75 * hpFrac;  // dims toward dead
+    const cowl = ctx.createLinearGradient(0, -r * 1.5, 0, r * 1.5);
+    cowl.addColorStop(0, '#838c9a'); cowl.addColorStop(1, '#4a5160');
+    ctx.fillStyle = cowl;
+    ctx.strokeStyle = '#2c323d';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(-r * 1.2, -r * 1.5); ctx.lineTo(r * 0.6, -r);
+    ctx.lineTo(r * 0.6, r); ctx.lineTo(-r * 1.2, r * 1.5);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    const pulse = (0.7 + 0.3 * Math.sin(now * 0.006 + (a.stationSlot ?? 0) * 3)) * lit;
+    const g = ctx.createRadialGradient(r * 0.9, 0, 0, r * 0.9, 0, r * 1.7);
+    g.addColorStop(0, `rgba(255, 200, 120, ${pulse})`);
+    g.addColorStop(1, 'rgba(255, 140, 60, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(r * 0.9, 0, r * 1.7, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(255, 217, 160, ${lit})`;
+    ctx.shadowColor = '#ffb24a';
+    ctx.shadowBlur = 8 * lit;
+    ctx.beginPath(); ctx.arc(r * 0.9, 0, r * 0.7, 0, Math.PI * 2); ctx.fill();
+    if (flash > 0.01) {
+      // Bright white pop over the whole pod so a hit reads unmistakably.
+      ctx.shadowColor = '#ffffff';
+      ctx.shadowBlur = 16 * flash;
+      ctx.fillStyle = `rgba(255,255,255,${0.9 * flash})`;
+      ctx.beginPath(); ctx.arc(r * 0.5, 0, r * 1.9, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
 function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): void {
   if (!a.alive) return;
   const style = getAsteroidStyle(a.type);
@@ -2615,6 +2732,14 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   // The 2D vein treatment below — halo, gold cracks, HP ring — is the
   // vector/shaded fallback used on lower tiers or while the overlay loads.
   if (asteroidTier === 'mesh' && isWebGLOverlayReady() && !a.councilMember && (a.depth ?? 3) === 3) return;
+  // EAGLE STATION rig parts (vector/shaded fallback; the mesh tier returns above
+  // and the overlay paints the 3D rig). Drawn as an ARTIFICIAL structure —
+  // gunmetal beams, a gimbal-caged green reactor core, orange emitter pods — so
+  // it reads as built, not rock, on every tier.
+  if (a.stationPart) {
+    drawStationPart(ctx, a, now);
+    return;
+  }
   // SHADED-tier asteroids get the "tumbling through space" treatment:
   // drop shadow under, camera-fixed rim light + terminator shading on
   // top, neutral outline (no per-type tint). Council members carry
