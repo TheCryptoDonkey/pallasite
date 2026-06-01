@@ -2662,7 +2662,7 @@ function drawStationPart(ctx: CanvasRenderingContext2D, a: Asteroid, now: number
     if (flash > 0.01) { ctx.shadowBlur = 0; ctx.fillStyle = `rgba(255,255,255,${0.55 * flash})`; ctx.beginPath(); ctx.arc(0, 0, r * 0.7, 0, Math.PI * 2); ctx.fill(); }
   } else if (a.stationPart === 'arm') {
     ctx.rotate(a.rot);
-    const L = 112, W = 20;
+    const L = 84, W = 18;
     const bg = ctx.createLinearGradient(0, -W / 2, 0, W / 2);
     bg.addColorStop(0, '#838c9a'); bg.addColorStop(0.5, '#6d7684'); bg.addColorStop(1, '#4a5160');
     ctx.fillStyle = bg;
@@ -2673,9 +2673,9 @@ function drawStationPart(ctx: CanvasRenderingContext2D, a: Asteroid, now: number
     // Panel seams + ribs.
     ctx.strokeStyle = '#454d5b';
     ctx.lineWidth = 1;
-    for (const x of [-44, -16, 10, 36]) { ctx.beginPath(); ctx.moveTo(x, -W / 2); ctx.lineTo(x, W / 2); ctx.stroke(); }
+    for (const x of [-33, -12, 8, 27]) { ctx.beginPath(); ctx.moveTo(x, -W / 2); ctx.lineTo(x, W / 2); ctx.stroke(); }
     ctx.fillStyle = '#9aa3b0';
-    for (const x of [-34, -6, 22]) ctx.fillRect(x - 3, -W / 2 - 6, 7, W + 12);
+    for (const x of [-26, -5, 17]) ctx.fillRect(x - 3, -W / 2 - 6, 7, W + 12);
     // Green power conduit.
     ctx.strokeStyle = '#9be15d';
     ctx.lineWidth = 3;

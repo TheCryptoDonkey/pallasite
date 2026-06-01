@@ -928,7 +928,7 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
       const core = spawnAsteroid('large', s.wave, { x: cx, y: cy }, { x: 0, y: 0 }, 'pallasite', { vein: true });
       core.hp = coreHp;
       core.hpMax = coreHp;
-      core.radius = 52;  // compact core so the tighter arm ring still clears it (portrait fit)
+      core.radius = 38;  // compact core so the tighter arm ring still clears it (portrait fit)
       core.stationPart = 'core';
       s.asteroids.push(core);
       // Three arms (indestructible terrain beams) + emitter pods at their tips,
@@ -937,6 +937,7 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
       for (let i = 0; i < STATION_ARMS; i++) {
         const slot = (Math.PI * 2 * i) / STATION_ARMS - Math.PI / 2;
         const arm = spawnAsteroid('large', s.wave, { x: cx + Math.cos(slot) * STATION_ARM_R, y: cy + Math.sin(slot) * STATION_ARM_R }, { x: 0, y: 0 }, 'iron', { terrain: true });
+        arm.radius = 30;  // slimmer cover so the tighter ring still clears the core (no overlap → no shove)
         arm.stationPart = 'arm';
         arm.stationSlot = slot;
         s.asteroids.push(arm);

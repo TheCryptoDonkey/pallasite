@@ -362,8 +362,8 @@ export const STATION_ARMS = 3;
 // Footprint kept compact so the whole rig fits a portrait phone's narrow strip
 // (positions are sim state, so this can't be orientation-specific — it shrinks
 // for everyone; desktop just reads as a tighter, denser rig).
-export const STATION_ARM_R = 104;               // arm-beam distance from the core (just clears the core rim)
-export const STATION_EMITTER_R = 150;           // emitter-pod distance — the arm tip
+export const STATION_ARM_R = 76;                // arm-beam distance from the core (just clears the core rim)
+export const STATION_EMITTER_R = 112;           // emitter-pod distance — the arm tip
 export const STATION_ROT_SPEED = (Math.PI * 2) / 19000;  // rad/ms — ~19s per rev (slow enough to target parts)
 export const STATION_EMITTER_HP = 4;            // hits to knock out an emitter pod
 // A pod launches a HOMING MISSILE every STATION_MISSILE_MS (one pod per cycle)

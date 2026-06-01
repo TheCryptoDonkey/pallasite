@@ -1915,26 +1915,26 @@ function buildStationArm(): { group: THREE.Group; geometry: THREE.BufferGeometry
   const group = new THREE.Group();
   const metal = new THREE.MeshPhongMaterial(STATION_METAL);
   const dark = new THREE.MeshPhongMaterial(STATION_DARK);
-  const L = 112;  // beam length — bridges the (now compact) core → emitter spoke
-  const beamGeo = new THREE.BoxGeometry(L, 18, 22);
+  const L = 84;  // beam length — bridges the (now compact) core → emitter spoke
+  const beamGeo = new THREE.BoxGeometry(L, 16, 20);
   group.add(newMesh(beamGeo, metal));
   // Underplate (darker, slightly larger) for depth.
-  const under = newMesh(new THREE.BoxGeometry(L, 10, 30), dark); under.position.y = -10; group.add(under);
+  const under = newMesh(new THREE.BoxGeometry(L, 9, 27), dark); under.position.y = -9; group.add(under);
   // Panel ribs.
-  const ribGeo = new THREE.BoxGeometry(6, 30, 32);
-  for (const x of [-39, -15, 10, 34]) { const rib = newMesh(ribGeo, metal); rib.position.x = x; group.add(rib); }
+  const ribGeo = new THREE.BoxGeometry(5, 27, 29);
+  for (const x of [-29, -11, 8, 26]) { const rib = newMesh(ribGeo, metal); rib.position.x = x; group.add(rib); }
   // Pipe run along the top edge.
-  const pipe = newMesh(new THREE.CylinderGeometry(3.2, 3.2, L, 8), dark);
-  pipe.rotation.z = Math.PI / 2; pipe.position.set(0, 8, -11);
+  const pipe = newMesh(new THREE.CylinderGeometry(2.8, 2.8, L, 8), dark);
+  pipe.rotation.z = Math.PI / 2; pipe.position.set(0, 7, -10);
   group.add(pipe);
   // Inner gimbal joint (toward the core) + outer pod housing (toward the tip).
-  group.add((() => { const j = newMesh(new THREE.CylinderGeometry(15, 15, 26, 10), dark); j.rotation.x = Math.PI / 2; j.position.x = -52; return j; })());
-  group.add((() => { const h = newMesh(new THREE.BoxGeometry(26, 30, 30), metal); h.position.x = 51; return h; })());
+  group.add((() => { const j = newMesh(new THREE.CylinderGeometry(13, 13, 23, 10), dark); j.rotation.x = Math.PI / 2; j.position.x = -39; return j; })());
+  group.add((() => { const h = newMesh(new THREE.BoxGeometry(23, 27, 27), metal); h.position.x = 38; return h; })());
   // Emissive conduit + two warning stripes.
   const conduitMat = new THREE.MeshPhongMaterial({ color: 0x0d160a, emissive: STATION_ENERGY, emissiveIntensity: 0.8 });
-  const conduit = newMesh(new THREE.BoxGeometry(L - 8, 4, 8), conduitMat); conduit.position.set(0, 10, 0); group.add(conduit);
+  const conduit = newMesh(new THREE.BoxGeometry(L - 6, 4, 7), conduitMat); conduit.position.set(0, 9, 0); group.add(conduit);
   const stripeMat = new THREE.MeshPhongMaterial({ color: 0x141414, emissive: 0xffb24a, emissiveIntensity: 0.5 });
-  for (const x of [-25, 25]) { const st = newMesh(new THREE.BoxGeometry(5, 19, 23), stripeMat); st.position.x = x; group.add(st); }
+  for (const x of [-19, 19]) { const st = newMesh(new THREE.BoxGeometry(5, 17, 21), stripeMat); st.position.x = x; group.add(st); }
   group.userData.conduitMat = conduitMat;
   return { group, geometry: beamGeo, material: metal };
 }
