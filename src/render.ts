@@ -2662,7 +2662,7 @@ function drawStationPart(ctx: CanvasRenderingContext2D, a: Asteroid, now: number
     if (flash > 0.01) { ctx.shadowBlur = 0; ctx.fillStyle = `rgba(255,255,255,${0.55 * flash})`; ctx.beginPath(); ctx.arc(0, 0, r * 0.7, 0, Math.PI * 2); ctx.fill(); }
   } else if (a.stationPart === 'arm') {
     ctx.rotate(a.rot);
-    const L = 150, W = 20;
+    const L = 112, W = 20;
     const bg = ctx.createLinearGradient(0, -W / 2, 0, W / 2);
     bg.addColorStop(0, '#838c9a'); bg.addColorStop(0.5, '#6d7684'); bg.addColorStop(1, '#4a5160');
     ctx.fillStyle = bg;
@@ -2673,9 +2673,9 @@ function drawStationPart(ctx: CanvasRenderingContext2D, a: Asteroid, now: number
     // Panel seams + ribs.
     ctx.strokeStyle = '#454d5b';
     ctx.lineWidth = 1;
-    for (const x of [-60, -24, 12, 48]) { ctx.beginPath(); ctx.moveTo(x, -W / 2); ctx.lineTo(x, W / 2); ctx.stroke(); }
+    for (const x of [-44, -16, 10, 36]) { ctx.beginPath(); ctx.moveTo(x, -W / 2); ctx.lineTo(x, W / 2); ctx.stroke(); }
     ctx.fillStyle = '#9aa3b0';
-    for (const x of [-46, -8, 30]) ctx.fillRect(x - 3, -W / 2 - 6, 7, W + 12);
+    for (const x of [-34, -6, 22]) ctx.fillRect(x - 3, -W / 2 - 6, 7, W + 12);
     // Green power conduit.
     ctx.strokeStyle = '#9be15d';
     ctx.lineWidth = 3;
@@ -3728,6 +3728,50 @@ function drawBullet(ctx: CanvasRenderingContext2D, b: Bullet, friendly: boolean)
   // render bullets yet (asteroid + ship only in the first MESH cut).
   const bulletShaded = getVisualStyle('bullet') !== 'vector';
   ctx.save();
+
+  // EAGLE STATION homing missile — a sleek metal seeker with a flame trail,
+  // pointing along its velocity so its turns read. Drawn in 2D (all tiers).
+  if (b.homing) {
+    const r = b.radius;
+    // Flame trail (additive).
+    const trail = r * 4.6;
+    const tg = ctx.createLinearGradient(b.pos.x, b.pos.y, b.pos.x - ux * trail, b.pos.y - uy * trail);
+    tg.addColorStop(0, 'rgba(255, 180, 80, 0.85)');
+    tg.addColorStop(0.5, 'rgba(255, 90, 40, 0.4)');
+    tg.addColorStop(1, 'rgba(255, 90, 40, 0)');
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = tg;
+    ctx.lineCap = 'round';
+    ctx.lineWidth = r * 1.1;
+    ctx.beginPath();
+    ctx.moveTo(b.pos.x, b.pos.y);
+    ctx.lineTo(b.pos.x - ux * trail, b.pos.y - uy * trail);
+    ctx.stroke();
+    const halo = ctx.createRadialGradient(b.pos.x, b.pos.y, 0, b.pos.x, b.pos.y, r * 2.2);
+    halo.addColorStop(0, 'rgba(255, 120, 60, 0.5)');
+    halo.addColorStop(1, 'rgba(255, 120, 60, 0)');
+    ctx.fillStyle = halo;
+    ctx.beginPath(); ctx.arc(b.pos.x, b.pos.y, r * 2.2, 0, Math.PI * 2); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    // Dart body pointing along travel.
+    ctx.translate(b.pos.x, b.pos.y);
+    ctx.rotate(Math.atan2(uy, ux));
+    ctx.fillStyle = '#d6d8e0';
+    ctx.strokeStyle = '#2c2f3a';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(r * 1.7, 0);
+    ctx.lineTo(-r * 0.8, -r * 0.75);
+    ctx.lineTo(-r * 1.3, 0);
+    ctx.lineTo(-r * 0.8, r * 0.75);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#ffe0b0';
+    ctx.shadowColor = '#ff6a3a';
+    ctx.shadowBlur = 8;
+    ctx.beginPath(); ctx.arc(r * 0.95, 0, r * 0.5, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    return;
+  }
 
   // Boss-vein retaliation: a tumbling pallasite shard (a chunk torn off the
   // rock), not a fire bolt. Drawn entirely in 2D so it reads the same in

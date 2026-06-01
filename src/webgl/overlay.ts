@@ -1894,17 +1894,17 @@ function buildStationCore(radius: number): { group: THREE.Group; geometry: THREE
   const energyMat = new THREE.MeshPhongMaterial({ color: 0x14240c, emissive: STATION_ENERGY, emissiveIntensity: 1.3, shininess: 140, specular: 0xffffff });
   const crystal = newMesh(coreGeo, energyMat);
   group.add(crystal);
-  // Corona — a soft additive glow shell so the reactor blooms.
+  // Corona — a soft additive glow shell so the reactor blooms. Low-poly sphere
+  // (8×6) to keep mobile fill-rate down; the emissive crystal carries the glow.
   const coronaMat = new THREE.MeshBasicMaterial({ color: STATION_ENERGY, transparent: true, opacity: 0.28, blending: THREE.AdditiveBlending, depthWrite: false });
-  const corona = newMesh(new THREE.SphereGeometry(radius * 0.86, 16, 12), coronaMat);
+  const corona = newMesh(new THREE.SphereGeometry(radius * 0.86, 8, 6), coronaMat);
   group.add(corona);
-  // Reactor light — casts green across the metal arms for real drama.
-  const light = new THREE.PointLight(STATION_ENERGY, 2.0, radius * 6, 2);
-  group.add(light);
+  // NOTE: a green PointLight used to wash the arms here, but a dynamic per-pixel
+  // light tanked iOS GPUs (the whole game slowed to a crawl on wave 17). Dropped
+  // it — the emissive crystal + corona + emissive arm conduits carry the glow.
   group.userData.energyMat = energyMat;
   group.userData.crystal = crystal;
   group.userData.coronaMat = coronaMat;
-  group.userData.coreLight = light;
   return { group, geometry: coreGeo, material: energyMat };
 }
 
@@ -1915,25 +1915,26 @@ function buildStationArm(): { group: THREE.Group; geometry: THREE.BufferGeometry
   const group = new THREE.Group();
   const metal = new THREE.MeshPhongMaterial(STATION_METAL);
   const dark = new THREE.MeshPhongMaterial(STATION_DARK);
-  const beamGeo = new THREE.BoxGeometry(150, 18, 22);
+  const L = 112;  // beam length — bridges the (now compact) core → emitter spoke
+  const beamGeo = new THREE.BoxGeometry(L, 18, 22);
   group.add(newMesh(beamGeo, metal));
   // Underplate (darker, slightly larger) for depth.
-  const under = newMesh(new THREE.BoxGeometry(150, 10, 30), dark); under.position.y = -10; group.add(under);
+  const under = newMesh(new THREE.BoxGeometry(L, 10, 30), dark); under.position.y = -10; group.add(under);
   // Panel ribs.
   const ribGeo = new THREE.BoxGeometry(6, 30, 32);
-  for (const x of [-52, -20, 14, 46]) { const rib = newMesh(ribGeo, metal); rib.position.x = x; group.add(rib); }
+  for (const x of [-39, -15, 10, 34]) { const rib = newMesh(ribGeo, metal); rib.position.x = x; group.add(rib); }
   // Pipe run along the top edge.
-  const pipe = newMesh(new THREE.CylinderGeometry(3.2, 3.2, 150, 8), dark);
+  const pipe = newMesh(new THREE.CylinderGeometry(3.2, 3.2, L, 8), dark);
   pipe.rotation.z = Math.PI / 2; pipe.position.set(0, 8, -11);
   group.add(pipe);
   // Inner gimbal joint (toward the core) + outer pod housing (toward the tip).
-  group.add((() => { const j = newMesh(new THREE.CylinderGeometry(15, 15, 26, 10), dark); j.rotation.x = Math.PI / 2; j.position.x = -70; return j; })());
-  group.add((() => { const h = newMesh(new THREE.BoxGeometry(26, 30, 30), metal); h.position.x = 68; return h; })());
+  group.add((() => { const j = newMesh(new THREE.CylinderGeometry(15, 15, 26, 10), dark); j.rotation.x = Math.PI / 2; j.position.x = -52; return j; })());
+  group.add((() => { const h = newMesh(new THREE.BoxGeometry(26, 30, 30), metal); h.position.x = 51; return h; })());
   // Emissive conduit + two warning stripes.
   const conduitMat = new THREE.MeshPhongMaterial({ color: 0x0d160a, emissive: STATION_ENERGY, emissiveIntensity: 0.8 });
-  const conduit = newMesh(new THREE.BoxGeometry(140, 4, 8), conduitMat); conduit.position.set(0, 10, 0); group.add(conduit);
+  const conduit = newMesh(new THREE.BoxGeometry(L - 8, 4, 8), conduitMat); conduit.position.set(0, 10, 0); group.add(conduit);
   const stripeMat = new THREE.MeshPhongMaterial({ color: 0x141414, emissive: 0xffb24a, emissiveIntensity: 0.5 });
-  for (const x of [-34, 34]) { const st = newMesh(new THREE.BoxGeometry(5, 19, 23), stripeMat); st.position.x = x; group.add(st); }
+  for (const x of [-25, 25]) { const st = newMesh(new THREE.BoxGeometry(5, 19, 23), stripeMat); st.position.x = x; group.add(st); }
   group.userData.conduitMat = conduitMat;
   return { group, geometry: beamGeo, material: metal };
 }
@@ -2113,11 +2114,6 @@ export function renderOverlay(opts: {
         if (corona) {
           corona.opacity = 0.22 + instab * 0.22 + 0.1 * throb + flash * 0.3;
           corona.color.setRGB(0.6 * instab + flash, 0.88, 0.36 + 0.5 * instab);
-        }
-        const light = ud.coreLight as THREE.PointLight | undefined;
-        if (light) {
-          light.intensity = 1.8 + instab * 1.6 + 0.5 * throb + flash * 2;
-          light.color.setRGB(0.6 * instab + flash, 0.88, 0.36 + 0.5 * instab);
         }
       } else {
         // Arms + pods orient along their radial (negated for the Y-flip).
@@ -2473,8 +2469,16 @@ function sweepStale<M extends THREE.Material>(
   for (const [id, entry] of map) {
     if (frame - entry.lastSeenFrame > 30) {
       scene.remove(entry.mesh);
-      entry.geometry.dispose();
-      entry.material.dispose();
+      // entry.geometry/material is only the representative pair. Multi-mesh
+      // GROUPS (station parts, council medallions) own many more — traverse and
+      // dispose every one, or they leak (which on iOS compounds into the
+      // "slows to a stop" GPU-memory creep across W17 retries).
+      entry.mesh.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.geometry) m.geometry.dispose();
+        const mat = m.material;
+        if (mat) (Array.isArray(mat) ? mat : [mat]).forEach((x) => x.dispose());
+      });
       map.delete(id);
     } else {
       entry.mesh.visible = entry.lastSeenFrame === frame;

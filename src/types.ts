@@ -221,6 +221,10 @@ export interface Bullet extends Entity {
   /** True for a boss-vein retaliation projectile — rendered as a spinning
    *  pallasite chunk (a shard of the rock) rather than the default fire bolt. */
   shard?: boolean;
+  /** True for an EAGLE STATION homing missile — steers toward the nearest pilot
+   *  each frame (capped turn) and can be SHOT DOWN by a player bullet. Rendered
+   *  as a glowing seeker with a flame trail. */
+  homing?: boolean;
 }
 
 export type UfoType = 'cruiser' | 'elite' | 'tank' | 'sniper' | 'boss';
@@ -355,15 +359,22 @@ export const VEIN_SHARD_RADIUS = 9;             // chunky — bigger hitbox + re
  *  the drone stream, then break the core. All driven off the sim clock + the
  *  deterministic RNG, so co-op lockstep is unaffected. */
 export const STATION_ARMS = 3;
-export const STATION_ARM_R = 132;               // arm-beam distance from the core (just clears the core rim)
-export const STATION_EMITTER_R = 196;           // emitter-pod distance — the arm tip
+// Footprint kept compact so the whole rig fits a portrait phone's narrow strip
+// (positions are sim state, so this can't be orientation-specific — it shrinks
+// for everyone; desktop just reads as a tighter, denser rig).
+export const STATION_ARM_R = 104;               // arm-beam distance from the core (just clears the core rim)
+export const STATION_EMITTER_R = 150;           // emitter-pod distance — the arm tip
 export const STATION_ROT_SPEED = (Math.PI * 2) / 19000;  // rad/ms — ~19s per rev (slow enough to target parts)
 export const STATION_EMITTER_HP = 4;            // hits to knock out an emitter pod
-// A pod launches a UFO drone every STATION_EMIT_MS (one pod per cycle) up to a
-// live cap, so the threat tracks + shoots + can be shot down. Cadence eases on
-// easy, sharpens on hard.
-export const STATION_EMIT_MS: Record<'easy' | 'normal' | 'hard', number> = { easy: 4200, normal: 3100, hard: 2300 };
-export const STATION_UFO_CAP: Record<'easy' | 'normal' | 'hard', number> = { easy: 2, normal: 3, hard: 4 };
+// A pod launches a HOMING MISSILE every STATION_MISSILE_MS (one pod per cycle)
+// up to a live cap — it tracks the pilot and must be shot down or out-juked.
+// Kill the pods to choke the stream. Cadence eases on easy, sharpens on hard.
+export const STATION_MISSILE_MS: Record<'easy' | 'normal' | 'hard', number> = { easy: 3400, normal: 2500, hard: 1800 };
+export const STATION_MISSILE_CAP: Record<'easy' | 'normal' | 'hard', number> = { easy: 3, normal: 4, hard: 6 };
+export const STATION_MISSILE_SPEED = 165;       // px/s — the turn cap is what makes it dodgeable
+export const STATION_MISSILE_TURN = 1.8;        // rad/s steering cap (out-juke with a hard perpendicular cut)
+export const STATION_MISSILE_TTL_MS = 6000;
+export const STATION_MISSILE_RADIUS = 6;        // chunky enough to shoot down comfortably
 export const STATION_AMBIENT_MS = 5200;         // an ambient rock of a random type drifts through this often
 export const VEIN_SATS_PER_HIT = 0;    // score-only drip; the jackpot is the sat moment
 export const VEIN_SCORE_PER_HIT = 35;

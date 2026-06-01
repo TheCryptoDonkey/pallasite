@@ -38,7 +38,8 @@ import {
   VEIN_HP_BASE, VEIN_HP_EASY_MUL, VEIN_HP_HARD_MUL,
   VEIN_RADIUS_MUL, VEIN_MIN_RADIUS_SCALE, VEIN_SATS_PER_HIT, VEIN_SCORE_PER_HIT,
   VEIN_RETALIATE_PER_N_HITS, VEIN_SHARD_SPEED, VEIN_SHARD_TTL_MS, VEIN_SHARD_RADIUS,
-  STATION_ARMS, STATION_ARM_R, STATION_EMITTER_R, STATION_ROT_SPEED, STATION_EMIT_MS, STATION_UFO_CAP, STATION_AMBIENT_MS, STATION_EMITTER_HP,
+  STATION_ARMS, STATION_ARM_R, STATION_EMITTER_R, STATION_ROT_SPEED, STATION_EMITTER_HP, STATION_AMBIENT_MS,
+  STATION_MISSILE_MS, STATION_MISSILE_CAP, STATION_MISSILE_SPEED, STATION_MISSILE_TURN, STATION_MISSILE_TTL_MS, STATION_MISSILE_RADIUS,
   VEIN_JACKPOT_SATS, VEIN_JACKPOT_SCORE, VEIN_SPAWN_CHANCE,
   VEIN_SPAWN_MIN_WAVE, VEIN_SPAWN_MAX_WAVE, VEIN_SWARM_DELAY_MS,
   VEIN_POWERUP_PER_N_HITS, VEIN_NOVA_DAMAGE,
@@ -927,6 +928,7 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
       const core = spawnAsteroid('large', s.wave, { x: cx, y: cy }, { x: 0, y: 0 }, 'pallasite', { vein: true });
       core.hp = coreHp;
       core.hpMax = coreHp;
+      core.radius = 52;  // compact core so the tighter arm ring still clears it (portrait fit)
       core.stationPart = 'core';
       s.asteroids.push(core);
       // Three arms (indestructible terrain beams) + emitter pods at their tips,
@@ -962,27 +964,42 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
       }
       const d = currentDifficulty();
       const prev = s.elapsed - dt * 1000;
-      // Drone bay: each cycle a live pod LAUNCHES a UFO drone (up to a live cap),
-      // emerging from the pod with a burst. The drones track + shoot + can be
-      // shot down; kill the pods to choke the stream. Stateless boundary test.
-      const emitMs = STATION_EMIT_MS[d];
-      if (Math.floor(s.elapsed / emitMs) > Math.floor(prev / emitMs)) {
-        const drones = s.ufos.filter(u => u.alive && u.type !== 'boss').length;
+      // Each cycle a live pod LAUNCHES a homing missile (up to a live cap) aimed
+      // at the nearest pilot — it then steers (see the enemy-bullet update) and
+      // can be shot down. Kill the pods to choke the stream. Stateless boundary.
+      const missileMs = STATION_MISSILE_MS[d];
+      if (Math.floor(s.elapsed / missileMs) > Math.floor(prev / missileMs)) {
+        const missiles = s.enemyBullets.filter(b => b.alive && b.homing).length;
         const emitters = s.asteroids.filter(a => a.alive && a.stationPart === 'emitter');
-        if (emitters.length > 0 && drones < STATION_UFO_CAP[d]) {
+        if (emitters.length > 0 && missiles < STATION_MISSILE_CAP[d]) {
           const em = emitters[Math.floor(gameRng() * emitters.length)];
-          const dir: 1 | -1 = em.pos.x < cx ? 1 : -1;            // head inward across the field
-          const utype: UfoType = gameRng() < 0.5 ? 'cruiser' : 'sniper';
-          const u = makeEdgeUfo(utype, dir);
-          u.pos.x = em.pos.x; u.pos.y = em.pos.y;                // emerge AT the pod
-          u.vel.y = (cy < em.pos.y ? -1 : 1) * 30;
-          s.ufos.push(u);
-          s.ufoSpawnedThisWave = true;
-          if (drones === 0) audio.ufoSirenStart();
-          em.hitFlash = 1;                                       // bay flares as it launches
+          let tx = cx, ty = WORLD_H, bestSq = Infinity;
+          for (const pl of s.players) {
+            if (!pl.ship.alive) continue;
+            const ddx = pl.ship.pos.x - em.pos.x, ddy = pl.ship.pos.y - em.pos.y;
+            const dSq = ddx * ddx + ddy * ddy;
+            if (dSq < bestSq) { bestSq = dSq; tx = pl.ship.pos.x; ty = pl.ship.pos.y; }
+          }
+          const aim = Math.atan2(ty - em.pos.y, tx - em.pos.x);
+          s.enemyBullets.push({
+            pos: { x: em.pos.x + Math.cos(aim) * em.radius * 1.4, y: em.pos.y + Math.sin(aim) * em.radius * 1.4 },
+            vel: { x: Math.cos(aim) * STATION_MISSILE_SPEED, y: Math.sin(aim) * STATION_MISSILE_SPEED },
+            radius: STATION_MISSILE_RADIUS,
+            alive: true,
+            id: nextStreamEntityId(),
+            ttl: STATION_MISSILE_TTL_MS,
+            pierceLeft: 0,
+            caromHit: false,
+            wrapped: false,
+            hasLanded: false,
+            owner: -1,
+            homing: true,
+          });
+          em.hitFlash = 1;                                       // pod flares as it fires
           spawnShockwave(s, em.pos.x, em.pos.y, em.radius * 1.9, '#ffb24a');
-          spawnParticles(s, em.pos.x, em.pos.y, 16, '#ffb24a', 300, 420);
-          spawnParticles(s, em.pos.x, em.pos.y, 7, '#fff5d8', 360, 300);
+          spawnParticles(s, em.pos.x, em.pos.y, 14, '#ffb24a', 300, 380);
+          spawnParticles(s, em.pos.x, em.pos.y, 6, '#fff5d8', 360, 280);
+          audio.ufoShoot();
         }
       }
       // Ambient debris: a rock of a random type drifts through now and then so
@@ -3841,6 +3858,25 @@ export function updateGame(s: GameState): void {
 
   // ── Enemy bullets (don't wrap — feel different) ──
   for (const b of s.enemyBullets) {
+    // Homing missiles (EAGLE STATION) steer toward the nearest living pilot each
+    // frame, capped turn so they're dodgeable + shoot-downable. Constant speed.
+    if (b.homing) {
+      let tx = 0, ty = 0, bestSq = Infinity, found = false;
+      for (const pl of s.players) {
+        if (!pl.ship.alive) continue;
+        const ddx = pl.ship.pos.x - b.pos.x, ddy = pl.ship.pos.y - b.pos.y;
+        const dSq = ddx * ddx + ddy * ddy;
+        if (dSq < bestSq) { bestSq = dSq; tx = pl.ship.pos.x; ty = pl.ship.pos.y; found = true; }
+      }
+      if (found) {
+        const speed = Math.hypot(b.vel.x, b.vel.y) || 1;
+        const cur = Math.atan2(b.vel.y, b.vel.x);
+        const turn = STATION_MISSILE_TURN * dt;
+        const na = cur + Math.max(-turn, Math.min(turn, angleDelta(cur, Math.atan2(ty - b.pos.y, tx - b.pos.x))));
+        b.vel.x = Math.cos(na) * speed;
+        b.vel.y = Math.sin(na) * speed;
+      }
+    }
     b.pos.x += b.vel.x * dt;
     b.pos.y += b.vel.y * dt;
     b.ttl -= dt * 1000;
@@ -4133,6 +4169,24 @@ export function updateGame(s: GameState): void {
         b.alive = false;
         b.hasLanded = true;
         damageUfo(s, u, s.players[b.owner]);
+        break;
+      }
+    }
+  }
+
+  // ── Collisions: bullets × homing missiles (shoot them down) ──
+  for (const b of s.bullets) {
+    if (!b.alive) continue;
+    for (const m of s.enemyBullets) {
+      if (!m.alive || !m.homing) continue;
+      if (circlesHit(b, m)) {
+        m.alive = false;
+        b.alive = false;
+        b.hasLanded = true;
+        s.players[b.owner].score += 60;
+        spawnParticles(s, m.pos.x, m.pos.y, 12, '#ff7a4a', 240, 360);
+        spawnParticles(s, m.pos.x, m.pos.y, 5, '#ffe6b0', 300, 260);
+        audio.hit();
         break;
       }
     }
