@@ -956,6 +956,11 @@ function maybeSelfHealWebAudioSilence(entry: Loaded, ctx: AudioContext): void {
 
 export function musicSetTrackForState(state: GameState): void {
   if (directMusicOutputActive()) refreshDirectVolumes();
+  // The SOUNDTRACK overlay owns playback while freeplay is active. The game
+  // loop still ticks underneath the overlay; if an album change, STOP, or audio
+  // recovery clears lastAppliedKey, state-driven music would otherwise reclaim
+  // the player a few seconds after a preview starts.
+  if (freeplayActive) return;
   // Title rotation hook — on phase TRANSITION into 'title', pick a
   // fresh track from the idle pool. Done here (in the once-per-frame
   // setter) rather than in trackForState because the latter is called
@@ -1350,7 +1355,9 @@ export function musicPreviewPlay(id: string): void {
       void ctx.resume().catch(() => undefined);
     }
   }
-  crossfadeTo(id, 250);
+  const replayingCurrent = id === currentId;
+  if (replayingCurrent) currentId = null;
+  crossfadeTo(id, replayingCurrent ? 0 : 250);
   // Snap the picked track's gain to full (bypass the 0→trim ramp). The
   // crossfadeTo path is still doing the previous track's fade-out, so the
   // transition isn't an audible cut — but the new track is guaranteed

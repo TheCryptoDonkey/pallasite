@@ -113,6 +113,17 @@ async function clickButton(page: Page, text: string): Promise<void> {
   await page.locator('button').filter({ hasText: text }).first().click({ timeout: 10_000 });
 }
 
+async function openMusicPlayerFromLogo(page: Page): Promise<void> {
+  const logo = page.locator('.title-logo').first();
+  const box = await logo.boundingBox();
+  if (!box) throw new Error('title logo not found for music player long-press');
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await wait(850);
+  await page.mouse.up();
+  await page.getByText('SOUNDTRACK').waitFor({ timeout: 10_000 });
+}
+
 async function main(): Promise<void> {
   const vite = await startVite();
   let browser: Browser | null = null;
@@ -152,6 +163,16 @@ async function main(): Promise<void> {
     await page.mouse.click(640, 360);
     const title = await waitForActiveMusic(page, 'pallasite-idle', 'title');
     console.log(`title music ok: ${title.music.currentId} ready=${title.music.readyState} loaded=${title.music.loadedCount}`);
+
+    await openMusicPlayerFromLogo(page);
+    await page.getByText('SLOW GRAVITY').click({ timeout: 10_000 });
+    const preview = await waitForActiveMusic(page, 'slow-gravity', 'music player preview');
+    await wait(6_500);
+    const sustained = await waitForActiveMusic(page, 'slow-gravity', 'music player sustained preview');
+    console.log(`music player ok: ${sustained.music.currentId} still active after preview hold, loaded=${preview.music.loadedCount}`);
+    await clickButton(page, 'BACK');
+    const backTitle = await waitForActiveMusic(page, 'pallasite-idle', 'music player back');
+    console.log(`music player back ok: ${backTitle.music.currentId}`);
 
     await page.evaluate(() => {
       const poison = (window as unknown as { __pallasiteMusicPoison?: () => unknown }).__pallasiteMusicPoison;

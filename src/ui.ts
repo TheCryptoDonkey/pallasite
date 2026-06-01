@@ -29,6 +29,7 @@ import {
   BRIGHTNESS,
   getBrightness,
   setBrightness,
+  mobileRuntimeActive,
   type VisualCategory,
   type VisualTier,
 } from './visual-style.js';
@@ -7753,16 +7754,15 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
   // →red) plus peak-hold caps with decay echo classic VU meters, strong
   // bloom on bar tops makes the bass kicks read.
   //
-  // Lightweight mode on iOS PWA: the underlying game canvas + WebGL
+  // Lightweight mode on mobile: the underlying game canvas + WebGL
   // overlay are already drawing at 60fps beneath the music player.
   // Stacking a third 60fps canvas with ~200 shadowBlur calls per frame
   // plus sparks plus the analyser tap on top of the AudioContext
-  // decoding music chokes the iOS PWA main thread badly enough that
-  // audio drops out and touch events stop firing. The lightweight
-  // mode drops shadowBlur entirely (the most expensive Safari op),
-  // skips sparks, halves the bar count, and throttles the RAF loop
-  // to ~20fps — the bars and waveform still read.
-  const lightweightViz = isIosSafari() && isStandalone();
+  // decoding music chokes mobile browsers badly enough that audio drops
+  // out and touch events stop firing. The lightweight mode drops shadowBlur
+  // entirely (the most expensive Safari op), skips sparks, halves the bar
+  // count, and throttles the RAF loop to ~20fps.
+  const lightweightViz = mobileRuntimeActive() || (isIosSafari() && isStandalone());
   const vizSticky = el('div', { parent: overlay });
   vizSticky.style.cssText = [
     'position:sticky', 'top:-8px',  // -8px so the rounded corners overlap the overlay padding
@@ -8230,10 +8230,11 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
   diagRow.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;justify-content:center;';
   const resetBtn = el('button', { className: 'menu-btn secondary', parent: diagRow, text: '🔧 RESET AUDIO' });
   onTap(resetBtn, () => {
+    const resumeId = currentTrackId();
     void audio.unlockAudio();
     musicResetElements();
-    musicWarmUpAll(currentTrackId() ?? undefined);
-    musicSetTrackForState(state);
+    musicWarmUpAll(resumeId ?? undefined);
+    if (resumeId) musicPreviewPlay(resumeId);
     musicForceRefresh();
     refreshDiag();
   });

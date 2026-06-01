@@ -4,14 +4,16 @@
  * Strategy:
  *   - HTML: network-first. Fall back to cache if offline so the app still
  *     boots, but always prefer the latest deploy when online.
- *   - Hashed assets / music / backgrounds: cache-first. Vite content-hashes
+ *   - Hashed assets / backgrounds: cache-first. Vite content-hashes
  *     the filenames, so a stale cache only ever serves the file it was
  *     originally cached against — safe forever.
+ *   - Music: network passthrough. Media elements need byte-range responses;
+ *     caching them in the SW can truncate playback on mobile browsers.
  *
  * Bump SW_VERSION below to invalidate all caches on the next visit.
  */
 
-const SW_VERSION = 'v222';
+const SW_VERSION = 'v223';
 const CACHE_HTML = `pallasite-html-${SW_VERSION}`;
 const CACHE_ASSET = `pallasite-asset-${SW_VERSION}`;
 
