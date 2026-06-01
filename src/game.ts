@@ -750,13 +750,14 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
     suppressDefaultMines: true,
   },
 
-  // Wave 8 — The Gauntlet. Mines arm for the first time this wave, so we
-  // make their debut a designed corridor rather than scattered wells: three
-  // pairs narrow into a funnel, wide at the bottom mouth where the player
-  // spawns and tightening to a throat at the top. The walls' overlapping
-  // gravity make the centre the only clean line — and it still bites if you
-  // drift. The prize (a knot of pallasite, flanked by two iron tanks) sits at
-  // the head, so the reward is across the most dangerous ground.
+  // Wave 8 — The Gauntlet. Mines arm for the first time this wave, so we make
+  // their debut a designed corridor: three pairs narrow into a funnel, wide at
+  // the bottom mouth where the player spawns and tightening to a throat at the
+  // top. At the head sits a pallasite VEIN that fires rock-shards back DOWN the
+  // corridor at whoever's shooting it — so camping the mouth and sniping is
+  // out; you have to keep weaving the shards (and two descending iron tanks)
+  // while you chip it down. The walls' overlapping gravity keeps the centre the
+  // only clean lane, and it still bites if you drift.
   8: {
     playerSpawn: { x: WORLD_W / 2, y: WORLD_H - 70 },
     setup(s) {
@@ -772,37 +773,76 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
         s.mines.push(makeMine({ x: cx - r.half, y: r.y }));
         s.mines.push(makeMine({ x: cx + r.half, y: r.y }));
       }
-      // Reward at the head of the funnel — three pallasite drifting slowly
-      // down the throat so they linger in the kill zone, plus two iron tanks
-      // sweeping in so clearing the head is a fight, not a free harvest.
-      for (let i = 0; i < 3; i++) {
-        s.asteroids.push(spawnAsteroid('large', s.wave, { x: cx - 120 + i * 120, y: 110 }, { x: 0, y: 18 }, 'pallasite'));
-      }
-      s.asteroids.push(spawnAsteroid('large', s.wave, { x: cx - 230, y: 80 }, { x: 22, y: 22 }, 'iron'));
-      s.asteroids.push(spawnAsteroid('large', s.wave, { x: cx + 230, y: 80 }, { x: -22, y: 22 }, 'iron'));
+      // The head of the funnel hits back: a vein that spits shards down the
+      // corridor at the firing pilot, so the mouth is no longer a safe snipe
+      // spot. Modest HP — a quick gauntlet boss, not a mega-vein.
+      const d = currentDifficulty();
+      const hp = d === 'easy' ? 40 : d === 'hard' ? 90 : 60;
+      const boss = spawnAsteroid('large', s.wave, { x: cx, y: 120 }, { x: 0, y: 0 }, 'pallasite', { vein: true });
+      boss.hp = hp;
+      boss.hpMax = hp;
+      boss.veinRetaliates = true;
+      s.asteroids.push(boss);
+      // Two iron tanks sweep down the flanks, pressuring the mouth so the
+      // player can't just sit there casually dodging the shards.
+      s.asteroids.push(spawnAsteroid('large', s.wave, { x: cx - 250, y: 70 }, { x: 16, y: 34 }, 'iron'));
+      s.asteroids.push(spawnAsteroid('large', s.wave, { x: cx + 250, y: 70 }, { x: -16, y: 34 }, 'iron'));
     },
     suppressDefaultMines: true,
     suppressDefaultUfos: true,
   },
 
-  // Wave 9 — Gold Rush. The exhale after the Gauntlet, and the curtain-up on
-  // Act II. No mines, no UFOs — a slow ring of pure pallasite drifting gently
-  // inward, raining sats, with one fat vein at the top of the ring as the
-  // jackpot that caps the rush. A deliberate pace-breaking reward beat: the
-  // moment the player remembers fondly right before Act II tightens the screws.
+  // Wave 9 — Gold Rush. Act II's curtain-up, reimagined as a closing cage:
+  // eight pallasite (one the jackpot vein) start wide and rush INWARD, sealing
+  // into a tight ring around the player at dead centre. You're boxed in — the
+  // only way out is to blast a gap — and the wave only clears once the whole
+  // ring is broken, so hyperspacing merely relocates you (the cage is still
+  // there to clear). Raining sats the whole way: greed the jackpot vein, or
+  // punch a quick exit and pick the ring apart from outside.
   9: {
+    playerSpawn: { x: WORLD_W / 2, y: WORLD_H / 2 },  // dead centre — the cage closes on you
     setup(s) {
       const cx = WORLD_W / 2, cy = WORLD_H / 2;
       const N = 8;
+      const d = currentDifficulty();
+      const veinHp = d === 'easy' ? 40 : d === 'hard' ? 90 : 60;
+      const closeSpeed = 52;  // px/s inward — seals in ~2.4s, fast enough to actually trap
       for (let i = 0; i < N; i++) {
-        const ang = (Math.PI * 2 * i) / N - Math.PI / 2;  // slot 0 at the top
-        const r = 250;                                    // clears the centre — player spawns safe
+        const ang = (Math.PI * 2 * i) / N - Math.PI / 2;
+        const r = 250;
         const pos = { x: cx + Math.cos(ang) * r, y: cy + Math.sin(ang) * r };
-        const vel = { x: -Math.cos(ang) * 12, y: -Math.sin(ang) * 12 };  // gentle inward drift
-        const rich = i === 0;  // top slot is the jackpot vein
+        const vel = { x: -Math.cos(ang) * closeSpeed, y: -Math.sin(ang) * closeSpeed };
+        const rich = i === 3;  // a side slot is the jackpot vein
         const a = spawnAsteroid('large', s.wave, pos, vel, 'pallasite', rich ? { vein: true } : undefined);
-        if (rich) { a.hp = 60; a.hpMax = 60; }
+        if (rich) {
+          a.hp = veinHp; a.hpMax = veinHp;
+          a.radius = RADIUS_PER_SIZE.large;  // match the ring so the cage seals even
+        }
         s.asteroids.push(a);
+      }
+    },
+    tick(s) {
+      // Halt each ring rock at the seal radius so the eight lock into a tight
+      // cage instead of piling onto the player at the centre. Only the large
+      // originals are pinned; fragments fly free once a rock is shot. Pure
+      // geometry, no RNG — deterministic for co-op lockstep.
+      const cx = WORLD_W / 2, cy = WORLD_H / 2;
+      // 8 large rocks (r48) just-touch at ~125px; seal a hair beyond so they
+      // never overlap — overlap makes the physics engine fling them apart as
+      // they converge. The ~2px edge gaps are far too small for the ship (r12)
+      // to slip through, so the cage stays solid until you blast a rock out.
+      const SEAL_R = 130;  // ~70px inner bubble for the boxed-in player
+      for (const a of s.asteroids) {
+        if (!a.alive || a.size !== 'large') continue;
+        const dx = a.pos.x - cx, dy = a.pos.y - cy;
+        const dist = Math.hypot(dx, dy);
+        if (dist <= SEAL_R && dist > 0.1) {
+          const k = SEAL_R / dist;  // clamp back out to the ring and stop
+          a.pos.x = cx + dx * k;
+          a.pos.y = cy + dy * k;
+          a.vel.x = 0;
+          a.vel.y = 0;
+        }
       }
     },
     suppressDefaultMines: true,
