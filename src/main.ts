@@ -33,7 +33,7 @@ import { getMusicDebugSnapshot, musicForceRefresh, musicSetTrackForState, preloa
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, applyDisplayMode } from './display.js';
-import { warmWebGLIfPreviouslyEnabled, ensureWebGLForCurrentStyle, getTheme, getAsciiCols, getBitDepth, getBitColour, getVisualStyle, isWebGLOverlayReady, getRenderDprCap, getBrightness } from './visual-style.js';
+import { warmWebGLIfPreviouslyEnabled, ensureWebGLForCurrentStyle, getTheme, getAsciiCols, getBitDepth, getBitColour, getVisualStyle, isWebGLOverlayReady, getRenderDprCap, getBrightness, mobileRuntimeActive } from './visual-style.js';
 import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
 import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges, ensureLocalEdges, EMPTY_INPUT, isPeerActive, setPeerActive } from './netcode.js';
@@ -2713,6 +2713,17 @@ async function boot(): Promise<void> {
   const STREAM_PHASES: ReadonlySet<string> = new Set([
     'playing', 'wavestart', 'warp', 'bonus', 'paused', 'deathreplay',
   ]);
+  const MOBILE_STREAM_FRAME_INTERVAL_MS = 100;
+  const MOBILE_REPLAY_SAMPLE_MS = 100;
+  const DESKTOP_REPLAY_SAMPLE_MS = 33;
+
+  const activeStreamCadenceMs = (slowPhase: boolean): number => {
+    if (slowPhase) return STREAM_FRAME_INTERVAL_PAUSED_MS;
+    return mobileRuntimeActive() ? MOBILE_STREAM_FRAME_INTERVAL_MS : STREAM_FRAME_INTERVAL_MS;
+  };
+
+  const activeReplaySampleMs = (): number =>
+    mobileRuntimeActive() ? MOBILE_REPLAY_SAMPLE_MS : DESKTOP_REPLAY_SAMPLE_MS;
 
   const tickStream = (): void => {
     if (!state.session) return;
@@ -2796,11 +2807,11 @@ async function boot(): Promise<void> {
       const slowPhase = state.phase === 'paused'
         || state.phase === 'warp'
         || state.phase === 'wavestart';
-      const cadence = slowPhase
-        ? STREAM_FRAME_INTERVAL_PAUSED_MS
-        : STREAM_FRAME_INTERVAL_MS;
+      const cadence = activeStreamCadenceMs(slowPhase);
       const lastAt = activeStream ? activeStream.lastFramePublishedAt : lastFrameCapturedAt;
-      if (now - lastAt < cadence - 50) return;
+      const cadenceSlack = Math.min(50, Math.max(4, cadence * 0.1));
+      if (now - lastAt < cadence - cadenceSlack) return;
+      const replaySampleMs = activeReplaySampleMs();
 
       // Asteroid type → single-letter code matching what the stream
       // wire expects. Original four: s/i/c/p. Newer types use chars
@@ -2914,12 +2925,12 @@ async function boot(): Promise<void> {
         events: drainStreamEvents(),
       };
       if (activeStream) {
-        void publishStreamFrame(activeStream, frame);
+        void publishStreamFrame(activeStream, frame, { replaySampleMs });
       } else {
         // No live-stream session (NIP-53 sign failed or in-flight) —
         // still capture into the replay buffer so the kind 30764
         // publish at game-over has frames to ship.
-        captureReplayFrame(frame);
+        captureReplayFrame(frame, { sampleMs: replaySampleMs });
         lastFrameCapturedAt = now;
       }
     }

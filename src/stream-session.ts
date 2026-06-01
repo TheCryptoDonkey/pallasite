@@ -108,6 +108,8 @@ export const STREAM_FRAME_INTERVAL_MS = 16;
  *  per-frame state change. */
 export const STREAM_FRAME_INTERVAL_PAUSED_MS = 1000;
 const PUBLISH_TIMEOUT_MS = 4000;
+const DEFAULT_REPLAY_SAMPLE_MS = 33;
+const MAX_LIVE_WS_BUFFERED_BYTES = 256 * 1024;
 
 export interface StreamFrame {
   /** Frame timestamp (unix ms) — when the client captured this pose. */
@@ -487,16 +489,17 @@ function buildWireWorld(frame: StreamFrame): WireWorld {
 /** Push a frame into the in-memory replay buffer. No session required —
  *  this is the path called when activeStream isn't set (NIP-53 signEvent
  *  failed) so the kind 30764 publish at game-over still has frames.
- *  Subsampled to 30Hz regardless of wire rate. */
-export function captureReplayFrame(frame: StreamFrame): void {
+ *  Subsampled by caller-provided cadence; desktop defaults to 30Hz, mobile
+ *  callers pass a lower rate to keep memory and serialization flat. */
+export function captureReplayFrame(frame: StreamFrame, opts: { sampleMs?: number } = {}): void {
   // Soft cap on buffer length. With Blossom-style single-blob upload
   // at game-over we hold the entire run in memory, but anything past
   // ~16 minutes at 30Hz is almost certainly an idle tab or runaway
   // bug — drop the head so we don't OOM.
   const MAX_BUFFER = 30000;
-  const REPLAY_SAMPLE_MS = 33;
+  const sampleMs = Math.max(DEFAULT_REPLAY_SAMPLE_MS, opts.sampleMs ?? DEFAULT_REPLAY_SAMPLE_MS);
   const last = replayBuffer[replayBuffer.length - 1];
-  if (last && frame.t - last.t < REPLAY_SAMPLE_MS) return;
+  if (last && frame.t - last.t < sampleMs) return;
   const world = buildWireWorld(frame);
   replayBuffer.push({
     t: frame.t,
@@ -517,11 +520,11 @@ export function captureReplayFrame(frame: StreamFrame): void {
 export async function publishStreamFrame(
   session: ActiveStreamSession,
   frame: StreamFrame,
-  opts: { relays?: readonly string[] } = {},
+  opts: { relays?: readonly string[]; replaySampleMs?: number } = {},
 ): Promise<void> {
   // Capture for the end-of-run replay buffer first — same shared helper
   // main.ts uses on the no-activeStream fallback path.
-  captureReplayFrame(frame);
+  captureReplayFrame(frame, { sampleMs: opts.replaySampleMs });
   const world = buildWireWorld(frame);
 
   // Publish to the WebSocket relay — no signing, no Nostr envelope,
@@ -539,7 +542,6 @@ export async function publishStreamFrame(
     paused: frame.paused,
     world,
   });
-  void opts; // relays no longer used — kept for caller compat
   session.lastFramePublishedAt = frame.t;
 }
 
@@ -572,6 +574,7 @@ function publishStreamFrameWs(masterPubkey: string, frame: ReplayFrameRaw): void
     return; // skip this frame — socket isn't open yet
   }
   if (liveWs.ws.readyState !== WebSocket.OPEN) return; // CONNECTING — drop
+  if (liveWs.ws.bufferedAmount > MAX_LIVE_WS_BUFFERED_BYTES) return;
   try {
     liveWs.ws.send(JSON.stringify(frame));
   } catch { /* ignore */ }
