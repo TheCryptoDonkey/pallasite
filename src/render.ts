@@ -20,7 +20,7 @@ import { getAsteroidStyle, shouldReduceMotion } from './a11y.js';
 import { getActiveSkin } from './skins.js';
 import { getMemberImage } from './sanctum-avatars.js';
 import { getFlavour } from './flavour.js';
-import { getVisualStyle, getTheme, isWebGLOverlayReady, callWebGLOverlay } from './visual-style.js';
+import { getVisualStyle, getTheme, isWebGLOverlayReady, callWebGLOverlay, mobilePerformanceGuardActive } from './visual-style.js';
 import { DEPTH_CONFIGS } from './parallax.js';
 import { getRadarVisible, getRadarLandscape, getRadarTilt } from './radar.js';
 import { buildSeamlessStarfield, drawParallaxStarfield } from './starfield.js';
@@ -351,6 +351,15 @@ export interface RenderModeInfo {
 }
 let renderMode: RenderModeInfo = { kind: 'retro', vw: WORLD_W, vh: WORLD_H, dpr: 1, scale: 1, tx: 0, ty: 0, insets: ZERO_INSETS };
 export function setRenderMode(info: RenderModeInfo): void { renderMode = info; }
+
+// Phone-lite render flag, recomputed once per render() frame. canvas
+// `shadowBlur` is the single most expensive 2D op on iOS Safari — a per-shape
+// Gaussian pass — and we set it on numerous, uncapped entities (coins, dust,
+// bullets, particles) that pile up from wave 4 onward. On a phone that glow is
+// not worth the frame budget, so drawers drop the blur when this is set. Cached
+// at frame top because mobilePerformanceGuardActive() parses URLSearchParams,
+// and calling it per-entity would allocate hundreds of times per frame.
+let mobileLite = false;
 
 // ── Portrait follow camera ────────────────────────────────────────────────────
 
@@ -3767,7 +3776,7 @@ function drawBullet(ctx: CanvasRenderingContext2D, b: Bullet, friendly: boolean)
     ctx.closePath(); ctx.fill(); ctx.stroke();
     ctx.fillStyle = '#ffe0b0';
     ctx.shadowColor = '#ff6a3a';
-    ctx.shadowBlur = 8;
+    ctx.shadowBlur = mobileLite ? 0 : 8;
     ctx.beginPath(); ctx.arc(r * 0.95, 0, r * 0.5, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
     return;
@@ -3968,7 +3977,7 @@ function drawCoin(ctx: CanvasRenderingContext2D, c: Coin, now: number): void {
     ctx.lineWidth = 1.6;
     ctx.strokeStyle = '#ffd84a';
     ctx.shadowColor = '#ffd84a';
-    ctx.shadowBlur = 10;
+    ctx.shadowBlur = mobileLite ? 0 : 10;
     ctx.beginPath();
     ctx.arc(0, 0, c.radius, 0, Math.PI * 2);
     ctx.stroke();
@@ -4000,7 +4009,7 @@ function drawCoin(ctx: CanvasRenderingContext2D, c: Coin, now: number): void {
   ctx.lineWidth = 1.4;
   ctx.strokeStyle = dustColour;
   ctx.shadowColor = dustColour;
-  ctx.shadowBlur = 9;
+  ctx.shadowBlur = mobileLite ? 0 : 9;
   drawDustShape(ctx, sourceType, r, alpha);
   ctx.restore();
 }
@@ -5837,6 +5846,9 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // transform, and clearRect under it would miss the device-pixel edges.
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // Recompute the phone-lite flag once for this frame — every drawer below
+  // (incl. drawReplay, dispatched a few lines down) reads the cached value.
+  mobileLite = mobilePerformanceGuardActive();
 
   // Portrait follow camera. In portrait-modern the renderer shows the world at
   // full height and scrolls a horizontal slice to track the ship; everywhere
