@@ -544,6 +544,12 @@ export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequent
       // reads real signal rather than an uninitialised buffer on its first call.
       try { getMusicAnalyser(); } catch { /* ignore */ }
     }
+    if (entry.direct && entry.el.readyState === 0) {
+      // Current-track only. Constructor-level load() caused the first-gesture
+      // warm-up storm; doing it here gives the one track we are about to play
+      // a real network start inside the gesture without touching the album.
+      try { entry.el.preload = 'auto'; entry.el.load(); } catch { /* ignore */ }
+    }
     attemptPlay(0);
     // Fast startup recovery: a MediaElementSource created during the gesture
     // unlock can be born silent on desktop Chrome and stay dead even through a
@@ -802,6 +808,7 @@ function trackForState(state: GameState): string | null {
   if (override) return override;
   switch (state.phase) {
     case 'title':
+      if (getFlavour() === '600bn') return 'the-cult';
       // Pallasite rotates its idle pool (pickTitleTrack); other albums use
       // their single title bed.
       return activeAlbum().titlePool ? currentTitleTrack : activeAlbum().title;
@@ -1059,6 +1066,10 @@ const SHARED_CRITICAL: readonly string[] = [
  *  everything else lazy-loads on first crossfade so we don't ship ~60MB up
  *  front for late-wave beds most players never reach. */
 function criticalTrackIds(): string[] {
+  if (sanctumMusicFocusActive()) {
+    const ids = getFlavour() === '600bn' ? ['the-cult'] : ['pallasite-idle', 'the-cult'];
+    return ids.filter((id) => !!TRACKS[id]);
+  }
   const a = activeAlbum();
   const ids = new Set<string>(SHARED_CRITICAL);
   ids.add(a.title);              // title — first thing the user hears
@@ -1071,6 +1082,14 @@ function criticalTrackIds(): string[] {
 const FLAVOUR_CRITICAL: Record<string, readonly string[]> = {
   '600bn': ['the-cult'],
 };
+
+function sanctumMusicFocusActive(): boolean {
+  try {
+    return getFlavour() === '600bn' || getStoredMode() === 'sanctum' || isSanctumMode();
+  } catch {
+    return false;
+  }
+}
 
 function extraCriticalTrackIds(): string[] {
   const ids = new Set<string>(FLAVOUR_CRITICAL[getFlavour()] ?? []);
@@ -1185,6 +1204,11 @@ function warmOne(id: string, skipId: string | undefined): void {
 }
 
 export function musicWarmUpAll(skipId?: string): void {
+  // 600bn/Sanctum is a one-level mobile-heavy surface. The current track is
+  // replayed below by musicSetTrackForState() under the same gesture; warming
+  // campaign beds here only competes with the-cult.m4a and can leave it stuck
+  // at readyState=0 on iOS.
+  if (sanctumMusicFocusActive()) return;
   // Warm the critical set — title + wave 1 + completion + bonus. Rebuilds clear
   // warmedIds, so recovery still primes fresh elements without replaying the
   // same already-unlocked tracks on every later gesture.

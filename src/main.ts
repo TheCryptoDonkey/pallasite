@@ -1225,6 +1225,7 @@ function shouldWaitForSoloCampaignAssets(): boolean {
     && !defenderMode
     && !urlDeathmatchModeActive()
     && !urlCoopCampaignModeActive()
+    && getFlavour() !== '600bn'
     && getStoredMode() === 'campaign';
 }
 
@@ -1595,7 +1596,7 @@ function musicLooksStalled(): boolean {
   return false;
 }
 
-function recoverMusicFromGesture(force = false): void {
+function recoverMusicFromGesture(force = false, deferStateTrack = false): void {
   if (isControllerSurface()) return;
   const now = performance.now();
   const snap = getMusicDebugSnapshot();
@@ -1613,12 +1614,19 @@ function recoverMusicFromGesture(force = false): void {
   musicResetElements();
   musicWarmUpAll(force && state.phase === 'title' ? 'pallasite-idle' : undefined);
   musicForceRefresh();
-  musicSetTrackForState(state);
+  if (!deferStateTrack) musicSetTrackForState(state);
+}
+
+function shouldDeferFirstUnlockTrack(event: Event): boolean {
+  if (getFlavour() !== '600bn') return false;
+  const target = event.target instanceof Element ? event.target : null;
+  const button = target?.closest('button');
+  return button?.textContent?.includes('ENTER') === true;
 }
 
 const firstUnlock = (event: Event): void => {
   if (!event.isTrusted) return;
-  recoverMusicFromGesture(true);
+  recoverMusicFromGesture(true, shouldDeferFirstUnlockTrack(event));
   window.removeEventListener('pointerup', firstUnlock, true);
   window.removeEventListener('click', firstUnlock, true);
   window.removeEventListener('keyup', firstUnlock, true);
@@ -1645,7 +1653,7 @@ const recoverUnlock = (event: Event): void => {
   // backgrounding, route change, Bluetooth/audio-session interruption, or
   // browser autoplay race, the next tap can rebuild music without making the
   // player dig into the hidden music reset panel.
-  recoverMusicFromGesture(!firstMusicGesturePrimed);
+  recoverMusicFromGesture(!firstMusicGesturePrimed, shouldDeferFirstUnlockTrack(event));
 };
 window.addEventListener('pointerup', recoverUnlock, true);
 window.addEventListener('click', recoverUnlock, true);
