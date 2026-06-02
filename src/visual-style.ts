@@ -79,19 +79,100 @@ export function mobileRuntimeActive(): boolean {
   return uaMobile || ((coarse || touch) && smallViewport);
 }
 
+/** URL escape hatches that force FULL fidelity regardless of device or
+ *  measured performance — `?fullfx=1` / `?highfx=1` for capture/debug, and
+ *  `?mobileLite=0` to disable the phone guard. Both must also veto the runtime
+ *  governor below, or the override wouldn't actually hold under load. */
+function fxOverrideForcesFull(): boolean {
+  return urlFlag('fullfx') === '1' || urlFlag('highfx') === '1' || urlFlag('mobileLite') === '0';
+}
+
 /** Phone-safe presentation guard. Full 3D mesh is part of the mobile
  *  experience, but mesh plus full-frame CRT/post-FX and a high-DPR backing store
  *  pushes iOS Safari into wave-3 judder. This guard is runtime-only and
  *  non-persistent: phones keep mesh, but skip expensive presentation FX and
  *  use a bounded DPR. Add ?fullfx=1 for capture/debug. */
 export function mobilePerformanceGuardActive(): boolean {
-  const fullFx = urlFlag('fullfx') === '1' || urlFlag('highfx') === '1';
-  const forcedOff = urlFlag('mobileLite') === '0';
-  return !fullFx && !forcedOff && mobileRuntimeActive();
+  return !fxOverrideForcesFull() && mobileRuntimeActive();
 }
 
 export function getRenderDprCap(): number {
+  // DPR is fixed at fit/resize time, so key it on the STATIC device guard, not
+  // the runtime governor — flipping the backing-store resolution mid-run would
+  // force a canvas resize and a visible reflow. Phones get the bounded DPR.
   return mobilePerformanceGuardActive() ? 1.5 : 2;
+}
+
+// ── Adaptive performance governor ────────────────────────────────────────────
+//
+// Capability-based, not device-based. UA/viewport sniffing (mobileRuntimeActive)
+// is a guess — it punishes a fast tablet and misses a struggling old laptop on
+// integrated graphics. The governor instead watches real frame time and flips a
+// runtime "shed the expensive cheap-FX" flag on ANY device that can't hold rate.
+//
+// Scope is deliberately cheap-FX-only: it sheds shadowBlur glow and full-frame
+// post-FX (the per-frame costs that scale with on-screen entity count), and
+// NEVER touches the player's chosen mesh/vector art tiers. Runtime-only, never
+// persisted. Hysteresis (different drop/raise thresholds) plus a change cooldown
+// keep it from oscillating; the rolling window itself supplies the "sustained"
+// requirement so a single GC stutter can't trip it.
+const PERF_WINDOW = 90;             // frames sampled (~1.5s at 60Hz)
+const PERF_DROP_MS = 22;            // a frame slower than this (~<45fps) is "slow"
+const PERF_RAISE_MS = 13;           // a frame faster than this (~>75fps) is "fast"
+const PERF_DROP_FRACTION = 0.2;     // ≥20% of the window slow → shed FX
+const PERF_RAISE_FRACTION = 0.9;    // ≥90% of the window fast → restore FX
+const PERF_CHANGE_COOLDOWN_MS = 3000; // min wall-time between state flips
+const PERF_OUTLIER_MS = 500;        // ignore tab-restore / first-frame spikes
+
+const perfFrames: number[] = [];    // ring of recent rAF deltas (ms)
+let perfHead = 0;
+let perfFilled = 0;
+let perfSlowCount = 0;              // frames in window with dt > PERF_DROP_MS
+let perfFastCount = 0;             // frames in window with dt < PERF_RAISE_MS
+let perfMsSinceChange = PERF_CHANGE_COOLDOWN_MS; // allow an early first decision
+let governorShedFx = false;        // the runtime decision the renderer reads
+
+/** Feed one rAF frame delta to the governor. Called once per frame from the
+ *  main loop. O(1) — maintains the slow/fast counts incrementally so there's no
+ *  per-frame sort. */
+export function recordFrameTime(ms: number): void {
+  if (!(ms > 0) || ms > PERF_OUTLIER_MS) return; // drop spikes (backgrounded tab etc.)
+  perfMsSinceChange += ms;
+  // Evict the value leaving the window, fold in the new one.
+  if (perfFilled === PERF_WINDOW) {
+    const old = perfFrames[perfHead];
+    if (old > PERF_DROP_MS) perfSlowCount--;
+    if (old < PERF_RAISE_MS) perfFastCount--;
+  } else {
+    perfFilled++;
+  }
+  perfFrames[perfHead] = ms;
+  if (ms > PERF_DROP_MS) perfSlowCount++;
+  if (ms < PERF_RAISE_MS) perfFastCount++;
+  perfHead = (perfHead + 1) % PERF_WINDOW;
+
+  // Decide only on a full window and outside the cooldown.
+  if (perfFilled < PERF_WINDOW || perfMsSinceChange < PERF_CHANGE_COOLDOWN_MS) return;
+  const slowFrac = perfSlowCount / PERF_WINDOW;
+  const fastFrac = perfFastCount / PERF_WINDOW;
+  if (!governorShedFx && slowFrac >= PERF_DROP_FRACTION) {
+    governorShedFx = true;
+    perfMsSinceChange = 0;
+    console.log(`[perf] sustained slow frames (${Math.round(slowFrac * 100)}% > ${PERF_DROP_MS}ms) — shedding expensive FX`);
+  } else if (governorShedFx && fastFrac >= PERF_RAISE_FRACTION) {
+    governorShedFx = false;
+    perfMsSinceChange = 0;
+    console.log(`[perf] frame budget recovered (${Math.round(fastFrac * 100)}% < ${PERF_RAISE_MS}ms) — restoring FX`);
+  }
+}
+
+/** The unified "render in reduced-FX mode" decision used by the per-frame
+ *  presentation paths (shadowBlur glow, post-FX theme). True when EITHER the
+ *  static phone guard is active OR the runtime governor has shed FX on a
+ *  device measuring as overloaded. The force-full URL flags veto both. */
+export function reducedFxActive(): boolean {
+  if (fxOverrideForcesFull()) return false;
+  return mobileRuntimeActive() || governorShedFx;
 }
 
 /** Coerce an unknown value into a known VisualTier; unknown → 'vector'. */
@@ -196,9 +277,11 @@ export function setAllVisualStyles(tier: VisualTier): void {
 }
 
 /** The active presentation theme: the post-process look (CRT etc.). A
- *  separate axis from the per-category fidelity tiers. */
+ *  separate axis from the per-category fidelity tiers. Suppressed whenever
+ *  reduced-FX is active — the phone guard OR the runtime governor on an
+ *  overloaded device — since full-frame post-FX is one of the costs we shed. */
 export function getTheme(): ThemeId {
-  if (mobilePerformanceGuardActive()) return 'none';
+  if (reducedFxActive()) return 'none';
   return load().theme;
 }
 

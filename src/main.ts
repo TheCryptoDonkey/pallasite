@@ -33,7 +33,7 @@ import { getMusicDebugSnapshot, musicForceRefresh, musicSetTrackForState, preloa
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, applyDisplayMode } from './display.js';
-import { warmWebGLIfPreviouslyEnabled, ensureWebGLForCurrentStyle, getTheme, getAsciiCols, getBitDepth, getBitColour, getVisualStyle, isWebGLOverlayReady, getRenderDprCap, getBrightness, mobileRuntimeActive } from './visual-style.js';
+import { warmWebGLIfPreviouslyEnabled, ensureWebGLForCurrentStyle, getTheme, getAsciiCols, getBitDepth, getBitColour, getVisualStyle, isWebGLOverlayReady, getRenderDprCap, getBrightness, mobileRuntimeActive, recordFrameTime } from './visual-style.js';
 import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
 import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges, ensureLocalEdges, EMPTY_INPUT, isPeerActive, setPeerActive } from './netcode.js';
@@ -1773,6 +1773,10 @@ function loop(now: number): void {
   }
   // Bank real time, clamped, then spend it one fixed sim step at a time.
   const rawFrameDeltaMs = Math.max(0, now - lastFrame);
+  // Feed the adaptive performance governor (capability-based reduced-FX). It
+  // filters outliers and only acts on a sustained signal, so recording every
+  // live frame here is safe and cheap (O(1) per call).
+  recordFrameTime(rawFrameDeltaMs);
   if (shouldRecordPeerPerf()) recordPeerPerfSample(peerPerfRaf, rawFrameDeltaMs);
   const frameDeltaS = Math.min(maxCatchupSteps() * FIXED_STEP_S, rawFrameDeltaMs / 1000);
   stepAccumulator += frameDeltaS;
