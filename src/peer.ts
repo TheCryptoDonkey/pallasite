@@ -227,63 +227,6 @@ export function loopbackPair(oneWayDelayFrames = 3): [LoopbackPeer, LoopbackPeer
   return [a, b];
 }
 
-const PEER_BINARY_MAGIC = 0x50; // 'P'
-const PEER_BINARY_VERSION = 1;
-const PEER_BINARY_FRAME = 1;
-const PEER_BINARY_FRAMES = 2;
-const PEER_BINARY_HASH = 3;
-
-function parsePeerBinaryMessage(data: unknown): PeerMsgIn | null {
-  let buffer: ArrayBuffer;
-  let byteOffset = 0;
-  let byteLength = 0;
-  if (data instanceof ArrayBuffer) {
-    buffer = data;
-    byteLength = data.byteLength;
-  } else if (ArrayBuffer.isView(data)) {
-    buffer = data.buffer as ArrayBuffer;
-    byteOffset = data.byteOffset;
-    byteLength = data.byteLength;
-  } else {
-    return null;
-  }
-  if (byteLength < 9) return null;
-  const bytes = new Uint8Array(buffer, byteOffset, byteLength);
-  if (bytes[0] !== PEER_BINARY_MAGIC || bytes[1] !== PEER_BINARY_VERSION) return null;
-  const kind = bytes[2];
-  const slot = bytes[3];
-  const view = new DataView(buffer, byteOffset, byteLength);
-  const frameOrBase = view.getUint32(4, true);
-  if (kind === PEER_BINARY_FRAME) {
-    if (byteLength !== 12) return null;
-    return { type: 'frame', frame: frameOrBase, slot, input: view.getUint32(8, true) };
-  }
-  if (kind === PEER_BINARY_HASH) {
-    if (byteLength !== 12) return null;
-    return { type: 'hash', frame: frameOrBase, slot, hash: view.getUint32(8, true) };
-  }
-  if (kind === PEER_BINARY_FRAMES) {
-    const count = bytes[8];
-    if (count <= 0 || byteLength !== 9 + count * 4) return null;
-    const inputs: number[] = [];
-    for (let i = 0; i < count; i++) inputs.push(view.getUint32(9 + i * 4, true));
-    return { type: 'frames', slot, base: frameOrBase, inputs };
-  }
-  return null;
-}
-
-function parsePeerMessageData(data: unknown): PeerMsgIn | null {
-  const binary = parsePeerBinaryMessage(data);
-  if (binary) return binary;
-  if (typeof data !== 'string') return null;
-  try {
-    const parsed = JSON.parse(data) as PeerMsgIn;
-    return parsed && typeof parsed.type === 'string' ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
 // ── WebSocketPeer ────────────────────────────────────────────────────────────
 
 /** Real transport against the controller-ws broker (`joystick` repo). The
@@ -980,6 +923,19 @@ function buildPeerWorkerSource(): string {
 export interface SpectatorFrameDelivery { frame: number; slot: PeerSlot; input: number; }
 export interface SpectatorHashDelivery { frame: number; slot: PeerSlot; hash: number; }
 
+type SpectatorWorkerMessage =
+  | { kind: 'open' }
+  | { kind: 'closed' }
+  | { kind: 'error'; error?: string }
+  | { kind: 'peerwatch-ready'; players?: number; aiFill?: boolean; humanSlots?: number[]; takeovers?: HumanSlotTakeover[]; inputDelay?: number }
+  | { kind: 'session-config'; players?: number; aiFill?: boolean; humanSlots?: number[]; takeovers?: HumanSlotTakeover[]; inputDelay?: number }
+  | { kind: 'peer-joined'; slot: PeerSlot }
+  | { kind: 'peer-left'; slot: PeerSlot }
+  | { kind: 'frame'; frame: number; slot: PeerSlot; input: number }
+  | { kind: 'frames'; slot: PeerSlot; base: number; inputs: number[] }
+  | { kind: 'hash'; frame: number; slot: PeerSlot; hash: number }
+  | { kind: 'session-error'; code: string };
+
 /** Read-only peer that drains both slots' frames and hashes from a
  *  `r=peerwatch` broker connection. Used by the M5 spectator surface
  *  (watch.pallasite.app/?spectate=…&peer=…). Never sends; the broker
@@ -992,7 +948,7 @@ export interface SpectatorHashDelivery { frame: number; slot: PeerSlot; hash: nu
  *  - `drainFrames()` / `drainHashes()` return slot-tagged inboxes the
  *    lockstep loop writes into both players' input log positions. */
 export class SpectatorPeer {
-  private ws: WebSocket | null = null;
+  private worker: Worker | null = null;
   private connected = false;
   private slotsBound: boolean[] = [false, false];
   private expectedPlayers = 2;
@@ -1007,37 +963,40 @@ export class SpectatorPeer {
 
   connect(opts: { url: string; session: string; players?: number; aiFill?: boolean }): Promise<void> {
     void opts.session;  // session is encoded into opts.url by the caller
+    this.disconnect();
     this.expectedPlayers = Math.max(2, Math.min(64, Math.floor(opts.players ?? 2)));
     this.slotsBound = new Array(this.expectedPlayers).fill(false);
     this.aiFill = opts.aiFill === true;
     this.humanSlots = null;
     this.humanTakeovers = [];
+    this.negotiatedInputDelay = null;
+    this.frameInbox = [];
+    this.hashInbox = [];
     return new Promise<void>((resolve, reject) => {
       this.resolveConnect = resolve;
       this.rejectConnect = reject;
       try {
-        this.ws = new WebSocket(opts.url);
-        this.ws.binaryType = 'arraybuffer';
+        const workerSource = buildSpectatorWorkerSource();
+        const blob = new Blob([workerSource], { type: 'application/javascript' });
+        const workerUrl = URL.createObjectURL(blob);
+        this.worker = new Worker(workerUrl);
       } catch (e) {
         reject(e instanceof Error ? e : new Error(String(e)));
         return;
       }
-      this.ws.addEventListener('open', () => { this.connected = true; });
-      this.ws.addEventListener('message', (ev: MessageEvent) => this.onMessage(ev));
-      this.ws.addEventListener('close', () => {
-        this.connected = false;
-        this.slotsBound = new Array(this.expectedPlayers).fill(false);
-        if (this.rejectConnect) { this.rejectConnect(new Error('socket closed before all peers joined')); this.resolveConnect = null; this.rejectConnect = null; }
-      });
-      this.ws.addEventListener('error', () => {
-        if (this.rejectConnect) { this.rejectConnect(new Error('socket error')); this.resolveConnect = null; this.rejectConnect = null; }
-      });
+      this.worker.addEventListener('message', this.onWorkerMessage);
+      this.worker.postMessage({ kind: 'connect', url: opts.url });
     });
   }
 
   disconnect(): void {
-    if (this.ws) this.ws.close();
-    this.ws = null;
+    if (this.worker) {
+      const worker = this.worker;
+      try { worker.postMessage({ kind: 'disconnect' }); } catch { /* worker may already be gone */ }
+      try { worker.removeEventListener('message', this.onWorkerMessage); } catch { /* ignore */ }
+      setTimeout(() => { try { worker.terminate(); } catch { /* ignore */ } }, 250);
+    }
+    this.worker = null;
     this.connected = false;
     this.slotsBound = new Array(this.expectedPlayers).fill(false);
   }
@@ -1119,10 +1078,21 @@ export class SpectatorPeer {
     }
   }
 
-  private onMessage(ev: MessageEvent): void {
-    const msg = parsePeerMessageData(ev.data);
-    if (!msg) return;
-    switch (msg.type) {
+  private onWorkerMessage = (ev: MessageEvent<unknown>): void => {
+    const msg = ev.data as SpectatorWorkerMessage;
+    if (!msg || typeof msg.kind !== 'string') return;
+    switch (msg.kind) {
+      case 'open':
+        this.connected = true;
+        return;
+      case 'closed':
+        this.connected = false;
+        this.slotsBound = new Array(this.expectedPlayers).fill(false);
+        if (this.rejectConnect) { this.rejectConnect(new Error('socket closed before all peers joined')); this.resolveConnect = null; this.rejectConnect = null; }
+        return;
+      case 'error':
+        if (this.rejectConnect) { this.rejectConnect(new Error(msg.error || 'socket error')); this.resolveConnect = null; this.rejectConnect = null; }
+        return;
       case 'peerwatch-ready':
         if (msg.players !== undefined) {
           this.expectedPlayers = Math.max(2, Math.min(64, Math.floor(msg.players)));
@@ -1172,5 +1142,129 @@ export class SpectatorPeer {
         this.disconnect();
         return;
     }
-  }
+  };
+}
+
+/** Inline spectator worker. The spectator path receives the same high-rate
+ *  frame/hash traffic as a pilot but does not need to send anything back. Keep
+ *  parsing and socket reads off the render thread so mobile watch pages can
+ *  keep drawing while the broker replays history or fans out live inputs. */
+function buildSpectatorWorkerSource(): string {
+  return `
+    'use strict';
+    var ws = null;
+    var PEER_BINARY_MAGIC = 0x50;
+    var PEER_BINARY_VERSION = 1;
+    var PEER_BINARY_FRAME = 1;
+    var PEER_BINARY_FRAMES = 2;
+    var PEER_BINARY_HASH = 3;
+    function post(m) { self.postMessage(m); }
+    function toInt(value, fallback) {
+      var n = Number(value);
+      return isFinite(n) ? Math.floor(n) : fallback;
+    }
+    function parseBinaryPeerMessage(data) {
+      if (!(data instanceof ArrayBuffer) || data.byteLength < 9) return null;
+      var bytes = new Uint8Array(data);
+      if (bytes[0] !== PEER_BINARY_MAGIC || bytes[1] !== PEER_BINARY_VERSION) return null;
+      var kind = bytes[2];
+      var slot = bytes[3];
+      var view = new DataView(data);
+      var frameOrBase = view.getUint32(4, true);
+      if (kind === PEER_BINARY_FRAME) {
+        if (data.byteLength !== 12) return null;
+        return { type: 'frame', frame: frameOrBase, slot: slot, input: view.getUint32(8, true) };
+      }
+      if (kind === PEER_BINARY_HASH) {
+        if (data.byteLength !== 12) return null;
+        return { type: 'hash', frame: frameOrBase, slot: slot, hash: view.getUint32(8, true) };
+      }
+      if (kind === PEER_BINARY_FRAMES) {
+        var count = bytes[8];
+        if (count <= 0 || data.byteLength !== 9 + count * 4) return null;
+        var inputs = [];
+        for (var i = 0; i < count; i++) inputs.push(view.getUint32(9 + i * 4, true));
+        return { type: 'frames', slot: slot, base: frameOrBase, inputs: inputs };
+      }
+      return null;
+    }
+    function parsePeerMessageData(data) {
+      if (data instanceof ArrayBuffer) return parseBinaryPeerMessage(data);
+      if (typeof data !== 'string') return null;
+      try {
+        var parsed = JSON.parse(data);
+        return parsed && typeof parsed.type === 'string' ? parsed : null;
+      } catch (e) {
+        return null;
+      }
+    }
+    function normaliseInputs(raw) {
+      if (!Array.isArray(raw)) return [];
+      var out = [];
+      for (var i = 0; i < raw.length; i++) out.push((Number(raw[i]) || 0) >>> 0);
+      return out;
+    }
+    function forwardPeerMessage(msg) {
+      if (!msg || typeof msg.type !== 'string') return;
+      if (msg.type === 'peerwatch-ready' || msg.type === 'session-config') {
+        post({
+          kind: msg.type,
+          players: msg.players,
+          aiFill: msg.aiFill === true ? true : undefined,
+          humanSlots: Array.isArray(msg.humanSlots) ? msg.humanSlots : undefined,
+          takeovers: Array.isArray(msg.takeovers) ? msg.takeovers : undefined,
+          inputDelay: typeof msg.inputDelay === 'number' ? msg.inputDelay : undefined
+        });
+        return;
+      }
+      if (msg.type === 'peer-joined') {
+        post({ kind: 'peer-joined', slot: toInt(msg.slot, -1) });
+        return;
+      }
+      if (msg.type === 'peer-left') {
+        post({ kind: 'peer-left', slot: toInt(msg.slot, -1) });
+        return;
+      }
+      if (msg.type === 'frame') {
+        post({ kind: 'frame', frame: toInt(msg.frame, -1), slot: toInt(msg.slot, -1), input: (Number(msg.input) || 0) >>> 0 });
+        return;
+      }
+      if (msg.type === 'frames') {
+        post({ kind: 'frames', slot: toInt(msg.slot, -1), base: toInt(msg.base, -1), inputs: normaliseInputs(msg.inputs) });
+        return;
+      }
+      if (msg.type === 'hash') {
+        post({ kind: 'hash', frame: toInt(msg.frame, -1), slot: toInt(msg.slot, -1), hash: (Number(msg.hash) || 0) >>> 0 });
+        return;
+      }
+      if (msg.type === 'session-error') {
+        post({ kind: 'session-error', code: typeof msg.code === 'string' ? msg.code : 'unknown' });
+      }
+    }
+    function closeSocket() {
+      if (!ws) return;
+      var current = ws;
+      ws = null;
+      try { current.close(); } catch (e) {}
+    }
+    self.addEventListener('message', function (ev) {
+      var msg = ev.data || {};
+      if (msg.kind === 'connect') {
+        closeSocket();
+        try {
+          ws = new WebSocket(String(msg.url || ''));
+          ws.binaryType = 'arraybuffer';
+        } catch (e) {
+          post({ kind: 'error', error: e && e.message ? e.message : String(e) });
+          return;
+        }
+        ws.addEventListener('open', function () { post({ kind: 'open' }); });
+        ws.addEventListener('message', function (event) { forwardPeerMessage(parsePeerMessageData(event.data)); });
+        ws.addEventListener('close', function () { post({ kind: 'closed' }); });
+        ws.addEventListener('error', function () { post({ kind: 'error', error: 'socket error' }); });
+      } else if (msg.kind === 'disconnect') {
+        closeSocket();
+      }
+    });
+  `;
 }

@@ -262,10 +262,10 @@ function canPlayOpus(): boolean {
 
 /** Pick the playable URL for a track. The wave / sting set is published
  *  as .opus (smaller files, ~50% bandwidth of equivalent-bitrate AAC).
- *  Safari on older macOS has no Opus codec at all — we ship matching
- *  .m4a (AAC) versions of every track and swap the extension here for
- *  any browser that says it can't play Opus. */
+ *  Mobile Safari can report Opus support too optimistically and then fail
+ *  the element load/play path, so phones use the shipped AAC copies. */
 function trackUrlFor(track: Track): string {
+  if (mobileRuntimeActive()) return track.src.replace(/\.opus$/, '.m4a');
   if (canPlayOpus()) return track.src;
   return track.src.replace(/\.opus$/, '.m4a');
 }

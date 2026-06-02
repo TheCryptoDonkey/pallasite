@@ -54,7 +54,7 @@ const state: GameState = makeInitialState();
 
 function modeUsesWaveStart(): boolean {
   const mode = currentMode();
-  return getFlavour() !== '600bn' && mode !== 'arena' && mode !== 'deathmatch';
+  return getFlavour() !== '600bn' && mode !== 'sanctum' && mode !== 'arena' && mode !== 'deathmatch';
 }
 
 function boundedPlayerCount(raw: string | null, fallback: number, min = 2, max = 64): number {
@@ -1277,9 +1277,15 @@ async function startRunFromAction(): Promise<void> {
   if (startActionInFlight) return;
   startActionInFlight = true;
   try {
-    const readiness: Promise<unknown>[] = [ensureWebGLForCurrentStyle()];
+    const readiness: Promise<unknown>[] = [];
+    if (!mobileRuntimeActive()) readiness.push(ensureWebGLForCurrentStyle());
     if (shouldWaitForSoloCampaignAssets()) {
       readiness.push(warmCriticalCampaignAssets());
+    }
+    if (readiness.length === 0) {
+      startRunNow();
+      scheduleMeshWarmupAfterStart();
+      return;
     }
     await Promise.all(readiness);
     startRunNow();
