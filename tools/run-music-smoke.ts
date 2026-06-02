@@ -124,6 +124,25 @@ async function openMusicPlayerFromLogo(page: Page): Promise<void> {
   await page.getByText('SOUNDTRACK').waitFor({ timeout: 10_000 });
 }
 
+function logBrowserErrors(page: Page): void {
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') process.stderr.write(`[browser:${msg.type()}] ${msg.text()}\n`);
+  });
+}
+
+async function installMusicSmokeSession(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const s = (window as unknown as { __pallasiteState?: { session?: unknown } }).__pallasiteState;
+    if (!s) throw new Error('missing pallasite state');
+    s.session = {
+      pubkey: '0'.repeat(64),
+      displayName: 'MUSIC QA',
+      method: 'guest',
+      signer: { capabilities: { canSignEvents: false } },
+    };
+  });
+}
+
 async function main(): Promise<void> {
   const vite = await startVite();
   let browser: Browser | null = null;
@@ -155,9 +174,7 @@ async function main(): Promise<void> {
       }));
     });
     const page = await context.newPage();
-    page.on('console', (msg) => {
-      if (msg.type() === 'error') process.stderr.write(`[browser:${msg.type()}] ${msg.text()}\n`);
-    });
+    logBrowserErrors(page);
     await page.goto(`${VITE_BASE}/?musicSmoke=1&dbg=audio`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => typeof (window as unknown as { __pallasiteMusicProbe?: unknown }).__pallasiteMusicProbe === 'function');
     await page.mouse.click(640, 360);
@@ -187,16 +204,7 @@ async function main(): Promise<void> {
     const recovered = await waitForActiveMusic(page, 'pallasite-idle', 'gesture recovery');
     console.log(`gesture recovery ok: ctx=${recovered.audioContext} paused=${recovered.music.paused} ready=${recovered.music.readyState}`);
 
-    await page.evaluate(() => {
-      const s = (window as unknown as { __pallasiteState?: { session?: unknown } }).__pallasiteState;
-      if (!s) throw new Error('missing pallasite state');
-      s.session = {
-        pubkey: '0'.repeat(64),
-        displayName: 'MUSIC QA',
-        method: 'guest',
-        signer: { capabilities: { canSignEvents: false } },
-      };
-    });
+    await installMusicSmokeSession(page);
     await clickButton(page, 'PLAY');
     await clickButton(page, 'CAMPAIGN');
     await clickButton(page, 'IGNITE');
@@ -206,6 +214,28 @@ async function main(): Promise<void> {
     }, undefined, { timeout: 20_000 });
     const wave = await waitForActiveMusic(page, 'slow-orbit', 'wave 1');
     console.log(`wave music ok: ${wave.music.currentId} phase=${wave.phase} ready=${wave.music.readyState} audible=${wave.music.audibleIds.join(',')}`);
+
+    await page.close();
+
+    const sanctumPage = await context.newPage();
+    logBrowserErrors(sanctumPage);
+    await sanctumPage.goto(`${VITE_BASE}/?musicSmoke=1&dbg=audio`, { waitUntil: 'domcontentloaded' });
+    await sanctumPage.waitForFunction(() => typeof (window as unknown as { __pallasiteMusicProbe?: unknown }).__pallasiteMusicProbe === 'function');
+    await sanctumPage.mouse.click(640, 360);
+    const sanctumTitle = await waitForActiveMusic(sanctumPage, 'pallasite-idle', 'sanctum title');
+    console.log(`sanctum title music ok: ${sanctumTitle.music.currentId}`);
+
+    await installMusicSmokeSession(sanctumPage);
+    await clickButton(sanctumPage, 'PLAY');
+    await clickButton(sanctumPage, 'SANCTUM');
+    await clickButton(sanctumPage, 'IGNITE');
+    await sanctumPage.waitForFunction(() => {
+      const p = (window as unknown as { __pallasiteMusicProbe?: () => MusicProbe }).__pallasiteMusicProbe?.();
+      return p?.phase === 'wavestart' || p?.phase === 'playing' || p?.phase === 'sanctum';
+    }, undefined, { timeout: 20_000 });
+    const sanctumWave = await waitForActiveMusic(sanctumPage, 'the-cult', 'sanctum wave 1');
+    console.log(`sanctum wave music ok: ${sanctumWave.music.currentId} phase=${sanctumWave.phase} ready=${sanctumWave.music.readyState} audible=${sanctumWave.music.audibleIds.join(',')}`);
+    await sanctumPage.close();
   } finally {
     if (browser) await browser.close().catch(() => undefined);
     killGroup(vite);
