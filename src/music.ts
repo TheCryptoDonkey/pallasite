@@ -861,6 +861,11 @@ function trackForState(state: GameState): string | null {
 let lastPhase: string | null = null;
 let lastVerifyMs = 0;
 const VERIFY_INTERVAL_MS = 1000;
+const READY_ZERO_LOADING_GRACE_MS = 8_000;
+const READY_ZERO_FORCE_RETRY_MS = 3_000;
+let readyZeroTrack: string | null = null;
+let readyZeroSinceMs = 0;
+let readyZeroLastForceMs = 0;
 
 // Web Audio silence self-heal (desktop). If a track is "playing" via the Web
 // Audio path (element advancing, context running) but the analyser tapped off
@@ -1019,13 +1024,36 @@ export function musicSetTrackForState(state: GameState): void {
           // thinks it's playing (paused=false) but readyState=0 means no
           // network buffer arrived — the original verify pass only retried
           // on paused=true so this silent failure mode slipped through.
-          // Force an explicit load() then a fresh play() to break the stall.
+          // If the browser is already loading, do not call load() every verify
+          // tick: that aborts the in-flight range request and can permanently
+          // starve a 4MB .m4a on production/mobile networks.
+          if (readyZeroTrack !== currentId) {
+            readyZeroTrack = currentId;
+            readyZeroSinceMs = nowMs;
+            readyZeroLastForceMs = 0;
+          }
+          const loading = entry.el.networkState === 2;
+          if (loading && nowMs - readyZeroSinceMs < READY_ZERO_LOADING_GRACE_MS) {
+            logMusic(`verify: ${currentId} readyState=0 while network loading — waiting`);
+            return;
+          }
+          if (nowMs - readyZeroLastForceMs < READY_ZERO_FORCE_RETRY_MS) return;
+          readyZeroLastForceMs = nowMs;
           logMusic(`verify: ${currentId} readyState=0 while 'playing' — forcing load()+play()`);
           try { entry.el.load(); } catch { /* ignore */ }
           try { void entry.el.play().catch(() => undefined); } catch { /* ignore */ }
         } else if (!entry.direct) {
+          if (readyZeroTrack === currentId) {
+            readyZeroTrack = null;
+            readyZeroSinceMs = 0;
+            readyZeroLastForceMs = 0;
+          }
           // Element genuinely playing via Web Audio — make sure it's audible.
           maybeSelfHealWebAudioSilence(entry, ctx);
+        } else if (readyZeroTrack === currentId) {
+          readyZeroTrack = null;
+          readyZeroSinceMs = 0;
+          readyZeroLastForceMs = 0;
         }
       }
     }
@@ -1144,6 +1172,9 @@ export function musicResetElements(): void {
   warmedIds.clear();
   currentId = null;
   lastAppliedKey = '';
+  readyZeroTrack = null;
+  readyZeroSinceMs = 0;
+  readyZeroLastForceMs = 0;
 }
 
 /**
