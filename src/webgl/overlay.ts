@@ -29,6 +29,19 @@ import { getMemberImage } from '../sanctum-avatars.js';
 import { getFlavour } from '../flavour.js';
 import { DEPTH_CONFIGS } from '../parallax.js';
 
+function mobileOverlayRuntime(): boolean {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+  const uaMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  const touch = (navigator.maxTouchPoints ?? 0) > 0;
+  const coarse = (() => {
+    try { return window.matchMedia?.('(pointer: coarse)').matches === true; }
+    catch { return false; }
+  })();
+  const smallViewport = Math.min(window.innerWidth || 9999, window.innerHeight || 9999) <= 640
+    || Math.max(window.innerWidth || 0, window.innerHeight || 0) <= 960;
+  return uaMobile || ((coarse || touch) && smallViewport);
+}
+
 interface OverlayHandle {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
@@ -525,13 +538,15 @@ export function ensureWebGLOverlay(): Promise<OverlayHandle> {
   loading = (async () => {
     const canvas = document.getElementById('game3d') as HTMLCanvasElement | null;
     if (!canvas) throw new Error('WebGL overlay canvas missing');
+    const mobile = mobileOverlayRuntime();
     const renderer = new THREE.WebGLRenderer({
       canvas,
       alpha: true,
-      antialias: true,
-      // Kept readable so a presentation theme can composite the overlay
-      // down into the 2D canvas (see main.ts applyThemeFrame).
-      preserveDrawingBuffer: true,
+      antialias: !mobile,
+      // Desktop presentation themes can composite the overlay into the 2D
+      // canvas (see main.ts applyThemeFrame). Mobile forces theme='none', so
+      // avoid the preserved-buffer/readback cost on iOS/Android GPUs.
+      preserveDrawingBuffer: !mobile,
     });
     renderer.setClearColor(0x000000, 0);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
