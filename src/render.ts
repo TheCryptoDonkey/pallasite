@@ -2741,7 +2741,7 @@ function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): 
   // MESH-tier veins render as a chunky 3D pallasite vault in the WebGL overlay.
   // The 2D vein treatment below — halo, gold cracks, HP ring — is the
   // vector/shaded fallback used on lower tiers or while the overlay loads.
-  if (asteroidTier === 'mesh' && isWebGLOverlayReady() && !a.councilMember && (a.depth ?? 3) === 3) return;
+  if (asteroidTier === 'mesh' && isWebGLOverlayReady() && (a.depth ?? 3) === 3) return;
   // EAGLE STATION rig parts (vector/shaded fallback; the mesh tier returns above
   // and the overlay paints the 3D rig). Drawn as an ARTIFICIAL structure —
   // gunmetal beams, a gimbal-caged green reactor core, orange emitter pods — so
@@ -5335,9 +5335,9 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
   // owns those rocks/UFOs), so handing the overlay empty arrays left the
   // death replay with no asteroids or UFOs at all — only the 2D-forced faux
   // ship survived. Mirror the live render() wiring: asteroids ride the
-  // asteroid tier, UFOs ride ship-OR-asteroid mesh, and the same eligibility
-  // filter (no council members, foreground depth only). No follow camera in
-  // the death cinematic, so there's no meshVisible cull and wrapXs stays [0].
+  // asteroid tier, UFOs ride ship-OR-asteroid mesh, and the same foreground
+  // depth filter. No follow camera in the death cinematic, so there's no
+  // meshVisible cull and wrapXs stays [0].
   // Ships stay empty here — the faux death-ship is drawn 2D below
   // (forceCanvas) so the explosion hand-off matches killShip exactly.
   if (isWebGLOverlayReady()) {
@@ -5345,7 +5345,7 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
     const ufosMesh = getVisualStyle('ship') === 'mesh' || asteroidTier === 'mesh';
     callWebGLOverlay({
       asteroids: asteroidTier === 'mesh'
-        ? snap.asteroids.filter((a) => !a.councilMember && (a.depth ?? 3) === 3)
+        ? snap.asteroids.filter((a) => (a.depth ?? 3) === 3)
         : [],
       ufos: ufosMesh ? snap.ufos : [],
       powerups: [],
@@ -6170,7 +6170,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       return x + r >= left && x - r <= right && y + r >= top && y - r <= bottom;
     };
     const meshAsteroids = !holding && asteroidTier === 'mesh'
-      ? state.asteroids.filter((a) => !a.councilMember && (a.depth ?? 3) === 3 && meshVisible(a.pos.x, a.pos.y, a.radius))
+      ? state.asteroids.filter((a) => (a.depth ?? 3) === 3 && meshVisible(a.pos.x, a.pos.y, a.radius))
       : [];
     const meshUfos = !holding && ufosMesh
       ? state.ufos.filter((u) => meshVisible(u.pos.x, u.pos.y, u.radius))

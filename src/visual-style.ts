@@ -19,6 +19,8 @@
 
 import type { Asteroid, PowerUp, Ship, Ufo } from './types.js';
 import { ASCII_COLS, BIT_DEPTH, coerceThemeId, type ThemeId } from './postfx/index.js';
+import { getFlavour } from './flavour.js';
+import { getStoredMode, isSanctumMode } from './mode.js';
 
 export type VisualTier = 'vector' | 'shaded' | 'mesh';
 export type VisualCategory = 'asteroid' | 'ship' | 'bullet' | 'particle';
@@ -88,9 +90,10 @@ function fxOverrideForcesFull(): boolean {
 }
 
 /** Phone-safe presentation guard. iOS Safari cannot reliably hold frame
- *  budget with the WebGL mesh overlay plus the game canvas, so phones use
- *  the shaded canvas path by default and skip expensive presentation FX. The
- *  cap is runtime-only and non-persistent; add ?fullfx=1 for capture/debug. */
+ *  budget with the WebGL mesh overlay plus the game canvas in the general
+ *  campaign, so phones use the shaded canvas path by default and skip
+ *  expensive presentation FX. Sanctum is the exception: its textured fillers
+ *  and council medallions are cheaper and clearer on the overlay path. */
 export function mobilePerformanceGuardActive(): boolean {
   return !fxOverrideForcesFull() && mobileRuntimeActive();
 }
@@ -176,8 +179,16 @@ export function reducedFxActive(): boolean {
 
 function effectiveTier(cat: VisualCategory, tier: VisualTier): VisualTier {
   void cat;
-  if (tier === 'mesh' && mobilePerformanceGuardActive()) return 'shaded';
+  if (tier === 'mesh' && mobilePerformanceGuardActive() && !sanctumMeshAllowed()) return 'shaded';
   return tier;
+}
+
+function sanctumMeshAllowed(): boolean {
+  try {
+    return getFlavour() === '600bn' || getStoredMode() === 'sanctum' || isSanctumMode();
+  } catch {
+    return false;
+  }
 }
 
 /** Coerce an unknown value into a known VisualTier; unknown → 'vector'. */
@@ -278,7 +289,7 @@ export function setVisualStyle(cat: VisualCategory, tier: VisualTier): void {
  *  settings panel. */
 export function setAllVisualStyles(tier: VisualTier): void {
   save({ ...load(), asteroid: tier, ship: tier, bullet: tier, particle: tier });
-  if (!mobilePerformanceGuardActive() && tier === 'mesh') void warmWebGL();
+  if (VISUAL_CATEGORIES.some((cat) => effectiveTier(cat, tier) === 'mesh')) void warmWebGL();
 }
 
 /** The active presentation theme: the post-process look (CRT etc.). A
