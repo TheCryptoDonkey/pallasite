@@ -14,7 +14,7 @@ import { getMasterVolume, getMusicAnalyser, getMusicDestination, getMusicDuckFac
 import type { GameState } from './types.js';
 import { FINAL_WAVE } from './types.js';
 import { getFlavour } from './flavour.js';
-import { isSanctumMode } from './mode.js';
+import { getStoredMode, isSanctumMode } from './mode.js';
 import { mobileRuntimeActive } from './visual-style.js';
 
 /** Override hook for flavour-specific wave music. When 600bn flavour
@@ -1024,17 +1024,18 @@ export function musicSetTrackForState(state: GameState): void {
     }
   }
 
-  // Pause ducks rather than switches; key the memo on phase+wave so we still
-  // crossfade correctly when the wave changes during a paused mid-game.
+  // Pause ducks rather than switches; include the resolved track in the memo
+  // so same phase+wave transitions between modes (campaign wave 1 vs SANCTUM
+  // wave 1) still re-resolve and crossfade correctly.
   const isPaused = state.phase === 'paused';
-  const key = `${state.phase}|${state.wave}`;
+  const id = trackForState(state);
+  const key = `${state.phase}|${state.wave}|${state.warpTargetWave ?? ''}|${id ?? 'silence'}`;
   if (key === lastAppliedKey) return;
   lastAppliedKey = key;
   if (isPaused) {
     // Don't change the track — the underlying playing track keeps going, just ducked.
     return;
   }
-  const id = trackForState(state);
   const profile = id ? PHASE_FADE_PROFILE[id] : undefined;
   crossfadeTo(id, profile?.fadeMs, profile?.sequentialGapMs);
 }
@@ -1066,20 +1067,26 @@ function criticalTrackIds(): string[] {
   ids.add(a.bonus ?? 'hyperspace'); // 1.3s window on the W9→W10 detour
   return [...ids].filter((id) => !!TRACKS[id]);
 }
-/** Flavour-gated additions to the critical preload set. The 600bn Sanctum
- *  has a single bed (the-cult) that needs to land instantly when the player
- *  taps PLAY — no fallback track to fade in behind it. Only preloaded on
- *  600b.pallasite.app so the main game doesn't ship the 3MB file. */
+/** Flavour-gated additions to the critical preload set. */
 const FLAVOUR_CRITICAL: Record<string, readonly string[]> = {
   '600bn': ['the-cult'],
 };
+
+function extraCriticalTrackIds(): string[] {
+  const ids = new Set<string>(FLAVOUR_CRITICAL[getFlavour()] ?? []);
+  // Explicit SANCTUM mode on the main host needs the same gesture-bound warm
+  // as the 600bn flavour. Reading stored mode covers the title screen before
+  // startGame locks the active run mode.
+  if (getStoredMode() === 'sanctum' || isSanctumMode()) ids.add('the-cult');
+  return [...ids].filter((id) => !!TRACKS[id]);
+}
+
 export function preloadAllTracks(): void {
   for (const id of criticalTrackIds()) {
     const track = TRACKS[id];
     if (track) try { load(track); } catch { /* ignore */ }
   }
-  const extra = FLAVOUR_CRITICAL[getFlavour()] ?? [];
-  for (const id of extra) {
+  for (const id of extraCriticalTrackIds()) {
     const track = TRACKS[id];
     if (track) try { load(track); } catch { /* ignore */ }
   }
@@ -1178,11 +1185,10 @@ function warmOne(id: string, skipId: string | undefined): void {
 }
 
 export function musicWarmUpAll(skipId?: string): void {
-  const flavourCritical = FLAVOUR_CRITICAL[getFlavour()] ?? [];
   // Warm the critical set — title + wave 1 + completion + bonus. Rebuilds clear
   // warmedIds, so recovery still primes fresh elements without replaying the
   // same already-unlocked tracks on every later gesture.
-  for (const id of new Set<string>([...criticalTrackIds(), ...flavourCritical])) {
+  for (const id of new Set<string>([...criticalTrackIds(), ...extraCriticalTrackIds()])) {
     if (!warmedIds.has(id)) warmOne(id, skipId);
   }
   // Then unlock the REST of the active album's wave beds a few at a time, in
