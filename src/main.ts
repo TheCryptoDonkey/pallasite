@@ -1693,6 +1693,22 @@ document.addEventListener('resume', hardResume);
 // time and spends it one whole step at a time. MAX_CATCHUP_STEPS caps a
 // single frame's catch-up so a backgrounded tab can't trigger a step storm.
 const MAX_CATCHUP_STEPS = 5;
+// Catch-up only needs the full 5 steps under peer lockstep, where each client
+// MUST reach the agreed sim frame to stay byte-identical with its partner. In
+// solo there is no peer to converge with, so deep multi-step catch-up mostly
+// burns CPU running updateGame N× on a frame that's already over budget. We
+// cap it at 2 off-peer: that still holds full real-time speed down to 30fps
+// (a 33ms frame banks exactly 2 steps), and below that the sim degrades a
+// little slow rather than running 3–5 steps to stay wall-clock-accurate at a
+// frame rate the player can't see anyway. NOTE the floor of 2, not 1 — a cap
+// of 1 would slam the sim to half-speed the instant the device dropped under
+// 60fps, which is worse than judder for a twitch shooter. This only diverges
+// from MAX_CATCHUP_STEPS once frames exceed ~33ms, and it only helps if the
+// SIM (updateGame) is the bottleneck — if RENDER (mesh tier on mobile) is the
+// cost, the real fix is cutting render load, not this cap.
+function maxCatchupSteps(): number {
+  return isPeerActive() ? MAX_CATCHUP_STEPS : 2;
+}
 const FAST_CRT_PLAYER_THRESHOLD = 32;
 let lastFrame = performance.now();
 let stepAccumulator = 0;
@@ -1758,7 +1774,7 @@ function loop(now: number): void {
   // Bank real time, clamped, then spend it one fixed sim step at a time.
   const rawFrameDeltaMs = Math.max(0, now - lastFrame);
   if (shouldRecordPeerPerf()) recordPeerPerfSample(peerPerfRaf, rawFrameDeltaMs);
-  const frameDeltaS = Math.min(MAX_CATCHUP_STEPS * FIXED_STEP_S, rawFrameDeltaMs / 1000);
+  const frameDeltaS = Math.min(maxCatchupSteps() * FIXED_STEP_S, rawFrameDeltaMs / 1000);
   stepAccumulator += frameDeltaS;
   lastFrame = now;
   // Peer catch-up: a late-joining peerwatch, AI-slot takeover, or slow-starting
