@@ -380,6 +380,7 @@ export interface WebGLOverlayCall {
 let overlayRenderFn: ((opts: WebGLOverlayCall) => void) | null = null;
 let overlayShipExplosionFn: ((pos: { x: number; y: number }, vel: { x: number; y: number }, rot: number) => void) | null = null;
 let overlayClearShipChunksFn: (() => void) | null = null;
+let overlayPrewarmMeshesFn: (() => void) | null = null;
 let overlayReady = false;
 export function isWebGLOverlayReady(): boolean { return overlayReady; }
 export function callWebGLOverlay(opts: WebGLOverlayCall): void {
@@ -399,6 +400,17 @@ export function callWebGLClearShipChunks(): void {
   overlayClearShipChunksFn?.();
 }
 
+/** Compile the mesh overlay's expensive first-use material/geometry variants
+ *  after the player has started a run. This keeps mobile boot quiet while
+ *  moving UFO/station first-spawn hitches into the wave-start downtime. */
+export async function prewarmWebGLMeshesForCurrentStyle(): Promise<void> {
+  const s = load();
+  const anyMesh = s.asteroid === 'mesh' || s.ship === 'mesh' || s.bullet === 'mesh' || s.particle === 'mesh';
+  if (!anyMesh) return;
+  await warmWebGL();
+  overlayPrewarmMeshesFn?.();
+}
+
 let warmPromise: Promise<void> | null = null;
 async function warmWebGL(): Promise<void> {
   if (overlayReady) return;
@@ -410,6 +422,7 @@ async function warmWebGL(): Promise<void> {
       overlayRenderFn = mod.renderOverlay;
       overlayShipExplosionFn = mod.spawnShipMeshExplosion;
       overlayClearShipChunksFn = mod.clearShipChunks;
+      overlayPrewarmMeshesFn = mod.prewarmWebGLOverlayMeshes;
       overlayReady = true;
     } catch (e) {
       // If three.js fails to load (offline, sw bug, etc.), render code

@@ -86,6 +86,16 @@ export const GAME_ID = 'pallasite';
 const SIGN_IN_TIMEOUT_MS = 20_000;
 /** Session restoration on boot is best-effort; don't block the title screen. */
 const RESTORE_TIMEOUT_MS = 5_000;
+const SIGNET_VERIFY_SRC = '/signet-verify.iife.js';
+const SIGNET_LOGIN_SRC = '/signet-login.iife.js';
+const SIGNET_STORAGE_KEYS = {
+  pubkey: 'signet:login.pubkey',
+  method: 'signet:login.method',
+  authEvent: 'signet:login.authEvent',
+} as const;
+const SIGNET_CALLBACK_PARAMS = ['error', 'pubkey', 'signature', 'eventId'] as const;
+
+let signetLoadPromise: Promise<boolean> | null = null;
 
 export class SignInTimeoutError extends Error {
   constructor() {
@@ -104,8 +114,80 @@ function withTimeout<T>(p: Promise<T>, ms: number, onTimeout: () => Error): Prom
   });
 }
 
+function signetLoginReady(): boolean {
+  return typeof window !== 'undefined'
+    && typeof window.Signet?.login === 'function'
+    && typeof window.Signet.restoreSession === 'function'
+    && typeof window.Signet.handleRedirectCallback === 'function';
+}
+
+function loadScript(src: string, id: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const existing = document.getElementById(id) as HTMLScriptElement | null;
+    if (existing?.dataset.loaded === '1') {
+      resolve();
+      return;
+    }
+    if (existing) {
+      existing.addEventListener('load', () => resolve(), { once: true });
+      existing.addEventListener('error', () => reject(new Error(`failed to load ${src}`)), { once: true });
+      return;
+    }
+    const script = document.createElement('script');
+    script.id = id;
+    script.src = src;
+    script.async = true;
+    script.onload = () => {
+      script.dataset.loaded = '1';
+      resolve();
+    };
+    script.onerror = () => reject(new Error(`failed to load ${src}`));
+    document.head.appendChild(script);
+  });
+}
+
+async function ensureSignetLoaded(): Promise<boolean> {
+  if (signetLoginReady()) return true;
+  if (typeof document === 'undefined') return false;
+  if (!signetLoadPromise) {
+    signetLoadPromise = (async () => {
+      // signet-verify assigns window.Signet; signet-login merges into it.
+      // Loading in the reverse order drops login methods.
+      await loadScript(SIGNET_VERIFY_SRC, 'pallasite-signet-verify-sdk');
+      await loadScript(SIGNET_LOGIN_SRC, 'pallasite-signet-login-sdk');
+      return signetLoginReady();
+    })().catch((err) => {
+      console.warn('[auth] failed to load Signet SDK:', err);
+      signetLoadPromise = null;
+      return false;
+    });
+  }
+  return signetLoadPromise;
+}
+
+export function hasSignetRedirectCallback(): boolean {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return SIGNET_CALLBACK_PARAMS.some((key) => params.has(key));
+  } catch {
+    return false;
+  }
+}
+
+function hasStoredSignetSession(): boolean {
+  try {
+    return !!(
+      localStorage.getItem(SIGNET_STORAGE_KEYS.pubkey)
+      && localStorage.getItem(SIGNET_STORAGE_KEYS.method)
+      && localStorage.getItem(SIGNET_STORAGE_KEYS.authEvent)
+    );
+  } catch {
+    return false;
+  }
+}
+
 export async function signIn(): Promise<SignetSession | null> {
-  if (!window.Signet) return null;
+  if (!(await ensureSignetLoaded()) || !window.Signet) return null;
   // Use the player's chosen relay for the cross-device QR path — the SDK's
   // wss://relay.damus.io default doesn't match what publishing/scoring use,
   // so a relay-mode handshake there would be cross-traffic the game never
@@ -137,7 +219,7 @@ export async function signIn(): Promise<SignetSession | null> {
  * "paste bunker URI" as the headline, not "Sign in with Signet".
  */
 export async function signInWith(method: SignInMethod): Promise<SignetSession | null> {
-  if (!window.Signet) return null;
+  if (!(await ensureSignetLoaded()) || !window.Signet) return null;
   const active = getActiveRelays();
   const relayUrl = active[0];
   const session = await withTimeout(
@@ -162,7 +244,8 @@ export async function signInWith(method: SignInMethod): Promise<SignetSession | 
  * directly.
  */
 export async function handleAuthCallback(): Promise<SignetSession | null> {
-  if (!window.Signet?.handleRedirectCallback) return null;
+  if (!hasSignetRedirectCallback() && !window.Signet?.handleRedirectCallback) return null;
+  if (!(await ensureSignetLoaded()) || !window.Signet?.handleRedirectCallback) return null;
   try {
     const result = await window.Signet.handleRedirectCallback();
     // Whether the callback resolved to a session, denied, or invalid, the
@@ -215,8 +298,9 @@ export async function tryRestore(): Promise<SignetSession | null> {
   // account should land back on that real identity, not regress to the
   // shadow guest record we may have kept around from before the
   // upgrade.
-  if (window.Signet) {
+  if (window.Signet || hasStoredSignetSession()) {
     try {
+      if (!(await ensureSignetLoaded()) || !window.Signet) throw new Error('signet-load-failed');
       const session = await withTimeout(
         window.Signet.restoreSession(),
         RESTORE_TIMEOUT_MS,
@@ -243,7 +327,8 @@ export async function tryRestore(): Promise<SignetSession | null> {
 }
 
 export async function signOut(currentSession: SignetSession | null): Promise<void> {
-  if (!window.Signet) return;
+  if ((currentSession?.method as string | undefined) === 'guest') return;
+  if (!(await ensureSignetLoaded()) || !window.Signet) return;
   await window.Signet.logout(currentSession ?? undefined);
 }
 
