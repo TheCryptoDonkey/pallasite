@@ -5313,10 +5313,31 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
   const dr = state.deathReplay;
   if (!dr || dr.snapshots.length === 0) return;
 
+  drawBackground(ctx, state, now);
+  drawStars(ctx, now);
+
+  const wallElapsed = state.elapsed - dr.startedAt;
+  const gameTime = replayGameTime(dr.spanMs, wallElapsed);
+  const snap = pickSnapshot(dr.snapshots, gameTime);
+
+  // Feed the mesh overlay the SNAPSHOT entities — not empty lists. On the
+  // mesh tier drawAsteroid/drawUfo skip the 2D path entirely (the overlay
+  // owns those rocks/UFOs), so handing the overlay empty arrays left the
+  // death replay with no asteroids or UFOs at all — only the 2D-forced faux
+  // ship survived. Mirror the live render() wiring: asteroids ride the
+  // asteroid tier, UFOs ride ship-OR-asteroid mesh, and the same eligibility
+  // filter (no council members, foreground depth only). No follow camera in
+  // the death cinematic, so there's no meshVisible cull and wrapXs stays [0].
+  // Ships stay empty here — the faux death-ship is drawn 2D below
+  // (forceCanvas) so the explosion hand-off matches killShip exactly.
   if (isWebGLOverlayReady()) {
+    const asteroidTier = getVisualStyle('asteroid');
+    const ufosMesh = getVisualStyle('ship') === 'mesh' || asteroidTier === 'mesh';
     callWebGLOverlay({
-      asteroids: [],
-      ufos: [],
+      asteroids: asteroidTier === 'mesh'
+        ? snap.asteroids.filter((a) => !a.councilMember && (a.depth ?? 3) === 3)
+        : [],
+      ufos: ufosMesh ? snap.ufos : [],
       powerups: [],
       ships: [],
       elapsed: state.elapsed,
@@ -5329,13 +5350,6 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
       wrapXs: [0],
     });
   }
-
-  drawBackground(ctx, state, now);
-  drawStars(ctx, now);
-
-  const wallElapsed = state.elapsed - dr.startedAt;
-  const gameTime = replayGameTime(dr.spanMs, wallElapsed);
-  const snap = pickSnapshot(dr.snapshots, gameTime);
 
   // Clip replayed entities and debris to the world rect, the same letterbox-
   // gutter guard as the live path. The vignette below is device space and is
