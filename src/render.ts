@@ -20,7 +20,7 @@ import { getAsteroidStyle, shouldReduceMotion } from './a11y.js';
 import { getActiveSkin } from './skins.js';
 import { getMemberImage } from './sanctum-avatars.js';
 import { getFlavour } from './flavour.js';
-import { getVisualStyle, getTheme, isWebGLOverlayReady, callWebGLOverlay, reducedFxActive } from './visual-style.js';
+import { getVisualStyle, getTheme, isWebGLOverlayReady, callWebGLOverlay, reducedFxActive, mobileRuntimeActive } from './visual-style.js';
 import { DEPTH_CONFIGS } from './parallax.js';
 import { getRadarVisible, getRadarLandscape, getRadarTilt } from './radar.js';
 import { buildSeamlessStarfield, drawParallaxStarfield } from './starfield.js';
@@ -622,7 +622,7 @@ function preloadSolarSprites(): void {
   for (const kind of SOLAR_SPRITE_KINDS) loadSolarSprite(kind);
 }
 
-preloadSolarSprites();
+if (!mobileRuntimeActive()) preloadSolarSprites();
 
 function drawSolarSprite(
   ctx: CanvasRenderingContext2D,

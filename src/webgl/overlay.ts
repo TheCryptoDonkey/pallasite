@@ -24,7 +24,7 @@
 
 import * as THREE from 'three';
 import type { Asteroid, PowerUp, PowerUpType, Ship, Ufo } from '../types.js';
-import { POWERUP_CONFIG, POWERUP_RADIUS, WORLD_W, WORLD_H } from '../types.js';
+import { POWERUP_CONFIG, POWERUP_RADIUS, UFO_RADIUS, WORLD_W, WORLD_H } from '../types.js';
 import { getMemberImage } from '../sanctum-avatars.js';
 import { getFlavour } from '../flavour.js';
 import { DEPTH_CONFIGS } from '../parallax.js';
@@ -166,6 +166,8 @@ const UFO_PALETTE: Record<Ufo['type'], { body: number; dome: number; glow: numbe
 let handle: OverlayHandle | null = null;
 let loading: Promise<OverlayHandle> | null = null;
 let frameCounter = 0;
+let meshPrewarmDone = false;
+const meshPrewarmKeepAlive: THREE.Object3D[] = [];
 
 /** ── Asteroid geometry ────────────────────────────────────────────────
  *  Displaced icosphere with three distinct displacement layers:
@@ -1977,6 +1979,99 @@ function buildStationPart(a: Asteroid): { group: THREE.Group; geometry: THREE.Bu
   if (a.stationPart === 'core') return buildStationCore(a.radius);
   if (a.stationPart === 'emitter') return buildStationEmitter(a.radius);
   return buildStationArm();
+}
+
+function addWarmupLights(scene: THREE.Scene): void {
+  const sun = new THREE.DirectionalLight(0xfff2da, 1.5);
+  sun.position.set(-200, -200, 350);
+  scene.add(sun);
+  const ambient = new THREE.AmbientLight(0xa8b0b8, 1.3);
+  scene.add(ambient);
+  const rim = new THREE.DirectionalLight(0xfff0c0, 2.4);
+  rim.position.set(180, 100, -450);
+  scene.add(rim);
+}
+
+function warmupUfo(type: Ufo['type'], id: number): Ufo {
+  const radius = UFO_RADIUS[type];
+  return {
+    pos: { x: WORLD_W / 2, y: WORLD_H / 2 },
+    vel: { x: 0, y: 0 },
+    radius,
+    alive: true,
+    id,
+    type,
+    hp: 1,
+    dir: 1,
+    zigTimer: 0,
+    shootTimer: 0,
+    lifetime: 1_000,
+    blink: 0,
+    hitFlash: 0,
+    bossPhase: 1,
+  };
+}
+
+function warmupStation(part: NonNullable<Asteroid['stationPart']>, id: number): Asteroid {
+  const radius = part === 'core' ? 58 : part === 'emitter' ? 24 : 30;
+  return {
+    id,
+    alive: true,
+    pos: { x: WORLD_W / 2, y: WORLD_H / 2 },
+    vel: { x: 0, y: 0 },
+    radius,
+    rot: 0,
+    shape: [1, 1, 1, 1],
+    size: 'large',
+    type: 'iron',
+    hp: 1,
+    hpMax: 1,
+    hitFlash: 0,
+    stationPart: part,
+    stationSlot: 0,
+    depth: 3,
+  } as Asteroid;
+}
+
+/** One-shot compile pass for meshes that otherwise first appear mid-run.
+ *  Kept out of boot by visual-style.ts; callers schedule this after IGNITE. */
+export function prewarmWebGLOverlayMeshes(): void {
+  if (!handle || meshPrewarmDone) return;
+  meshPrewarmDone = true;
+
+  const { renderer, camera } = handle;
+  const warmScene = new THREE.Scene();
+  addWarmupLights(warmScene);
+
+  let x = 260;
+  const add = (obj: THREE.Object3D): void => {
+    obj.position.set(x, WORLD_H / 2, 0);
+    x += 150;
+    warmScene.add(obj);
+    meshPrewarmKeepAlive.push(obj);
+  };
+
+  for (const [i, type] of (['cruiser', 'elite', 'tank', 'sniper'] as const).entries()) {
+    add(buildUfoMesh(warmupUfo(type, -10_000 - i)).group);
+  }
+  for (const [i, part] of (['core', 'arm', 'emitter'] as const).entries()) {
+    add(buildStationPart(warmupStation(part, -20_000 - i)).group);
+  }
+
+  const autoClear = renderer.autoClear;
+  try {
+    renderer.compile(warmScene, camera);
+    renderer.autoClear = true;
+    renderer.setScissorTest(true);
+    renderer.setViewport(0, 0, 1, 1);
+    renderer.setScissor(0, 0, 1, 1);
+    renderer.render(warmScene, camera);
+  } catch (e) {
+    console.warn('[webgl-overlay] mesh prewarm failed', e);
+  } finally {
+    renderer.setScissorTest(false);
+    renderer.autoClear = autoClear;
+  }
 }
 
 export function renderOverlay(opts: {

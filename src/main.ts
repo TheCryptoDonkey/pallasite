@@ -33,7 +33,7 @@ import { getMusicDebugSnapshot, musicForceRefresh, musicSetTrackForState, preloa
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, applyDisplayMode } from './display.js';
-import { warmWebGLIfPreviouslyEnabled, ensureWebGLForCurrentStyle, getTheme, getAsciiCols, getBitDepth, getBitColour, getVisualStyle, isWebGLOverlayReady, getRenderDprCap, getBrightness, mobileRuntimeActive, recordFrameTime } from './visual-style.js';
+import { warmWebGLIfPreviouslyEnabled, ensureWebGLForCurrentStyle, prewarmWebGLMeshesForCurrentStyle, getTheme, getAsciiCols, getBitDepth, getBitColour, getVisualStyle, isWebGLOverlayReady, getRenderDprCap, getBrightness, mobileRuntimeActive, recordFrameTime } from './visual-style.js';
 import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
 import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges, ensureLocalEdges, EMPTY_INPUT, isPeerActive, setPeerActive } from './netcode.js';
@@ -1247,6 +1247,7 @@ function startRunNow(): void {
   }
   startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, currentStartOptions());
   applyDeathmatchHarnessOptions();
+  restoreHeldInputsAfterStart();
   // Only force wavestart for the standard campaign — startGame on the
   // 600bn flavour sets phase='sanctum' and doesn't want the warp/wave
   // pipeline kicking in over the top.
@@ -1259,6 +1260,19 @@ function startRunNow(): void {
   musicSetTrackForState(state);
 }
 
+function restoreHeldInputsAfterStart(): void {
+  ensureLocalInputSlots(state.players.length);
+  for (let i = 0; i < state.players.length; i++) {
+    const p = state.players[i];
+    const held = localKeys[i] ?? {};
+    for (const [code, pressed] of Object.entries(held)) {
+      if (pressed) p.keys[code] = true;
+    }
+    p.targetHeading = localHeading[i] ?? null;
+    p.thrustOverride = localThrust[i] === true;
+  }
+}
+
 async function startRunFromAction(): Promise<void> {
   if (startActionInFlight) return;
   startActionInFlight = true;
@@ -1269,8 +1283,19 @@ async function startRunFromAction(): Promise<void> {
     }
     await Promise.all(readiness);
     startRunNow();
+    scheduleMeshWarmupAfterStart();
   } finally {
     startActionInFlight = false;
+  }
+}
+
+function scheduleMeshWarmupAfterStart(): void {
+  const run = () => { void prewarmWebGLMeshesForCurrentStyle(); };
+  const requestIdle = window.requestIdleCallback;
+  if (typeof requestIdle === 'function') {
+    requestIdle(run, { timeout: 1800 });
+  } else {
+    globalThis.setTimeout(run, 250);
   }
 }
 
@@ -1623,6 +1648,11 @@ window.addEventListener('keyup', recoverUnlock, true);
 // Lose focus → release keys & pause
 window.addEventListener('blur', () => {
   for (const pl of state.players) pl.keys = {};
+  for (let i = 0; i < localKeys.length; i++) {
+    localKeys[i] = {};
+    localHeading[i] = null;
+    localThrust[i] = false;
+  }
   audio.thrustOff();
   if (state.phase === 'playing') {
     pauseGame(state);
@@ -2279,9 +2309,9 @@ async function boot(): Promise<void> {
     });
   }
   // Kick off WebGL overlay load if the player had a mesh-tier category
-  // selected last session. Fire-and-forget — render loop uses 2D
-  // shaded fallbacks while three.js streams in.
-  warmWebGLIfPreviouslyEnabled();
+  // selected last session. Fire-and-forget on desktop; mobile defers this
+  // until IGNITE so phones don't download/parse three.js on the title screen.
+  if (!mobileRuntimeActive()) warmWebGLIfPreviouslyEnabled();
 
   // Resize canvas to fit viewport in BOTH dimensions while preserving the
   // 16:9 world aspect — internal pixel resolution stays WORLD_W×WORLD_H
@@ -2549,8 +2579,9 @@ async function boot(): Promise<void> {
   }
 
   // Preload and decode the first campaign backgrounds plus asteroid surface
-  // textures so a Prague walk-up player does not see art pop in after IGNITE.
-  void warmCriticalCampaignAssets();
+  // textures so a desktop/walk-up player does not see art pop in after IGNITE.
+  // Mobile waits in startRunFromAction instead, keeping the boot network quiet.
+  if (!mobileRuntimeActive()) void warmCriticalCampaignAssets();
 
   // Fetch server-driven gameplay config (bonus_wave_chance etc.) in
   // the background. Fire-and-forget — the cached default (1.0) keeps
