@@ -87,11 +87,10 @@ function fxOverrideForcesFull(): boolean {
   return urlFlag('fullfx') === '1' || urlFlag('highfx') === '1' || urlFlag('mobileLite') === '0';
 }
 
-/** Phone-safe presentation guard. Full 3D mesh is part of the mobile
- *  experience, but mesh plus full-frame CRT/post-FX and a high-DPR backing store
- *  pushes iOS Safari into wave-3 judder. This guard is runtime-only and
- *  non-persistent: phones keep mesh, but skip expensive presentation FX and
- *  use a bounded DPR. Add ?fullfx=1 for capture/debug. */
+/** Phone-safe presentation guard. iOS Safari cannot reliably hold frame
+ *  budget with the WebGL mesh overlay plus the game canvas, so phones use
+ *  the shaded canvas path by default and skip expensive presentation FX. The
+ *  cap is runtime-only and non-persistent; add ?fullfx=1 for capture/debug. */
 export function mobilePerformanceGuardActive(): boolean {
   return !fxOverrideForcesFull() && mobileRuntimeActive();
 }
@@ -175,6 +174,12 @@ export function reducedFxActive(): boolean {
   return mobileRuntimeActive() || governorShedFx;
 }
 
+function effectiveTier(cat: VisualCategory, tier: VisualTier): VisualTier {
+  void cat;
+  if (tier === 'mesh' && mobilePerformanceGuardActive()) return 'shaded';
+  return tier;
+}
+
 /** Coerce an unknown value into a known VisualTier; unknown → 'vector'. */
 function coerceTier(v: unknown): VisualTier {
   if (v === 'vector' || v === 'shaded' || v === 'mesh') return v;
@@ -250,7 +255,7 @@ export function setForcedVisualTier(tier: VisualTier | null): void {
  *  'shaded' if the WebGL overlay hasn't loaded yet. */
 export function getVisualStyle(cat: VisualCategory): VisualTier {
   if (forcedTier) return forcedTier;
-  return load()[cat];
+  return effectiveTier(cat, load()[cat]);
 }
 
 /** The raw stored tier, ignoring any forced override. Used by the
@@ -266,14 +271,14 @@ export function getVisualStyleRaw(cat: VisualCategory): VisualTier {
 export function setVisualStyle(cat: VisualCategory, tier: VisualTier): void {
   const next = { ...load(), [cat]: tier };
   save(next);
-  if (tier === 'mesh') void warmWebGL();
+  if (effectiveTier(cat, tier) === 'mesh') void warmWebGL();
 }
 
 /** Set every category to the same tier. Used by the quick-pick row in the
  *  settings panel. */
 export function setAllVisualStyles(tier: VisualTier): void {
   save({ ...load(), asteroid: tier, ship: tier, bullet: tier, particle: tier });
-  if (tier === 'mesh') void warmWebGL();
+  if (!mobilePerformanceGuardActive() && tier === 'mesh') void warmWebGL();
 }
 
 /** The active presentation theme: the post-process look (CRT etc.). A
@@ -337,7 +342,7 @@ export function setBrightness(value: number): void {
  *  main.ts; safe to call repeatedly (the loader is idempotent). */
 export function warmWebGLIfPreviouslyEnabled(): Promise<void> {
   const s = load();
-  const anyMesh = s.asteroid === 'mesh' || s.ship === 'mesh' || s.bullet === 'mesh' || s.particle === 'mesh';
+  const anyMesh = VISUAL_CATEGORIES.some((cat) => effectiveTier(cat, s[cat]) === 'mesh');
   return anyMesh ? warmWebGL() : Promise.resolve();
 }
 
@@ -405,7 +410,7 @@ export function callWebGLClearShipChunks(): void {
  *  moving UFO/station first-spawn hitches into the wave-start downtime. */
 export async function prewarmWebGLMeshesForCurrentStyle(): Promise<void> {
   const s = load();
-  const anyMesh = s.asteroid === 'mesh' || s.ship === 'mesh' || s.bullet === 'mesh' || s.particle === 'mesh';
+  const anyMesh = VISUAL_CATEGORIES.some((cat) => effectiveTier(cat, s[cat]) === 'mesh');
   if (!anyMesh) return;
   await warmWebGL();
   overlayPrewarmMeshesFn?.();
