@@ -2650,6 +2650,27 @@ async function boot(): Promise<void> {
     // smartbomb) and has no 600bn theme anymore.
   }
 
+  // ── Live-watch / broadcast surface gate ─────────────────────────────────
+  // Everything that exists purely so OTHER people can watch this run live —
+  // the per-frame stream tick (entity-mapping + WebSocket publish + replay
+  // capture) and the 4s presence heartbeat — is bundled behind one flag.
+  //
+  // On mobile this is a per-frame main-thread tax (a 60Hz setInterval plus
+  // ~10Hz entity serialisation) for little product value: almost nobody
+  // watches a random phone run live. So it defaults OFF on mobile and ON on
+  // desktop. Overrides let us A/B the perf hit on the SAME device:
+  //   ?stream=1 — force the watch surface ON anywhere (capture / debug)
+  //   ?stream=0 — force it OFF anywhere
+  // Trade-off when off: no live spectating AND no end-of-run kind 30764 ghost
+  // replay for that device (the replay buffer fills inside the stream tick).
+  const streamFlag = new URLSearchParams(window.location.search).get('stream');
+  const streamingEnabled = streamFlag === '1'
+    ? true
+    : streamFlag === '0'
+      ? false
+      : !mobileRuntimeActive();
+  console.log(`[stream] live-watch surface ${streamingEnabled ? 'ENABLED' : 'DISABLED'} (mobile=${mobileRuntimeActive()}, ?stream=${streamFlag ?? 'unset'})`);
+
   // Live-presence heartbeat — fires while a run is in progress so the
   // watch.pallasite.app surface renders LIVE cards. Ticks every 4s and
   // skips no-op repeats (same score+wave AND a previous tick less than
@@ -2685,7 +2706,7 @@ async function boot(): Promise<void> {
       mode: currentMode(),
     });
   };
-  window.setInterval(fireHeartbeat, 4_000);
+  if (streamingEnabled) window.setInterval(fireHeartbeat, 4_000);
 
   // Live-stream session (NIP-53 + kind 22769 frames) — the "Twitch
   // stream key" pattern. Master signs a kind 30311 Live Activities
@@ -2935,7 +2956,11 @@ async function boot(): Promise<void> {
       }
     }
   };
-  window.setInterval(tickStream, STREAM_FRAME_INTERVAL_MS);
+  // Gated: on mobile this 60Hz timer + its 10Hz entity serialisation is the
+  // suspected frame-time tax. When the watch surface is off we never even
+  // register the interval, so there's zero per-frame cost — not just an early
+  // return. ?stream=1 re-arms it for capture/debug.
+  if (streamingEnabled) window.setInterval(tickStream, STREAM_FRAME_INTERVAL_MS);
 
   // Route dispatch — query-param, path-based, and hostname-based surfaces.
   // Title renders first so the shared boot wiring (music, scoreboard subs,
