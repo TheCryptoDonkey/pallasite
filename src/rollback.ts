@@ -286,6 +286,7 @@ interface SimStateClone {
   rng: number | null;
   nextEntityId: number;
   bossDefeated: boolean;
+  forgeBreached: boolean;
   defenderMode: boolean;
   defenderTimerMs: number;
   defenderCouncilLost: number;
@@ -319,7 +320,7 @@ function makeClone(): SimStateClone {
     nextUfoSpawn: 0, nextMineSpawn: 0, warpTargetWave: 0,
     bonusStartedAt: 0, bonusNextSpawnAt: 0, bonusPreludeSpawned: 0,
     runTimeMs: 0, runStartedAt: 0, seed: 0, rng: null, nextEntityId: 0,
-    bossDefeated: false, defenderMode: false, defenderTimerMs: 0, defenderCouncilLost: 0,
+    bossDefeated: false, forgeBreached: false, defenderMode: false, defenderTimerMs: 0, defenderCouncilLost: 0,
     hitStopSteps: 0,
     toast: null, toastUntil: 0, cheatedThisRun: false, initialsEnteredThisRun: false,
     cameraTrauma: 0,
@@ -353,7 +354,7 @@ function captureState(s: GameState, c: SimStateClone): void {
   c.nextUfoSpawn = s.nextUfoSpawn; c.nextMineSpawn = s.nextMineSpawn; c.warpTargetWave = s.warpTargetWave;
   c.bonusStartedAt = s.bonusStartedAt; c.bonusNextSpawnAt = s.bonusNextSpawnAt; c.bonusPreludeSpawned = s.bonusPreludeSpawned;
   c.runTimeMs = s.runTimeMs; c.runStartedAt = s.runStartedAt; c.seed = s.seed; c.rng = s.rng; c.nextEntityId = s.nextEntityId;
-  c.bossDefeated = s.bossDefeated; c.defenderMode = s.defenderMode; c.defenderTimerMs = s.defenderTimerMs; c.defenderCouncilLost = s.defenderCouncilLost;
+  c.bossDefeated = s.bossDefeated; c.forgeBreached = s.forgeBreached; c.defenderMode = s.defenderMode; c.defenderTimerMs = s.defenderTimerMs; c.defenderCouncilLost = s.defenderCouncilLost;
   c.hitStopSteps = s.hitStopSteps;
   c.toast = s.toast; c.toastUntil = s.toastUntil; c.cheatedThisRun = s.cheatedThisRun; c.initialsEnteredThisRun = s.initialsEnteredThisRun;
   c.cameraTrauma = s.cameraTrauma;
@@ -383,7 +384,7 @@ function applyState(c: SimStateClone, s: GameState): void {
   s.nextUfoSpawn = c.nextUfoSpawn; s.nextMineSpawn = c.nextMineSpawn; s.warpTargetWave = c.warpTargetWave;
   s.bonusStartedAt = c.bonusStartedAt; s.bonusNextSpawnAt = c.bonusNextSpawnAt; s.bonusPreludeSpawned = c.bonusPreludeSpawned;
   s.runTimeMs = c.runTimeMs; s.runStartedAt = c.runStartedAt; s.seed = c.seed; s.rng = c.rng; s.nextEntityId = c.nextEntityId;
-  s.bossDefeated = c.bossDefeated; s.defenderMode = c.defenderMode; s.defenderTimerMs = c.defenderTimerMs; s.defenderCouncilLost = c.defenderCouncilLost;
+  s.bossDefeated = c.bossDefeated; s.forgeBreached = c.forgeBreached; s.defenderMode = c.defenderMode; s.defenderTimerMs = c.defenderTimerMs; s.defenderCouncilLost = c.defenderCouncilLost;
   s.hitStopSteps = c.hitStopSteps;
   s.toast = c.toast; s.toastUntil = c.toastUntil; s.cheatedThisRun = c.cheatedThisRun; s.initialsEnteredThisRun = c.initialsEnteredThisRun;
   s.cameraTrauma = c.cameraTrauma;
