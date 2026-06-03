@@ -159,7 +159,7 @@ function makeMine(): Mine {
 function copyMine(s: Mine, d: Mine): void {
   d.pos.x = s.pos.x; d.pos.y = s.pos.y; d.vel.x = s.vel.x; d.vel.y = s.vel.y;
   d.radius = s.radius; d.alive = s.alive; d.id = s.id;
-  d.age = s.age; d.gravityRange = s.gravityRange; d.hp = s.hp; d.hitFlash = s.hitFlash;
+  d.age = s.age; d.gravityRange = s.gravityRange; d.gravityStrength = s.gravityStrength; d.hp = s.hp; d.hitFlash = s.hitFlash;
 }
 
 function makeCoin(): Coin {
@@ -287,10 +287,13 @@ interface SimStateClone {
   nextEntityId: number;
   bossDefeated: boolean;
   forgeBreached: boolean;
+  forgeMeltdown: boolean;
+  forgeEscaped: boolean;
   defenderMode: boolean;
   defenderTimerMs: number;
   defenderCouncilLost: number;
   hitStopSteps: number;
+  flash: number;
   toast: string | null;
   toastUntil: number;
   cheatedThisRun: boolean;
@@ -320,8 +323,8 @@ function makeClone(): SimStateClone {
     nextUfoSpawn: 0, nextMineSpawn: 0, warpTargetWave: 0,
     bonusStartedAt: 0, bonusNextSpawnAt: 0, bonusPreludeSpawned: 0,
     runTimeMs: 0, runStartedAt: 0, seed: 0, rng: null, nextEntityId: 0,
-    bossDefeated: false, forgeBreached: false, defenderMode: false, defenderTimerMs: 0, defenderCouncilLost: 0,
-    hitStopSteps: 0,
+    bossDefeated: false, forgeBreached: false, forgeMeltdown: false, forgeEscaped: false, defenderMode: false, defenderTimerMs: 0, defenderCouncilLost: 0,
+    hitStopSteps: 0, flash: 0,
     toast: null, toastUntil: 0, cheatedThisRun: false, initialsEnteredThisRun: false,
     cameraTrauma: 0,
     shieldUsedThisWave: false, bulletsFiredThisWave: 0, missedShotsThisWave: 0,
@@ -354,8 +357,8 @@ function captureState(s: GameState, c: SimStateClone): void {
   c.nextUfoSpawn = s.nextUfoSpawn; c.nextMineSpawn = s.nextMineSpawn; c.warpTargetWave = s.warpTargetWave;
   c.bonusStartedAt = s.bonusStartedAt; c.bonusNextSpawnAt = s.bonusNextSpawnAt; c.bonusPreludeSpawned = s.bonusPreludeSpawned;
   c.runTimeMs = s.runTimeMs; c.runStartedAt = s.runStartedAt; c.seed = s.seed; c.rng = s.rng; c.nextEntityId = s.nextEntityId;
-  c.bossDefeated = s.bossDefeated; c.forgeBreached = s.forgeBreached; c.defenderMode = s.defenderMode; c.defenderTimerMs = s.defenderTimerMs; c.defenderCouncilLost = s.defenderCouncilLost;
-  c.hitStopSteps = s.hitStopSteps;
+  c.bossDefeated = s.bossDefeated; c.forgeBreached = s.forgeBreached; c.forgeMeltdown = s.forgeMeltdown; c.forgeEscaped = s.forgeEscaped; c.defenderMode = s.defenderMode; c.defenderTimerMs = s.defenderTimerMs; c.defenderCouncilLost = s.defenderCouncilLost;
+  c.hitStopSteps = s.hitStopSteps; c.flash = s.flash;
   c.toast = s.toast; c.toastUntil = s.toastUntil; c.cheatedThisRun = s.cheatedThisRun; c.initialsEnteredThisRun = s.initialsEnteredThisRun;
   c.cameraTrauma = s.cameraTrauma;
   c.shieldUsedThisWave = s.shieldUsedThisWave; c.bulletsFiredThisWave = s.bulletsFiredThisWave; c.missedShotsThisWave = s.missedShotsThisWave;
@@ -384,8 +387,8 @@ function applyState(c: SimStateClone, s: GameState): void {
   s.nextUfoSpawn = c.nextUfoSpawn; s.nextMineSpawn = c.nextMineSpawn; s.warpTargetWave = c.warpTargetWave;
   s.bonusStartedAt = c.bonusStartedAt; s.bonusNextSpawnAt = c.bonusNextSpawnAt; s.bonusPreludeSpawned = c.bonusPreludeSpawned;
   s.runTimeMs = c.runTimeMs; s.runStartedAt = c.runStartedAt; s.seed = c.seed; s.rng = c.rng; s.nextEntityId = c.nextEntityId;
-  s.bossDefeated = c.bossDefeated; s.forgeBreached = c.forgeBreached; s.defenderMode = c.defenderMode; s.defenderTimerMs = c.defenderTimerMs; s.defenderCouncilLost = c.defenderCouncilLost;
-  s.hitStopSteps = c.hitStopSteps;
+  s.bossDefeated = c.bossDefeated; s.forgeBreached = c.forgeBreached; s.forgeMeltdown = c.forgeMeltdown; s.forgeEscaped = c.forgeEscaped; s.defenderMode = c.defenderMode; s.defenderTimerMs = c.defenderTimerMs; s.defenderCouncilLost = c.defenderCouncilLost;
+  s.hitStopSteps = c.hitStopSteps; s.flash = c.flash;
   s.toast = c.toast; s.toastUntil = c.toastUntil; s.cheatedThisRun = c.cheatedThisRun; s.initialsEnteredThisRun = c.initialsEnteredThisRun;
   s.cameraTrauma = c.cameraTrauma;
   s.shieldUsedThisWave = c.shieldUsedThisWave; s.bulletsFiredThisWave = c.bulletsFiredThisWave; s.missedShotsThisWave = c.missedShotsThisWave;

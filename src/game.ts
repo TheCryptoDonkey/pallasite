@@ -43,6 +43,8 @@ import {
   FORGE_SPAWN, FORGE_CENTRE_Y, FORGE_SEGMENTS, FORGE_RING_R, FORGE_CORE_R, FORGE_SEG_R, FORGE_SPIN, FORGE_ROCK_MS, FORGE_ROCK_SPREAD,
   FORGE_CORE_HP, FORGE_VENT_HP, FORGE_MISSILE_CAP, FORGE_MISSILE_SPEED_MUL, FORGE_MISSILE_TTL_MUL, FORGE_MISSILE_TURN_MUL,
   FORGE_PULSE_DENSITY, FORGE_PULSE_CADENCE_MS, FORGE_PULSE_DENSITY_MUL, FORGE_PULSE_CADENCE_MUL, FORGE_ROCK_CAP,
+  FORGE_MELTDOWN_FRAC, FORGE_MELTDOWN_WELLS, FORGE_MELTDOWN_R_START, FORGE_MELTDOWN_R_MIN, FORGE_MELTDOWN_SPIN,
+  FORGE_MELTDOWN_WELL_RANGE, FORGE_MELTDOWN_WELL_STRENGTH, FORGE_ESCAPE_FRAC, FORGE_ESCAPE_SPEED, FORGE_ESCAPE_ZIG_MS,
   VEIN_JACKPOT_SATS, VEIN_JACKPOT_SCORE, VEIN_SPAWN_CHANCE,
   VEIN_SPAWN_MIN_WAVE, VEIN_SPAWN_MAX_WAVE, VEIN_SWARM_DELAY_MS,
   VEIN_POWERUP_PER_N_HITS, VEIN_NOVA_DAMAGE,
@@ -143,10 +145,13 @@ export function makeInitialState(): GameState {
     nextEntityId: 0,
     bossDefeated: false,
     forgeBreached: false,
+    forgeMeltdown: false,
+    forgeEscaped: false,
     defenderMode: false,
     defenderTimerMs: 0,
     defenderCouncilLost: 0,
     hitStopSteps: 0,
+    flash: 0,
     session: null,
     profile: null,
     toast: null,
@@ -1139,6 +1144,8 @@ const THE_FORGE: WaveSetPiece = {
   playerSpawn: FORGE_SPAWN,
   setup(s) {
     s.forgeBreached = false;
+    s.forgeMeltdown = false;
+    s.forgeEscaped = false;
     const d = currentDifficulty();
     const cx = WORLD_W / 2, cy = FORGE_CENTRE_Y;
     // Core — a vein at centre. Sealed only in the emergent sense: the shell
@@ -1232,7 +1239,7 @@ const THE_FORGE: WaveSetPiece = {
     // it charges (telegraph glow) and releases a dense 360° ring of bullets.
     // Rotation is randomised each beat (no fixed-gap camp); density + cadence
     // ramp as the core is worn down. See forgeCorePulse.
-    if (core && core.hp < core.hpMax) {
+    if (core && core.hp < core.hpMax && !s.forgeEscaped) {
       const frac = core.hp / core.hpMax;
       const band = frac < 0.34 ? 'low' : frac < 0.67 ? 'mid' : 'fresh';
       const pulseMs = FORGE_PULSE_CADENCE_MS[band] * FORGE_PULSE_CADENCE_MUL[d];
@@ -1248,6 +1255,104 @@ const THE_FORGE: WaveSetPiece = {
       }
       if (Math.floor(s.elapsed / pulseMs) > Math.floor(prev / pulseMs)) {
         forgeCorePulse(s, core, pulseN);
+      }
+    }
+
+    // MELTDOWN · EVENT HORIZON — below FORGE_MELTDOWN_FRAC the forge's
+    // containment fails: a ring of indestructible gravity wells appears and
+    // tightens toward the core as you push it to death, squeezing the fight into
+    // the pulse zone. The wells are the only mines here (suppressDefaultMines),
+    // so railing every live mine repositions the ring. Pure geometry → deterministic.
+    if (core) {
+      const frac = core.hp / core.hpMax;
+      if (!s.forgeMeltdown && frac < FORGE_MELTDOWN_FRAC) {
+        s.forgeMeltdown = true;
+        for (let i = 0; i < FORGE_MELTDOWN_WELLS; i++) {
+          const ang = (Math.PI * 2 * i) / FORGE_MELTDOWN_WELLS - Math.PI / 2;
+          const w = makeMine({ x: cx + Math.cos(ang) * FORGE_MELTDOWN_R_START, y: cy + Math.sin(ang) * FORGE_MELTDOWN_R_START }, 99999);
+          w.gravityRange = FORGE_MELTDOWN_WELL_RANGE;       // wide field — can't find a calm spot
+          w.gravityStrength = FORGE_MELTDOWN_WELL_STRENGTH; // strong pull — camping the core gets dragged off
+          s.mines.push(w);
+        }
+        bumpTrauma(s, 0.8);
+        hitStop(s, 300);
+        audio.pulseDuck(0.5, 320);
+        spawnShockwave(s, cx, cy, FORGE_MELTDOWN_R_START * 1.25, '#ff5050');
+        spawnParticles(s, cx, cy, 36, '#ff5050', 320, 760);
+        toastNow(s, 'EVENT HORIZON · CONTAINMENT FAILING');
+      }
+      if (s.forgeMeltdown) {
+        // Ring tightens R_START → R_MIN as HP drops FRAC → 0, slowly counter-rotating.
+        const ratio = Math.max(0, Math.min(1, frac / FORGE_MELTDOWN_FRAC));
+        const ringR = FORGE_MELTDOWN_R_MIN + (FORGE_MELTDOWN_R_START - FORGE_MELTDOWN_R_MIN) * ratio;
+        const mspin = s.elapsed * FORGE_MELTDOWN_SPIN;
+        const wells = s.mines.filter(m => m.alive);
+        for (let i = 0; i < wells.length; i++) {
+          const ang = (Math.PI * 2 * i) / FORGE_MELTDOWN_WELLS - Math.PI / 2 + mspin;
+          wells[i].pos.x = cx + Math.cos(ang) * ringR;
+          wells[i].pos.y = cy + Math.sin(ang) * ringR;
+        }
+      }
+
+      // ESCAPE / THE CHASE — below FORGE_ESCAPE_FRAC the core breaks containment:
+      // the rig + wells tear apart and the bare core FLEES the nearest pilot. You
+      // have to run it down to finish it (it keeps pulsing as it runs). Velocity is
+      // set here each frame; the asteroid update integrates the position.
+      if (!s.forgeEscaped && frac < FORGE_ESCAPE_FRAC) {
+        s.forgeEscaped = true;
+        for (const a of s.asteroids) {                 // the rig tears apart — pods blow
+          if (a.alive && a.stationPart != null && a !== core) {
+            a.alive = false;
+            spawnShockwave(s, a.pos.x, a.pos.y, a.radius * 2, '#ffb24a');
+            spawnParticles(s, a.pos.x, a.pos.y, 16, '#ffb24a', 340, 600);
+          }
+        }
+        for (const m of s.mines) {                     // containment broken — wells blow
+          spawnShockwave(s, m.pos.x, m.pos.y, 50, '#ff5050');
+          spawnParticles(s, m.pos.x, m.pos.y, 12, '#ff5050', 300, 500);
+        }
+        s.mines = [];
+        const ang0 = gameRng() * Math.PI * 2;          // launch the bare core off in a random heading
+        core.vel.x = Math.cos(ang0) * FORGE_ESCAPE_SPEED;
+        core.vel.y = Math.sin(ang0) * FORGE_ESCAPE_SPEED;
+        bumpTrauma(s, 0.8); hitStop(s, 200); audio.pulseDuck(0.5, 320); audio.explosion(1.3);
+        spawnShockwave(s, core.pos.x, core.pos.y, core.radius * 4, '#9be15d');
+        spawnParticles(s, core.pos.x, core.pos.y, 30, '#9be15d', 360, 700);
+        toastNow(s, 'CONTAINMENT BREACHED · RUN IT DOWN');
+      }
+      if (s.forgeEscaped) {
+        // Keep the bare core a CONSISTENT, hittable size — the vein would otherwise
+        // shrink to a near-invisible dot at this HP, making the chase brutal.
+        core.radius = FORGE_CORE_R;
+        const escSpeed = FORGE_ESCAPE_SPEED * (d === 'easy' ? 0.8 : d === 'hard' ? 1.12 : 1);
+        // Move like a UFO: fly straight, bounce off all four walls, hold a steady speed.
+        const M = 70;
+        if (core.pos.x < M && core.vel.x < 0) core.vel.x = -core.vel.x;
+        else if (core.pos.x > WORLD_W - M && core.vel.x > 0) core.vel.x = -core.vel.x;
+        if (core.pos.y < M && core.vel.y < 0) core.vel.y = -core.vel.y;
+        else if (core.pos.y > WORLD_H - M && core.vel.y > 0) core.vel.y = -core.vel.y;
+        const vm = Math.hypot(core.vel.x, core.vel.y) || 1;
+        core.vel.x = core.vel.x / vm * escSpeed;
+        core.vel.y = core.vel.y / vm * escSpeed;
+        if (Math.floor(s.elapsed / FORGE_ESCAPE_ZIG_MS) > Math.floor(prev / FORGE_ESCAPE_ZIG_MS)) {
+          let px = cx, py = cy, bestSq = Infinity;
+          for (const pl of s.players) {
+            if (!pl.ship.alive) continue;
+            const ddx = pl.ship.pos.x - core.pos.x, ddy = pl.ship.pos.y - core.pos.y;
+            const dSq = ddx * ddx + ddy * ddy;
+            if (dSq < bestSq) { bestSq = dSq; px = pl.ship.pos.x; py = pl.ship.pos.y; }
+          }
+          // Only jink AWAY when the pilot is right on top of it; otherwise roam (often
+          // crossing your aim) so you actually get shooting windows.
+          const away = Math.atan2(core.pos.y - py, core.pos.x - px);
+          const heading = bestSq < 200 * 200 ? away + (gameRng() - 0.5) * 1.6 : gameRng() * Math.PI * 2;
+          core.vel.x = Math.cos(heading) * escSpeed;
+          core.vel.y = Math.sin(heading) * escSpeed;
+          // Aimed shot only at sensible range; eased hard on easy so the chase
+          // isn't a bullet-storm while you're trying to line up the kill.
+          const shootChance = d === 'easy' ? 0.4 : d === 'hard' ? 1 : 0.72;
+          if (bestSq < 460 * 460 && gameRng() < shootChance) ufoShootAt(s, { pos: core.pos, type: 'boss' } as unknown as Ufo, { x: px, y: py });
+        }
       }
     }
 
@@ -2801,7 +2906,7 @@ function updateMines(s: GameState, dt: number, _now: number): void {
       if (distSq < range * range && distSq > 4) {
         const dist = Math.sqrt(distSq);
         const t = 1 - dist / range;
-        const accel = MINE_GRAVITY_STRENGTH * t * mods.mineGravityMul;
+        const accel = (m.gravityStrength ?? MINE_GRAVITY_STRENGTH) * t * mods.mineGravityMul;
         const nx = dx / dist;
         const ny = dy / dist;
         s.players[0].ship.vel.x += nx * accel * dt;
@@ -3803,6 +3908,11 @@ export function updateGame(s: GameState): void {
   if (s.cameraTrauma > 0) {
     s.cameraTrauma = Math.max(0, s.cameraTrauma - dt * 1.8);
   }
+  // Screen-flash decay (~330ms fade). Runs after the hit-stop early-return, so a
+  // white-out punch HOLDS through the freeze, then fades to reveal the burst.
+  if (s.flash > 0) {
+    s.flash = Math.max(0, s.flash - dt * 3);
+  }
 
   // Snapshot the world state for the death replay buffer (no-op outside 'playing').
   recordReplaySnapshot(s, now);
@@ -4639,10 +4749,10 @@ export function updateGame(s: GameState): void {
         // and sats are voided — either way the dash would be pointless.
         const hasGoodies = s.coins.some(c => c.alive)
           || s.powerups.some(p => p.alive && !p.collected);
-        // EAGLE STATION (17) always holds the grace beat even with nothing to
-        // scoop / on a cheated run, so the rig's big detonation actually plays
-        // out on THIS wave instead of bleeding into the warp / next level.
-        const bossHold = s.wave === 17;
+        // EAGLE STATION (17) and THE FORGE (25) always hold the grace beat even
+        // with nothing to scoop / on a cheated run, so the rig's big detonation
+        // actually plays out instead of cutting straight to the warp / completion.
+        const bossHold = s.wave === 17 || s.wave === FINAL_WAVE;
         if ((hasGoodies && !s.cheatedThisRun) || bossHold) {
           s.waveClearAt = now;
           for (const p of s.players) {
@@ -5110,16 +5220,39 @@ function stationCoreFinale(s: GameState, core: Asteroid, p: PlayerState): void {
     s.bossDefeated = true;                         // the wave25Clear gate reads this
     markAchievement(s, 'first-boss');
     if (markSkinUnlocked('halo')) toastNow(s, 'HALO SKIN UNLOCKED');
-    // Sweep any forged rocks still loose so the wave clears on the core's fall
-    // (wave25Clear needs the field empty), then a guaranteed nova for stragglers.
+    // Sweep the field for a clean victory beat — forged rocks, the meltdown
+    // wells, and any pulse/missile in flight all go. (The clear's bossHold grace
+    // holds the playing phase so the detonation below actually plays out.)
     for (const a of s.asteroids) {
       if (a.alive && a.stationPart == null && !a.terrain) {
         a.alive = false;
         spawnParticles(s, a.pos.x, a.pos.y, 8, '#ffb24a', 220, 360);
       }
     }
+    s.mines = [];
+    s.enemyBullets = [];
+    // END-OF-GAME DETONATION — the forge tears itself apart. A full-screen white
+    // flash + a SHORT punch (a long freeze would stall the burst) + screen-filling
+    // shockwaves sweeping off the edges + a huge particle storm that bursts outward
+    // and lingers as embers. The 5s bossHold grace lets it play out fully.
+    s.flash = 1;                                   // white-out, held through the hit-stop then fades to reveal the burst
+    bumpTrauma(s, 1.0);                            // max shake
+    hitStop(s, 140);                               // a beat of weight, short enough that the burst still animates
+    spawnShockwave(s, core.pos.x, core.pos.y, 120, '#ffffff');
+    spawnShockwave(s, core.pos.x, core.pos.y, 340, '#eaffc0');
+    spawnShockwave(s, core.pos.x, core.pos.y, 600, '#9be15d');
+    spawnShockwave(s, core.pos.x, core.pos.y, 880, '#eaffc0');
+    spawnShockwave(s, core.pos.x, core.pos.y, 1150, '#ffffff');   // sweeps off the screen edges
+    spawnParticles(s, core.pos.x, core.pos.y, 70, '#ffffff', 920, 700);
+    spawnParticles(s, core.pos.x, core.pos.y, 120, '#9be15d', 660, 1800);
+    spawnParticles(s, core.pos.x, core.pos.y, 90, '#eaffc0', 500, 2100);
+    spawnParticles(s, core.pos.x, core.pos.y, 70, '#ffd84a', 360, 2300);
+    spawnParticles(s, core.pos.x, core.pos.y, 44, '#ff9a3a', 240, 2500);  // slow drifting embers
+    audio.explosion(2.2);
+    audio.explosion(1.5);                          // layered second boom for depth
+    audio.pulseDuck(0.65, 700);
+    haptic('celebrate');
     maybeDropPowerUp(s, core.pos.x, core.pos.y, 'nova');
-    bumpTrauma(s, 1.0);
     toastNow(s, s.session && !isCoopCampaignMode() ? `THE FORGE FALLS · +${VEIN_JACKPOT_SATS * 2} sats` : 'THE FORGE FALLS');
   } else {
     toastNow(s, s.session && !isCoopCampaignMode() ? `STATION DOWN · +${VEIN_JACKPOT_SATS * 2} sats` : `STATION DOWN · +${VEIN_JACKPOT_SCORE * 2}`);

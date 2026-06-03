@@ -5811,8 +5811,26 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
 /** The full HUD overlay layer: persistent readouts, transient wave
  *  banners, and the intertitle. The intertitle draws last so its black
  *  card can cover the readouts during act-boundary intros. */
+/** Full-screen white flash for a climactic blast (THE FORGE's death). Drawn in
+ *  screen-pixel space over the world but under the HUD readouts, at state.flash
+ *  alpha. See s.flash (set in stationCoreFinale, decays in updateGame). */
+function drawScreenFlash(ctx: CanvasRenderingContext2D, state: GameState): void {
+  if (state.flash <= 0.002) return;
+  ctx.save();
+  const w = renderMode.kind === 'modern' ? renderMode.vw : WORLD_W;
+  const h = renderMode.kind === 'modern' ? renderMode.vh : WORLD_H;
+  if (renderMode.kind === 'modern') {
+    ctx.setTransform(renderMode.dpr, 0, 0, renderMode.dpr, 0, 0);
+  }
+  ctx.globalAlpha = Math.min(1, state.flash) * 0.92;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, w, h);
+  ctx.restore();
+}
+
 function drawHudLayer(ctx: CanvasRenderingContext2D, state: GameState): void {
   if (state.phase === 'title') return;
+  drawScreenFlash(ctx, state);
   drawHud(ctx, state);
   drawRadar(ctx, state);
   drawWaveBanner(ctx, state);
