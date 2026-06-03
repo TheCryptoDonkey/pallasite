@@ -1356,20 +1356,32 @@ const THE_FORGE: WaveSetPiece = {
       }
     }
 
-    // THE FORGE PLACES STONES — a lethal rock dropped from the top band now and
-    // then: a third threat axis plus shootable targets (sats/power-ups) that
-    // sustain the long fight. Depth-3 gameplay rock (campaign rule: every visible
-    // asteroid is lethal, never decorative), capped so it never piles on.
-    if (Math.floor(s.elapsed / FORGE_ROCK_MS) > Math.floor(prev / FORGE_ROCK_MS)) {
-      const loose = s.asteroids.filter(a => a.alive && a.stationPart == null && !a.isVein).length;
-      if (loose < FORGE_ROCK_CAP[d]) {
-        const types: AsteroidType[] = ['iron', 'pallasite', 'stony', 'chondrite'];
-        const t = types[Math.floor(gameRng() * types.length)];
+    // THE FORGE PLACES ITS OWN (Slice 3) — the whole arc has been "someone is
+    // placing them"; here you watch the placer do it. Instead of generic rocks
+    // the forge births foes from across the run — W4 elites, the W7/W12 iron, and
+    // chondrite that splits into a swarm — the "I placed all of these" payoff +
+    // sustaining targets. Capped across every placed foe (rocks + ufos); easy
+    // leans on the gentler rocks. Stops once the core breaks free (the chase is
+    // the bare core alone). NB: no free rig pods — a loose emitter careens off the
+    // pinned shell ring like a glitch; only rocks (which bounce normally) + ufos.
+    if (!s.forgeEscaped && Math.floor(s.elapsed / FORGE_ROCK_MS) > Math.floor(prev / FORGE_ROCK_MS)) {
+      const placed = s.asteroids.filter(a => a.alive && a.stationPart == null && !a.isVein).length
+                   + s.ufos.filter(u => u.alive).length;
+      if (placed < FORGE_ROCK_CAP[d]) {
         const rx = WORLD_W / 2 + (gameRng() - 0.5) * FORGE_ROCK_SPREAD;
-        const rock = spawnAsteroid(gameRng() < 0.5 ? 'large' : 'medium', s.wave, { x: rx, y: -40 }, { x: (gameRng() - 0.5) * 50, y: 70 + gameRng() * 50 }, t);
-        s.asteroids.push(rock);
-        spawnShockwave(s, rx, 20, rock.radius * 1.6, '#ffb24a');
-        spawnParticles(s, rx, 20, 10, '#ffb24a', 240, 360);
+        const roll = gameRng();
+        const eliteCut = d === 'easy' ? 0.18 : 0.32;   // fewer UFO harassers on easy
+        if (roll < eliteCut) {
+          // W4 — an elite UFO sweeps in from the edge.
+          s.ufos.push(makeEdgeUfo('elite', gameRng() < 0.5 ? 1 : -1));
+        } else {
+          // W7/W12 tanky iron, or a chondrite that splits into a swarm.
+          const t: AsteroidType = roll < eliteCut + 0.42 ? 'iron' : 'chondrite';
+          const rock = spawnAsteroid(gameRng() < 0.5 ? 'large' : 'medium', s.wave, { x: rx, y: -40 }, { x: (gameRng() - 0.5) * 50, y: 70 + gameRng() * 50 }, t);
+          s.asteroids.push(rock);
+          spawnShockwave(s, rx, 20, rock.radius * 1.6, '#ffb24a');
+          spawnParticles(s, rx, 20, 10, '#ffb24a', 240, 360);
+        }
       }
     }
   },
@@ -5229,6 +5241,8 @@ function stationCoreFinale(s: GameState, core: Asteroid, p: PlayerState): void {
         spawnParticles(s, a.pos.x, a.pos.y, 8, '#ffb24a', 220, 360);
       }
     }
+    for (const u of s.ufos) spawnParticles(s, u.pos.x, u.pos.y, 10, '#ff5050', 280, 500);  // forge-placed elites vaporise too
+    s.ufos = [];
     s.mines = [];
     s.enemyBullets = [];
     // END-OF-GAME DETONATION — the forge tears itself apart. A full-screen white
