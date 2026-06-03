@@ -1,6 +1,6 @@
 # Wave-25 Forge Boss — Build Spec
 
-**Status:** Slice 1 **BUILT + verified** (the Forge is the real wave-25 boss; the UFO boss is retired). Slices 2–6 pending. Uncommitted as of this build.
+**Status:** Slices 1–2 + finale polish **BUILT + verified**. S1 = the Forge is the real wave-25 boss (UFO boss retired). S2 = the meltdown gravity-ring squeeze, escalating into **the chase** (below 20% HP the core breaks free and flees like a UFO — you run it down) and an **end-of-game detonation** (screen flash + screen-filling shockwaves, held 5s before completion). Difficulty-scaled throughout (eased hard on easy). Slices 3–6 pending.
 **Purpose:** replace the weak wave-25 finale (a bouncing gun-UFO) with **THE FORGE** — a multi-layer structural boss that pays off the arc's "you meet the maker" promise. This doc is the buildable spec for **Slice 1**, plus the roadmap for Slices 2–6.
 **Provenance:** every number below was tuned in a live, in-engine spike (behind `?forge=1`, on wave 2) and playtested on desktop + a 390 px portrait phone, across difficulties. See the spike in `src/game.ts` (search `FORGE SPIKE`).
 
@@ -87,7 +87,9 @@ The campaign sim is a fixed **1280×720**, aspect-agnostic; portrait uses a rend
 ## 5. Slice plan
 
 **Slice 1 — The Forge fortress (this spec).** Productionise the spike as the real W25. Checklist in §6.
-**Slice 2 — Meltdown / Event Horizon.** Low-core-HP arena change (a gravity clamp à la W9 cage / W20 wells, a final timed burn, the horizon visual).
+**Slice 2 — Meltdown / Event Horizon. ✅ BUILT.** Below `FORGE_MELTDOWN_FRAC` (0.34) the containment fails: a ring of 5 indestructible gravity wells (`makeMine`, hp 99999) spawns and tightens `FORGE_MELTDOWN_R_START`→`R_MIN` (180→110) as the core is pushed to death, slowly counter-rotating — squeezing the fight into the pulse zone. Driven from the Forge tick; `forgeMeltdown` flag on GameState + rollback (4 sites). Wells kept **escapable** — peak strength (`FORGE_MELTDOWN_WELL_STRENGTH` 190) MUST stay < `SHIP_THRUST` (240) or you can't thrust out; the *wide range* (240) is the anti-camp, not raw strength. Wave-25's black-hole background reinforces it.
+
+**Finale: the chase + the detonation. ✅ BUILT.** Below `FORGE_ESCAPE_FRAC` (0.2) the core **breaks containment**: the rig + wells tear apart and the bare core flees like a UFO — flies straight, bounces off the walls, zig-zags to a new heading every `FORGE_ESCAPE_ZIG_MS`, leans away only when you're right on it (else roams, crossing your aim), and fires aimed shots (the 360° pulse stops). Pinned to a hittable size (the vein would otherwise shrink to a dot); speed + fire-rate difficulty-scaled (`forgeEscaped` flag). On core death (`stationCoreFinale`, gated to W25): a full-screen **white flash** (`s.flash` — a new screen-flash field rendered in `drawScreenFlash`, decayed in updateGame, rollback-serialised), screen-filling shockwaves + a ~390-particle storm + a SHORT punch (140ms, not a long freeze that would stall the burst), held by `bossHold` for the 5s grace so it plays out before the completion card. **Difficulty rebalance** baked in: easy pulse density/cadence + homing-missile turn/speed/ttl much gentler.
 **Slice 3 — Forge callbacks.** The forge births *specific* earlier-wave foes (W4 elites, W12 reclassified iron, W17 pods) instead of generic rocks — the "I placed all of these" payoff.
 **Slice 4 — The Song.** The forge is *a singer forced to forge* — a signature attack tied to the soundtrack. NOTE: gameplay can't be driven by the audio clock (wall-clock, device-dependent → co-op desync); it must be a deterministic timer with audio *dressing*.
 **Slice 5 — Return / Step-Through ending.** The completion choice screen. Build with a **local** Mark first (no Nostr).

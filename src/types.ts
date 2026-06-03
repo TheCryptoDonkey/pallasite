@@ -451,6 +451,9 @@ export interface Mine extends Entity {
   age: number;
   /** Gravity well effective range in px */
   gravityRange: number;
+  /** Per-mine gravity strength override (px/s^2). Falls back to
+   *  MINE_GRAVITY_STRENGTH when unset. The Forge meltdown wells set it high. */
+  gravityStrength?: number;
   /** Hits to destroy. Set per spawn — see MINE_HP_BASE / wave scaling. */
   hp: number;
   /** Hit-flash decay 0..1 */
@@ -728,6 +731,14 @@ export interface GameState {
    *  announced exposed. On GameState (not a module var) so co-op lockstep +
    *  rollback replay stay deterministic. Reset when the Forge wave begins. */
   forgeBreached: boolean;
+  /** THE FORGE (wave 25) — true once the core drops below FORGE_MELTDOWN_FRAC
+   *  and the collapsing gravity-well ring has spawned (Event Horizon). Same
+   *  determinism rationale as forgeBreached; reset when the Forge wave begins. */
+  forgeMeltdown: boolean;
+  /** THE FORGE (wave 25) — true once the core drops below FORGE_ESCAPE_FRAC and
+   *  breaks containment (the chase phase): the rig + wells blow and the bare core
+   *  flees. Same determinism rationale; reset when the Forge wave begins. */
+  forgeEscaped: boolean;
 
   /** 600bn Defender bonus wave (`?defender=1`). When true, council
    *  asteroids drift through the wide arena as defendees and the
@@ -750,6 +761,12 @@ export interface GameState {
    *  not frozen). Set on milestone moments to give a punch a frame of
    *  weight; the loop skips updateGame while this is positive. */
   hitStopSteps: number;
+
+  /** Full-screen white-flash intensity 0..1 (renderer draws a fading white
+   *  overlay at this alpha). Set to 1 for a climactic blast (THE FORGE's death);
+   *  decays each frame. Held during a hit-stop so a white-out punch precedes the
+   *  burst. Cosmetic, but on GameState (+ rollback) so it stays deterministic. */
+  flash: number;
 
   /** Deferred sim transitions pending against the sim clock — the
    *  deterministic replacement for wall-clock setTimeout deferrals.
@@ -990,17 +1007,36 @@ export const FORGE_ROCK_SPREAD = 300;                 // forged rocks drop from 
 export const FORGE_CORE_HP: Record<'easy' | 'normal' | 'hard', number> = { easy: 90, normal: 140, hard: 200 };
 export const FORGE_VENT_HP: Record<'easy' | 'normal' | 'hard', number> = { easy: 4, normal: 5, hard: 5 };
 export const FORGE_MISSILE_CAP: Record<'easy' | 'normal' | 'hard', number> = { easy: 1, normal: 2, hard: 3 };
-export const FORGE_MISSILE_SPEED_MUL: Record<'easy' | 'normal' | 'hard', number> = { easy: 0.78, normal: 1, hard: 1 };
-export const FORGE_MISSILE_TTL_MUL: Record<'easy' | 'normal' | 'hard', number> = { easy: 0.6, normal: 1, hard: 1 };
-export const FORGE_MISSILE_TURN_MUL: Record<'easy' | 'normal' | 'hard', number> = { easy: 0.45, normal: 1, hard: 1 };
-export const FORGE_PULSE_DENSITY_MUL: Record<'easy' | 'normal' | 'hard', number> = { easy: 0.6, normal: 1, hard: 1 };
-export const FORGE_PULSE_CADENCE_MUL: Record<'easy' | 'normal' | 'hard', number> = { easy: 1.3, normal: 1, hard: 1 };
+export const FORGE_MISSILE_SPEED_MUL: Record<'easy' | 'normal' | 'hard', number> = { easy: 0.66, normal: 1, hard: 1 };
+export const FORGE_MISSILE_TTL_MUL: Record<'easy' | 'normal' | 'hard', number> = { easy: 0.42, normal: 1, hard: 1 };
+export const FORGE_MISSILE_TURN_MUL: Record<'easy' | 'normal' | 'hard', number> = { easy: 0.25, normal: 1, hard: 1 };  // easy: barely homes — out-jukeable
+export const FORGE_PULSE_DENSITY_MUL: Record<'easy' | 'normal' | 'hard', number> = { easy: 0.5, normal: 1, hard: 1 };
+export const FORGE_PULSE_CADENCE_MUL: Record<'easy' | 'normal' | 'hard', number> = { easy: 1.8, normal: 1, hard: 1 };  // easy: pulses far less often
 export const FORGE_ROCK_CAP: Record<'easy' | 'normal' | 'hard', number> = { easy: 2, normal: 3, hard: 3 };
 
 /** Pulse density (bullets/ring) + cadence (ms) by core-HP band — ramps as the
  *  core is worn down. Multiplied by the difficulty muls above. */
 export const FORGE_PULSE_DENSITY = { fresh: 10, mid: 13, low: 18 };
 export const FORGE_PULSE_CADENCE_MS = { fresh: 3800, mid: 3200, low: 2600 };
+
+// Meltdown / Event Horizon (Slice 2): below FORGE_MELTDOWN_FRAC the forge's
+// containment fails — a ring of (indestructible) gravity wells appears and
+// tightens toward the core as you push it to death, squeezing the fight into
+// the pulse zone. Reuses the mine gravity-well + W20-pentagon idea.
+export const FORGE_MELTDOWN_FRAC = 0.34;              // core-HP fraction that triggers the meltdown
+export const FORGE_MELTDOWN_WELLS = 5;                // gravity wells in the collapsing ring
+export const FORGE_MELTDOWN_R_START = 180;            // ring radius at onset (outside the shell)
+export const FORGE_MELTDOWN_R_MIN = 110;              // ring radius at core death (max squeeze)
+export const FORGE_MELTDOWN_SPIN = -FORGE_SPIN * 0.55; // rad/ms — the ring counter-rotates as it closes
+export const FORGE_MELTDOWN_WELL_RANGE = 240;         // wide pull field (vs 150) — no calm camp spot; the WIDTH is the anti-camp
+export const FORGE_MELTDOWN_WELL_STRENGTH = 190;      // MUST stay < SHIP_THRUST (240) or the well is inescapable; 190 = firm but you can thrust out
+
+// Escape / the chase (final phase): below FORGE_ESCAPE_FRAC the core breaks
+// containment — the rig + wells tear apart and the bare core FLEES the nearest
+// pilot, weaving and steering off the walls. You run it down to finish it.
+export const FORGE_ESCAPE_FRAC = 0.2;                 // core HP fraction that triggers the breakout
+export const FORGE_ESCAPE_SPEED = 165;                // px/s base UFO drift (×0.8 easy / ×1.12 hard); well under the ship's ~600 terminal
+export const FORGE_ESCAPE_ZIG_MS = 800;               // how often the fleeing core zig-zags to a new heading + fires (UFO-style)
 
 /** Grab-everything grace window after a wave is cleared, before the warp.
  *  Lets the player scoop loose coins / power-ups; ship is invulnerable for
