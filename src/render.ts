@@ -10,7 +10,7 @@ import type {
   GameState, Ship, Asteroid, AsteroidType, Bullet, Coin, Particle, Ufo, Mine, PowerUp, ReplaySnapshot, Debris, Shockwave, HyperspaceEffect,
 } from './types.js';
 import {
-  WORLD_W, WORLD_H, WARP_MS, WAVE_CLEAR_GRACE_MS, waveName, waveSubtitle, waveTagline, waveSetPieceBanner, POWERUP_CONFIG,
+  WORLD_W, WORLD_H, WARP_MS, WAVE_CLEAR_GRACE_MS, waveName, waveSubtitle, waveTagline, waveSetPieceBanner, POWERUP_CONFIG, FORGE_CAM_BIAS,
   REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS, COMBO_MAX,
   intertitleForWave, INTERTITLE_MS,
 } from './types.js';
@@ -5875,7 +5875,15 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     scale = renderMode.vh / WORLD_H;        // full world height fills the viewport
     camStrip = renderMode.vw / scale;       // visible world width
     camStripY = renderMode.vh / scale;
-    const sx = p0.ship.pos.x;
+    // Boss framing bias: when a station/forge core is on the field, pull the
+    // follow target most of the way toward it, so a corner-spawned ship and the
+    // big central boss frame together on portrait. Without this the follow-cam
+    // centres on the ship and clips the boss off a phone's edge. Render-only —
+    // the sim never reads camX, so co-op lockstep is unaffected. Wrap-aware.
+    const bossCore = state.asteroids.find(a => a.alive && a.stationPart === 'core');
+    const sx = bossCore
+      ? wrapInto(p0.ship.pos.x + wrapDelta(p0.ship.pos.x, bossCore.pos.x) * FORGE_CAM_BIAS)
+      : p0.ship.pos.x;
     const sy = p0.ship.pos.y;
     if (!camInit) {
       // Fresh run, post-death respawn, or a rotation into portrait: snap on.

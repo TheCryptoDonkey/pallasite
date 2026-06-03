@@ -40,6 +40,9 @@ import {
   VEIN_RETALIATE_PER_N_HITS, VEIN_SHARD_SPEED, VEIN_SHARD_TTL_MS, VEIN_SHARD_RADIUS,
   STATION_ARMS, STATION_ARM_R, STATION_EMITTER_R, STATION_ROT_SPEED, STATION_EMITTER_HP, STATION_AMBIENT_MS,
   STATION_MISSILE_MS, STATION_MISSILE_CAP, STATION_MISSILE_SPEED, STATION_MISSILE_TURN, STATION_MISSILE_TTL_MS, STATION_MISSILE_RADIUS,
+  FORGE_SPAWN, FORGE_CENTRE_Y, FORGE_SEGMENTS, FORGE_RING_R, FORGE_CORE_R, FORGE_SEG_R, FORGE_SPIN, FORGE_ROCK_MS, FORGE_ROCK_SPREAD,
+  FORGE_CORE_HP, FORGE_VENT_HP, FORGE_MISSILE_CAP, FORGE_MISSILE_SPEED_MUL, FORGE_MISSILE_TTL_MUL, FORGE_MISSILE_TURN_MUL,
+  FORGE_PULSE_DENSITY, FORGE_PULSE_CADENCE_MS, FORGE_PULSE_DENSITY_MUL, FORGE_PULSE_CADENCE_MUL, FORGE_ROCK_CAP,
   VEIN_JACKPOT_SATS, VEIN_JACKPOT_SCORE, VEIN_SPAWN_CHANCE,
   VEIN_SPAWN_MIN_WAVE, VEIN_SPAWN_MAX_WAVE, VEIN_SWARM_DELAY_MS,
   VEIN_POWERUP_PER_N_HITS, VEIN_NOVA_DAMAGE,
@@ -139,6 +142,7 @@ export function makeInitialState(): GameState {
     rng: null,
     nextEntityId: 0,
     bossDefeated: false,
+    forgeBreached: false,
     defenderMode: false,
     defenderTimerMs: 0,
     defenderCouncilLost: 0,
@@ -1086,6 +1090,195 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
   },
 };
 
+// ── THE FORGE — wave-25 finale boss ──────────────────────────────────────────
+// The campaign's climax (replaces the old bouncing gun-UFO). Peel the rotating
+// shell of destructible pods to expose the core; the core wakes on its first hit
+// and fires a telegraphed 360° pulse (ramping as it's worn down); the forge
+// places lethal rocks throughout. Built on EAGLE STATION's rig tech (stationPart
+// core/arm/emitter), so the pods + core render for free on the 2D + mesh tiers.
+// Tuning lives in FORGE_* (types.ts). Portrait framing is handled by the
+// follow-cam bias in render.ts (FORGE_CAM_BIAS). All spawn randomness routes
+// through gameRng so co-op lockstep stays bit-identical; the only Math.random in
+// the spawn path is cosmetic (rotation/hue/shape, excluded from the canary).
+// See docs/plans/2026-06-03-wave25-forge-boss.md.
+
+/** The core's signature: a dense 360° bullet pulse. Rotation is randomised per
+ *  beat so a camper can't sit in a fixed gap between spokes. Reuses the enemy-
+ *  bullet shape + UFO bullet constants; only the cosmetic rotation uses gameRng. */
+function forgeCorePulse(s: GameState, core: Asteroid, n: number): void {
+  const mods = currentMods();
+  const baseRot = gameRng() * (Math.PI * 2);
+  const speed = UFO_BULLET_SPEED * UFO_BULLET_SPEED_MUL.boss * mods.ufoBulletSpeedMul * 0.75;
+  for (let i = 0; i < n; i++) {
+    const ang = baseRot + (Math.PI * 2 * i) / n;
+    s.enemyBullets.push({
+      pos: { x: core.pos.x, y: core.pos.y },
+      vel: { x: Math.cos(ang) * speed, y: Math.sin(ang) * speed },
+      radius: BULLET_RADIUS + 1,
+      alive: true,
+      id: nextStreamEntityId(),
+      ttl: UFO_BULLET_TTL_MS,
+      pierceLeft: 0,
+      caromHit: false,
+      wrapped: false,
+      hasLanded: false,
+      owner: -1,
+    });
+  }
+  spawnShockwave(s, core.pos.x, core.pos.y, core.radius * 2.6, '#9be15d');
+  spawnParticles(s, core.pos.x, core.pos.y, 20, '#9be15d', 340, 560);
+  bumpTrauma(s, 0.3);
+  hitStop(s, 40);
+  audio.ufoShoot();
+}
+
+const THE_FORGE: WaveSetPiece = {
+  // A real corner of the play area, not dead-below. On portrait the boss-wave
+  // camera bias (render.ts, FORGE_CAM_BIAS) frames the ship + the central Forge
+  // together, so the corner reads on a phone too — not just landscape.
+  playerSpawn: FORGE_SPAWN,
+  setup(s) {
+    s.forgeBreached = false;
+    const d = currentDifficulty();
+    const cx = WORLD_W / 2, cy = FORGE_CENTRE_Y;
+    // Core — a vein at centre. Sealed only in the emergent sense: the shell
+    // blocks fire, so it's unreachable until you blow a gap facing it.
+    const core = spawnAsteroid('large', s.wave, { x: cx, y: cy }, { x: 0, y: 0 }, 'pallasite', { vein: true });
+    core.hp = FORGE_CORE_HP[d]; core.hpMax = FORGE_CORE_HP[d];
+    core.radius = FORGE_CORE_R;
+    core.stationPart = 'core';
+    s.asteroids.push(core);
+    // The shell — FORGE_SEGMENTS destructible pods evenly spaced on the ring,
+    // railed by the spin tick. Each one you kill opens its slot as a firing line.
+    for (let i = 0; i < FORGE_SEGMENTS; i++) {
+      const slot = (Math.PI * 2 * i) / FORGE_SEGMENTS - Math.PI / 2;
+      const seg = spawnAsteroid('small', s.wave, { x: cx + Math.cos(slot) * FORGE_RING_R, y: cy + Math.sin(slot) * FORGE_RING_R }, { x: 0, y: 0 }, 'pallasite');
+      seg.radius = FORGE_SEG_R;
+      seg.hp = FORGE_VENT_HP[d]; seg.hpMax = FORGE_VENT_HP[d];
+      seg.stationPart = 'emitter';
+      seg.stationSlot = slot;
+      s.asteroids.push(seg);
+    }
+  },
+  tick(s, dt) {
+    const d = currentDifficulty();
+    const cx = WORLD_W / 2, cy = FORGE_CENTRE_Y;
+    const prev = s.elapsed - dt * 1000;
+    const spin = s.elapsed * FORGE_SPIN;
+    // Rail the live shell segments around the core (pure geometry, deterministic).
+    for (const a of s.asteroids) {
+      if (!a.alive || a.stationPart !== 'emitter') continue;
+      const ang = (a.stationSlot ?? 0) + spin;
+      a.pos.x = cx + Math.cos(ang) * FORGE_RING_R;
+      a.pos.y = cy + Math.sin(ang) * FORGE_RING_R;
+      a.vel.x = 0; a.vel.y = 0;
+      a.rot = ang;
+    }
+    // Shell pods lob homing missiles at the nearest pilot — peeling under fire is
+    // what makes it a fight, not target practice. (Built on EAGLE STATION; the
+    // missiles steer at a difficulty-scaled turn cap in the enemy-bullet update.)
+    const missileMs = STATION_MISSILE_MS[d];
+    if (Math.floor(s.elapsed / missileMs) > Math.floor(prev / missileMs)) {
+      const missiles = s.enemyBullets.filter(b => b.alive && b.homing).length;
+      const pods = s.asteroids.filter(a => a.alive && a.stationPart === 'emitter');
+      if (pods.length > 0 && missiles < FORGE_MISSILE_CAP[d]) {
+        const em = pods[Math.floor(gameRng() * pods.length)];
+        let tx = cx, ty = WORLD_H, bestSq = Infinity;
+        for (const pl of s.players) {
+          if (!pl.ship.alive) continue;
+          const ddx = pl.ship.pos.x - em.pos.x, ddy = pl.ship.pos.y - em.pos.y;
+          const dSq = ddx * ddx + ddy * ddy;
+          if (dSq < bestSq) { bestSq = dSq; tx = pl.ship.pos.x; ty = pl.ship.pos.y; }
+        }
+        const aim = Math.atan2(ty - em.pos.y, tx - em.pos.x);
+        const mspd = STATION_MISSILE_SPEED * FORGE_MISSILE_SPEED_MUL[d];
+        s.enemyBullets.push({
+          pos: { x: em.pos.x + Math.cos(aim) * em.radius * 1.4, y: em.pos.y + Math.sin(aim) * em.radius * 1.4 },
+          vel: { x: Math.cos(aim) * mspd, y: Math.sin(aim) * mspd },
+          radius: STATION_MISSILE_RADIUS,
+          alive: true,
+          id: nextStreamEntityId(),
+          ttl: STATION_MISSILE_TTL_MS * FORGE_MISSILE_TTL_MUL[d],
+          pierceLeft: 0,
+          caromHit: false,
+          wrapped: false,
+          hasLanded: false,
+          owner: -1,
+          homing: true,
+        });
+        em.hitFlash = 1;
+        spawnShockwave(s, em.pos.x, em.pos.y, em.radius * 1.9, '#ffb24a');
+        spawnParticles(s, em.pos.x, em.pos.y, 14, '#ffb24a', 300, 380);
+        audio.ufoShoot();
+      }
+    }
+    const core = s.asteroids.find(a => a.alive && a.stationPart === 'core');
+
+    // BREACH beat — once half the shell is down, announce the core exposed.
+    const segsAlive = s.asteroids.filter(a => a.alive && a.stationPart === 'emitter').length;
+    if (!s.forgeBreached && segsAlive <= Math.floor(FORGE_SEGMENTS / 2)) {
+      s.forgeBreached = true;
+      if (core) {
+        spawnShockwave(s, core.pos.x, core.pos.y, core.radius * 3, '#9be15d');
+        spawnParticles(s, core.pos.x, core.pos.y, 40, '#9be15d', 280, 700);
+      }
+      bumpTrauma(s, 0.6);
+      hitStop(s, 260);
+      audio.pulseDuck(0.45, 280);
+      toastNow(s, 'SHELL BREACHED · CORE EXPOSED');
+    }
+
+    // THE FORGE PULSES — the core wakes on its first hit, then every few seconds
+    // it charges (telegraph glow) and releases a dense 360° ring of bullets.
+    // Rotation is randomised each beat (no fixed-gap camp); density + cadence
+    // ramp as the core is worn down. See forgeCorePulse.
+    if (core && core.hp < core.hpMax) {
+      const frac = core.hp / core.hpMax;
+      const band = frac < 0.34 ? 'low' : frac < 0.67 ? 'mid' : 'fresh';
+      const pulseMs = FORGE_PULSE_CADENCE_MS[band] * FORGE_PULSE_CADENCE_MUL[d];
+      const pulseN = Math.max(5, Math.round(FORGE_PULSE_DENSITY[band] * FORGE_PULSE_DENSITY_MUL[d]));
+      // Telegraph: core glows + sheds sparks in the ~440ms before release.
+      const toRelease = pulseMs - (s.elapsed % pulseMs);
+      if (toRelease < 440) {
+        const k = 1 - toRelease / 440;
+        core.hitFlash = Math.max(core.hitFlash, 0.35 + 0.65 * k);
+        if (Math.floor(s.elapsed / 80) > Math.floor(prev / 80)) {
+          spawnParticles(s, core.pos.x, core.pos.y, 3, '#9be15d', 140 + 240 * k, 240);
+        }
+      }
+      if (Math.floor(s.elapsed / pulseMs) > Math.floor(prev / pulseMs)) {
+        forgeCorePulse(s, core, pulseN);
+      }
+    }
+
+    // THE FORGE PLACES STONES — a lethal rock dropped from the top band now and
+    // then: a third threat axis plus shootable targets (sats/power-ups) that
+    // sustain the long fight. Depth-3 gameplay rock (campaign rule: every visible
+    // asteroid is lethal, never decorative), capped so it never piles on.
+    if (Math.floor(s.elapsed / FORGE_ROCK_MS) > Math.floor(prev / FORGE_ROCK_MS)) {
+      const loose = s.asteroids.filter(a => a.alive && a.stationPart == null && !a.isVein).length;
+      if (loose < FORGE_ROCK_CAP[d]) {
+        const types: AsteroidType[] = ['iron', 'pallasite', 'stony', 'chondrite'];
+        const t = types[Math.floor(gameRng() * types.length)];
+        const rx = WORLD_W / 2 + (gameRng() - 0.5) * FORGE_ROCK_SPREAD;
+        const rock = spawnAsteroid(gameRng() < 0.5 ? 'large' : 'medium', s.wave, { x: rx, y: -40 }, { x: (gameRng() - 0.5) * 50, y: 70 + gameRng() * 50 }, t);
+        s.asteroids.push(rock);
+        spawnShockwave(s, rx, 20, rock.radius * 1.6, '#ffb24a');
+        spawnParticles(s, rx, 20, 10, '#ffb24a', 240, 360);
+      }
+    }
+  },
+  // Note: wave 25's clear is governed by the engine's wave25Clear gate
+  // (s.bossDefeated, set when the core dies — see forgeCoreFinale), not this
+  // isCleared. Kept as the documented intent + a fallback for non-final use.
+  isCleared(s) {
+    return !s.asteroids.some(a => a.alive && a.stationPart === 'core');
+  },
+  suppressDefaultMines: true,
+  suppressDefaultUfos: true,
+};
+WAVE_SET_PIECES[FINAL_WAVE] = THE_FORGE;
+
 /** Vein HP scaled by current difficulty. Easy gets a shorter engagement
  *  so the event stays fun on low-pressure runs; hard runs commit to a
  *  proper marathon with the long fight balanced by power-up drops at
@@ -1587,14 +1780,9 @@ export function beginWave(s: GameState, wave: number): void {
     s.nextUfoSpawn = 8_000;
     s.nextMineSpawn = 10 * 60 * 1000;
   } else if (setPiece) {
+    // Wave 25 is THE FORGE (WAVE_SET_PIECES[FINAL_WAVE]); its core death sets
+    // s.bossDefeated, which the wave25Clear gate reads (see stationCoreFinale).
     setPiece.setup(s);
-  } else if (wave === FINAL_WAVE) {
-    // Wave 25: BOSS arena — spawn boss + lighter asteroid garnish
-    s.ufos.push(makeBossUfo());
-    audio.ufoSirenStart();
-    for (let i = 0; i < 5; i++) {
-      s.asteroids.push(spawnAsteroid('large', wave));
-    }
   } else {
     // Standard wave — count ramps 5 to 13 then plateaus, then scaled
     // by the admin-tunable asteroid_count_multiplier. 1.0 keeps the
@@ -2285,25 +2473,6 @@ function clearStage(s: GameState, opts: { autoCollect: boolean }): void {
 /** UFO species is locked per wave — see UFO_TYPE_BY_WAVE. */
 function pickUfoType(wave: number): UfoType {
   return UFO_TYPE_BY_WAVE[wave - 1] ?? 'cruiser';
-}
-
-function makeBossUfo(): Ufo {
-  return {
-    pos: { x: WORLD_W / 2, y: WORLD_H / 3 },
-    vel: { x: 30, y: 0 },
-    radius: UFO_RADIUS.boss,
-    alive: true,
-    id: nextStreamEntityId(),
-    type: 'boss',
-    hp: UFO_HP.boss,
-    dir: 1,
-    zigTimer: UFO_ZIG_INTERVAL_MS,
-    shootTimer: 1500,
-    lifetime: Number.POSITIVE_INFINITY,
-    blink: 0,
-    hitFlash: 0,
-    bossPhase: 1,
-  };
 }
 
 function spawnUfo(s: GameState): void {
@@ -3858,6 +4027,9 @@ export function updateGame(s: GameState): void {
   s.bullets = s.bullets.filter(b => b.alive);
 
   // ── Enemy bullets (don't wrap — feel different) ──
+  // Homing-missile steering is dumbed WAY down on easy so they're out-jukeable
+  // instead of inescapable (shared by THE FORGE wave-25 boss + EAGLE STATION).
+  const homingTurnScale = FORGE_MISSILE_TURN_MUL[currentDifficulty()];
   for (const b of s.enemyBullets) {
     // Homing missiles (EAGLE STATION) steer toward the nearest living pilot each
     // frame, capped turn so they're dodgeable + shoot-downable. Constant speed.
@@ -3872,7 +4044,7 @@ export function updateGame(s: GameState): void {
       if (found) {
         const speed = Math.hypot(b.vel.x, b.vel.y) || 1;
         const cur = Math.atan2(b.vel.y, b.vel.x);
-        const turn = STATION_MISSILE_TURN * dt;
+        const turn = STATION_MISSILE_TURN * homingTurnScale * dt;
         const na = cur + Math.max(-turn, Math.min(turn, angleDelta(cur, Math.atan2(ty - b.pos.y, tx - b.pos.x))));
         b.vel.x = Math.cos(na) * speed;
         b.vel.y = Math.sin(na) * speed;
@@ -4931,7 +5103,27 @@ function stationCoreFinale(s: GameState, core: Asteroid, p: PlayerState): void {
   if (s.session && !isCoopCampaignMode()) spawnCoins(s, core.pos.x, core.pos.y, VEIN_JACKPOT_SATS * 3, 6, 'sat');
   spawnCoins(s, core.pos.x, core.pos.y, 0, 11, 'dust');
   recordStreamEvent('vc', core.pos.x, core.pos.y);
-  toastNow(s, s.session && !isCoopCampaignMode() ? `STATION DOWN · +${VEIN_JACKPOT_SATS * 2} sats` : `STATION DOWN · +${VEIN_JACKPOT_SCORE * 2}`);
+  // THE FORGE (wave 25) is the campaign finale — the core's fall is the run's
+  // victory, so it carries what the old boss-UFO kill did. EAGLE STATION (W17)
+  // keeps the lighter "STATION DOWN" beat.
+  if (s.wave === FINAL_WAVE) {
+    s.bossDefeated = true;                         // the wave25Clear gate reads this
+    markAchievement(s, 'first-boss');
+    if (markSkinUnlocked('halo')) toastNow(s, 'HALO SKIN UNLOCKED');
+    // Sweep any forged rocks still loose so the wave clears on the core's fall
+    // (wave25Clear needs the field empty), then a guaranteed nova for stragglers.
+    for (const a of s.asteroids) {
+      if (a.alive && a.stationPart == null && !a.terrain) {
+        a.alive = false;
+        spawnParticles(s, a.pos.x, a.pos.y, 8, '#ffb24a', 220, 360);
+      }
+    }
+    maybeDropPowerUp(s, core.pos.x, core.pos.y, 'nova');
+    bumpTrauma(s, 1.0);
+    toastNow(s, s.session && !isCoopCampaignMode() ? `THE FORGE FALLS · +${VEIN_JACKPOT_SATS * 2} sats` : 'THE FORGE FALLS');
+  } else {
+    toastNow(s, s.session && !isCoopCampaignMode() ? `STATION DOWN · +${VEIN_JACKPOT_SATS * 2} sats` : `STATION DOWN · +${VEIN_JACKPOT_SCORE * 2}`);
+  }
   maybeExtraLife(s, p);
 }
 
