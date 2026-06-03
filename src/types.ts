@@ -1035,8 +1035,9 @@ export const FORGE_MELTDOWN_WELL_STRENGTH = 190;      // MUST stay < SHIP_THRUST
 // containment — the rig + wells tear apart and the bare core FLEES the nearest
 // pilot, weaving and steering off the walls. You run it down to finish it.
 export const FORGE_ESCAPE_FRAC = 0.2;                 // core HP fraction that triggers the breakout
-export const FORGE_ESCAPE_SPEED = 165;                // px/s base UFO drift (×0.8 easy / ×1.12 hard); well under the ship's ~600 terminal
+export const FORGE_ESCAPE_SPEED = 165;                // px/s base UFO drift (×0.72 easy / ×1.12 hard); well under the ship's ~600 terminal
 export const FORGE_ESCAPE_ZIG_MS = 800;               // how often the fleeing core zig-zags to a new heading + fires (UFO-style)
+export const FORGE_ESCAPE_HP: Record<'easy' | 'normal' | 'hard', number> = { easy: 5, normal: 8, hard: 11 };  // chase = a SHORT punchy run-down, not an 18-hit grind
 
 /** Grab-everything grace window after a wave is cleared, before the warp.
  *  Lets the player scoop loose coins / power-ups; ship is invulnerable for

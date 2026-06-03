@@ -44,7 +44,7 @@ import {
   FORGE_CORE_HP, FORGE_VENT_HP, FORGE_MISSILE_CAP, FORGE_MISSILE_SPEED_MUL, FORGE_MISSILE_TTL_MUL, FORGE_MISSILE_TURN_MUL,
   FORGE_PULSE_DENSITY, FORGE_PULSE_CADENCE_MS, FORGE_PULSE_DENSITY_MUL, FORGE_PULSE_CADENCE_MUL, FORGE_ROCK_CAP,
   FORGE_MELTDOWN_FRAC, FORGE_MELTDOWN_WELLS, FORGE_MELTDOWN_R_START, FORGE_MELTDOWN_R_MIN, FORGE_MELTDOWN_SPIN,
-  FORGE_MELTDOWN_WELL_RANGE, FORGE_MELTDOWN_WELL_STRENGTH, FORGE_ESCAPE_FRAC, FORGE_ESCAPE_SPEED, FORGE_ESCAPE_ZIG_MS,
+  FORGE_MELTDOWN_WELL_RANGE, FORGE_MELTDOWN_WELL_STRENGTH, FORGE_ESCAPE_FRAC, FORGE_ESCAPE_SPEED, FORGE_ESCAPE_ZIG_MS, FORGE_ESCAPE_HP,
   VEIN_JACKPOT_SATS, VEIN_JACKPOT_SCORE, VEIN_SPAWN_CHANCE,
   VEIN_SPAWN_MIN_WAVE, VEIN_SPAWN_MAX_WAVE, VEIN_SWARM_DELAY_MS,
   VEIN_POWERUP_PER_N_HITS, VEIN_NOVA_DAMAGE,
@@ -1300,6 +1300,7 @@ const THE_FORGE: WaveSetPiece = {
       // set here each frame; the asteroid update integrates the position.
       if (!s.forgeEscaped && frac < FORGE_ESCAPE_FRAC) {
         s.forgeEscaped = true;
+        core.hp = Math.min(core.hp, FORGE_ESCAPE_HP[d]);  // the chase is a SHORT run-down, not a long grind on a moving target
         for (const a of s.asteroids) {                 // the rig tears apart — pods blow
           if (a.alive && a.stationPart != null && a !== core) {
             a.alive = false;
@@ -1323,8 +1324,8 @@ const THE_FORGE: WaveSetPiece = {
       if (s.forgeEscaped) {
         // Keep the bare core a CONSISTENT, hittable size — the vein would otherwise
         // shrink to a near-invisible dot at this HP, making the chase brutal.
-        core.radius = FORGE_CORE_R;
-        const escSpeed = FORGE_ESCAPE_SPEED * (d === 'easy' ? 0.8 : d === 'hard' ? 1.12 : 1);
+        core.radius = FORGE_CORE_R * 1.5;              // a bigger, clearer target — the moving core was too small to hit
+        const escSpeed = FORGE_ESCAPE_SPEED * (d === 'easy' ? 0.72 : d === 'hard' ? 1.12 : 1);
         // Move like a UFO: fly straight, bounce off all four walls, hold a steady speed.
         const M = 70;
         if (core.pos.x < M && core.vel.x < 0) core.vel.x = -core.vel.x;
@@ -1345,7 +1346,7 @@ const THE_FORGE: WaveSetPiece = {
           // Only jink AWAY when the pilot is right on top of it; otherwise roam (often
           // crossing your aim) so you actually get shooting windows.
           const away = Math.atan2(core.pos.y - py, core.pos.x - px);
-          const heading = bestSq < 200 * 200 ? away + (gameRng() - 0.5) * 1.6 : gameRng() * Math.PI * 2;
+          const heading = bestSq < 160 * 160 ? away + (gameRng() - 0.5) * 1.6 : gameRng() * Math.PI * 2;
           core.vel.x = Math.cos(heading) * escSpeed;
           core.vel.y = Math.sin(heading) * escSpeed;
           // Aimed shot only at sensible range; eased hard on easy so the chase
