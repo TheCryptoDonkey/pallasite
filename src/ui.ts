@@ -10523,7 +10523,7 @@ function renderVersusBanner(parent: HTMLElement, state: GameState): void {
 
 function renderRunCredits(
   state: GameState,
-  opts: { headerText: string; subText?: string; isCompletion?: boolean; idleSeconds?: number },
+  opts: { headerText: string; subText?: string; isCompletion?: boolean; idleSeconds?: number; endingChoice?: 'return' | 'forged' },
 ): void {
   // 600bn flavour gets a focused conference-funnel game-over instead
   // of the standard run credits — no kofi tip, no honours, no replay
@@ -10552,6 +10552,17 @@ function renderRunCredits(
   if (opts.subText) {
     const sub = el('p', { parent: overlay, text: opts.subText });
     sub.style.cssText = 'font-size:1.1rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:-10px 0 4px;';
+  }
+
+  // Slice 5 — the chosen ending (Return / Step Through) reflected on the
+  // completion card: a tag + the Pallasite Mark welcome line. The choice itself
+  // is made on renderEndingChoice; see docs/pallasite-arc.md §6–7.
+  if (opts.endingChoice) {
+    const forged = opts.endingChoice === 'forged';
+    const tag = el('p', { parent: overlay, text: forged ? 'YOU STEPPED THROUGH · FORGESWORN' : 'YOU RETURNED' });
+    tag.style.cssText = `font-size:0.95rem;letter-spacing:0.22em;margin:6px 0 0;color:${forged ? '#9be15d' : '#8fd0ff'};text-shadow:0 0 8px ${forged ? 'rgba(155,225,93,0.45)' : 'rgba(143,208,255,0.45)'};`;
+    const line = el('p', { parent: overlay, text: forged ? 'Welcome back, forgesworn.' : 'Welcome back. The chain is shorter than you remember.' });
+    line.style.cssText = 'font:italic 0.9rem ui-monospace,monospace;color:rgba(255,245,216,0.65);letter-spacing:0.05em;margin:2px 0 8px;max-width:480px;text-align:center;';
   }
 
   // Versus banner: when this was a 2-player run (couch or duel), show both
@@ -10933,10 +10944,13 @@ export function renderCompletion(state: GameState): void {
     }, board);
     state.initialsEnteredThisRun = true;
   }
-  renderCompletionRecap(state);
+  // Slice 5 — beating the Forge earns THE CHOICE (Return / Step Through) before
+  // the recap. 600bn (Sanctum) has no W25 gate, so it goes straight to credits.
+  if (getFlavour() === '600bn') { renderCompletionRecap(state); return; }
+  renderEndingChoice(state);
 }
 
-function renderCompletionRecap(state: GameState): void {
+function renderCompletionRecap(state: GameState, choice?: 'return' | 'forged'): void {
   // 600bn flavour completion swaps the wave-25 'EVENT HORIZON ·
   // BREACHED' framing for canonical 600B copy — wave 1 IS the whole
   // experience here, so 'COMPLETE' is what mattered.
@@ -10945,7 +10959,58 @@ function renderCompletionRecap(state: GameState): void {
     headerText: is600bn ? '$600B WAVE COMPLETE' : 'PALLASITE COMPLETE',
     subText: is600bn ? 'COUNCIL CLEARED' : 'EVENT HORIZON · BREACHED',
     isCompletion: true,
+    endingChoice: choice,
   });
+}
+
+/** The Pallasite Mark — the player's chosen W25 ending, persisted locally.
+ *  Slice 5 stores it; Slice 6 will publish it as a self-signed NIP-85 claim
+ *  (docs/pallasite-arc.md §6–7). 'return' = carried the chain home; 'forged' =
+ *  stepped through the gate. */
+const PALLASITE_MARK_KEY = 'pallasite:mark';
+export function getPallasiteMark(): { mark: 'return' | 'forged'; wave: number; at: string } | null {
+  try {
+    const raw = localStorage.getItem(PALLASITE_MARK_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw);
+    return (v && (v.mark === 'return' || v.mark === 'forged')) ? v : null;
+  } catch { return null; }
+}
+function setPallasiteMark(mark: 'return' | 'forged'): void {
+  try { localStorage.setItem(PALLASITE_MARK_KEY, JSON.stringify({ mark, wave: 25, at: new Date().toISOString() })); } catch { /* ignore */ }
+}
+
+/** THE GATE — the W25 ending choice. Beating the Forge earns it: carry the chain
+ *  home (Return) or step through and become one of the makers (Forged). Cosmetic
+ *  + narrative; the choice persists to the Mark. Two lines of arc copy per
+ *  docs/pallasite-arc.md §3.4. */
+function renderEndingChoice(state: GameState): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  overlay.style.background = 'rgba(0, 0, 0, 0.9)';
+  setupOverlayArrowNav(overlay);
+
+  el('h2', { parent: overlay, text: 'THE GATE' }).style.cssText = 'margin:0 0 6px;font-size:1.7rem;letter-spacing:0.32em;color:var(--hud-yellow);text-shadow:0 0 14px rgba(255,216,74,0.5);';
+  el('p', { parent: overlay, text: 'The forge falls. The line ends here.' }).style.cssText = 'margin:0;font:italic 0.95rem ui-monospace,monospace;color:rgba(255,245,216,0.7);letter-spacing:0.08em;';
+  el('p', { parent: overlay, text: 'Stand or fall. Then choose.' }).style.cssText = 'margin:2px 0 20px;font:italic 0.95rem ui-monospace,monospace;color:rgba(255,245,216,0.7);letter-spacing:0.08em;';
+
+  const choices = el('div', { parent: overlay });
+  choices.style.cssText = 'display:flex;flex-direction:column;gap:14px;width:100%;max-width:480px;';
+
+  const makeChoice = (glyph: string, title: string, body: string, choice: 'return' | 'forged'): void => {
+    const btn = el('button', { className: 'menu-btn', parent: choices });
+    btn.style.cssText = 'display:flex;flex-direction:column;align-items:flex-start;gap:4px;text-align:left;padding:14px 18px;width:100%;white-space:normal;';
+    el('span', { parent: btn, text: `${glyph}  ${title}` }).style.cssText = 'font-size:1.1rem;letter-spacing:0.12em;color:var(--hud-yellow);';
+    el('span', { parent: btn, text: body }).style.cssText = 'font-size:0.82rem;color:rgba(220,210,255,0.78);letter-spacing:0.04em;line-height:1.45;';
+    btn.addEventListener('click', () => chooseEnding(state, choice));
+  };
+  makeChoice('↩', 'RETURN', 'Carry the chain home. Warn the others. Bank the run.', 'return');
+  makeChoice('⟴', 'STEP THROUGH', 'Keep the chain. Become one of the makers. The next run knows your name.', 'forged');
+}
+
+function chooseEnding(state: GameState, choice: 'return' | 'forged'): void {
+  setPallasiteMark(choice);
+  renderCompletionRecap(state, choice);
 }
 
 /**
