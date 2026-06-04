@@ -1591,7 +1591,17 @@ function musicLooksStalled(): boolean {
   if (snap.failedFlag) return true;
   if (snap.muted) return true;
   if (snap.paused) return true;
-  if ((snap.readyState ?? 0) === 0) return true;
+  // readyState 0 is NOT a stall while the element is actively loading
+  // (networkState 2 === NETWORK_LOADING). recoverMusicFromGesture's cure is
+  // musicResetElements() — a full wipe + rebuild — so flagging a mid-load
+  // element here means every gameplay touch past the 650ms gesture throttle
+  // aborts the in-flight fetch and restarts it from zero. On iOS a 4MB .m4a
+  // takes far longer than 650ms, so the element could NEVER reach metadata:
+  // the recovery loop was the very thing keeping music at rs0. A genuinely
+  // wedged loader is recovered per-element (no wipe) by the verify pass in
+  // music.ts after an 8s loading grace. Only treat rs0 as a stall once the
+  // element is no longer loading (idle/empty/no-source).
+  if ((snap.readyState ?? 0) === 0 && (snap.networkState ?? 0) !== 2) return true;
   if ((snap.networkState ?? 0) === 3 && (snap.readyState ?? 0) < 2) return true;
   return false;
 }
@@ -2305,15 +2315,36 @@ function setupDiagHud(): void {
   };
   requestAnimationFrame(tick);
 
+  // Capture the latest [music] diagnostic + load failure. music.ts already
+  // dispatches these (the reasons were previously only visible in a tethered
+  // console); mirroring the last one on-screen turns "still no music" into a
+  // single conclusive screenshot — it literally reads back "readyState=0 while
+  // network loading — waiting", "forcing load()+play()", "play() rejected:
+  // NotAllowedError", etc., so the failure mode no longer needs guessing.
+  let musicLog = '';
+  let musicLogAt = 0;
+  const noteMusic = (msg: string): void => { musicLog = msg; musicLogAt = performance.now(); };
+  window.addEventListener('pallasite:music-diag', (e: Event) => {
+    const d = (e as CustomEvent).detail as { msg?: string } | undefined;
+    if (d?.msg) noteMusic(d.msg);
+  });
+  window.addEventListener('pallasite:music-load-failed', (e: Event) => {
+    const d = (e as CustomEvent).detail as { id?: string; code?: number } | undefined;
+    if (d) noteMusic(`load-fail ${d.id ?? '?'} code${d.code ?? '?'}`);
+  });
+
   window.setInterval(() => {
     const m = getMusicDebugSnapshot();
     const fps = ema > 0 ? Math.round(1000 / ema) : 0;
     const worst = maxDt; maxDt = 0;
+    const logAge = musicLog ? ` (${((performance.now() - musicLogAt) / 1000).toFixed(0)}s)` : '';
     box.textContent = [
       `fps ${fps}  frame ${ema.toFixed(1)}ms  worst ${worst.toFixed(0)}ms`,
       `tier a:${getVisualStyle('asteroid')} s:${getVisualStyle('ship')}  dpr ${getRenderDprCap()}  redFx ${reducedFxActive() ? 'Y' : 'N'}  mob ${mobileRuntimeActive() ? 'Y' : 'N'}`,
       `ctx ${audio.getAudioContextState()}`,
       `mus ${m.currentId ?? '—'} ${m.direct ? 'direct' : 'webaudio'} ${m.paused ? 'PAUSED' : 'play'} rs${m.readyState ?? '?'} ns${m.networkState ?? '?'} vol${(m.volume ?? 0).toFixed(2)}${m.errorCode ? ' ERR' + m.errorCode : ''}`,
+      `mus# ${m.loadedCount} play[${m.playingIds.length}] aud[${m.audibleIds.length}]${m.errorMsg ? ' e:' + m.errorMsg.slice(0, 22) : ''}`,
+      `log ${(musicLog || '—').slice(0, 44)}${logAge}`,
     ].join('\n');
   }, 400);
 }
