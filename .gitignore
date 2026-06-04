@@ -49,3 +49,6 @@ yarn-error.log*
 # here as a .webm chunk + transcodes to duel-demo.mp4). Local artefacts;
 # we don't ship them in the repo.
 /tools/record-out/
+
+# Playwright MCP browser-test scratch output
+.playwright-mcp/
