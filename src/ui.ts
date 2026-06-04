@@ -89,6 +89,7 @@ import { subscribeZapTotals, type ZapTotalsByPubkey } from './zaps.js';
 import { isGuestSession, setGuestName, clearGuestIdentity, getGuestPrivkeyHex, getGuestRecord } from './guest.js';
 import { getReplayBuffer, type ReplayFrameRaw } from './stream-session.js';
 import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, gzipReplayFrames, findReplayByAuthor, fetchReplayByScoreEventId, fetchReplayByEventId, type GhostRun } from './ghost.js';
+import { publishPallasiteMark } from './mark.js';
 import { preloadBackground, render, setRenderMode, setHudHidden, type RenderModeInfo } from './render.js';
 import { createTheatreState, populateTheatreState } from './theatre-adapter.js';
 import { musicSetTrackForState } from './music.js';
@@ -10563,6 +10564,14 @@ function renderRunCredits(
     tag.style.cssText = `font-size:0.95rem;letter-spacing:0.22em;margin:6px 0 0;color:${forged ? '#9be15d' : '#8fd0ff'};text-shadow:0 0 8px ${forged ? 'rgba(155,225,93,0.45)' : 'rgba(143,208,255,0.45)'};`;
     const line = el('p', { parent: overlay, text: forged ? 'Welcome back, forgesworn.' : 'Welcome back. The chain is shorter than you remember.' });
     line.style.cssText = 'font:italic 0.9rem ui-monospace,monospace;color:rgba(255,245,216,0.65);letter-spacing:0.05em;margin:2px 0 8px;max-width:480px;text-align:center;';
+
+    // Slice 6 — publish the Mark to Nostr (a self-signed NIP-85 kind 30382
+    // assertion). The local Mark is already written by chooseEnding; this seals
+    // it on relays. Best-effort + async: the status line below updates when it
+    // resolves, and a failure never blocks the recap. See mark.ts.
+    const markStatus = el('p', { parent: overlay, text: '' });
+    markStatus.style.cssText = 'font:0.74rem ui-monospace,monospace;color:rgba(180,150,230,0.72);letter-spacing:0.1em;margin:0 0 10px;min-height:1.1em;';
+    void sealPallasiteMark(state, opts.endingChoice, markStatus);
   }
 
   // Versus banner: when this was a 2-player run (couch or duel), show both
@@ -11011,6 +11020,27 @@ function renderEndingChoice(state: GameState): void {
 function chooseEnding(state: GameState, choice: 'return' | 'forged'): void {
   setPallasiteMark(choice);
   renderCompletionRecap(state, choice);
+}
+
+/** Seal the Mark on Nostr (Slice 6) and reflect progress on the recap. The local
+ *  Mark is the source of truth (already written by chooseEnding); this is the
+ *  publish layer. Best-effort: a read-only session, an unreachable relay, or a
+ *  declined signature all fall back to "kept on this device" — the recap never
+ *  breaks. Signing a guest event is silent; an extension/Signet signer may
+ *  prompt, which is a fair consequence of the player's explicit gate choice. */
+async function sealPallasiteMark(state: GameState, mark: 'return' | 'forged', statusEl: HTMLElement): Promise<void> {
+  const session = state.session;
+  if (!session || !session.signer.capabilities.canSignEvents) {
+    statusEl.textContent = '◇ MARK KEPT ON THIS DEVICE';
+    return;
+  }
+  statusEl.textContent = '◈ SEALING YOUR MARK…';
+  try {
+    const res = await publishPallasiteMark(session, mark);
+    statusEl.textContent = res?.relayed ? '◆ MARK SEALED ON NOSTR' : '◇ MARK KEPT ON THIS DEVICE';
+  } catch {
+    statusEl.textContent = '◇ MARK KEPT ON THIS DEVICE';
+  }
 }
 
 /**
