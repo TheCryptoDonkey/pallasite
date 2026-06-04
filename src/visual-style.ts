@@ -19,8 +19,6 @@
 
 import type { Asteroid, PowerUp, Ship, Ufo } from './types.js';
 import { ASCII_COLS, BIT_DEPTH, coerceThemeId, type ThemeId } from './postfx/index.js';
-import { getFlavour } from './flavour.js';
-import { getStoredMode, isSanctumMode } from './mode.js';
 
 export type VisualTier = 'vector' | 'shaded' | 'mesh';
 export type VisualCategory = 'asteroid' | 'ship' | 'bullet' | 'particle';
@@ -194,16 +192,13 @@ export function reducedFxActive(): boolean {
 
 function effectiveTier(cat: VisualCategory, tier: VisualTier): VisualTier {
   void cat;
-  if (tier === 'mesh' && mobilePerformanceGuardActive() && !sanctumMeshAllowed()) return 'shaded';
+  // No auto-downgrade: the player's chosen tier stands on every device. Mesh is
+  // WebGL (GPU) and is actually CHEAPER than the shaded 2D path on iOS Safari —
+  // that path's per-frame radial gradients, shadowBlur and large fills are the
+  // real cost — so forcing phones to 'shaded' (the old behaviour here) made them
+  // SLOWER, not faster. Tier stays a player choice via the settings panel; the
+  // adaptive governor only sheds cheap FX (see reducedFxActive), never art tiers.
   return tier;
-}
-
-function sanctumMeshAllowed(): boolean {
-  try {
-    return getFlavour() === '600bn' || getStoredMode() === 'sanctum' || isSanctumMode();
-  } catch {
-    return false;
-  }
 }
 
 /** Coerce an unknown value into a known VisualTier; unknown → 'vector'. */
