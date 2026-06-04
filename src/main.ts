@@ -2363,10 +2363,11 @@ async function boot(): Promise<void> {
       try { localStorage.setItem('pallasite:rotateHintDismissed', '1'); } catch { /* ignore */ }
     });
   }
-  // Kick off WebGL overlay load if the player had a mesh-tier category
-  // selected last session. Fire-and-forget on desktop; mobile defers this
-  // until IGNITE so phones don't download/parse three.js on the title screen.
-  if (!mobileRuntimeActive()) warmWebGLIfPreviouslyEnabled();
+  // Kick off WebGL overlay load if the player had a mesh-tier category selected
+  // last session — on EVERY device. Mesh runs on iOS again (it's GPU work and
+  // cheaper than the shaded 2D path there), so warm it at boot rather than
+  // stalling the first wave on the shaded fallback while three.js streams in.
+  warmWebGLIfPreviouslyEnabled();
 
   // Resize canvas to fit viewport in BOTH dimensions while preserving the
   // 16:9 world aspect — internal pixel resolution stays WORLD_W×WORLD_H
