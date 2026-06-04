@@ -31,7 +31,12 @@ import { DEPTH_CONFIGS } from '../parallax.js';
 
 function mobileOverlayRuntime(): boolean {
   if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
-  const uaMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  const ua = navigator.userAgent;
+  const uaMobile = /iPhone|iPad|iPod|Android/i.test(ua);
+  // Match visual-style.ts mobileRuntimeActive: a modern iPad reports a Mac UA,
+  // so detect it via touch points or the overlay runs with antialias +
+  // preserveDrawingBuffer (the desktop path) on iPad Sanctum and stutters.
+  const iPadAsMac = /Macintosh/.test(ua) && (navigator.maxTouchPoints ?? 0) > 1;
   const touch = (navigator.maxTouchPoints ?? 0) > 0;
   const coarse = (() => {
     try { return window.matchMedia?.('(pointer: coarse)').matches === true; }
@@ -39,7 +44,7 @@ function mobileOverlayRuntime(): boolean {
   })();
   const smallViewport = Math.min(window.innerWidth || 9999, window.innerHeight || 9999) <= 640
     || Math.max(window.innerWidth || 0, window.innerHeight || 0) <= 960;
-  return uaMobile || ((coarse || touch) && smallViewport);
+  return uaMobile || iPadAsMac || ((coarse || touch) && smallViewport);
 }
 
 interface OverlayHandle {
