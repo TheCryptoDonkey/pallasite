@@ -362,6 +362,34 @@ export function setRenderMode(info: RenderModeInfo): void { renderMode = info; }
 // URLSearchParams — calling it per-entity would allocate hundreds of times/frame.
 let mobileLite = false;
 
+// shadowBlur is the single most expensive 2D op on iOS Safari — every shadowed
+// draw forces a full blurred rasterisation on the CPU. render.ts has ~120
+// shadowBlur assignments and only a handful were gated on mobileLite, so the
+// reduced-FX governor sheds almost none of that cost. Rather than thread the
+// flag through every drawer, gate it once at the source: shadow the context's
+// shadowBlur setter so that while mobileLite is active every assignment clamps
+// to 0 (a hard offset-shadow still works; only the costly blur convolution is
+// suppressed). Reads and the full-FX path pass straight through to the native
+// accessor, so desktop frames are byte-identical and the gate self-adjusts when
+// the governor toggles mobileLite mid-session. Degrades to a no-op if the engine
+// doesn't expose a prototype accessor for shadowBlur.
+const shadowGatedContexts = new WeakSet<CanvasRenderingContext2D>();
+function installShadowBlurGate(ctx: CanvasRenderingContext2D): void {
+  if (shadowGatedContexts.has(ctx)) return;
+  shadowGatedContexts.add(ctx);
+  const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(ctx) as object, 'shadowBlur');
+  if (!desc || typeof desc.get !== 'function' || typeof desc.set !== 'function') return;
+  const nativeGet = desc.get;
+  const nativeSet = desc.set;
+  try {
+    Object.defineProperty(ctx, 'shadowBlur', {
+      configurable: true,
+      get(this: CanvasRenderingContext2D): number { return nativeGet.call(this) as number; },
+      set(this: CanvasRenderingContext2D, value: number): void { nativeSet.call(this, mobileLite ? 0 : value); },
+    });
+  } catch { /* property locked down — leave the native (ungated) behaviour in place */ }
+}
+
 // ── Portrait follow camera ────────────────────────────────────────────────────
 
 /** Smoothed camera-centre X in world coords. Render-only state: the sim never
@@ -5862,6 +5890,7 @@ export function drawAsciiHud(canvas: HTMLCanvasElement, state: GameState): void 
 
 export function render(canvas: HTMLCanvasElement, state: GameState, now: number): void {
   const ctx = canvas.getContext('2d')!;
+  installShadowBlurGate(ctx);   // one-time: clamp shadowBlur to 0 while mobileLite (iOS killer)
   // Follow camera centres on the LOCAL slot — defaults to players[0] for
   // every solo / couch / spectate / portrait-solo path; only the slot-1
   // duel client passes localSlot=1 via setRenderMode.
