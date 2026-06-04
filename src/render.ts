@@ -4964,7 +4964,8 @@ let warpStars: WarpStar[] | null = null;
 function ensureWarpStars(): WarpStar[] {
   if (warpStars) return warpStars;
   warpStars = [];
-  for (let i = 0; i < 220; i++) {
+  // Far fewer streaks under reduced-FX — each is an additive ('lighter') stroke.
+  for (let i = 0; i < (mobileLite ? 90 : 220); i++) {
     const r = Math.random();
     const colour: WarpColour =
       r < 0.42 ? 'white'
@@ -5097,23 +5098,28 @@ function drawWarp(ctx: CanvasRenderingContext2D, s: GameState, now: number): voi
   ctx.translate(-cx, -cy);
 
   // ── Layer 2a: chromatic ribbons — large translucent sin curves drifting
-  const ribbons = ensureWarpRibbons();
   ctx.globalCompositeOperation = 'lighter';
   ctx.lineCap = 'round';
-  for (const rib of ribbons) {
-    const t = now * rib.speed + rib.phase;
-    const baseY = rib.offsetY + Math.sin(t * 0.5) * rib.amp * 0.3;
-    ctx.beginPath();
-    const steps = 20;
-    for (let i = 0; i <= steps; i++) {
-      const x = (i / steps) * WORLD_W;
-      const y = baseY + Math.sin(t + i * 0.55) * rib.amp;
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+  // Ribbons are thick (70–150px) ADDITIVE strokes — the single worst iOS Safari
+  // cost in the warp (large-area 'lighter' compositing). Skip them under
+  // reduced-FX; the spiral tunnel below still reads as a warp without them.
+  if (!mobileLite) {
+    const ribbons = ensureWarpRibbons();
+    for (const rib of ribbons) {
+      const t = now * rib.speed + rib.phase;
+      const baseY = rib.offsetY + Math.sin(t * 0.5) * rib.amp * 0.3;
+      ctx.beginPath();
+      const steps = 20;
+      for (let i = 0; i <= steps; i++) {
+        const x = (i / steps) * WORLD_W;
+        const y = baseY + Math.sin(t + i * 0.55) * rib.amp;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.lineWidth = rib.thickness;
+      ctx.strokeStyle = `hsla(${rib.hue}, 75%, 55%, ${0.10 * intensity})`;
+      ctx.stroke();
     }
-    ctx.lineWidth = rib.thickness;
-    ctx.strokeStyle = `hsla(${rib.hue}, 75%, 55%, ${0.10 * intensity})`;
-    ctx.stroke();
   }
 
   // ── Layer 2b: spiral tunnel streaks (curl per star → swirl)
@@ -5171,7 +5177,7 @@ function drawWarp(ctx: CanvasRenderingContext2D, s: GameState, now: number): voi
     ctx.strokeStyle = '#a3d958';
     ctx.lineWidth = 1.6;
     ctx.shadowColor = '#a3d958';
-    ctx.shadowBlur = 14;
+    ctx.shadowBlur = mobileLite ? 0 : 14;
     ctx.beginPath();
     for (let i = 0; i < a.vertices.length; i++) {
       const angle = (i / a.vertices.length) * Math.PI * 2;
@@ -5238,7 +5244,7 @@ function drawWarp(ctx: CanvasRenderingContext2D, s: GameState, now: number): voi
       const imgScale = (r * 2.4) / Math.min(target.width, target.height);
       const w = target.width * imgScale;
       const h = target.height * imgScale;
-      if (aberration > 1) {
+      if (aberration > 1 && !mobileLite) {   // 3 extra additive drawImage passes — desktop only
         ctx.globalCompositeOperation = 'lighter';
         ctx.globalAlpha = 0.55;
         ctx.drawImage(target, -w / 2 - aberration, -h / 2, w, h);
@@ -5267,7 +5273,7 @@ function drawWarp(ctx: CanvasRenderingContext2D, s: GameState, now: number): voi
     const rimAlpha = Math.min(1, 0.55 + intensity * 0.45);
     ctx.strokeStyle = `rgba(255,216,74,${rimAlpha})`;
     ctx.shadowColor = '#ffd84a';
-    ctx.shadowBlur = 28 + r * 0.06;
+    ctx.shadowBlur = mobileLite ? 0 : 28 + r * 0.06;
     ctx.lineWidth = 1.8 + r * 0.005;
     ctx.beginPath();
     ctx.arc(0, 0, r, 0, Math.PI * 2);
