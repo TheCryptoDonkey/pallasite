@@ -1257,6 +1257,11 @@ function warmOne(id: string, skipId: string | undefined): void {
       // tracks that opt into it (slow-orbit).
       try { entry.el.currentTime = track.startAt ?? 0; } catch { /* ignore */ }
       try { entry.el.muted = false; } catch { /* ignore */ }
+      // This bed is unlocked now but not current — release its buffer at once
+      // (don't wait for the next refreshDirectVolumes frame) so the warm-up's
+      // muted-play() load doesn't keep competing with the current bed for an
+      // iOS decoder slot. It re-buffers via crossfadeTo when it becomes current.
+      if (mobileRuntimeActive()) { try { entry.el.preload = 'none'; } catch { /* ignore */ } }
     };
     if (p && typeof p.then === 'function') p.then(cleanup, cleanup);
     else cleanup();
