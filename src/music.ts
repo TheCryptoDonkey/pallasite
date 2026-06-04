@@ -443,11 +443,28 @@ function refreshDirectVolumes(): void {
   if (!directMusicOutputActive()) return;
   for (const [id, entry] of loaded) {
     if (!entry.direct) continue;
-    const trim = id === currentId ? (TRACKS[id]?.trim ?? 1) : 0;
+    const isCurrent = id === currentId;
+    const trim = isCurrent ? (TRACKS[id]?.trim ?? 1) : 0;
     if (entry.volumeRaf === null) {
       try { entry.el.volume = directTargetVolume(trim); } catch { /* ignore */ }
       if (trim === 0 && !entry.el.paused) {
         try { entry.el.pause(); } catch { /* ignore */ }
+      }
+      // iOS decoder/network throttle: Safari only lets a few media elements
+      // buffer at once. With ~12 cached tracks all on 'auto' preload, the CURRENT
+      // bed gets starved at readyState 0/1 indefinitely — confirmed on device
+      // (title pallasite-idle + wave-1 slow-orbit stuck loading, while later waves,
+      // by which point the warm-up's loads had drained, reached rs4 and played).
+      // So keep only the current track buffering and release every other settled
+      // direct element's buffer, so the one track we actually need wins a slot. A
+      // released track re-buffers via crossfadeTo (preload='auto'+play()) when it
+      // next becomes current; the muted-warm play() already unlocked it for the
+      // session, so releasing the buffer doesn't re-lock it. Gated on volumeRaf
+      // === null so we never touch a track mid-fade (releasing a fading-out bed's
+      // buffer could cut its tail on iOS).
+      const wantPreload = isCurrent ? 'auto' : 'none';
+      if (entry.el.preload !== wantPreload) {
+        try { entry.el.preload = wantPreload; } catch { /* ignore */ }
       }
     }
   }
@@ -544,11 +561,18 @@ export function crossfadeTo(id: string | null, fadeMs = DEFAULT_FADE_MS, sequent
       // reads real signal rather than an uninitialised buffer on its first call.
       try { getMusicAnalyser(); } catch { /* ignore */ }
     }
-    if (entry.direct && entry.el.readyState === 0) {
-      // Current-track only. Constructor-level load() caused the first-gesture
-      // warm-up storm; doing it here gives the one track we are about to play
-      // a real network start inside the gesture without touching the album.
-      try { entry.el.preload = 'auto'; entry.el.load(); } catch { /* ignore */ }
+    if (entry.direct) {
+      // This track is now current, so it's allowed to buffer again — undo any
+      // preload='none' release applied by refreshDirectVolumes while it sat
+      // idle (see the iOS decoder-throttle note there). preload='auto' alone
+      // resumes buffering without resetting currentTime; only force a full
+      // load() from readyState 0, where there's nothing to lose and we want a
+      // real network start inside the gesture (a constructor-level load() here
+      // would re-create the first-gesture warm-up storm).
+      try { entry.el.preload = 'auto'; } catch { /* ignore */ }
+      if (entry.el.readyState === 0) {
+        try { entry.el.load(); } catch { /* ignore */ }
+      }
     }
     attemptPlay(0);
     // Fast startup recovery: a MediaElementSource created during the gesture
@@ -1019,11 +1043,12 @@ export function musicSetTrackForState(state: GameState): void {
           // STOP — replaying would fight either case.
           logMusic(`verify: ${currentId} was paused — replaying (readyState=${entry.el.readyState}, ctx=${ctx.state}, direct=${entry.direct})`);
           try { void entry.el.play().catch((e: unknown) => logMusic(`verify play() rejected: ${currentId}: ${(e as Error)?.name ?? String(e)}`)); } catch { /* ignore */ }
-        } else if (!entry.el.paused && entry.el.readyState === 0) {
-          // iOS PWA "play() resolved, no data ever loaded" race. The element
-          // thinks it's playing (paused=false) but readyState=0 means no
-          // network buffer arrived — the original verify pass only retried
-          // on paused=true so this silent failure mode slipped through.
+        } else if (!entry.el.paused && entry.el.readyState <= 1) {
+          // iOS PWA "play() resolved, no playable data" race. The element thinks
+          // it's playing (paused=false) but readyState 0 (HAVE_NOTHING) or 1
+          // (HAVE_METADATA — header only, as the title track showed on device)
+          // means no playable buffer arrived — the original verify pass only
+          // retried on paused=true so this silent failure mode slipped through.
           // If the browser is already loading, do not call load() every verify
           // tick: that aborts the in-flight range request and can permanently
           // starve a 4MB .m4a on production/mobile networks.
@@ -1034,12 +1059,12 @@ export function musicSetTrackForState(state: GameState): void {
           }
           const loading = entry.el.networkState === 2;
           if (loading && nowMs - readyZeroSinceMs < READY_ZERO_LOADING_GRACE_MS) {
-            logMusic(`verify: ${currentId} readyState=0 while network loading — waiting`);
+            logMusic(`verify: ${currentId} readyState=${entry.el.readyState} while network loading — waiting`);
             return;
           }
           if (nowMs - readyZeroLastForceMs < READY_ZERO_FORCE_RETRY_MS) return;
           readyZeroLastForceMs = nowMs;
-          logMusic(`verify: ${currentId} readyState=0 while 'playing' — forcing load()+play()`);
+          logMusic(`verify: ${currentId} readyState=${entry.el.readyState} while 'playing' — forcing load()+play()`);
           try { entry.el.load(); } catch { /* ignore */ }
           try { void entry.el.play().catch(() => undefined); } catch { /* ignore */ }
         } else if (!entry.direct) {
@@ -1207,8 +1232,12 @@ export function musicResetElements(): void {
 const warmedIds = new Set<string>();
 /** How many EXTRA (non-critical) wave beds to unlock per gesture. Small so we
  *  never recreate the 25-at-once decode storm that used to choke iOS and break
- *  the unlock click; spread across gestures the whole album warms in seconds. */
-const WARM_INCREMENT = 5;
+ *  the unlock click; spread across gestures the whole album warms in seconds.
+ *  Mobile goes lower still: on device, warming 5 beds at once on the first
+ *  gesture made ~12 elements buffer simultaneously and starved the actual
+ *  current bed (title + wave 1) at readyState 0/1. Each game input is a gesture,
+ *  so 2/gesture still unlocks the whole album within the first wave or two. */
+const WARM_INCREMENT = mobileRuntimeActive() ? 2 : 5;
 
 function warmOne(id: string, skipId: string | undefined): void {
   if (!id || id === skipId || !TRACKS[id]) return;
