@@ -990,8 +990,25 @@ function maybeSelfHealWebAudioSilence(entry: Loaded, ctx: AudioContext): void {
   if (resumeId) crossfadeTo(resumeId, 200);
 }
 
+/** Mobile first-unlock defers the CURRENT bed's first real play until the
+ *  warm-up burst has drained (see recoverMusicFromGesture). On iOS a bed played
+ *  for real *amid* the burst wedges at readyState 0 forever (title pallasite-idle
+ *  + wave-1 slow-orbit), while a bed warmed during the burst and played later
+ *  (slow-gravity) loads fine — so we warm the current bed in-gesture but hold its
+ *  real play for a beat. While suppressed the state-driven crossfade + verify pass
+ *  are held; refreshDirectVolumes still runs so nothing is left loud. */
+let suppressStatePlayUntilMs = 0;
+export function musicSuppressStatePlay(ms: number): void {
+  const now = typeof performance !== 'undefined' ? performance.now() : 0;
+  suppressStatePlayUntilMs = now + Math.max(0, ms);
+}
+
 export function musicSetTrackForState(state: GameState): void {
   if (directMusicOutputActive()) refreshDirectVolumes();
+  if (suppressStatePlayUntilMs > 0) {
+    if (performance.now() < suppressStatePlayUntilMs) return;  // hold: warm-up burst still draining
+    suppressStatePlayUntilMs = 0;
+  }
   // The SOUNDTRACK overlay owns playback while freeplay is active. The game
   // loop still ticks underneath the overlay; if an album change, STOP, or audio
   // recovery clears lastAppliedKey, state-driven music would otherwise reclaim

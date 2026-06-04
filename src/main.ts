@@ -29,7 +29,7 @@ import {
 import { getActiveSkinId } from './skins.js';
 import { handleAuthCallback, tryRestore, sweepSignetArtefacts } from './auth.js';
 import * as audio from './audio.js';
-import { getMusicDebugSnapshot, musicForceRefresh, musicSetTrackForState, preloadAllTracks, musicSetPaused, musicSetMuted, musicResetElements, musicWarmUpAll, currentTrackId } from './music.js';
+import { getMusicDebugSnapshot, musicForceRefresh, musicSetTrackForState, preloadAllTracks, musicSetPaused, musicSetMuted, musicResetElements, musicWarmUpAll, currentTrackId, musicSuppressStatePlay } from './music.js';
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, applyDisplayMode } from './display.js';
@@ -1574,6 +1574,13 @@ const isControllerSurface = (): boolean =>
 let firstMusicGesturePrimed = false;
 let lastMusicGestureRecoveryMs = 0;
 const MUSIC_GESTURE_RECOVERY_THROTTLE_MS = 650;
+/** Mobile only: how long to hold the current bed's first real play after a
+ *  gesture-unlock so it lands once the warm-up's load burst has drained. Playing
+ *  it amid the burst wedges it at readyState 0 on iOS (title + wave 1). */
+const MOBILE_FIRST_PLAY_DEFER_MS = 1000;
+/** Mobile: guards the prime/defer window so a follow-up tap can't reset + re-burst
+ *  before the deferred first play lands. A little past the defer to cover the play. */
+let mobilePrimeUntilMs = 0;
 
 function phaseAllowsMusicRecovery(): boolean {
   return state.phase !== 'paused'
@@ -1609,6 +1616,11 @@ function musicLooksStalled(): boolean {
 function recoverMusicFromGesture(force = false, deferStateTrack = false): void {
   if (isControllerSurface()) return;
   const now = performance.now();
+  // Mobile prime/defer window in flight: the current bed is intentionally
+  // warmed-but-not-yet-playing, which musicLooksStalled() reads as a stall. Don't
+  // let a follow-up tap reset everything and restart the warm-up burst before the
+  // deferred first play has had its calm moment.
+  if (now < mobilePrimeUntilMs) return;
   const snap = getMusicDebugSnapshot();
   const mutedStall = !!snap.currentId && snap.muted === true;
   if (!force && now - lastMusicGestureRecoveryMs < MUSIC_GESTURE_RECOVERY_THROTTLE_MS && !mutedStall) return;
@@ -1631,7 +1643,18 @@ function recoverMusicFromGesture(force = false, deferStateTrack = false): void {
   // stayed silent while later waves, created in calmer moments, loaded fine.
   // Warm the rest AFTER, skipping the now-current track so warmOne can't fight
   // the play we just kicked off.
-  if (!deferStateTrack) {
+  if (mobileRuntimeActive()) {
+    // iOS: do NOT play the current bed for real inside this gesture. A bed played
+    // amid the warm-up's load burst wedges at readyState 0 forever (title
+    // pallasite-idle, wave-1 slow-orbit), while beds warmed now and played later
+    // (wave 2+, e.g. slow-gravity) load fine. So warm EVERY critical bed (muted
+    // unlock, incl. the current one), then HOLD the state-driven play briefly:
+    // once the burst drains, the game loop's musicSetTrackForState plays the
+    // now-unlocked current bed in calm — exactly how wave-2 beds work.
+    musicWarmUpAll(undefined);
+    musicSuppressStatePlay(MOBILE_FIRST_PLAY_DEFER_MS);
+    mobilePrimeUntilMs = now + MOBILE_FIRST_PLAY_DEFER_MS + 400;
+  } else if (!deferStateTrack) {
     musicSetTrackForState(state);
     musicWarmUpAll(currentTrackId() ?? undefined);
   } else {
