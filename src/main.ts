@@ -29,7 +29,7 @@ import {
 import { getActiveSkinId } from './skins.js';
 import { handleAuthCallback, tryRestore, sweepSignetArtefacts } from './auth.js';
 import * as audio from './audio.js';
-import { getMusicDebugSnapshot, musicForceRefresh, musicSetTrackForState, preloadAllTracks, musicSetPaused, musicSetMuted, musicResetElements, musicWarmUpAll } from './music.js';
+import { getMusicDebugSnapshot, musicForceRefresh, musicSetTrackForState, preloadAllTracks, musicSetPaused, musicSetMuted, musicResetElements, musicWarmUpAll, currentTrackId } from './music.js';
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, applyDisplayMode } from './display.js';
@@ -1622,9 +1622,21 @@ function recoverMusicFromGesture(force = false, deferStateTrack = false): void {
   // repeatedly calling play() on the same poisoned element.
   void audio.unlockAudio();
   musicResetElements();
-  musicWarmUpAll(force && state.phase === 'title' ? 'pallasite-idle' : undefined);
   musicForceRefresh();
-  if (!deferStateTrack) musicSetTrackForState(state);
+  // Play the CURRENT bed FIRST so it claims an iOS decoder/network slot before
+  // the warm-up burst. iOS only buffers a few media elements at once, and
+  // warming a handful of beds (each muted-play()s, which kicks a load) right
+  // before the real current play() made the current bed (title pallasite-idle,
+  // wave-1 slow-orbit) lose the race and wedge at readyState 0/1 — title + L1
+  // stayed silent while later waves, created in calmer moments, loaded fine.
+  // Warm the rest AFTER, skipping the now-current track so warmOne can't fight
+  // the play we just kicked off.
+  if (!deferStateTrack) {
+    musicSetTrackForState(state);
+    musicWarmUpAll(currentTrackId() ?? undefined);
+  } else {
+    musicWarmUpAll(force && state.phase === 'title' ? 'pallasite-idle' : undefined);
+  }
 }
 
 function shouldDeferFirstUnlockTrack(event: Event): boolean {
