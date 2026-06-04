@@ -132,6 +132,63 @@ function getCtx(): AudioContext {
   return ctx;
 }
 
+/**
+ * One-shot SFX voice. iOS Safari does NOT garbage-collect AudioNodes that stay
+ * connected to the destination graph after they fall silent — only an explicit
+ * disconnect() frees them. (Desktop Chrome auto-reclaims, which is exactly why
+ * this leak never showed on the dev box.) Every SFX below builds a small node
+ * graph, schedules stop() on its sources and connects to a bus, but never
+ * disconnects — so under sustained play each shot/explosion leaks its gain +
+ * filter nodes until the Web Audio graph saturates: the game slows to a crawl
+ * and the music is choked out.
+ *
+ * Building an SFX through voice().ctx records every node it creates and
+ * disconnects them all once the SFX's scheduled sources have fired 'ended' — no
+ * per-function bookkeeping and no "which node was last" guesswork. Persistent
+ * nodes (the bus graph, the continuous thrust/siren voices, the stems bus) keep
+ * using getCtx() directly, so they are never recorded and never torn down.
+ */
+function voice(): { ctx: AudioContext } {
+  const c = getCtx();
+  const nodes: AudioNode[] = [];
+  const sources: AudioScheduledSourceNode[] = [];
+  const proxy = new Proxy(c, {
+    get(target, prop): unknown {
+      const value = target[prop as keyof AudioContext];
+      if (typeof value !== 'function') return value;          // currentTime, sampleRate, destination, …
+      const fn = value as (...a: unknown[]) => unknown;
+      if (typeof prop === 'string' && prop.startsWith('create')) {
+        return (...args: unknown[]): unknown => {
+          const node = fn.apply(target, args);
+          if (node && typeof (node as AudioNode).disconnect === 'function') {
+            nodes.push(node as AudioNode);
+            const src = node as Partial<AudioScheduledSourceNode>;
+            if (typeof src.start === 'function' && typeof src.stop === 'function') {
+              sources.push(node as AudioScheduledSourceNode);
+            }
+          }
+          return node;
+        };
+      }
+      return fn.bind(target);
+    },
+  });
+  // Seal once the SFX's synchronous build is done: free every recorded node the
+  // moment all its scheduled sources have ended.
+  queueMicrotask(() => {
+    if (sources.length === 0) return;            // no source = made no sound; nothing to reap
+    let live = sources.length;
+    let done = false;
+    const free = (): void => {
+      if (done) return;
+      done = true;
+      for (const n of nodes) { try { n.disconnect(); } catch { /* already detached */ } }
+    };
+    for (const s of sources) s.addEventListener('ended', () => { if (--live <= 0) free(); });
+  });
+  return { ctx: proxy };
+}
+
 function rampGain(node: GainNode | null, target: number, ms = 60): void {
   if (!node || !ctx) return;
   const t = ctx.currentTime;
@@ -336,7 +393,7 @@ let thrustNode: { osc1: OscillatorNode; osc2: OscillatorNode; sub: OscillatorNod
 export function thrustOn(): void {
   if (settings.muted) return;
   if (thrustNode) return;
-  const c = getCtx();
+  const c = voice().ctx;
 
   // Layer 1: filtered noise (jet exhaust)
   const noise = c.createBufferSource();
@@ -411,7 +468,7 @@ export function thrustOff(): void {
 
 export function fire(): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
 
   // Body thump — sub-bass kick for impact
@@ -461,7 +518,7 @@ export function fire(): void {
 
 export function explosion(scale: number = 1): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
 
   // Layer 1: white-noise burst with low-pass sweep
@@ -560,7 +617,7 @@ let ufoSiren: { osc: OscillatorNode; osc2: OscillatorNode; lfo: OscillatorNode; 
 
 export function ufoSirenStart(): void {
   if (settings.muted || ufoSiren) return;
-  const c = getCtx();
+  const c = voice().ctx;
 
   // Two slightly detuned squares — dissonance signals "threat"
   const osc = c.createOscillator();
@@ -615,7 +672,7 @@ export function ufoSirenStop(): void {
 
 export function ufoShoot(): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
 
   // Aggressive saw with a tiny noise burst at the head
@@ -649,7 +706,7 @@ export function ufoShoot(): void {
 
 export function mineArm(): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
 
   // Low tick
@@ -683,7 +740,7 @@ export function mineArm(): void {
 
 export function shieldUp(): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
   // Two-tone rising chord with a sparkle on top
   const notes = [
@@ -709,7 +766,7 @@ export function shieldUp(): void {
 
 export function shieldDown(): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
   const osc = c.createOscillator();
   osc.type = 'triangle';
@@ -726,7 +783,7 @@ export function shieldDown(): void {
 
 export function shieldHit(): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
   // Bright sparkle ping with shimmer
   const osc = c.createOscillator();
@@ -758,7 +815,7 @@ export function shieldHit(): void {
 
 export function warpJump(): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
 
   // Sub bass swell
@@ -828,7 +885,7 @@ export function warpJump(): void {
  */
 export function warpJumpGlitch(): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
 
   // Wrong-direction sub: drops instead of rises, ends low and unresolved
@@ -897,7 +954,7 @@ export function warpJumpGlitch(): void {
  */
 export function dustPickup(): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
   // Single bright sine, brief
   const osc = c.createOscillator();
@@ -928,7 +985,7 @@ export function dustPickup(): void {
 
 export function coinPickup(): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
   const notes = [880, 1108, 1397];  // A5, C#6, F6 — bright major triad
   notes.forEach((freq, i) => {
@@ -951,7 +1008,7 @@ export function coinPickup(): void {
 
 export function hit(): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
   // Body
   const osc = c.createOscillator();
@@ -986,7 +1043,7 @@ export function hit(): void {
 // council shrink step (large→medium→small).
 export function councilHit(): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
   // Body thump — slightly higher and shorter than hit() so it doesn't muddy.
   const body = c.createOscillator();
@@ -1026,7 +1083,7 @@ export function councilHit(): void {
 // than "another rock cracked".
 export function councilBreak(): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
   // Bandpass-swept noise — metallic-shatter character.
   const burstBuf = c.createBuffer(1, c.sampleRate * 0.9, c.sampleRate);
@@ -1086,7 +1143,7 @@ export function councilBreak(): void {
 
 export function levelUp(): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
   const notes = [440, 554.37, 659.25, 880];  // A4 C#5 E5 A5
   notes.forEach((freq, i) => {
@@ -1122,7 +1179,7 @@ export function levelUp(): void {
 
 export function extraLife(): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
   const osc = c.createOscillator();
   const lfo = c.createOscillator();
@@ -1149,7 +1206,7 @@ export function extraLife(): void {
 
 export function gameOver(): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
 
   // Sawtooth descent
@@ -1204,7 +1261,7 @@ export function gameOver(): void {
 
 export function triumph(): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
 
   // Sub-bass swell
@@ -1260,7 +1317,7 @@ export function triumph(): void {
 
 export function powerupDrop(): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
 
   const osc = c.createOscillator();
@@ -1293,7 +1350,7 @@ export function powerupDrop(): void {
 
 export function powerupPickup(): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
   const chord = [523.25, 659.25, 783.99, 1046.5];  // C E G C
   chord.forEach((freq, i) => {
@@ -1329,7 +1386,7 @@ export function powerupPickup(): void {
 
 export function comboTick(level: number): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
   const osc = c.createOscillator();
   osc.type = 'sine';
@@ -1354,7 +1411,7 @@ export function startHeartbeat(): void {
   if (settings.muted) return;
   if (heartbeatHandle !== null) return;
   const tick = (): void => {
-    const c = getCtx();
+    const c = voice().ctx;
     const osc = c.createOscillator();
     osc.type = 'sine';
     const gain = c.createGain();
@@ -1390,7 +1447,7 @@ let ambient: { sub: OscillatorNode; mid: OscillatorNode; high: OscillatorNode; l
 
 export function startAmbient(): void {
   if (settings.muted || ambient) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
 
   // Three oscillators forming a low spread chord — A1, A2, E3
@@ -1458,7 +1515,7 @@ export function stopAmbient(): void {
 /** Internal square-wave blip helper for the initials sounds. Short, punchy. */
 function squareBlip(startFreq: number, endFreq: number, durationMs: number, volume: number): void {
   if (settings.muted) return;
-  const c = getCtx();
+  const c = voice().ctx;
   const t0 = c.currentTime;
   const dur = durationMs / 1000;
   const osc = c.createOscillator();
