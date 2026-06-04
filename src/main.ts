@@ -33,7 +33,7 @@ import { getMusicDebugSnapshot, musicForceRefresh, musicSetTrackForState, preloa
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, applyDisplayMode } from './display.js';
-import { warmWebGLIfPreviouslyEnabled, ensureWebGLForCurrentStyle, prewarmWebGLMeshesForCurrentStyle, getTheme, getAsciiCols, getBitDepth, getBitColour, getVisualStyle, isWebGLOverlayReady, getRenderDprCap, getBrightness, mobileRuntimeActive, recordFrameTime } from './visual-style.js';
+import { warmWebGLIfPreviouslyEnabled, ensureWebGLForCurrentStyle, prewarmWebGLMeshesForCurrentStyle, getTheme, getAsciiCols, getBitDepth, getBitColour, getVisualStyle, isWebGLOverlayReady, getRenderDprCap, getBrightness, mobileRuntimeActive, reducedFxActive, recordFrameTime } from './visual-style.js';
 import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
 import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges, ensureLocalEdges, EMPTY_INPUT, isPeerActive, setPeerActive } from './netcode.js';
@@ -2278,9 +2278,50 @@ function loop(now: number): void {
   requestAnimationFrame(loop);
 }
 
+/** On-screen diagnostic HUD, opt-in via ?diag=1. Surfaces the numbers only the
+ *  real device knows — present cadence (fps) + the worst frame in each window,
+ *  the active render tier / DPR / reduced-FX / mobile-detection state, and the
+ *  live music element state (direct vs web-audio, paused, readyState,
+ *  networkState, volume, error). One phone screenshot then diagnoses iOS-only
+ *  perf jitter and "no music" without a tethered Web Inspector. Self-contained:
+ *  its own rAF measures cadence, so the game loop is untouched. */
+function setupDiagHud(): void {
+  let on = false;
+  try { on = new URLSearchParams(window.location.search).get('diag') === '1'; } catch { /* ignore */ }
+  if (!on) return;
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;top:0;left:0;z-index:2147483647;pointer-events:none;'
+    + 'font:10px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;color:#8f8;'
+    + 'background:rgba(0,0,0,0.62);padding:4px 6px;white-space:pre;letter-spacing:0.02em;';
+  const attach = (): void => { (document.body ?? document.documentElement).appendChild(box); };
+  if (document.body) attach(); else window.addEventListener('DOMContentLoaded', attach, { once: true });
+
+  // Own rAF: measures the real present cadence and the worst frame per window.
+  let last = 0, ema = 16.7, maxDt = 0;
+  const tick = (t: number): void => {
+    if (last) { const dt = t - last; ema += (dt - ema) * 0.08; if (dt > maxDt) maxDt = dt; }
+    last = t;
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+
+  window.setInterval(() => {
+    const m = getMusicDebugSnapshot();
+    const fps = ema > 0 ? Math.round(1000 / ema) : 0;
+    const worst = maxDt; maxDt = 0;
+    box.textContent = [
+      `fps ${fps}  frame ${ema.toFixed(1)}ms  worst ${worst.toFixed(0)}ms`,
+      `tier a:${getVisualStyle('asteroid')} s:${getVisualStyle('ship')}  dpr ${getRenderDprCap()}  redFx ${reducedFxActive() ? 'Y' : 'N'}  mob ${mobileRuntimeActive() ? 'Y' : 'N'}`,
+      `ctx ${audio.getAudioContextState()}`,
+      `mus ${m.currentId ?? '—'} ${m.direct ? 'direct' : 'webaudio'} ${m.paused ? 'PAUSED' : 'play'} rs${m.readyState ?? '?'} ns${m.networkState ?? '?'} vol${(m.volume ?? 0).toFixed(2)}${m.errorCode ? ' ERR' + m.errorCode : ''}`,
+    ].join('\n');
+  }, 400);
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
 async function boot(): Promise<void> {
+  setupDiagHud();   // opt-in ?diag=1 on-screen perf/music readout
   // Lock in stored difficulty as the default for any auto-launched run
   lockInDifficulty(getStoredDifficulty());
   // Mirror the active display mode to a body data-attr so CSS can react.
