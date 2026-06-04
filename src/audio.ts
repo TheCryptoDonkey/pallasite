@@ -12,6 +12,8 @@
  * both branches go silent in one move.
  */
 
+import { mobileRuntimeActive } from './visual-style.js';
+
 let ctx: AudioContext | null = null;
 // True only while WE deliberately suspended the context (page hidden /
 // backgrounded). Lets the onstatechange handler tell an intentional
@@ -197,9 +199,28 @@ function rampGain(node: GainNode | null, target: number, ms = 60): void {
   node.gain.linearRampToValueAtTime(target, t + ms / 1000);
 }
 
+/** iOS plays our mobile 'direct' music (a plain HTMLAudioElement) through the
+ *  default "ambient" audio session, which is SILENCED BY THE HARDWARE RING /
+ *  SILENCE SWITCH. Web Audio (all SFX here) ignores that switch — so on a phone
+ *  with the switch flipped you get SFX but no music, which is exactly the
+ *  recurring "music stopped on iOS" report (it regressed when mobile music moved
+ *  from the Web Audio bus to the direct element for reliability). Declaring a
+ *  'playback' session makes the media ignore the switch, like a music app.
+ *  Safari 16.4+ via the Audio Session API; a silent no-op everywhere else.
+ *  Mobile-only — desktop has no such switch and 'playback' would needlessly duck
+ *  other apps' audio. */
+function ensurePlaybackAudioSession(): void {
+  if (!mobileRuntimeActive()) return;
+  try {
+    const sess = (navigator as unknown as { audioSession?: { type: string } }).audioSession;
+    if (sess && sess.type !== 'playback') sess.type = 'playback';
+  } catch { /* Audio Session API not present — nothing to do */ }
+}
+
 /** Resume the audio context — must be called from a user gesture handler. */
 export async function unlockAudio(): Promise<void> {
   const c = getCtx();
+  ensurePlaybackAudioSession();
   intentionalSuspend = false;
   // Cover Safari's 'interrupted' state too, not just 'suspended'.
   if (c.state !== 'running' && c.state !== 'closed') {
