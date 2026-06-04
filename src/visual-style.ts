@@ -70,7 +70,22 @@ function urlFlag(name: string): string | null {
 
 export function mobileRuntimeActive(): boolean {
   if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
-  const uaMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  // Dev/test escape hatch: force every mobile code path (shaded render, DPR cap,
+  // direct music output, .m4a, deferred boot loads) on a desktop browser, so
+  // iPhone-only issues can be reproduced without a device. Joins the existing
+  // override family (?fullfx, ?mobileLite, ?directMusic, ?webaudioMusic).
+  if (urlFlag('forceMobile') === '1') return true;
+  const ua = navigator.userAgent;
+  const uaMobile = /iPhone|iPad|iPod|Android/i.test(ua);
+  // Modern iPadOS Safari reports a desktop "Macintosh" UA with no iPad token,
+  // and an iPad in landscape exceeds the small-viewport gate below — so without
+  // an explicit check an iPad falls through to the full desktop path (mesh +
+  // DPR 2 + post-FX) and cannot hold frame budget even on wave 1. This is also
+  // why our recent mobile perf work appeared to do nothing on iPads: every
+  // guard keys off this function, and it was answering "not mobile". A real Mac
+  // reports maxTouchPoints 0 (a trackpad is not a touch digitiser); >1 touch
+  // point under a Mac UA is the only reliable iPad-as-Mac tell.
+  const iPadAsMac = /Macintosh/.test(ua) && (navigator.maxTouchPoints ?? 0) > 1;
   const coarse = (() => {
     try { return window.matchMedia?.('(pointer: coarse)').matches === true; }
     catch { return false; }
@@ -78,7 +93,7 @@ export function mobileRuntimeActive(): boolean {
   const touch = (navigator.maxTouchPoints ?? 0) > 0;
   const smallViewport = Math.min(window.innerWidth || 9999, window.innerHeight || 9999) <= 640
     || Math.max(window.innerWidth || 0, window.innerHeight || 0) <= 960;
-  return uaMobile || ((coarse || touch) && smallViewport);
+  return uaMobile || iPadAsMac || ((coarse || touch) && smallViewport);
 }
 
 /** URL escape hatches that force FULL fidelity regardless of device or
