@@ -70,6 +70,13 @@ body[data-display="modern"] #game3d {
   transform: translate(-50%, -50%);
   background: var(--bg);
   image-rendering: pixelated;
+  /* The canvas is the play surface — all input is handled by our own pointer
+     listeners, so suppress every native touch gesture on it. Without this the
+     canvas defaults to `touch-action: auto` (it does NOT inherit body's `none`),
+     so iOS Safari double-tap-zooms when you double-tap the play area — e.g.
+     double-tapping the wave indicator to cheat-advance zoomed the view and stuck
+     (a tab, not standalone PWA, so the viewport's user-scalable=no is ignored). */
+  touch-action: none;
   /* Soft CRT vignette */
   box-shadow:
     inset 0 0 120px rgba(0, 0, 0, 0.9),
