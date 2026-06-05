@@ -29,7 +29,7 @@ import {
 import { getActiveSkinId } from './skins.js';
 import { handleAuthCallback, tryRestore, sweepSignetArtefacts } from './auth.js';
 import * as audio from './audio.js';
-import { getMusicDebugSnapshot, musicForceRefresh, musicSetTrackForState, preloadAllTracks, musicSetPaused, musicSetMuted, musicResetElements, musicWarmUpAll, currentTrackId, musicSuppressStatePlay } from './music.js';
+import { getMusicDebugSnapshot, musicForceRefresh, musicSetTrackForState, preloadAllTracks, musicSetPaused, musicSetMuted, musicResetElements, musicWarmUpAll, currentTrackId, musicSuppressStatePlay, musicPoolActive } from './music.js';
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, applyDisplayMode } from './display.js';
@@ -1616,10 +1616,11 @@ function musicLooksStalled(): boolean {
 function recoverMusicFromGesture(force = false, deferStateTrack = false): void {
   if (isControllerSurface()) return;
   const now = performance.now();
-  // Mobile prime/defer window in flight: the current bed is intentionally
-  // warmed-but-not-yet-playing, which musicLooksStalled() reads as a stall. Don't
-  // let a follow-up tap reset everything and restart the warm-up burst before the
-  // deferred first play has had its calm moment.
+  // Legacy ?musicPool=0 mobile prime/defer window in flight: the current bed is
+  // intentionally warmed-but-not-yet-playing, which musicLooksStalled() reads as a
+  // stall. Don't let a follow-up tap reset everything and restart the warm-up
+  // burst before the deferred first play has had its calm moment. (The pool path
+  // never sets mobilePrimeUntilMs, so this is a no-op there.)
   if (now < mobilePrimeUntilMs) return;
   const snap = getMusicDebugSnapshot();
   const mutedStall = !!snap.currentId && snap.muted === true;
@@ -1628,29 +1629,34 @@ function recoverMusicFromGesture(force = false, deferStateTrack = false): void {
   lastMusicGestureRecoveryMs = now;
   firstMusicGesturePrimed = true;
 
-  // This must run inside the active user gesture. If a previous element
-  // was created or replayed while the browser considered audio locked,
-  // rebuilding the MediaElementSource graph is more reliable than
-  // repeatedly calling play() on the same poisoned element.
+  // Must run inside the active user gesture (resume the AudioContext + declare
+  // the iOS playback audio session before any element play()).
   void audio.unlockAudio();
+
+  // Element-pool path (mobile default): unlock the small fixed pool ONCE
+  // (musicWarmUpAll → unlockPool, idempotent), then let the per-frame loop drive
+  // playback. No element wipe, no defer — with ≤POOL_SIZE elements there is no
+  // warm-up load burst to drain, so the title / wave-1 bed loads uncontended,
+  // which was the wedge cause. This is the architectural fix for the silent
+  // title + L1 music; the legacy timing dance below is kept only for ?musicPool=0.
+  if (musicPoolActive()) {
+    musicWarmUpAll();
+    musicForceRefresh();
+    if (!deferStateTrack) musicSetTrackForState(state);
+    return;
+  }
+
+  // Legacy direct/web-audio path (?musicPool=0, or a desktop self-heal onto
+  // direct). Rebuild the MediaElementSource graph rather than replaying a
+  // poisoned element, then warm a few beds at a time.
   musicResetElements();
   musicForceRefresh();
-  // Play the CURRENT bed FIRST so it claims an iOS decoder/network slot before
-  // the warm-up burst. iOS only buffers a few media elements at once, and
-  // warming a handful of beds (each muted-play()s, which kicks a load) right
-  // before the real current play() made the current bed (title pallasite-idle,
-  // wave-1 slow-orbit) lose the race and wedge at readyState 0/1 — title + L1
-  // stayed silent while later waves, created in calmer moments, loaded fine.
-  // Warm the rest AFTER, skipping the now-current track so warmOne can't fight
-  // the play we just kicked off.
   if (mobileRuntimeActive()) {
-    // iOS: do NOT play the current bed for real inside this gesture. A bed played
-    // amid the warm-up's load burst wedges at readyState 0 forever (title
-    // pallasite-idle, wave-1 slow-orbit), while beds warmed now and played later
-    // (wave 2+, e.g. slow-gravity) load fine. So warm EVERY critical bed (muted
-    // unlock, incl. the current one), then HOLD the state-driven play briefly:
-    // once the burst drains, the game loop's musicSetTrackForState plays the
-    // now-unlocked current bed in calm — exactly how wave-2 beds work.
+    // iOS (no pool): do NOT play the current bed for real inside this gesture. A
+    // bed played amid the warm-up's load burst wedges at readyState 0 forever
+    // (title pallasite-idle, wave-1 slow-orbit), while beds warmed now and played
+    // later (wave 2+) load fine. Warm EVERY critical bed (muted unlock), then HOLD
+    // the state-driven play briefly so the loop plays the current bed in calm.
     musicWarmUpAll(undefined);
     musicSuppressStatePlay(MOBILE_FIRST_PLAY_DEFER_MS);
     mobilePrimeUntilMs = now + MOBILE_FIRST_PLAY_DEFER_MS + 400;

@@ -270,9 +270,158 @@ function trackUrlFor(track: Track): string {
   return track.src.replace(/\.opus$/, '.m4a');
 }
 
+// ── Mobile audio-element POOL ───────────────────────────────────────
+// iOS Safari throttles concurrent HTMLMediaElement decode/network to a small
+// handful. One element per track (the `loaded` map) reaches ~9-12 elements by
+// wave 2-3 and the bed we actually need (title, wave 1) is starved at
+// readyState 0/1 forever, while later-wave beds (created once the first-gesture
+// warm-up burst drained) load fine. Fix: a small fixed pool of PERSISTENT,
+// pre-unlocked elements REUSED by reassigning `.src` (the Howler html5Pool
+// pattern). At most POOL_SIZE elements ever exist, so iOS sees ≤2 concurrent
+// decodes (current bed + one fading tail) — the same calm condition under which
+// wave-2+ already loads. Each BOUND slot IS the `Loaded` entry for its current
+// id, so every consumer that iterates `loaded` (snapshot, pause/mute, verify,
+// silence) keeps working with loaded.size ≤ POOL_SIZE. Mobile/direct only — the
+// desktop Web-Audio path is byte-identical.
+const POOL_SIZE = 3;
+interface PoolSlot {
+  entry: Loaded;
+  boundId: string | null;   // track id this slot currently represents, null = spare
+  lastBoundMs: number;      // LRU stamp
+}
+let pool: PoolSlot[] | null = null;
+let poolUnlocked = false;
+
+/** The pool replaces one-element-per-track only on the mobile/direct path.
+ *  Narrower than directMusicOutputActive(): it deliberately EXCLUDES
+ *  forcedDirectBySilence, so a desktop self-heal-to-direct never engages the
+ *  pool (desktop has no concurrency throttle to cure). ?musicPool=0 opts out to
+ *  the legacy direct path for on-device A/B; ?directMusic=1 exercises the pool
+ *  on desktop for local element-count checks. */
+export function musicPoolActive(): boolean {
+  if (urlFlag('webaudioMusic') === '1') return false;
+  if (urlFlag('musicPool') === '0') return false;
+  return mobileRuntimeActive() || urlFlag('directMusic') === '1';
+}
+
+function poolNow(): number {
+  return typeof performance !== 'undefined' ? performance.now() : 0;
+}
+
+/** Build one pool element with SLOT-AWARE listeners installed once. Because the
+ *  element is reused across tracks (via .src swap) the listeners must read the
+ *  slot's CURRENT bound track at event time — per-track closures would be stale. */
+function buildPoolElement(): PoolSlot {
+  const el = new Audio();
+  el.volume = 0;
+  const entry: Loaded = { el, src: null, gain: null, failed: false, direct: true, volumeRaf: null };
+  const slot: PoolSlot = { entry, boundId: null, lastBoundMs: 0 };
+  el.addEventListener('error', () => {
+    const id = slot.boundId;
+    if (!id) return;   // error for an old/cleared src — irrelevant now
+    const code = el.error?.code;
+    const msg = el.error?.message;
+    logMusic(`pool load failed: ${id} code${code ?? '?'} ${msg ?? ''}`.trim());
+    try {
+      window.dispatchEvent(new CustomEvent('pallasite:music-load-failed', {
+        detail: { id, src: TRACKS[id]?.src, code, msg, blobRetryUsed: false },
+      }));
+    } catch { /* ignore */ }
+    entry.failed = true;
+  });
+  el.addEventListener('loadedmetadata', () => {
+    const track = slot.boundId ? TRACKS[slot.boundId] : undefined;
+    if (!track || freeplayActive) return;
+    if (track.startAt && track.startAt > 0 && el.currentTime < track.startAt) {
+      try { el.currentTime = track.startAt; } catch { /* ignore */ }
+    }
+  });
+  el.addEventListener('timeupdate', () => {
+    const track = slot.boundId ? TRACKS[slot.boundId] : undefined;
+    if (!track || freeplayActive || track.loop === false) return;
+    const target = track.startAt ?? 0;
+    if (target > 0 && el.duration > 0 && el.currentTime >= el.duration - 0.1) {
+      try { el.currentTime = target; } catch { /* ignore */ }
+    }
+  });
+  el.addEventListener('ended', () => {
+    if (freeplayActive && slot.boundId && slot.boundId === currentId) advanceFreeplay();
+  });
+  return slot;
+}
+
+function ensurePool(): PoolSlot[] {
+  if (!pool) {
+    pool = [];
+    for (let i = 0; i < POOL_SIZE; i++) pool.push(buildPoolElement());
+  }
+  return pool;
+}
+
+/** Is `entry`'s slot still bound to `id`? Guards deferred pauses/advances: a slot
+ *  rebound A→B must not run A's stale pause against the now-B element. */
+function slotStillBoundTo(entry: Loaded, id: string): boolean {
+  return !!pool && pool.some(s => s.entry === entry && s.boundId === id);
+}
+
+/** Acquire a pool slot for `id`, returning its `Loaded` entry. This is the
+ *  mobile replacement for load()'s per-track `new Audio()`. */
+function acquireSlot(id: string): Loaded {
+  const slots = ensurePool();
+  // 1) reuse the slot already bound to this id — no .src touch, no re-buffer.
+  const existing = slots.find(s => s.boundId === id);
+  if (existing) {
+    existing.lastBoundMs = poolNow();
+    existing.entry.failed = false;
+    loaded.set(id, existing.entry);
+    return existing.entry;
+  }
+  // 2) prefer a FREE slot: unbound (or whose bed already fell out of `loaded`)
+  //    AND paused. A prev bed still fading out is NOT paused → protected here.
+  // 3) else sacrifice the LRU slot that isn't the incoming current (oldest tail).
+  const free = slots.filter(s => (s.boundId === null || !loaded.has(s.boundId)) && s.entry.el.paused);
+  const candidates = free.length ? free : slots.filter(s => s.boundId !== currentId);
+  const slot = (candidates.length ? candidates : slots).reduce((a, b) => (a.lastBoundMs <= b.lastBoundMs ? a : b));
+  if (slot.boundId && slot.boundId !== id) loaded.delete(slot.boundId);
+  slot.boundId = id;                 // set BEFORE src so an instant media event reads the new binding
+  slot.lastBoundMs = poolNow();
+  slot.entry.failed = false;
+  try { slot.entry.el.src = trackUrlFor(TRACKS[id]); } catch { /* ignore */ }
+  loaded.set(id, slot.entry);
+  return slot.entry;
+}
+
+/** Unlock every pool element ONCE inside a user gesture: a muted play() of the
+ *  current bed's (cached) url registers the per-element iOS unlock, which then
+ *  persists across later .src swaps. Idempotent; replaces the per-track warm
+ *  storm on the pool path. Must run AFTER audio.unlockAudio() so the playback
+ *  audio session is already declared before the first element play. */
+function unlockPool(): void {
+  if (poolUnlocked) return;
+  const slots = ensurePool();
+  const id = currentId ?? activeAlbum().title;
+  const url = id && TRACKS[id] ? trackUrlFor(TRACKS[id]) : null;
+  for (const slot of slots) {
+    const el = slot.entry.el;
+    try { el.muted = true; } catch { /* ignore */ }
+    if (url && !el.currentSrc) { try { el.src = url; } catch { /* ignore */ } }
+    let p: Promise<void> | undefined;
+    try { p = el.play(); } catch { /* ignore */ }
+    const settle = (): void => {
+      try { el.muted = false; } catch { /* ignore */ }
+      if (slot.boundId !== null) return;   // got bound during the async gap — leave it to the player
+      try { el.pause(); } catch { /* ignore */ }
+    };
+    if (p && typeof p.then === 'function') p.then(settle, settle);
+    else settle();
+  }
+  poolUnlocked = true;
+}
+
 function load(track: Track): Loaded {
   const cached = loaded.get(track.id);
   if (cached) return cached;
+  if (musicPoolActive()) return acquireSlot(track.id);
   const el = new Audio();
   el.loop = track.loop !== false;
   el.preload = mediaPlaybackGestureReady() ? 'auto' : 'none';
@@ -417,6 +566,19 @@ function entryOutputLevel(entry: Loaded): number {
 
 function pauseAfterFade(id: string, entry: Loaded, ms: number): void {
   window.setTimeout(() => {
+    if (musicPoolActive()) {
+      // A slot rebound A→B must NOT run A's stale pause against the now-B
+      // element; and a bed that became current again must keep playing.
+      if (!slotStillBoundTo(entry, id) || currentId === id) return;
+      try { entry.el.pause(); } catch { /* ignore */ }
+      setDirectVolume(entry, 0);
+      // Faded out for good — unbind the slot + drop it from `loaded` so
+      // acquireSlot can reclaim it (and loaded.size reflects only live beds).
+      const slot = pool?.find(s => s.entry === entry);
+      if (slot) slot.boundId = null;
+      loaded.delete(id);
+      return;
+    }
     if (currentId !== id) {
       try { entry.el.pause(); } catch { /* ignore */ }
       if (entry.direct) setDirectVolume(entry, 0);
@@ -450,21 +612,18 @@ function refreshDirectVolumes(): void {
       if (trim === 0 && !entry.el.paused) {
         try { entry.el.pause(); } catch { /* ignore */ }
       }
-      // iOS decoder/network throttle: Safari only lets a few media elements
-      // buffer at once. With ~12 cached tracks all on 'auto' preload, the CURRENT
-      // bed gets starved at readyState 0/1 indefinitely — confirmed on device
-      // (title pallasite-idle + wave-1 slow-orbit stuck loading, while later waves,
-      // by which point the warm-up's loads had drained, reached rs4 and played).
-      // So keep only the current track buffering and release every other settled
-      // direct element's buffer, so the one track we actually need wins a slot. A
-      // released track re-buffers via crossfadeTo (preload='auto'+play()) when it
-      // next becomes current; the muted-warm play() already unlocked it for the
-      // session, so releasing the buffer doesn't re-lock it. Gated on volumeRaf
-      // === null so we never touch a track mid-fade (releasing a fading-out bed's
-      // buffer could cut its tail on iOS).
-      const wantPreload = isCurrent ? 'auto' : 'none';
-      if (entry.el.preload !== wantPreload) {
-        try { entry.el.preload = wantPreload; } catch { /* ignore */ }
+      // Legacy direct path (?musicPool=0) only: cap concurrent buffering by
+      // releasing every non-current settled element's buffer so the one bed we
+      // need wins an iOS decoder slot (released beds re-buffer via crossfadeTo
+      // when next current; the muted-warm play() keeps them unlocked). The
+      // element POOL makes this obsolete — only POOL_SIZE elements ever exist —
+      // so it's skipped there. Gated on volumeRaf===null so we never touch a
+      // track mid-fade (releasing a fading-out bed's buffer could cut its tail).
+      if (!musicPoolActive()) {
+        const wantPreload = isCurrent ? 'auto' : 'none';
+        if (entry.el.preload !== wantPreload) {
+          try { entry.el.preload = wantPreload; } catch { /* ignore */ }
+        }
       }
     }
   }
@@ -1171,6 +1330,10 @@ function extraCriticalTrackIds(): string[] {
 }
 
 export function preloadAllTracks(): void {
+  // Pool path: beds bind + fetch on demand via acquireSlot (and preloadTrack
+  // warms the upcoming wave into a spare slot). The critical set (4-6 ids) can't
+  // fit POOL_SIZE slots, so pre-creating them here would only thrash bindings.
+  if (musicPoolActive()) return;
   for (const id of criticalTrackIds()) {
     const track = TRACKS[id];
     if (track) try { load(track); } catch { /* ignore */ }
@@ -1202,6 +1365,30 @@ export function musicForceRefresh(): void {
  * indefinitely. Replacing the elements is the only reliable cure.
  */
 export function musicResetElements(): void {
+  if (musicPoolActive() && pool) {
+    // Pool SOFT-reset: pause + unbind every slot but KEEP the unlocked element
+    // objects — destroying them would lose the iOS unlock the pool depends on
+    // (the whole point of reusing elements). A re-bind to the same track stays
+    // warm (its .src is untouched).
+    for (const slot of pool) {
+      try { slot.entry.el.pause(); } catch { /* ignore */ }
+      if (slot.entry.volumeRaf !== null) {
+        try { cancelAnimationFrame(slot.entry.volumeRaf); } catch { /* ignore */ }
+        slot.entry.volumeRaf = null;
+      }
+      try { slot.entry.el.muted = false; } catch { /* ignore */ }
+      slot.boundId = null;
+      slot.entry.failed = false;
+    }
+    loaded.clear();
+    warmedIds.clear();
+    currentId = null;
+    lastAppliedKey = '';
+    readyZeroTrack = null;
+    readyZeroSinceMs = 0;
+    readyZeroLastForceMs = 0;
+    return;
+  }
   for (const entry of loaded.values()) {
     try { entry.el.pause(); } catch { /* ignore */ }
     if (entry.volumeRaf !== null) {
@@ -1286,6 +1473,9 @@ function warmOne(id: string, skipId: string | undefined): void {
 }
 
 export function musicWarmUpAll(skipId?: string): void {
+  // Pool path: one-time element unlock, no per-track warm storm. (skipId is a
+  // legacy-path concern; the pool reuses unlocked elements via .src swap.)
+  if (musicPoolActive()) { unlockPool(); return; }
   // 600bn/Sanctum is a one-level mobile-heavy surface. The current track is
   // replayed below by musicSetTrackForState() under the same gesture; warming
   // campaign beds here only competes with the-cult.m4a and can leave it stuck
