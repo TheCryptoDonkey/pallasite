@@ -1234,8 +1234,10 @@ export function renderEventLobby(state: GameState): void {
     })();
   });
 
-  renderEventLobbyAction(actions, 'HOST CO-OP', 'Shows a QR and short session code for a second pilot to join.', () => {
-    window.location.assign(`/duel?coop=1&event=1&booth=${encodeURIComponent(String(cfg.booth))}`);
+  renderEventLobbyAction(actions, '2 PLAYERS · 1 SCREEN', 'Two pilots share this TV — grab a pad each. Instant local co-op, no second device, no lag.', () => {
+    // Local couch co-op on this machine: no peer, no lockstep input-delay
+    // buffer. ?autostart=1 drops straight into a 2-player shared-screen run.
+    window.location.assign(`/?couch=1&autostart=1&event=1&booth=${encodeURIComponent(String(cfg.booth))}`);
   });
 
   renderEventLobbyAction(actions, 'HOST DEATHMATCH', 'Create a booth match. Empty slots can be AI-filled until real pilots arrive.', () => {

@@ -14,6 +14,7 @@ import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, r
 import { postHeartbeat } from './faucet.js';
 import { currentMode, getStoredMode, isStoredDefenderMode, type RunMode } from './mode.js';
 import { deathmatchActive } from './deathmatch.js';
+import { pollGamepads } from './gamepads.js';
 import {
   startStreamSession,
   publishStreamFrame,
@@ -1876,6 +1877,10 @@ function loop(now: number): void {
   const frameDeltaS = Math.min(maxCatchupSteps() * FIXED_STEP_S, rawFrameDeltaMs / 1000);
   stepAccumulator += frameDeltaS;
   lastFrame = now;
+  // Sample physical gamepads once per rAF (pad 0 → P1, pad 1 → P2) for local
+  // solo / couch play. No-ops in peer mode and when no pad is in use, so it's
+  // free for the keyboard and touch paths.
+  pollGamepads(state);
   // Peer catch-up: a late-joining peerwatch, AI-slot takeover, or slow-starting
   // 4P tab can receive remote input faster than its local sim is advancing.
   // The real-time accumulator can only afford one or two sim steps per rAF, so
@@ -2814,8 +2819,13 @@ async function boot(): Promise<void> {
   // the overlay anyway. Skipping renderAttract avoids a one-frame flash
   // of the attract screen between peer-joined and game start.
   const autoStartLocalDeathmatch = autoStartMode && !peer && !spectator && urlDeathmatchModeActive();
-  if (!peer && !spectator && !defenderMode && !autoStartLocalDeathmatch) renderAttract(state);
-  if (autoStartLocalDeathmatch) {
+  // Local couch co-op kiosk start: ?couch=1&autostart=1 drops two pilots
+  // straight into a shared-screen campaign with NO peer — and so none of the
+  // lockstep input-delay buffer that made the networked booth path laggy.
+  // Driven by the event lobby's "2 PLAYERS · 1 SCREEN" button.
+  const autoStartLocalCouch = autoStartMode && couchMode && !peer && !spectator && !defenderMode && !urlDeathmatchModeActive();
+  if (!peer && !spectator && !defenderMode && !autoStartLocalDeathmatch && !autoStartLocalCouch) renderAttract(state);
+  if (autoStartLocalDeathmatch || autoStartLocalCouch) {
     queueMicrotask(() => { simulateStart(); });
   }
   // Defender preview auto-starts straight into wave 1 so the player drops
