@@ -924,9 +924,13 @@ function attachPeer(slot, session, ws) {
         const latest = peerFrameLatestFrame(msg);
         if (latest > (slot.peerLatestFrame ?? -1)) slot.peerLatestFrame = latest;
       }
+      const forwarded = new Set();
       for (let i = 0; i < (slot.peerCount || 2); i++) {
-        if (i === ws._peerSlot) continue;
         const target = slot.peers[i];
+        // Skip empty slots, our own socket (a booth may own several slots),
+        // and any socket already sent this frame (multi-slot owners).
+        if (!target || target === ws || forwarded.has(target)) continue;
+        forwarded.add(target);
         sendPeerPayload(target, peerPayloadForTarget(target, payload, msg), peerForwardDelayMs(msg, ws._peerSlot, i));
       }
       // Buffer frames (only — not hashes) so a late-joining peerwatch
@@ -953,16 +957,19 @@ function attachPeer(slot, session, ws) {
   });
 
   const closeHandler = () => {
-    const departingSlot = ws._peerSlot;
-    if (departingSlot >= 0 && slot.peers[departingSlot] === ws) {
-      slot.peers[departingSlot] = undefined;
+    const owned = Array.isArray(ws._peerSlots) ? ws._peerSlots : (ws._peerSlot >= 0 ? [ws._peerSlot] : []);
+    const freed = [];
+    for (const os of owned) {
+      if (slot.peers[os] === ws) { slot.peers[os] = undefined; freed.push(os); }
+    }
+    for (const departingSlot of freed) {
       const leftPayload = JSON.stringify({ type: 'peer-left', slot: departingSlot, reason: 'disconnect' });
+      const told = new Set();
       for (let i = 0; i < (slot.peerCount || 2); i++) {
-        if (i === departingSlot) continue;
         const other = slot.peers[i];
-        if (other && other.readyState === other.OPEN) {
-          try { other.send(leftPayload); } catch {}
-        }
+        if (!other || other === ws || told.has(other) || other.readyState !== other.OPEN) continue;
+        told.add(other);
+        try { other.send(leftPayload); } catch {}
       }
       // Watchers see peer-left too so the spectator UI can surface
       // "OPPONENT LEFT" alongside the same gameover funnel.
@@ -1045,14 +1052,37 @@ function handlePeerHello(slot, session, ws, msg) {
     }
     nextHumanSlots = configuredSlots;
   }
-  if (slot.peers[requested]) {
-    const previous = slot.peers[requested];
-    slot.peers[requested] = undefined;
-    try { previous.close(1000, 'replaced'); } catch {}
+  // A single socket may drive MORE than one slot locally — a couch booth
+  // linked to the other booth owns e.g. slots [0,1] on one machine. ownedSlots
+  // defaults to just [requested], so one-slot peers are unchanged. Every owned
+  // slot must be in range; the primary (requested) is always included.
+  let ownedSlots = [requested];
+  if (Array.isArray(msg.ownedSlots) && msg.ownedSlots.length > 0) {
+    const cleaned = [];
+    for (const v of msg.ownedSlots) {
+      const n = Math.floor(Number(v));
+      if (!Number.isInteger(n) || n < 0 || n >= (slot.peerCount || 2)) {
+        try { ws.send(JSON.stringify({ type: 'session-error', code: 'invalid-slot' })); } catch {}
+        try { ws.close(1008, 'invalid-slot'); } catch {}
+        return;
+      }
+      if (!cleaned.includes(n)) cleaned.push(n);
+    }
+    if (!cleaned.includes(requested)) cleaned.push(requested);
+    cleaned.sort((a, b) => a - b);
+    ownedSlots = cleaned;
   }
 
-  slot.peers[requested] = ws;
+  for (const os of ownedSlots) {
+    if (slot.peers[os] && slot.peers[os] !== ws) {
+      const previous = slot.peers[os];
+      slot.peers[os] = undefined;
+      try { previous.close(1000, 'replaced'); } catch {}
+    }
+    slot.peers[os] = ws;
+  }
   ws._peerSlot = requested;
+  ws._peerSlots = ownedSlots;
   ws._peerBinaryFrames = msg.binaryFrames === true;
 
   if (nextHumanSlots) {
@@ -1074,18 +1104,24 @@ function handlePeerHello(slot, session, ws, msg) {
   // Watchers always see a peer-joined the moment a slot is bound, even
   // if the other peer isn't there yet — they may have connected first
   // and need to know when the game becomes startable.
-  fanOutToWatchers(slot, peerJoinedPayload(slot, requested), { type: 'peer-joined', slot: requested });
-
+  for (const os of ownedSlots) {
+    fanOutToWatchers(slot, peerJoinedPayload(slot, os), { type: 'peer-joined', slot: os });
+  }
+  // Tell every OTHER bound socket about each of our owned slots (dedup by
+  // socket so a multi-slot owner is told once per joined slot), and tell us
+  // about each already-bound slot we don't own.
+  const otherSockets = new Set();
   for (let i = 0; i < (slot.peerCount || 2); i++) {
-    if (i === requested) continue;
-    if (slot.peerHumanSlots && !slot.peerHumanSlots.includes(i)) continue;
     const other = slot.peers[i];
-    if (other && other.readyState === other.OPEN) {
-      const joinedRequested = peerJoinedPayload(slot, requested);
-      const joinedOther = peerJoinedPayload(slot, i);
-      try { other.send(joinedRequested); } catch {}
-      try { ws.send(joinedOther); } catch {}
-    }
+    if (other && other !== ws && other.readyState === other.OPEN) otherSockets.add(other);
+  }
+  for (const other of otherSockets) {
+    for (const os of ownedSlots) { try { other.send(peerJoinedPayload(slot, os)); } catch {} }
+  }
+  for (let i = 0; i < (slot.peerCount || 2); i++) {
+    if (ownedSlots.includes(i)) continue;
+    if (slot.peerHumanSlots && !slot.peerHumanSlots.includes(i)) continue;
+    if (slot.peers[i] && slot.peers[i] !== ws) { try { ws.send(peerJoinedPayload(slot, i)); } catch {} }
   }
   // Once the full human roster is present, measure RTT and lock in the
   // session's adaptive lockstep input delay. One-shot per session; late
