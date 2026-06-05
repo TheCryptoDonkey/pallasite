@@ -814,7 +814,21 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, opts?: {
 
 // ── Title screen ──────────────────────────────────────────────────────────────
 
+/** Prague kiosk identity — `?p1` = Booth 1, `?p2` = Booth 2. When set, the
+ *  title/attract surfaces collapse to a stripped booth lobby (login → campaign
+ *  → 1-screen co-op), hiding every normal menu. 0 = not a kiosk. */
+const boothKiosk: number = (() => {
+  try {
+    const q = new URLSearchParams(window.location.search);
+    return q.has('p1') ? 1 : q.has('p2') ? 2 : 0;
+  } catch { return 0; }
+})();
+
 export function renderTitle(state: GameState): void {
+  // Prague booth kiosk: collapse the whole title/menu surface to the stripped
+  // booth lobby. This one gate also closes the post-game loop — anything that
+  // would show the title shows the lobby instead.
+  if (boothKiosk) { renderBoothLobby(state, boothKiosk); return; }
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
@@ -1275,7 +1289,67 @@ export function renderEventLobby(state: GameState): void {
   }
 }
 
+/** Prague booth kiosk lobby — the stripped surface `?p1`/`?p2` boot into.
+ *  Login (renderAuth: Nostr or one-tap guest) happens first; here a pilot picks
+ *  how many play THIS screen, or links to the other booth. Campaign only — no
+ *  mode picker, difficulty, skins, settings, daily, deathmatch or join noise. */
+export function renderBoothLobby(state: GameState, booth: number): void {
+  // No identity yet → Signet login (Nostr or guest), then land back here.
+  if (!state.session) { renderAuth(state, () => renderBoothLobby(state, booth)); return; }
+
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+  document.body.dataset.surface = 'event';
+
+  const titleLogo = el('img', { parent: overlay });
+  titleLogo.className = 'title-logo';
+  (titleLogo as HTMLImageElement).src = '/logo.webp';
+  (titleLogo as HTMLImageElement).alt = 'PALLASITE';
+  (titleLogo as HTMLImageElement).decoding = 'async';
+
+  const kicker = el('p', { parent: overlay, text: `BTC PRAGUE · BOOTH ${booth}` });
+  kicker.style.cssText = 'font-size:1rem;color:#8cffb4;letter-spacing:0.28em;text-shadow:0 0 8px rgba(140,255,180,0.4);margin:-12px 0 0;';
+  const intro = el('p', { parent: overlay, text: 'Grab a pad and drop in — campaign run, two pilots welcome.' });
+  intro.style.cssText = 'font-size:0.88rem;color:rgba(220,210,255,0.76);letter-spacing:0.08em;text-align:center;max-width:520px;line-height:1.45;margin:0;';
+
+  const actions = el('div', { parent: overlay });
+  actions.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:10px;margin:8px auto 0;width:100%;';
+  const status = el('p', { parent: overlay });
+  status.style.cssText = 'min-height:1.1em;margin:6px 0 0;font-size:0.74rem;color:rgba(180,140,255,0.85);letter-spacing:0.08em;text-align:center;';
+
+  // 1 PLAYER — solo campaign on this screen. Starts in place.
+  renderEventLobbyAction(actions, '1 PLAYER', 'One pilot, this screen. Straight into the campaign.', () => {
+    void audio.unlockAudio();
+    tryEnterFullscreen();
+    setStoredMode('campaign');
+    setStoredDailyPref(false);
+    lockInDifficulty(getStoredDifficulty());
+    gateBehindOnboarding(() => onStartCb?.());
+  });
+
+  // 2 PLAYERS — local couch. Reload into the couch autostart, carrying the
+  // booth flag so the post-game loop returns to this lobby.
+  renderEventLobbyAction(actions, '2 PLAYERS · ONE SCREEN', 'Two pilots, two pads, this screen. Local couch co-op — no lag.', () => {
+    void audio.unlockAudio();
+    tryEnterFullscreen();
+    window.location.assign(`/?couch=1&autostart=1&p${booth}`);
+  });
+
+  // LINK BOOTHS — cross-booth co-op (Stage 2). Shown so the flow reads, not
+  // wired yet.
+  renderEventLobbyAction(actions, 'LINK BOOTHS', 'Team up with the other Prague booth for a bigger co-op.', () => {
+    status.textContent = 'Booth link arrives in the next build — play 1 or 2 here for now.';
+  });
+
+  // Operator escape — drop the kiosk flag to reach the full menu.
+  const exit = el('button', { parent: overlay, text: 'NORMAL MENU' });
+  exit.style.cssText = 'margin-top:14px;background:none;border:1px solid rgba(180,140,255,0.3);color:rgba(200,180,255,0.7);font:0.7rem ui-monospace,monospace;letter-spacing:0.14em;padding:7px 14px;border-radius:6px;cursor:pointer;';
+  exit.addEventListener('click', () => { window.location.assign('/'); });
+}
+
 export function renderAttract(state: GameState): void {
+  if (boothKiosk) { renderBoothLobby(state, boothKiosk); return; }
   // 600bn flavour gets its own bespoke attract screen — sacred number
   // wordmark, single PLAY to drop straight into the Sanctum, no auth
   // step in the way (claim flow at game-over handles sign-in if needed).
