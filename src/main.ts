@@ -1915,10 +1915,18 @@ function loop(now: number): void {
   const frameDeltaS = Math.min(maxCatchupSteps() * FIXED_STEP_S, rawFrameDeltaMs / 1000);
   stepAccumulator += frameDeltaS;
   lastFrame = now;
-  // Sample physical gamepads once per rAF (pad 0 → P1, pad 1 → P2) for local
-  // solo / couch play. No-ops in peer mode and when no pad is in use, so it's
-  // free for the keyboard and touch paths.
-  pollGamepads(state);
+  // Sample physical gamepads once per rAF: pad 0 drives the first local pilot,
+  // pad 1 the second. In peer mode it writes the lockstep input mirrors (a
+  // linked booth's two pads → its two owned slots); in couch / solo it pokes
+  // the players directly. No-op when no pad is in use.
+  pollGamepads(state, {
+    pilotSlots: localPilotSlots,
+    peerActive: isPeerActive(),
+    localKeys,
+    localHeading,
+    localThrust,
+    edgeFlags,
+  });
   // Peer catch-up: a late-joining peerwatch, AI-slot takeover, or slow-starting
   // 4P tab can receive remote input faster than its local sim is advancing.
   // The real-time accumulator can only afford one or two sim steps per rAF, so

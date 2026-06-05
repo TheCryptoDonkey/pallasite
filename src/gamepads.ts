@@ -1,16 +1,16 @@
 /**
- * Physical gamepads — local couch / kiosk input.
+ * Physical gamepads — local couch / kiosk + linked-booth input.
  *
  * Polled once per animation frame (gamepads have no event stream for held
- * state). The first connected pad drives P1, the second drives P2, mapped
- * straight onto the same player fields the phone-controller host writes
- * (`targetHeading` / `thrustOverride` / `keys[Space]` + shield/hyperspace),
- * so a TV booth with two pads behaves exactly like the touch / phone path.
+ * state). pollGamepads is handed the slots its local pilots drive: pad 0 → the
+ * first, pad 1 → the second. In peer/lockstep mode it writes the input MIRRORS
+ * (localHeading / localThrust / localKeys + edgeFlags) that the lockstep
+ * samples — so a linked booth's two pads feed its two owned slots
+ * deterministically. In couch / solo it pokes the player objects directly and
+ * fires edge actions synchronously, exactly as the keydown handler does.
  *
- * Self-gating:
- *   - No-op in peer/duel mode — lockstep owns the input pipeline there.
- *   - A slot is only driven once its pad shows activity, so a controller that
- *     is merely plugged in never zeroes a keyboard player's input.
+ * A pad is only driven once it shows activity, so one merely plugged in never
+ * zeroes a keyboard player on the same slot.
  *
  * Aim model: push the left stick to point-and-fly (heading + thrust together,
  * the walk-up-friendly twin-stick feel); the right trigger thrusts straight
@@ -19,11 +19,23 @@
 
 import type { GameState } from './types.js';
 import { tryHyperspace, tryActivateShield } from './game.js';
-import { isPeerActive } from './netcode.js';
 
 const FIRE_CODE = 'Space';
 const DEADZONE = 0.30;
 const MENU_PHASES = new Set(['title', 'paused', 'gameover', 'completed']);
+
+/** How pollGamepads should route input this frame. In peer mode it writes the
+ *  lockstep mirrors; otherwise it writes the player objects directly. */
+export interface GamepadRouting {
+  /** Pad index i drives game slot pilotSlots[i] — couch [0,1], a linked booth
+   *  its owned slots, solo / duel just [mpSlot]. */
+  pilotSlots: number[];
+  peerActive: boolean;
+  localKeys: Record<string, boolean>[];
+  localHeading: (number | null)[];
+  localThrust: boolean[];
+  edgeFlags: Array<{ shield: boolean; hyperspace: boolean }>;
+}
 
 interface PadMemory {
   engaged: boolean;
@@ -34,7 +46,7 @@ interface PadMemory {
   menuDir: 'up' | 'down' | 'left' | 'right' | null;
 }
 
-const memory: PadMemory[] = [freshMemory(), freshMemory()];
+const memory: PadMemory[] = [];
 
 function freshMemory(): PadMemory {
   return { engaged: false, fire: false, shield: false, hyper: false, pause: false, menuDir: null };
@@ -50,32 +62,29 @@ function pressed(pad: Gamepad, i: number): boolean {
   return !!b && (b.pressed || b.value > 0.5);
 }
 
-/** Poll every connected pad and route it onto its player slot. Call once per
- *  rAF, before the sim steps run, so couch's direct-read input pipeline picks
- *  up the live pad state exactly as it does live keyboard state. */
-export function pollGamepads(state: GameState): void {
-  // Lockstep mode samples + sends input itself; never let a raw pad poke the
-  // live player objects out from under it.
-  if (isPeerActive()) return;
+/** Poll every connected pad and route it onto its pilot's slot. Call once per
+ *  rAF, before the sim steps run. */
+export function pollGamepads(state: GameState, routing: GamepadRouting): void {
   if (typeof navigator === 'undefined' || typeof navigator.getGamepads !== 'function') return;
-
   const all = navigator.getGamepads();
   if (!all) return;
   const connected: Gamepad[] = [];
   for (const p of all) if (p && p.connected) connected.push(p);
 
-  const maxSlots = Math.min(state.players.length, 2);
-  for (let slot = 0; slot < maxSlots; slot++) {
-    const pad = connected[slot];
-    if (!pad) continue;
-    applyPad(state, slot, pad);
+  const maxPads = Math.min(connected.length, routing.pilotSlots.length);
+  for (let padIndex = 0; padIndex < maxPads; padIndex++) {
+    const slot = routing.pilotSlots[padIndex];
+    if (slot < 0 || slot >= state.players.length) continue;
+    while (memory.length <= padIndex) memory.push(freshMemory());
+    applyPad(state, padIndex, slot, connected[padIndex], routing);
   }
 }
 
-function applyPad(state: GameState, slot: number, pad: Gamepad): void {
+function applyPad(state: GameState, padIndex: number, slot: number, pad: Gamepad, routing: GamepadRouting): void {
   const player = state.players[slot];
   if (!player) return;
-  const mem = memory[slot];
+  const mem = memory[padIndex];
+  const peer = routing.peerActive;
 
   const ax = pad.axes[0] ?? 0;
   const ay = pad.axes[1] ?? 0;
@@ -94,10 +103,15 @@ function applyPad(state: GameState, slot: number, pad: Gamepad): void {
     else return;
   }
 
+  // Route to the lockstep mirror (peer) or the live player (direct).
+  const setHeading = (h: number | null): void => { if (peer) routing.localHeading[slot] = h; else player.targetHeading = h; };
+  const setThrust = (t: boolean): void => { if (peer) routing.localThrust[slot] = t; else player.thrustOverride = t; };
+  const setFire = (f: boolean): void => { if (peer) { const k = routing.localKeys[slot]; if (k) k[FIRE_CODE] = f; } else player.keys[FIRE_CODE] = f; };
+
   if (MENU_PHASES.has(state.phase)) {
     // Menu phases: the stick / d-pad walk the overlay buttons, A / Start
-    // confirm, B / Y dismiss — mirrors the phone controller's menu spec so a
-    // kiosk is fully driveable from the pad (e.g. SPAWN AGAIN after a death).
+    // confirm, B / Y dismiss — a kiosk is fully driveable from the pad (e.g.
+    // SPAWN AGAIN after a death). Synthetic keys go through the normal handlers.
     const dx = (pad.axes[0] ?? 0) + (pressed(pad, 15) ? 1 : 0) - (pressed(pad, 14) ? 1 : 0);
     const dy = (pad.axes[1] ?? 0) + (pressed(pad, 13) ? 1 : 0) - (pressed(pad, 12) ? 1 : 0);
     let dir: PadMemory['menuDir'] = null;
@@ -108,35 +122,26 @@ function applyPad(state: GameState, slot: number, pad: Gamepad): void {
       dispatchKey(dir === 'up' ? 'ArrowUp' : dir === 'down' ? 'ArrowDown' : dir === 'left' ? 'ArrowLeft' : 'ArrowRight');
     }
     mem.menuDir = dir;
-    if ((fire || pause) && !(mem.fire || mem.pause)) {
-      dispatchKey(pause && !fire ? 'Escape' : 'Enter');
-    }
+    if ((fire || pause) && !(mem.fire || mem.pause)) dispatchKey(pause && !fire ? 'Escape' : 'Enter');
     if (shield && !mem.shield) dispatchKey('Escape');
     // Park the in-game holds so nothing carries into the next run.
-    player.targetHeading = null;
-    player.thrustOverride = false;
-    player.keys[FIRE_CODE] = false;
+    setHeading(null); setThrust(false); setFire(false);
     mem.fire = fire; mem.shield = shield; mem.hyper = hyper; mem.pause = pause;
     return;
   }
-
   mem.menuDir = null;
 
   // ── Playing ──────────────────────────────────────────────────────────
-  if (mag > DEADZONE) {
-    player.targetHeading = Math.atan2(ay, ax);
-    player.thrustOverride = true;
-  } else {
-    player.targetHeading = null;
-    player.thrustOverride = thrust;
-  }
-  player.keys[FIRE_CODE] = fire;
+  if (mag > DEADZONE) { setHeading(Math.atan2(ay, ax)); setThrust(true); }
+  else { setHeading(null); setThrust(thrust); }
+  setFire(fire);
 
-  // Edge-triggered one-shots, dispatched straight (couch is never peer-active
-  // here, so the same direct calls the keydown handler makes are correct).
+  // Edge-triggered one-shots. In peer mode raise the lockstep edge flag (applied
+  // deterministically from the input log); otherwise fire straight, exactly as
+  // the keydown handler does in couch / solo.
   if (state.phase === 'playing') {
-    if (shield && !mem.shield) tryActivateShield(state, state.elapsed, player);
-    if (hyper && !mem.hyper) tryHyperspace(state, state.elapsed, player);
+    if (shield && !mem.shield) { if (peer) routing.edgeFlags[slot].shield = true; else tryActivateShield(state, state.elapsed, player); }
+    if (hyper && !mem.hyper) { if (peer) routing.edgeFlags[slot].hyperspace = true; else tryHyperspace(state, state.elapsed, player); }
     if (pause && !mem.pause) dispatchKey('Escape');
   }
 
