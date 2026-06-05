@@ -1344,18 +1344,26 @@ export function renderBoothLobby(state: GameState, booth: number): void {
   // session (default 'praguebooths', override ?link=<code>); auto-IGNITEs once
   // both booths connect. coop-campaign hard-codes 2 players in the URL builder,
   // so build it directly with players=4 + this booth's owned slots.
-  renderEventLobbyAction(actions, 'LINK BOOTHS', 'Team up with the other Prague booth — two pilots each, four ships, one campaign.', () => {
+  renderEventLobbyAction(actions, 'LINK BOOTHS', 'Team up with the other Prague booth — 1 or 2 pilots each, one campaign.', () => {
     void audio.unlockAudio();
     tryEnterFullscreen();
-    const raw = new URLSearchParams(window.location.search).get('link') || '';
-    const link = raw.replace(/[^a-z0-9]/gi, '').slice(0, 32) || 'praguebooths';
-    const base = Math.max(0, booth - 1) * 2;   // Booth 1 → slots 0,1; Booth 2 → slots 2,3
+    const q = new URLSearchParams(window.location.search);
+    const link = (q.get('link') || '').replace(/[^a-z0-9]/gi, '').slice(0, 32) || 'praguebooths';
+    // ?pilots=N,M (set IDENTICALLY on both booths) = N pilots at Booth 1, M at
+    // Booth 2 (each 1 or 2). Default 2,2 → four ships. Slots assign
+    // contiguously with NO gap, so every slot has an owner — an unowned slot
+    // would stall the whole lockstep — and there's never an idle ship.
+    const counts = (q.get('pilots') || '2,2').split(',').map(n => Math.max(1, Math.min(2, parseInt(n, 10) || 2)));
+    const b1 = counts[0] ?? 2, b2 = counts[1] ?? 2;
+    const offset = booth === 1 ? 0 : b1;
+    const myCount = booth === 1 ? b1 : b2;
+    const owned = Array.from({ length: myCount }, (_, i) => offset + i).join(',');
     const params = new URLSearchParams({
       peer: buildBrokerPeerUrl(link),
       session: link,
-      slot: String(base),
-      localSlots: `${base},${base + 1}`,
-      players: '4',
+      slot: String(offset),
+      localSlots: owned,
+      players: String(b1 + b2),
       mode: 'coop-campaign',
     });
     window.location.assign(`${window.location.origin}/?${params.toString()}&p${booth}=1`);
