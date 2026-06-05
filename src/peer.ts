@@ -71,6 +71,10 @@ export interface PeerConnectOpts {
   aiFill?: boolean;
   /** Slot list chosen by the host as human-controlled for this run. */
   humanSlots?: number[];
+  /** Slots this ONE socket drives locally — a couch booth linked to the other
+   *  booth owns e.g. [0,1] on one machine. Defaults to [localSlot]; the broker
+   *  registers the socket at every owned slot. */
+  ownedSlots?: number[];
 }
 
 // ── Peer interface ───────────────────────────────────────────────────────────
@@ -83,8 +87,9 @@ export interface Peer {
   connect(opts: PeerConnectOpts): Promise<void>;
   /** Close the connection cleanly, sending `bye` first. */
   disconnect(): void;
-  /** Buffer-and-send the local input for the given frame. */
-  sendFrame(frame: number, encoded: number): void;
+  /** Buffer-and-send the local input for the given frame. `slot` overrides the
+   *  bound local slot — a booth owning several slots sends one per slot. */
+  sendFrame(frame: number, encoded: number, slot?: number): void;
   /** Send a periodic state hash for desync detection. */
   sendHash(frame: number, hash: number): void;
   /** Drain remote frame deliveries received since the last call. Returns
@@ -188,8 +193,8 @@ export class LoopbackPeer implements Peer {
     this.connected = false;
   }
 
-  sendFrame(frame: number, encoded: number): void {
-    if (this.partner) this.partner.receiveFromPartner({ frame, slot: this.localSlot, input: encoded });
+  sendFrame(frame: number, encoded: number, slot?: number): void {
+    if (this.partner) this.partner.receiveFromPartner({ frame, slot: slot ?? this.localSlot, input: encoded });
   }
 
   sendHash(frame: number, hash: number): void {
@@ -364,6 +369,7 @@ export class WebSocketPeer implements Peer {
         batchFrames: opts.batchFrames === true,
         aiFill: opts.aiFill === true,
         humanSlots: Array.isArray(opts.humanSlots) ? opts.humanSlots : undefined,
+        ownedSlots: Array.isArray(opts.ownedSlots) ? opts.ownedSlots : undefined,
         enableWireTrace,
       });
     });
@@ -518,9 +524,16 @@ export class WebSocketPeer implements Peer {
     this.connected = false;
   }
 
-  sendFrame(frame: number, encoded: number): void {
+  sendFrame(frame: number, encoded: number, slot?: number): void {
     if (!this.worker) return;
-    this.worker.postMessage({ kind: 'send-frame', frame, input: encoded });
+    // A specific slot routes through the isolated, non-batched explicit-slot
+    // path (booth owning several slots); the default keeps the batched path
+    // that normal duels/deathmatch use, untouched.
+    if (slot === undefined) {
+      this.worker.postMessage({ kind: 'send-frame', frame, input: encoded });
+    } else {
+      this.worker.postMessage({ kind: 'send-frame-slot', frame, input: encoded, slot });
+    }
     this.sentFrameCount++;
     this.lastSendFrame = frame;
   }
@@ -565,6 +578,7 @@ function buildPeerWorkerSource(): string {
     var url = '';
     var session = '';
     var localSlot = 0;
+    var ownedSlots = null;
     var expectedPlayers = 2;
     var aiFill = false;
     var startHumanSlots = null;
@@ -758,6 +772,28 @@ function buildPeerWorkerSource(): string {
         wsSentFramePayloadCount++;
       }
     }
+    function binaryPeerFrameSlot(frame, input, slot) {
+      var buf = new ArrayBuffer(12);
+      var bytes = new Uint8Array(buf);
+      var view = new DataView(buf);
+      bytes[0] = PEER_BINARY_MAGIC;
+      bytes[1] = PEER_BINARY_VERSION;
+      bytes[2] = PEER_BINARY_FRAME;
+      bytes[3] = slot & 255;
+      view.setUint32(4, frame >>> 0, true);
+      view.setUint32(8, input >>> 0, true);
+      return buf;
+    }
+    // Non-batched send of ONE frame tagged with an explicit slot — a booth that
+    // owns several slots emits one frame per owned slot, without disturbing the
+    // single-slot batch path that normal duels use.
+    function sendFrameForSlot(frame, input, slot) {
+      if (binaryWire) {
+        if (sendTextPayload(binaryPeerFrameSlot(frame, input, slot))) { wsSentFrameCount++; wsSentFramePayloadCount++; }
+        return;
+      }
+      if (sendPayload({ type: 'frame', frame: frame, slot: slot, input: input })) { wsSentFrameCount++; wsSentFramePayloadCount++; }
+    }
     function flushFrameBatch() {
       if (frameFlushTimer !== null) {
         clearTimeout(frameFlushTimer);
@@ -817,7 +853,12 @@ function buildPeerWorkerSource(): string {
       ws.addEventListener('open', function () {
         joinedSlots = {};
         markJoined(localSlot);
+        // We own our extra slots the moment we connect — the broker won't send
+        // us peer-joined for our own slots, so mark them locally or the
+        // all-joined gate never fires for a multi-slot booth.
+        if (ownedSlots) { for (var oi = 0; oi < ownedSlots.length; oi++) markJoined(ownedSlots[oi]); }
         var hello = { type: 'hello-peer', session: session, slot: localSlot, version: 1, players: expectedPlayers, binaryFrames: true };
+        if (ownedSlots && ownedSlots.length > 0) hello.ownedSlots = ownedSlots;
         if (aiFill) hello.aiFill = true;
         if (aiFill && localSlot === 0 && startHumanSlots && startHumanSlots.length > 0) hello.humanSlots = startHumanSlots;
         if (ws) ws.send(JSON.stringify(hello));
@@ -888,6 +929,7 @@ function buildPeerWorkerSource(): string {
         batchFrames = msg.batchFrames === true;
         aiFill = msg.aiFill === true;
         startHumanSlots = normaliseSlots(msg.humanSlots);
+        ownedSlots = normaliseSlots(msg.ownedSlots);
         configuredHumanSlots = null;
         configuredTakeovers = [];
         binaryWire = false;
@@ -905,6 +947,9 @@ function buildPeerWorkerSource(): string {
       } else if (msg.kind === 'send-frame') {
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
         queueFrame(msg.frame, msg.input);
+      } else if (msg.kind === 'send-frame-slot') {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        sendFrameForSlot(msg.frame, msg.input, msg.slot);
       } else if (msg.kind === 'send-hash') {
         flushFrameBatch();
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
