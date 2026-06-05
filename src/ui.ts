@@ -1336,18 +1336,29 @@ export function renderBoothLobby(state: GameState, booth: number): void {
     window.location.assign(`/?couch=1&autostart=1&p${booth}`);
   });
 
-  // LINK BOOTHS — cross-booth co-op over the existing coop lockstep. Booth 1
-  // takes slot 0, Booth 2 slot 1, both on a shared link session (default
-  // 'praguebooths', overridable with ?link=<code>); the game auto-IGNITEs the
-  // moment both booths are connected. One pilot per booth for now — the
-  // 2-per-booth couch hybrid is the next sub-stage.
-  renderEventLobbyAction(actions, 'LINK BOOTHS', 'Team up with the other Prague booth — one pilot here, one there.', () => {
+  // LINK BOOTHS — cross-booth co-op, up to TWO pilots per booth (four ships,
+  // one campaign) over the multi-slot lockstep. Each booth owns a fixed
+  // two-slot region (Booth 1 → 0,1; Booth 2 → 2,3) so no slot is ever
+  // unowned (an empty region slot would stall the whole session); a second
+  // pilot just fills the booth's second ship, otherwise it idles. Shared link
+  // session (default 'praguebooths', override ?link=<code>); auto-IGNITEs once
+  // both booths connect. coop-campaign hard-codes 2 players in the URL builder,
+  // so build it directly with players=4 + this booth's owned slots.
+  renderEventLobbyAction(actions, 'LINK BOOTHS', 'Team up with the other Prague booth — two pilots each, four ships, one campaign.', () => {
     void audio.unlockAudio();
     tryEnterFullscreen();
     const raw = new URLSearchParams(window.location.search).get('link') || '';
     const link = raw.replace(/[^a-z0-9]/gi, '').slice(0, 32) || 'praguebooths';
-    const slot = Math.max(0, booth - 1);  // Booth 1 → slot 0, Booth 2 → slot 1
-    window.location.assign(`${buildDuelInviteUrl(link, slot, 2, undefined, 'coop-campaign')}&p${booth}=1`);
+    const base = Math.max(0, booth - 1) * 2;   // Booth 1 → slots 0,1; Booth 2 → slots 2,3
+    const params = new URLSearchParams({
+      peer: buildBrokerPeerUrl(link),
+      session: link,
+      slot: String(base),
+      localSlots: `${base},${base + 1}`,
+      players: '4',
+      mode: 'coop-campaign',
+    });
+    window.location.assign(`${window.location.origin}/?${params.toString()}&p${booth}=1`);
   });
 
   // Operator escape — drop the kiosk flag to reach the full menu.
