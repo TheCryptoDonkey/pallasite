@@ -1184,7 +1184,12 @@ export function musicSetTrackForState(state: GameState): void {
   // wave's first beat silent.
   if (lastPhase !== 'warp' && state.phase === 'warp') {
     const upcoming = activeAlbum().waves[state.warpTargetWave ?? state.wave + 1];
-    if (upcoming) preloadTrack(upcoming);
+    if (upcoming) {
+      // Pool/mobile warms the HTTP cache (iOS won't buffer a paused element, so a
+      // slot-level preload wouldn't actually fetch); desktop preloads the element.
+      if (musicPoolActive()) prefetchBed(upcoming);
+      else preloadTrack(upcoming);
+    }
   }
   lastPhase = state.phase;
 
@@ -1352,6 +1357,27 @@ export function preloadTrack(id: string): void {
   try { load(track); } catch { /* ignore */ }
 }
 
+/** HTTP-cache warm a bed by id (pool/mobile only). A plain fetch() pulls the
+ *  whole .m4a into the browser cache (the files are `immutable`), so the pool
+ *  element's later load is served from cache — instant — instead of a cold
+ *  4-5MB fetch at wave-start. Needs no gesture and no pool slot, and never
+ *  touches a media element, so it sidesteps iOS's refusal to buffer a paused
+ *  element (which makes a slot-level preload a no-op there). De-duped per
+ *  session; a failed fetch clears the flag so it can retry. */
+const prefetchedBeds = new Set<string>();
+function prefetchBed(id: string | undefined): void {
+  if (!id || !musicPoolActive() || prefetchedBeds.has(id)) return;
+  const track = TRACKS[id];
+  if (!track) return;
+  prefetchedBeds.add(id);
+  try {
+    void fetch(trackUrlFor(track), { mode: 'same-origin', credentials: 'omit' })
+      .then(r => (r.ok ? r.blob() : null))
+      .then(() => { /* discard the blob — the HTTP cache keeps the bytes */ })
+      .catch(() => { prefetchedBeds.delete(id); });
+  } catch { prefetchedBeds.delete(id); }
+}
+
 export function musicForceRefresh(): void {
   lastAppliedKey = '';
 }
@@ -1474,8 +1500,10 @@ function warmOne(id: string, skipId: string | undefined): void {
 
 export function musicWarmUpAll(skipId?: string): void {
   // Pool path: one-time element unlock, no per-track warm storm. (skipId is a
-  // legacy-path concern; the pool reuses unlocked elements via .src swap.)
-  if (musicPoolActive()) { unlockPool(); return; }
+  // legacy-path concern; the pool reuses unlocked elements via .src swap.) Also
+  // warm wave 1's bed into the HTTP cache so its first crossfade at IGNITE is
+  // instant rather than a cold 4-5MB fetch the moment the wave starts.
+  if (musicPoolActive()) { unlockPool(); prefetchBed(activeAlbum().waves[1]); return; }
   // 600bn/Sanctum is a one-level mobile-heavy surface. The current track is
   // replayed below by musicSetTrackForState() under the same gesture; warming
   // campaign beds here only competes with the-cult.m4a and can leave it stuck
