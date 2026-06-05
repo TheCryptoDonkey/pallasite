@@ -273,6 +273,11 @@ const localOwnedSlots: number[] = (() => {
   if (!uniq.includes(mpSlot)) uniq.push(mpSlot);
   return uniq.sort((a, b) => a - b);
 })();
+// Slots driven by LOCAL pilots on this machine: couch = [0,1] on one keyboard,
+// a linked booth = its owned slots, everything else = just [mpSlot]. A second
+// entry (if any) is the second local pilot — couch P2 or a booth's co-pilot.
+const localPilotSlots: number[] = couchMode ? [0, 1] : localOwnedSlots;
+const secondLocalSlot: number = localPilotSlots.length > 1 ? localPilotSlots[1] : -1;
 const mpMode = !!(mpUrl && mpSession && mpSlotValid);
 // Spectator mode (M5). `?spectate=<session>&peer=<broker-url>` opens a
 // peerwatch socket and runs the lockstep loop in read-only mode with no
@@ -771,10 +776,16 @@ function ensureLocalPeerStartupPrefill(activeDelay: number): void {
   const through = localPeerStartupPrefillThrough(activeDelay);
   if (through < 0 || through <= localPeerPrefilledThrough) return;
   const emptyEncoded = encodePlayerInput(EMPTY_INPUT);
+  const multi = localOwnedSlots.length > 1;
   for (let f = Math.max(0, localPeerPrefilledThrough + 1); f <= through; f++) {
-    if (inputLog.get(f, mpSlot) >= 0) continue;
-    inputLog.record(f, mpSlot, emptyEncoded);
-    peer.sendFrame(f, emptyEncoded);
+    // Prefill EVERY slot this machine owns — a multi-slot booth must warm up
+    // its co-pilot's slot too, or that slot's startup frames diverge between
+    // the booths and the sims desync.
+    for (const slot of localOwnedSlots) {
+      if (inputLog.get(f, slot) >= 0) continue;
+      inputLog.record(f, slot, emptyEncoded);
+      peer.sendFrame(f, emptyEncoded, multi ? slot : undefined);
+    }
   }
   localPeerPrefilledThrough = through;
 }
@@ -1349,13 +1360,18 @@ window.addEventListener('keydown', e => {
   // Any key during the wave-start cinematic skips to playing (after the
   // skip-allowed window — guard inside skipWaveStart). Lets repeat players
   // skim past the lore without sitting through the dwell every time.
-  if (state.phase === 'wavestart') {
+  //
+  // NOT in peer mode: the wave-start / warp transition must stay deterministic
+  // (a scheduled sim timer fires it on every client at the SAME frame). A local
+  // skip would jump only the booth with input to 'playing' while the other
+  // waits — an instant lockstep desync. Networked play always plays the dwell.
+  if (state.phase === 'wavestart' && !isPeerActive()) {
     skipWaveStart(state);
     // Don't swallow — let the keypress also register for movement
   }
   // Same for the warp cinematic — long enough to fit the music, but a key
   // press past the skip window jumps straight into the next wave.
-  if (state.phase === 'warp') {
+  if (state.phase === 'warp' && !isPeerActive()) {
     skipWarp(state);
   }
   // Wave-jump cheat input mode swallows keys while open
@@ -1398,27 +1414,32 @@ window.addEventListener('keydown', e => {
   // In couch mode, route P2's physical keys to players[1].keys under logical key names.
   // P2 mapping: KeyA→ArrowLeft, KeyD→ArrowRight, KeyW→ArrowUp, KeyS→ArrowDown, ShiftLeft→Space.
   // Those same keys in solo mode continue to write to players[0] via e.code (game.ts aliases them).
-  if (couchMode && state.players.length >= 2) {
+  // Second local pilot — couch P2 on one keyboard, or a linked booth's
+  // co-pilot. In peer mode the lockstep samples the input mirrors, so write
+  // localKeys there; couch (no peer) writes the player directly and fires its
+  // edge actions synchronously like P1 does.
+  if (secondLocalSlot >= 0 && state.players.length > secondLocalSlot) {
     const p2LogicalKey: Record<string, string> = {
       KeyA: 'ArrowLeft', KeyD: 'ArrowRight', KeyW: 'ArrowUp', KeyS: 'ArrowDown', ShiftLeft: 'Space',
     };
     const logical = p2LogicalKey[e.code];
     if (logical !== undefined) {
-      state.players[1].keys[logical] = true;
+      if (isPeerActive()) localKeys[secondLocalSlot][logical] = true;
+      else state.players[secondLocalSlot].keys[logical] = true;
       // P2 hyperspace: KeyU
     } else if (e.code === 'KeyU' && state.phase === 'playing') {
-      edgeFlags[1].hyperspace = true;
-      if (!isPeerActive()) tryHyperspace(state, state.elapsed, state.players[1]);
+      edgeFlags[secondLocalSlot].hyperspace = true;
+      if (!isPeerActive()) tryHyperspace(state, state.elapsed, state.players[secondLocalSlot]);
     } else if (e.code === 'KeyI' && state.phase === 'playing' && !e.repeat) {
       // P2 shield: KeyI
-      edgeFlags[1].shield = true;
-      if (!isPeerActive()) tryActivateShield(state, state.elapsed, state.players[1]);
+      edgeFlags[secondLocalSlot].shield = true;
+      if (!isPeerActive()) tryActivateShield(state, state.elapsed, state.players[secondLocalSlot]);
     }
   }
-  // P1 input — in couch mode only arrow/space go to players[0]; in solo mode all keys do (game.ts
-  // aliases KeyA/D/W/S to ArrowLeft/Right/Up/Down for P1 via the keys record directly).
+  // P1 input — when a second local pilot exists only arrow/space go to P1; in
+  // solo/duel all keys do (game.ts aliases KeyA/D/W/S to the arrows for P1).
   const localPlayer = state.players[mpSlot];
-  if (localPlayer && (!couchMode || !['KeyA', 'KeyD', 'KeyW', 'KeyS', 'ShiftLeft', 'KeyU', 'KeyI'].includes(e.code))) {
+  if (localPlayer && (secondLocalSlot < 0 || !['KeyA', 'KeyD', 'KeyW', 'KeyS', 'ShiftLeft', 'KeyU', 'KeyI'].includes(e.code))) {
     localPlayer.keys[e.code] = true;
     localKeys[mpSlot][e.code] = true;
   }
@@ -1430,7 +1451,7 @@ window.addEventListener('keydown', e => {
   // peer mode raises the edge flag and the per-step decode dispatches from
   // the input log.
   if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyH') && state.phase === 'playing') {
-    if (localPlayer && (!couchMode || e.code !== 'ShiftLeft')) {
+    if (localPlayer && (secondLocalSlot < 0 || e.code !== 'ShiftLeft')) {
       edgeFlags[mpSlot].hyperspace = true;
       if (!isPeerActive()) tryHyperspace(state, state.elapsed, localPlayer);
     }
@@ -1528,19 +1549,20 @@ window.addEventListener('keydown', e => {
 });
 
 window.addEventListener('keyup', e => {
-  // Mirror the couch-mode routing from keydown: P2 physical keys release P2 logical keys.
-  if (couchMode && state.players.length >= 2) {
+  // Mirror the keydown routing for the second local pilot — release the right
+  // slot's mirror (peer) or player keys (couch).
+  if (secondLocalSlot >= 0 && state.players.length > secondLocalSlot) {
     const p2LogicalKey: Record<string, string> = {
       KeyA: 'ArrowLeft', KeyD: 'ArrowRight', KeyW: 'ArrowUp', KeyS: 'ArrowDown', ShiftLeft: 'Space',
     };
     const logical = p2LogicalKey[e.code];
     if (logical !== undefined) {
-      state.players[1].keys[logical] = false;
-      if (logical === 'Space') state.players[1].keys.Space = false;
+      if (isPeerActive()) localKeys[secondLocalSlot][logical] = false;
+      else state.players[secondLocalSlot].keys[logical] = false;
     }
   }
   const localPlayer = state.players[mpSlot];
-  if (localPlayer && (!couchMode || !['KeyA', 'KeyD', 'KeyW', 'KeyS', 'ShiftLeft'].includes(e.code))) {
+  if (localPlayer && (secondLocalSlot < 0 || !['KeyA', 'KeyD', 'KeyW', 'KeyS', 'ShiftLeft'].includes(e.code))) {
     localPlayer.keys[e.code] = false;
     localKeys[mpSlot][e.code] = false;
   }
@@ -1554,6 +1576,7 @@ window.addEventListener('keyup', e => {
 // Tap anywhere during wave-start or warp to skip the long cinematic on touch
 // devices. Buttons bubble up too — skip helpers guard on phase + min elapsed.
 window.addEventListener('pointerdown', () => {
+  if (isPeerActive()) return;   // deterministic transition only in networked play
   if (state.phase === 'wavestart') skipWaveStart(state);
   else if (state.phase === 'warp') skipWarp(state);
 }, { capture: true });
