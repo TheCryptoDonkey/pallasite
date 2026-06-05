@@ -1336,10 +1336,18 @@ export function renderBoothLobby(state: GameState, booth: number): void {
     window.location.assign(`/?couch=1&autostart=1&p${booth}`);
   });
 
-  // LINK BOOTHS — cross-booth co-op (Stage 2). Shown so the flow reads, not
-  // wired yet.
-  renderEventLobbyAction(actions, 'LINK BOOTHS', 'Team up with the other Prague booth for a bigger co-op.', () => {
-    status.textContent = 'Booth link arrives in the next build — play 1 or 2 here for now.';
+  // LINK BOOTHS — cross-booth co-op over the existing coop lockstep. Booth 1
+  // takes slot 0, Booth 2 slot 1, both on a shared link session (default
+  // 'praguebooths', overridable with ?link=<code>); the game auto-IGNITEs the
+  // moment both booths are connected. One pilot per booth for now — the
+  // 2-per-booth couch hybrid is the next sub-stage.
+  renderEventLobbyAction(actions, 'LINK BOOTHS', 'Team up with the other Prague booth — one pilot here, one there.', () => {
+    void audio.unlockAudio();
+    tryEnterFullscreen();
+    const raw = new URLSearchParams(window.location.search).get('link') || '';
+    const link = raw.replace(/[^a-z0-9]/gi, '').slice(0, 32) || 'praguebooths';
+    const slot = Math.max(0, booth - 1);  // Booth 1 → slot 0, Booth 2 → slot 1
+    window.location.assign(`${buildDuelInviteUrl(link, slot, 2, undefined, 'coop-campaign')}&p${booth}=1`);
   });
 
   // Operator escape — drop the kiosk flag to reach the full menu.
