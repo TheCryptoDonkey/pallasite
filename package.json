@@ -24,6 +24,7 @@
     "test:deathmatch:nplayer": "tsx tools/run-deathmatch-nplayer-e2e.ts",
     "test:deathmatch:soak": "tsx tools/run-deathmatch-soak.ts",
     "test:booth:soak": "tsx tools/soak-booth-hybrid.ts",
+    "test:booth:link": "tsx tools/run-booth-link-e2e.ts",
     "scale:deathmatch": "tsx tools/run-deathmatch-scale.ts",
     "check:prod:campaign": "tsx tools/check-prod-campaign.ts",
     "check:prod:playability": "tsx tools/check-prod-playability.ts",
