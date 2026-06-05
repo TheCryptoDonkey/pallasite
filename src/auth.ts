@@ -81,9 +81,12 @@ declare global {
 export const APP_NAME = 'Pallasite';
 export const GAME_ID = 'pallasite';
 
-/** Cap interactive sign-in at 20s — generous for cold NIP-46 bunker handshakes
- *  (service worker spawn + relay WS + identity probe) but still feels finite. */
-const SIGN_IN_TIMEOUT_MS = 20_000;
+/** Cap interactive sign-in at 3 min. The QR / cross-device flow (scan → approve →
+ *  a hardware signer such as an ESP32 doing two physical signings) routinely runs
+ *  to ~30s+ — the old 20s fired "Signer didn't respond" mid-sign even though
+ *  signet-login's own 120s relay-wait and the response were perfectly fine. Keep
+ *  this above the SDK's internal timeout so the SDK's real outcome wins. */
+const SIGN_IN_TIMEOUT_MS = 180_000;
 /** Session restoration on boot is best-effort; don't block the title screen. */
 const RESTORE_TIMEOUT_MS = 5_000;
 const SIGNET_VERIFY_SRC = '/signet-verify.iife.js';
