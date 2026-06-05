@@ -92,7 +92,7 @@ function requestedDeathmatchPlayers(defaultCount: number): number {
 function requestedStartPlayers(): number {
   const peerSessionActive = !multiplayerUrlSessionSuppressed && !!(peer || spectator);
   if (urlCoopCampaignModeActive()) {
-    return boundedPlayerCount(mpParams.get('players'), 2, 2, 2);
+    return boundedPlayerCount(mpParams.get('players'), 2, 2, 4);
   }
   if (peerSessionActive && (urlDeathmatchModeActive() || getStoredMode() === 'deathmatch')) {
     return boundedPlayerCount(mpParams.get('deathmatchPlayers') ?? mpParams.get('players'), requestedPeerPlayers, 2, 64);
@@ -258,11 +258,21 @@ const urlMode = mpParams.get('mode');
 const mpUrl = mpParams.get('peer');
 const mpSession = mpParams.get('session');
 const urlCoopCampaignMode = urlMode === 'coop-campaign' || urlMode === 'coop';
-const requestedPeerPlayers = urlCoopCampaignMode ? 2 : boundedPlayerCount(mpParams.get('players') ?? mpParams.get('deathmatchPlayers'), 2, 2, 64);
+const requestedPeerPlayers = urlCoopCampaignMode ? boundedPlayerCount(mpParams.get('players'), 2, 2, 4) : boundedPlayerCount(mpParams.get('players') ?? mpParams.get('deathmatchPlayers'), 2, 2, 64);
 const mpSlotRaw = mpParams.get('slot');
 const parsedMpSlot = mpSlotRaw === null ? NaN : Number(mpSlotRaw);
 const mpSlotValid = Number.isInteger(parsedMpSlot) && parsedMpSlot >= 0 && parsedMpSlot < requestedPeerPlayers;
 const mpSlot: PeerSlot = mpSlotValid ? parsedMpSlot : 0;
+// Slots this machine drives locally. Normally just [mpSlot]; a linked couch
+// booth owns several (?localSlots=0,1) and samples + sends each over the peer.
+const localOwnedSlots: number[] = (() => {
+  const raw = mpParams.get('localSlots');
+  if (!raw) return [mpSlot];
+  const arr = raw.split(',').map(s => parseInt(s, 10)).filter(n => Number.isInteger(n) && n >= 0 && n < requestedPeerPlayers);
+  const uniq = Array.from(new Set(arr.length ? arr : [mpSlot]));
+  if (!uniq.includes(mpSlot)) uniq.push(mpSlot);
+  return uniq.sort((a, b) => a - b);
+})();
 const mpMode = !!(mpUrl && mpSession && mpSlotValid);
 // Spectator mode (M5). `?spectate=<session>&peer=<broker-url>` opens a
 // peerwatch socket and runs the lockstep loop in read-only mode with no
@@ -1991,7 +2001,7 @@ function loop(now: number): void {
       const localSampleSlots = spectator
         ? []
         : peer
-          ? [mpSlot]
+          ? localOwnedSlots
           : (state.players.length >= 2 ? [0, 1] : [0]);
       for (const i of localSampleSlots) {
         let encoded = inputLog.get(state.frame, i);
@@ -2008,7 +2018,9 @@ function loop(now: number): void {
           inputLog.record(state.frame, i, encoded);
           sampledThisFrame = true;
         }
-        if (peer && sampledThisFrame) peer.sendFrame(state.frame, encoded);
+        // Single-slot peers (duel / deathmatch / 1-each coop) keep the batched
+        // send path untouched; only a multi-slot booth tags each slot explicitly.
+        if (peer && sampledThisFrame) peer.sendFrame(state.frame, encoded, localOwnedSlots.length > 1 ? i : undefined);
       }
       // 2) Drain remote frames into the log. Duel: the OTHER slot only.
       //    Spectator: whichever slot each delivery is tagged with (both).
@@ -2630,6 +2642,7 @@ async function boot(): Promise<void> {
         batchFrames: shouldBatchPeerFrames(),
         aiFill: aiFillDeathmatch,
         humanSlots: requestedHumanSlots,
+        ownedSlots: localOwnedSlots,
       });
       // Freeze the broker-negotiated adaptive input delay BEFORE going active,
       // so frame 0 already runs at the session-agreed value. AI-filled sessions
