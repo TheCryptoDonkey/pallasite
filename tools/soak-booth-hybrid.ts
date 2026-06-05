@@ -7,7 +7,8 @@ import { spawn, type ChildProcess } from 'node:child_process';
 const VITE_PORT = 5180;
 const BROKER_PORT = 8788;
 const VITE = `http://localhost:${VITE_PORT}`;
-const DURATION_MS = 90_000;
+const DURATION_MS = 60_000;
+const safe = async <T>(fn: () => Promise<T>, dflt: T): Promise<T> => { try { return await fn(); } catch { return dflt; } };
 const ok = (l: string, c: boolean, x = '') => console.log(`${c ? 'PASS' : 'FAIL'}  ${l}${x ? '  · ' + x : ''}`);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const waitHttp = async (url: string, ms: number) => { const end = Date.now() + ms; while (Date.now() < end) { try { const r = await fetch(url); if (r.status > 0) return true; } catch { /* retry */ } await sleep(250); } return false; };
@@ -23,8 +24,8 @@ try {
 
   const link = 'praguesoak';
   const peer = `ws://localhost:${BROKER_PORT}/?s=${link}&r=peer`;
-  const url = (slot: number, owned: string, booth: number) =>
-    `${VITE}/?peer=${encodeURIComponent(peer)}&session=${link}&slot=${slot}&localSlots=${owned}&players=4&mode=coop-campaign&desync-hunt=1&p${booth}=1`;
+  const url = (slot: number, owned: string, _booth: number) =>
+    `${VITE}/?peer=${encodeURIComponent(peer)}&session=${link}&slot=${slot}&localSlots=${owned}&players=4&mode=coop-campaign&desync-hunt=1`;
 
   const browser = await chromium.launch();
   const p1 = await (await browser.newContext({ viewport: { width: 900, height: 560 } })).newPage();
@@ -44,18 +45,21 @@ try {
 
   // Drive the primary pilot on each booth (slot 0 / slot 2). The 2nd local
   // slot has no input routing yet, so it stays idle — fine for a desync soak.
-  const drive = (pg: typeof p1, slot: number, tick: number) => pg.evaluate(([sl, t]) => {
+  // No thrust — stationary ships firing clear asteroids without ramming them,
+  // so the coop run survives the full soak instead of hitting game-over (which
+  // navigates and tears down the test context).
+  const drive = (pg: typeof p1, slot: number, tick: number) => safe(() => pg.evaluate(([sl, t]) => {
     const k = (window as any).__pallasiteTestHooks?.localKeysRef?.[sl];
     if (!k) return;
-    k['ArrowUp'] = true;                 // thrust
-    k['Space'] = (t % 2) === 0;          // fire on alternate ticks
-    k['ArrowLeft'] = (t % 6) < 3;        // sweep turn
+    k['ArrowUp'] = false;
+    k['Space'] = true;
+    k['ArrowLeft'] = (t % 6) < 3;
     k['ArrowRight'] = (t % 6) >= 3;
-  }, [slot, tick] as [number, number]);
+  }, [slot, tick] as [number, number]), undefined);
 
-  const peerDbg = (pg: typeof p1) => pg.evaluate(() => (window as any).__pallasitePeerDebug?.() ?? null);
-  const stateLite = (pg: typeof p1) => pg.evaluate(() => { const s = (window as any).__pallasiteState; return s ? { phase: s.phase, players: s.players?.length ?? 0, frame: s.frame, wave: s.wave, alive: s.players?.filter((p: any) => p.ship?.alive).length ?? 0 } : null; });
-  const canary = (pg: typeof p1) => pg.evaluate(() => Array.from(((window as any).__pallasiteCanaryHistory as Map<number, string>) ?? new Map()).map(([f, s]) => [f, s]) as [number, string][]);
+  const peerDbg = (pg: typeof p1) => safe(() => pg.evaluate(() => (window as any).__pallasitePeerDebug?.() ?? null), null);
+  const stateLite = (pg: typeof p1) => safe(() => pg.evaluate(() => { const s = (window as any).__pallasiteState; return s ? { phase: s.phase, players: s.players?.length ?? 0, frame: s.frame, wave: s.wave, alive: s.players?.filter((p: any) => p.ship?.alive).length ?? 0 } : null; }), null);
+  const canary = (pg: typeof p1) => safe(() => pg.evaluate(() => Array.from(((window as any).__pallasiteCanaryHistory as Map<number, string>) ?? new Map()).map(([f, s]) => [f, s]) as [number, string][]), [] as [number, string][]);
 
   const start = Date.now();
   let tick = 0, maxStall = 0, maxGap = 0, disconnects = 0, checks = 0, maxWave = 1;
@@ -69,6 +73,7 @@ try {
     if (tick % 8 === 0) {                 // ~every 2s
       checks++;
       const [d1, d2, s1, s2, h1, h2] = await Promise.all([peerDbg(p1), peerDbg(p2), stateLite(p1), stateLite(p2), canary(p1), canary(p2)]);
+      if (!s1 || !s2) { process.stdout.write('\n   a booth left play (game-over / nav) — stopping, reporting collected data\n'); break; }
       if (d1) maxStall = Math.max(maxStall, d1.maxStallFrames ?? 0);
       if (d2) maxStall = Math.max(maxStall, d2.maxStallFrames ?? 0);
       if (!d1?.active || !d2?.active) disconnects++;

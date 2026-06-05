@@ -877,12 +877,17 @@ function resendPeerInputRange(fromFrame: number, throughFrame: number, now: numb
   if (now - lastPeerResendAt < PEER_RESEND_INTERVAL_MS) return;
   lastPeerResendAt = now;
   const from = Math.max(0, fromFrame);
+  const multi = localOwnedSlots.length > 1;
   let sent = 0;
   for (let f = from; f <= throughFrame; f++) {
-    const encoded = inputLog.get(f, mpSlot);
-    if (encoded >= 0) {
-      peer.sendFrame(f, encoded);
-      sent++;
+    // Resend every slot this machine owns, tagged — a multi-slot booth must
+    // resend its co-pilot's slot too, or that slot stalls under packet loss.
+    for (const slot of localOwnedSlots) {
+      const encoded = inputLog.get(f, slot);
+      if (encoded >= 0) {
+        peer.sendFrame(f, encoded, multi ? slot : undefined);
+        sent++;
+      }
     }
   }
   if (sent > 0) {
