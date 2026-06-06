@@ -2090,7 +2090,7 @@ function drawPlayerTag(ctx: CanvasRenderingContext2D, ship: Ship, index: number)
   ctx.restore();
 }
 
-function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapsed: number, idleSway = false, forceCanvas = false): void {
+function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapsed: number, idleSway = false, forceCanvas = false, tint?: string): void {
   if (!ship.alive) return;
   // Hide ship entirely during hyperspace cloak — except when the warp is
   // malfunctioning, in which case render a red distortion at the departure
@@ -2103,6 +2103,11 @@ function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapse
   if (flickerOff) return;
 
   const skin = getActiveSkin().palette;
+  // Per-player tint (couch / co-op): the hull stroke + lit top + outer glow take
+  // the player's colour so two pilots on one screen tell their ships apart at a
+  // glance. The dark shaded edge stays from the skin so the hull keeps depth.
+  const shipCol = tint ?? skin.ship;
+  const glowCol = tint ?? skin.shipShadow;
 
   const shipTier = getVisualStyle('ship');
   // MESH ship draws on the WebGL overlay; skip the 2D path entirely
@@ -2154,7 +2159,7 @@ function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapse
     // left in screen space rather than rotating with the ship.
     ctx.rotate(-(ship.rot + swayRot));
     const lit = ctx.createLinearGradient(-12, -10, 12, 10);
-    lit.addColorStop(0, skin.ship);
+    lit.addColorStop(0, shipCol);
     lit.addColorStop(0.55, skin.shipShadow);
     lit.addColorStop(1, 'rgba(0,0,0,0.45)');
     ctx.fillStyle = lit;
@@ -2162,8 +2167,8 @@ function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapse
     ctx.restore();
   }
   ctx.lineWidth = shipShaded ? 1.8 : 1.6;
-  ctx.strokeStyle = skin.ship;
-  ctx.shadowColor = skin.shipShadow;
+  ctx.strokeStyle = shipCol;
+  ctx.shadowColor = glowCol;
   ctx.shadowBlur = shipShaded ? 14 : 12;
   hullPath();
   ctx.stroke();
@@ -6265,7 +6270,9 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
         if (pl.ship.alive || pl.ship.hyperspaceCloakMs > 0) {
           if (!visibleInDeathmatchView(pl.ship.pos.x, pl.ship.pos.y, pl.ship.radius + 80)) continue;
           drawShield(ctx, pl.ship, now, state.elapsed);
-          drawShip(ctx, pl.ship, now, state.elapsed, idleSway);
+          // Tint each ship by its player colour on a shared screen so two pilots
+          // tell their ships apart; solo / large arenas keep the skin colour.
+          drawShip(ctx, pl.ship, now, state.elapsed, idleSway, false, tagPlayers ? PLAYER_COLOURS[pi % PLAYER_COLOURS.length] : undefined);
           if (tagPlayers) drawPlayerTag(ctx, pl.ship, pi);
         }
       }
