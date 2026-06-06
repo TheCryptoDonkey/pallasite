@@ -159,12 +159,16 @@ interface PadMemory {
    *  presses and never clears a key a keyboard co-driver on the slot holds. */
   heldKeys: Record<string, boolean>;
   menuDir: 'up' | 'down' | 'left' | 'right' | null;
+  /** Edge memory for the menu confirm (A) and back (B) buttons. Kept separate
+   *  from the in-game fire/shield/pause edges so a quirky pad can't mask them. */
+  menuA: boolean;
+  menuB: boolean;
 }
 
 const memory: PadMemory[] = [];
 
 function freshMemory(): PadMemory {
-  return { engaged: false, fire: false, shield: false, hyper: false, pause: false, thrust: false, cruise: false, heldKeys: {}, menuDir: null };
+  return { engaged: false, fire: false, shield: false, hyper: false, pause: false, thrust: false, cruise: false, heldKeys: {}, menuDir: null, menuA: false, menuB: false };
 }
 
 function dispatchKey(code: string): void {
@@ -258,8 +262,17 @@ function applyPad(state: GameState, padIndex: number, slot: number, pad: Gamepad
       dispatchKey(dir === 'up' ? 'ArrowUp' : dir === 'down' ? 'ArrowDown' : dir === 'left' ? 'ArrowLeft' : 'ArrowRight');
     }
     mem.menuDir = dir;
-    if ((fire || pause) && !(mem.fire || mem.pause)) dispatchKey(pause && !fire ? 'Escape' : 'Enter');
-    if (shield && !mem.shield) dispatchKey('Escape');
+    // Confirm / back use the STANDARD face buttons by index — independent of
+    // the in-game fire/shield/pause bindings and of each other. The old logic
+    // gated fire→Enter behind !(mem.fire || mem.pause); a pad that resting-
+    // reports its Start/extra button as 'pause' kept mem.pause true and so
+    // masked confirm forever (A "did nothing" while B/arrows worked). A (0) =
+    // select; B (1) / View (8) / Menu (9) = back.
+    const aBtn = pressed(pad, 0);
+    const bBtn = pressed(pad, 1) || pressed(pad, 8) || pressed(pad, 9);
+    if (aBtn && !mem.menuA) dispatchKey('Enter');
+    if (bBtn && !mem.menuB) dispatchKey('Escape');
+    mem.menuA = aBtn; mem.menuB = bBtn;
     // Park the in-game holds so nothing carries into the next run.
     setHeading(null); setThrust(false); setFire(false); setTurn(0);
     mem.cruise = false;
