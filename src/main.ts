@@ -9,7 +9,7 @@ import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHype
 import { getFlavour } from './flavour.js';
 import { lockInDifficulty, getStoredDifficulty, setStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
-import { render, preloadCriticalCampaignAssets, setRenderMode, getRenderModeKind, drawAsciiHud, type CriticalAssetReport } from './render.js';
+import { render, preloadCriticalCampaignAssets, setRenderMode, getRenderModeKind, drawAsciiHud, setShowPlayerIdentity, type CriticalAssetReport } from './render.js';
 import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderDuelLobby, renderDuelConnecting, renderEventLobby, simulateStart } from './ui.js';
 import { postHeartbeat } from './faucet.js';
 import { currentMode, getStoredMode, isStoredDefenderMode, type RunMode } from './mode.js';
@@ -256,6 +256,8 @@ let couchMode = new URLSearchParams(window.location.search).has('couch');
 const boothPickupAndGo = couchMode
   || new URLSearchParams(window.location.search).has('p1')
   || new URLSearchParams(window.location.search).has('p2');
+// Booth/kiosk: surface the signed-in player(s) avatar + name on the HUD.
+setShowPlayerIdentity(boothPickupAndGo);
 
 // Remote-peer duel mode: `?peer=ws://broker.host/path&session=abc&slot=0|1`.
 // Both clients open the same session URL with mirrored slot numbers; the

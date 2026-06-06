@@ -10960,6 +10960,14 @@ function renderRunCredits(
     sub.style.cssText = 'font-size:1.1rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin:-10px 0 4px;';
   }
 
+  // Booth: show who played — the signed-in player(s) avatar + name.
+  if (boothKiosk && state.session) {
+    const idRow = el('div', { parent: overlay });
+    idRow.style.cssText = 'display:flex;gap:28px;align-items:center;justify-content:center;margin:8px 0 10px;flex-wrap:wrap;';
+    renderIdentityChip(idRow, state.session.pubkey, state.session.displayName ?? 'guest', 'PLAYER 1', PLAYER_COLOURS[0]);
+    if (state.coopIdentity2) renderIdentityChip(idRow, state.coopIdentity2.pubkey, state.coopIdentity2.displayName, 'PLAYER 2', PLAYER_COLOURS[1]);
+  }
+
   // Slice 5 — the chosen ending (Return / Step Through) reflected on the
   // completion card: a tag + the Pallasite Mark welcome line. The choice itself
   // is made on renderEndingChoice; see docs/pallasite-arc.md §6–7.
