@@ -1214,23 +1214,25 @@ function eventLobbyConfigForRoute(): EventLobbyConfig {
   }
 }
 
-function renderEventLobbyAction(parent: HTMLElement, label: string, hint: string, onClick: () => void): HTMLButtonElement {
+function renderEventLobbyAction(parent: HTMLElement, label: string, hint: string, onClick: () => void, emphasis: 'hero' | 'normal' | 'compact' = 'normal'): HTMLButtonElement {
+  const hero = emphasis === 'hero', compact = emphasis === 'compact';
   const btn = el('button', { parent }) as HTMLButtonElement;
   btn.style.cssText = [
     'display:flex', 'flex-direction:column', 'align-items:flex-start', 'gap:4px',
     'width:min(520px, 92vw)',
-    'padding:14px 16px',
-    'background:rgba(20,12,36,0.72)',
-    'border:1.5px solid rgba(255,216,74,0.5)',
+    compact ? 'padding:10px 16px' : hero ? 'padding:22px 22px' : 'padding:14px 16px',
+    'background:' + (hero ? 'rgba(40,30,8,0.82)' : 'rgba(20,12,36,0.72)'),
+    'border:' + (hero ? '2.5px solid #ffd84a' : compact ? '1px solid rgba(180,140,255,0.4)' : '1.5px solid rgba(255,216,74,0.5)'),
     'border-radius:8px',
     'color:#fff5d8',
     'cursor:pointer',
     'text-align:left',
-  ].join(';');
+    hero ? 'box-shadow:0 0 26px rgba(255,216,74,0.32)' : '',
+  ].filter(Boolean).join(';');
   const head = el('span', { parent: btn, text: label });
-  head.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:1.35rem;letter-spacing:0.16em;color:#ffd84a;";
+  head.style.cssText = "font-family:'VT323',ui-monospace,monospace;" + (hero ? 'font-size:2.3rem;' : compact ? 'font-size:1.05rem;' : 'font-size:1.35rem;') + 'letter-spacing:0.16em;color:#ffd84a;';
   const body = el('span', { parent: btn, text: hint });
-  body.style.cssText = 'font-size:0.78rem;letter-spacing:0.04em;color:rgba(220,210,255,0.72);line-height:1.35;';
+  body.style.cssText = 'font-size:' + (compact ? '0.72rem' : '0.78rem') + ';letter-spacing:0.04em;color:rgba(220,210,255,' + (compact ? '0.6' : '0.72') + ');line-height:1.35;';
   btn.addEventListener('click', onClick);
   return btn;
 }
@@ -1353,45 +1355,44 @@ export function renderBoothLobby(state: GameState, booth: number): void {
   intro.style.cssText = 'font-size:0.88rem;color:rgba(220,210,255,0.76);letter-spacing:0.08em;text-align:center;max-width:520px;line-height:1.45;margin:0;';
 
   const actions = el('div', { parent: overlay });
-  actions.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:10px;margin:8px auto 0;width:100%;';
-  const status = el('p', { parent: overlay });
-  status.style.cssText = 'min-height:1.1em;margin:6px 0 0;font-size:0.74rem;color:rgba(180,140,255,0.85);letter-spacing:0.08em;text-align:center;';
+  actions.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:10px;margin:10px auto 0;width:100%;';
 
-  // 1 PLAYER — solo campaign on this screen. Starts in place.
-  renderEventLobbyAction(actions, '1 PLAYER', 'One pilot, this screen. Straight into the campaign.', () => {
+  // PLAY — the dominant action: solo campaign on this screen, starts in place.
+  renderEventLobbyAction(actions, '▶ PLAY', 'One pilot, this screen — straight into the campaign.', () => {
     void audio.unlockAudio();
     tryEnterFullscreen();
     setStoredMode('campaign');
     setStoredDailyPref(false);
     lockInDifficulty(getStoredDifficulty());
     gateBehindOnboarding(() => onStartCb?.());
-  });
+  }, 'hero');
+
+  // Secondary co-op options, kept small so PLAY dominates.
+  const more = el('p', { parent: overlay, text: 'OR TEAM UP' });
+  more.style.cssText = 'font-size:0.66rem;letter-spacing:0.32em;color:rgba(180,140,255,0.5);margin:16px 0 -2px;';
+  const extras = el('div', { parent: overlay });
+  extras.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:8px;width:100%;';
 
   // 2 PLAYERS — local couch. Reload into the couch autostart, carrying the
   // booth flag so the post-game loop returns to this lobby.
-  renderEventLobbyAction(actions, '2 PLAYERS · ONE SCREEN', 'Two pilots, two pads, this screen. Local couch co-op — no lag.', () => {
+  renderEventLobbyAction(extras, '2 PLAYERS · ONE SCREEN', 'Two pilots, two pads, this screen — no lag.', () => {
     void audio.unlockAudio();
     tryEnterFullscreen();
     window.location.assign(`/?couch=1&autostart=1&p${booth}`);
-  });
+  }, 'compact');
 
   // LINK BOOTHS — cross-booth co-op, up to TWO pilots per booth (four ships,
   // one campaign) over the multi-slot lockstep. Each booth owns a fixed
-  // two-slot region (Booth 1 → 0,1; Booth 2 → 2,3) so no slot is ever
-  // unowned (an empty region slot would stall the whole session); a second
-  // pilot just fills the booth's second ship, otherwise it idles. Shared link
-  // session (default 'praguebooths', override ?link=<code>); auto-IGNITEs once
-  // both booths connect. coop-campaign hard-codes 2 players in the URL builder,
-  // so build it directly with players=4 + this booth's owned slots.
-  renderEventLobbyAction(actions, 'LINK BOOTHS', 'Team up with the other Prague booth — 1 or 2 pilots each, one campaign.', () => {
+  // two-slot region (Booth 1 → 0,1; Booth 2 → 2,3) so no slot is ever unowned
+  // (an empty region slot would stall the whole session). Shared link session
+  // (default 'praguebooths', override ?link=<code>); ?pilots=N,M (set
+  // identically on both booths) sets 1 or 2 pilots each. Built directly because
+  // coop-campaign hard-codes 2 players in the URL builder.
+  renderEventLobbyAction(extras, 'LINK BOOTHS', 'Team up with the other Prague booth — one campaign.', () => {
     void audio.unlockAudio();
     tryEnterFullscreen();
     const q = new URLSearchParams(window.location.search);
     const link = (q.get('link') || '').replace(/[^a-z0-9]/gi, '').slice(0, 32) || 'praguebooths';
-    // ?pilots=N,M (set IDENTICALLY on both booths) = N pilots at Booth 1, M at
-    // Booth 2 (each 1 or 2). Default 2,2 → four ships. Slots assign
-    // contiguously with NO gap, so every slot has an owner — an unowned slot
-    // would stall the whole lockstep — and there's never an idle ship.
     const counts = (q.get('pilots') || '2,2').split(',').map(n => Math.max(1, Math.min(2, parseInt(n, 10) || 2)));
     const b1 = counts[0] ?? 2, b2 = counts[1] ?? 2;
     const offset = booth === 1 ? 0 : b1;
@@ -1406,12 +1407,33 @@ export function renderBoothLobby(state: GameState, booth: number): void {
       mode: 'coop-campaign',
     });
     window.location.assign(`${window.location.origin}/?${params.toString()}&p${booth}=1`);
+  }, 'compact');
+
+  // Compact control legend so every drop-in sees the layout (booth = Point & Fly).
+  const legend = el('p', { parent: overlay, text: '🎮 Push the left stick to fly · RT fire · RB shield · LB hyperspace      ⌨ Arrows + Space' });
+  legend.style.cssText = 'font-size:0.72rem;color:rgba(140,255,180,0.6);letter-spacing:0.05em;text-align:center;margin:16px 0 0;max-width:560px;line-height:1.5;';
+
+  // Hand-over: a finishing player signs out so the next drop-in gets the login
+  // (and the Signet nudge) fresh, instead of silently inheriting this identity.
+  const who = el('div', { parent: overlay });
+  who.style.cssText = 'display:flex;align-items:center;justify-content:center;gap:12px;margin-top:20px;flex-wrap:wrap;';
+  el('span', { parent: who, text: `Playing as ${state.session.displayName ?? 'guest'}` })
+    .style.cssText = 'font-size:0.74rem;color:rgba(180,140,255,0.7);letter-spacing:0.06em;';
+  const signOut = el('button', { parent: who, text: 'FINISHED? SIGN OUT' }) as HTMLButtonElement;
+  signOut.style.cssText = 'background:rgba(255,120,120,0.12);border:1px solid rgba(255,120,120,0.5);color:#ff8a8a;font:0.72rem ui-monospace,monospace;letter-spacing:0.12em;padding:6px 14px;border-radius:6px;cursor:pointer;';
+  signOut.addEventListener('click', () => {
+    void (async () => {
+      signOut.disabled = true;
+      try { await auth.signOut(state.session); } catch { /* ignore */ }
+      clearGuestIdentity();              // wipe any local guest record too — clean slate
+      state.session = null;
+      renderBoothLobby(state, booth);    // no session → renderAuth (login for the next player)
+    })();
   });
 
-  // Operator escape — drop the kiosk flag to reach the full menu.
-  const exit = el('button', { parent: overlay, text: 'NORMAL MENU' });
-  exit.style.cssText = 'margin-top:14px;background:none;border:1px solid rgba(180,140,255,0.3);color:rgba(200,180,255,0.7);font:0.7rem ui-monospace,monospace;letter-spacing:0.14em;padding:7px 14px;border-radius:6px;cursor:pointer;';
-  exit.addEventListener('click', () => { window.location.assign('/'); });
+  // Operator escape — long-press the logo (700ms) to drop the kiosk flag and
+  // reach the full menu + settings. Deliberately hidden from walk-ups.
+  bindLogoLongPress(titleLogo, () => window.location.assign('/'));
 }
 
 export function renderAttract(state: GameState): void {
@@ -8400,10 +8422,15 @@ export function renderPause(state?: GameState): void {
   // makes the focus ring light up loudly so the player sees what's
   // about to fire.
   setTimeout(() => tryFocusVisible(resume), 0);
-  const settings = el('button', { className: 'menu-btn secondary', parent: row, text: 'SETTINGS' });
-  settings.addEventListener('click', () => renderSettings(() => renderPause(state)));
+  // Settings is operator-only at a booth kiosk — walk-ups never reach remap /
+  // presets / display / clear-scores. The operator gets there via the hidden
+  // logo long-press on the lobby (→ full menu → Settings).
+  if (!boothKiosk) {
+    const settings = el('button', { className: 'menu-btn secondary', parent: row, text: 'SETTINGS' });
+    settings.addEventListener('click', () => renderSettings(() => renderPause(state)));
+  }
   if (state) {
-    const quit = el('button', { className: 'menu-btn secondary', parent: row, text: 'QUIT TO TITLE' });
+    const quit = el('button', { className: 'menu-btn secondary', parent: row, text: boothKiosk ? 'END RUN' : 'QUIT TO TITLE' });
     quit.addEventListener('click', () => {
       // Abandon the run — drop straight to title without going through gameover.
       audio.thrustOff();
