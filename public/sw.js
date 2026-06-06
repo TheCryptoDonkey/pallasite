@@ -13,7 +13,7 @@
  * Bump SW_VERSION below to invalidate all caches on the next visit.
  */
 
-const SW_VERSION = 'v225';
+const SW_VERSION = 'v226';
 const CACHE_HTML = `pallasite-html-${SW_VERSION}`;
 const CACHE_ASSET = `pallasite-asset-${SW_VERSION}`;
 
@@ -84,7 +84,11 @@ self.addEventListener('fetch', event => {
   if (isNav || isSdk) {
     event.respondWith((async () => {
       try {
-        const fresh = await fetch(req);
+        // `cache: 'reload'` bypasses the browser's HTTP cache so a stable-path
+        // resource with no Cache-Control (the signet-login IIFE) can't be served
+        // stale from heuristic caching — exactly the bug where a pre-update SDK
+        // bundle lingered and the gamepad-navigable login modal never loaded.
+        const fresh = await fetch(req, { cache: 'reload' });
         const cache = await caches.open(CACHE_HTML);
         cache.put(req, fresh.clone()).catch(() => { /* ignore quota errors */ });
         return fresh;
