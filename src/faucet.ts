@@ -478,6 +478,73 @@ export async function postHeartbeat(
   }
 }
 
+export type CoopScoreResult =
+  | { ok: true; published: { id: string; variant: 'individual' | 'team'; ok: number; total: number }[] }
+  | { ok: false; error: string; detail?: string };
+
+export interface CoopScoreInput {
+  score: number;
+  wave: number;
+  duration_ms: number;
+  daily_seed?: string;
+  cheated?: boolean;
+  /** When present, the server ALSO game-signs a combined TEAM event tagged
+   *  with every member. Only the submitter who's in `members` triggers it. */
+  team?: { score: number; members: string[] };
+}
+
+/**
+ * POST /api/coop-score — the player NIP-98 auths (identity proof only); the
+ * faucet GAME-signs + publishes the co-op kind 30762 score(s). This is the
+ * game-signed replacement for the legacy frontend-signed co-op publish, so a
+ * player's ESP32 / hardware signer never has to sign the score itself.
+ *
+ * Returns a recognisable `ok:false` (e.g. 'not_deployed' on 404) so callers can
+ * fall back to the legacy publish while the endpoint rolls out.
+ */
+export async function submitCoopScore(
+  session: SignetSession,
+  input: CoopScoreInput,
+): Promise<CoopScoreResult> {
+  if (!session.signer.capabilities.canSignEvents) return { ok: false, error: 'no_signer' };
+  const url = `${location.origin}${API_BASE}/coop-score`;
+  const bodyJson = JSON.stringify(input);
+  const payloadHash = await sha256Hex(bodyJson);
+  const authTemplate = {
+    kind: 27235,
+    created_at: Math.floor(Date.now() / 1000),
+    content: '',
+    tags: [['u', url], ['method', 'POST'], ['payload', payloadHash]],
+  };
+  let signedAuth;
+  try {
+    signedAuth = await Promise.race([
+      session.signer.signEvent(authTemplate),
+      new Promise<never>((_, reject) => { window.setTimeout(() => reject(new Error('signer-timeout')), 30_000); }),
+    ]);
+  } catch (err) {
+    return { ok: false, error: 'sign_failed', detail: err instanceof Error ? err.message : String(err) };
+  }
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/coop-score`, {
+      method: 'POST',
+      headers: {
+        authorization: `Nostr ${utf8Base64(JSON.stringify(signedAuth))}`,
+        'content-type': 'application/json',
+      },
+      body: bodyJson,
+    });
+  } catch (err) {
+    return { ok: false, error: 'network_error', detail: err instanceof Error ? err.message : String(err) };
+  }
+  if (res.status === 404) return { ok: false, error: 'not_deployed' };
+  let data: unknown;
+  try { data = await res.json(); } catch { return { ok: false, error: 'bad_response', detail: `HTTP ${res.status}` }; }
+  if (typeof data !== 'object' || data === null) return { ok: false, error: 'bad_response' };
+  return data as CoopScoreResult;
+}
+
 /**
  * POST /api/withdraw with a NIP-98-signed Authorization header. Debits
  * the player's accumulated balance and pays a Lightning invoice fetched
