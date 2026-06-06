@@ -154,6 +154,7 @@ export function makeInitialState(): GameState {
     flash: 0,
     session: null,
     profile: null,
+    coopIdentity2: null,
     toast: null,
     toastUntil: 0,
     replayBuffer: [],

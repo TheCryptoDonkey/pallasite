@@ -245,8 +245,10 @@ let applyTraceCount = 0;
   return out;
 };
 
-/** True when ?couch=1 is present — enables two-player local co-op. */
-const couchMode = new URLSearchParams(window.location.search).has('couch');
+/** True when ?couch=1 is present — enables two-player local co-op. Also flipped
+ *  at runtime by enableCouchInPlace() for the booth dual-login start (which
+ *  begins couch without a reload so both signed-in identities survive). */
+let couchMode = new URLSearchParams(window.location.search).has('couch');
 
 /** Booth contexts (couch on a TV, or a ?p1/?p2 kiosk / linked booth) are
  *  walk-up — force the pickup-and-go pad scheme regardless of the saved
@@ -283,8 +285,18 @@ const localOwnedSlots: number[] = (() => {
 // Slots driven by LOCAL pilots on this machine: couch = [0,1] on one keyboard,
 // a linked booth = its owned slots, everything else = just [mpSlot]. A second
 // entry (if any) is the second local pilot — couch P2 or a booth's co-pilot.
-const localPilotSlots: number[] = couchMode ? [0, 1] : localOwnedSlots;
-const secondLocalSlot: number = localPilotSlots.length > 1 ? localPilotSlots[1] : -1;
+let localPilotSlots: number[] = couchMode ? [0, 1] : localOwnedSlots;
+let secondLocalSlot: number = localPilotSlots.length > 1 ? localPilotSlots[1] : -1;
+
+/** Turn on two-player couch at runtime (booth dual-login starts the game in
+ *  place rather than reloading into ?couch, so both signed-in identities stay
+ *  in memory). Read each frame by pollGamepads / the keydown handler, so the
+ *  second pilot's pad + keyboard route the moment this flips. Idempotent. */
+function enableCouchInPlace(): void {
+  couchMode = true;
+  localPilotSlots = [0, 1];
+  secondLocalSlot = 1;
+}
 const mpMode = !!(mpUrl && mpSession && mpSlotValid);
 // Spectator mode (M5). `?spectate=<session>&peer=<broker-url>` opens a
 // peerwatch socket and runs the lockstep loop in read-only mode with no
@@ -1342,6 +1354,10 @@ function scheduleMeshWarmupAfterStart(): void {
 
 bindActions({
   onStart: () => {
+    void startRunFromAction();
+  },
+  onStartCouch: () => {
+    enableCouchInPlace();
     void startRunFromAction();
   },
   onResume: () => {

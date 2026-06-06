@@ -778,6 +778,12 @@ export interface GameState {
   /** Resolved kind-0 profile for the active session (or null if not yet fetched) */
   profile: import('./profile.js').NostrProfile | null;
 
+  /** Booth couch P2's own identity — when a second player signs in with their
+   *  own Nostr/guest details at a kiosk. Display-only in Stage 1 (P1's `session`
+   *  still drives signing/scoring); bridged across the couch reload via
+   *  sessionStorage. null when there's no distinct P2 identity. */
+  coopIdentity2: { pubkey: string; displayName: string; profile: import('./profile.js').NostrProfile | null } | null;
+
   /** transient toast text */
   toast: string | null;
   toastUntil: number;
