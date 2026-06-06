@@ -43,7 +43,7 @@ import { getHapticsEnabled, setHapticsEnabled, hapticsSupported } from './haptic
 import * as auth from './auth.js';
 import type { SignetSession } from 'signet-login';
 import { addLocalHighScore, getLocalHighScores, isHighScore, subscribeGlobalHighScores, clearLocalHighScores, publishCoopCampaignScore, type GlobalHighScore, type ScoreBoardId } from './score.js';
-import { submitClaim, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, fetchFlagged, requestDeleteFlag, requestLnurlWithdraw, pollLnurlWithdrawStatus, fetchAdminState, setAdminCaps, setAdminPause, applyAdminPreset, saveAdminSettings, fetchAdminPlayer, setAdminPlayerFlag, adjustAdminPlayerBalance, setAdminPlayerTier, isAdminSession, type PlayerTier, type FlaggedEntry, type AdminStateResult, type AdminPlayer } from './faucet.js';
+import { submitClaim, submitCoopScore, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, fetchFlagged, requestDeleteFlag, requestLnurlWithdraw, pollLnurlWithdrawStatus, fetchAdminState, setAdminCaps, setAdminPause, applyAdminPreset, saveAdminSettings, fetchAdminPlayer, setAdminPlayerFlag, adjustAdminPlayerBalance, setAdminPlayerTier, isAdminSession, type PlayerTier, type FlaggedEntry, type AdminStateResult, type AdminPlayer } from './faucet.js';
 import {
   fetchReviewCases,
   generateJuryIdentity,
@@ -10158,27 +10158,56 @@ async function maybePublishCoopCampaignScore(
     return;
   }
   status.style.color = '#5b9dff';
-  status.textContent = 'Publishing co-op campaign score…';
-  try {
-    const result = await publishCoopCampaignScore(state.session, {
-      score,
-      wave: state.wave,
-      durationMs: Math.max(0, Math.floor(state.runTimeMs)),
-      players: state.players.length,
-      seed: getActiveSeed(),
-      cheated: state.cheatedThisRun,
-    });
-    if (result.publishedTo.length > 0) {
-      status.style.color = '#58ff58';
-      status.textContent = `✓ Co-op score published to ${result.publishedTo.length}/${result.publishedTo.length + result.failed.length} relays · no sats payout`;
-    } else {
-      status.style.color = '#ff8050';
-      status.textContent = 'Co-op score saved locally; relays rejected the publish.';
+  status.textContent = 'Banking co-op scores (game-signed)…';
+
+  const durationMs = Math.max(0, Math.floor(state.runTimeMs));
+  const seed = getActiveSeed() || undefined;
+  const common = { wave: state.wave, duration_ms: durationMs, daily_seed: seed, cheated: state.cheatedThisRun };
+  const p2 = state.coopIdentity2;
+  const members = p2?.pubkey ? [state.session.pubkey, p2.pubkey] : [state.session.pubkey];
+  const p1Individual = state.players[0]?.score ?? 0;
+  const p2Individual = state.players[1]?.score ?? 0;
+
+  // Game-signed path: P1 NIP-98 auths → the faucet game-signs their own score
+  // AND the combined team event; P2 auths → the faucet game-signs their own.
+  // The players' signers only ever prove identity, never sign the score.
+  const r1 = await submitCoopScore(state.session, { ...common, score: p1Individual, team: { score, members } });
+
+  if (r1.ok) {
+    status.style.color = '#58ff58';
+    status.textContent = '✓ Team score + your score game-signed to the leaderboard · no sats payout';
+    if (p2?.session && p2Individual > 0 && p2.session.signer.capabilities.canSignEvents) {
+      const line = el('p', { parent });
+      line.style.cssText = 'font-size:0.78rem;margin:4px 0 0;color:rgba(180,200,255,0.72);letter-spacing:0.04em;text-align:center;';
+      line.textContent = "Banking Player 2's score to their npub…";
+      const r2 = await submitCoopScore(p2.session, { ...common, score: p2Individual });
+      line.style.color = r2.ok ? '#58ff58' : '#ff8050';
+      line.textContent = r2.ok ? "✓ Player 2's score game-signed under their own npub." : "Player 2's score couldn't publish.";
     }
-  } catch (err) {
-    status.style.color = '#ff8050';
-    status.textContent = `Co-op publish failed: ${err instanceof Error ? err.message : String(err)}`;
+    return;
   }
+
+  // Endpoint not deployed yet (or a transient network failure) → fall back to
+  // the legacy frontend-signed combined publish so co-op scoring still works
+  // during the roll-out. (Other errors surface as-is.)
+  if (r1.error === 'not_deployed' || r1.error === 'network_error') {
+    try {
+      const result = await publishCoopCampaignScore(state.session, {
+        score, wave: state.wave, durationMs, players: state.players.length, seed: getActiveSeed(), cheated: state.cheatedThisRun,
+      });
+      status.style.color = result.publishedTo.length > 0 ? '#58ff58' : '#ff8050';
+      status.textContent = result.publishedTo.length > 0
+        ? `✓ Co-op score published to ${result.publishedTo.length} relays · no sats payout`
+        : 'Co-op score saved locally; relays rejected the publish.';
+    } catch (err) {
+      status.style.color = '#ff8050';
+      status.textContent = `Co-op publish failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    return;
+  }
+
+  status.style.color = '#ff8050';
+  status.textContent = `Co-op publish failed: ${r1.error}${r1.detail ? ' — ' + r1.detail : ''}`;
 }
 
 async function maybePublishScore(
