@@ -1402,6 +1402,78 @@ function renderCoopReady(state: GameState, booth: number): void {
   back.addEventListener('click', () => { state.coopIdentity2 = null; renderBoothLobby(state, booth); });
 }
 
+/** Player-facing controller preferences — a focused subset of Settings reachable
+ *  straight from the booth lobby (the full Settings stays operator-only behind
+ *  the logo long-press). Lets a walk-up pick their gamepad flight scheme +
+ *  auto-thrust and test their pad, without the audio / lobby / score operator
+ *  controls. */
+function renderControllerPrefs(state: GameState, booth: number): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+  el('h2', { parent: overlay, text: 'CONTROLLER' });
+  el('p', { parent: overlay, text: 'Pick how your gamepad flies. The right stick aims + auto-fires in every mode.' })
+    .style.cssText = 'font-size:0.84rem;color:rgba(220,210,255,0.72);margin:4px auto 16px;max-width:520px;text-align:center;line-height:1.5;';
+
+  const padOpts: ReadonlyArray<{ value: PadFlightMode; label: string; hint: string }> = [
+    { value: 'flydirect', label: 'POINT & FLY',    hint: 'Pickup-and-go — push the left stick to aim and fly together' },
+    { value: 'throttle',  label: 'AIM + THROTTLE', hint: 'Left stick aims, right trigger throttles — hold a firing line' },
+    { value: 'classic',   label: 'CLASSIC',        hint: 'Arcade — d-pad turns, right trigger (or d-pad up) thrusts' },
+  ];
+  const panel = el('div', { parent: overlay });
+  panel.style.cssText = 'display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap;';
+  const hint = el('p', { parent: overlay });
+  hint.style.cssText = 'font-size:0.8rem;color:rgba(180,140,255,0.75);min-height:1.2em;margin:8px 0 0;text-align:center;max-width:520px;';
+  const btns = new Map<PadFlightMode, HTMLButtonElement>();
+  const paint = (): void => {
+    const cur = getPadFlightMode();
+    for (const [v, b] of btns) {
+      const on = v === cur;
+      b.style.cssText = [
+        'background:' + (on ? 'rgba(88,255,88,0.2)' : 'transparent'),
+        'border:2px solid ' + (on ? '#58ff58' : 'rgba(180,140,255,0.4)'),
+        'color:' + (on ? '#58ff58' : 'rgba(220,210,255,0.85)'),
+        "font-family:'VT323',ui-monospace,monospace", 'font-size:1.15rem', 'padding:10px 22px',
+        'letter-spacing:0.16em', 'cursor:pointer', 'border-radius:6px', 'min-width:140px',
+      ].join(';');
+    }
+    hint.textContent = padOpts.find((o) => o.value === cur)?.hint ?? '';
+  };
+  for (const opt of padOpts) {
+    const b = el('button', { parent: panel, text: opt.label }) as HTMLButtonElement;
+    btns.set(opt.value, b);
+    b.addEventListener('click', () => { setPadFlightMode(opt.value); paint(); });
+  }
+  paint();
+
+  const autoWrap = el('div', { parent: overlay });
+  autoWrap.style.cssText = 'display:flex;justify-content:center;align-items:center;gap:14px;margin-top:18px;';
+  el('span', { parent: autoWrap, text: 'AUTO-THRUST' }).style.cssText = 'font-size:0.9rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
+  const autoBtn = el('button', { parent: autoWrap, text: 'OFF' }) as HTMLButtonElement;
+  const paintAuto = (): void => {
+    const on = getPadAutoThrust();
+    autoBtn.textContent = on ? 'ON' : 'OFF';
+    autoBtn.style.cssText = [
+      'background:' + (on ? 'rgba(88,255,88,0.18)' : 'transparent'),
+      'border:2px solid ' + (on ? '#58ff58' : 'rgba(180,140,255,0.4)'),
+      'color:' + (on ? '#58ff58' : 'rgba(220,210,255,0.85)'),
+      "font-family:'VT323',ui-monospace,monospace", 'font-size:1rem', 'padding:6px 18px',
+      'letter-spacing:0.18em', 'cursor:pointer', 'border-radius:6px', 'min-width:64px',
+    ].join(';');
+  };
+  paintAuto();
+  autoBtn.addEventListener('click', () => { setPadAutoThrust(!getPadAutoThrust()); paintAuto(); });
+  el('p', { parent: overlay, text: 'Tap the thrust trigger to cruise instead of holding it.' })
+    .style.cssText = 'font-size:0.74rem;color:rgba(180,140,255,0.55);margin:4px 0 0;text-align:center;';
+
+  const row = el('div', { className: 'menu-row', parent: overlay });
+  const test = el('button', { className: 'menu-btn secondary', parent: row, text: '🎮 TEST CONTROLLER' });
+  test.addEventListener('click', () => { try { window.open('/gamepad-test.html', '_blank'); } catch { /* ignore */ } });
+  const back = el('button', { className: 'menu-btn', parent: row, text: '◀ BACK' });
+  back.addEventListener('click', () => renderBoothLobby(state, booth));
+  setTimeout(() => tryFocusVisible(back), 0);
+}
+
 export function renderBoothLobby(state: GameState, booth: number): void {
   // No identity yet → Signet login (Nostr or guest), then land back here.
   if (!state.session) { renderAuth(state, () => renderBoothLobby(state, booth)); return; }
@@ -1491,6 +1563,12 @@ export function renderBoothLobby(state: GameState, booth: number): void {
   const legend = el('p', { parent: overlay, text: '🎮 Push the left stick to fly · RT fire · RB shield · LB hyperspace      ⌨ Arrows + Space' });
   legend.style.cssText = 'font-size:0.72rem;color:rgba(140,255,180,0.6);letter-spacing:0.05em;text-align:center;margin:16px 0 0;max-width:560px;line-height:1.5;';
 
+  // Player-facing controller prefs (gamepad scheme + auto-thrust + pad test) —
+  // no operator settings, no secret gesture.
+  const controlsBtn = el('button', { parent: overlay, text: '🎮 CONTROLS' });
+  controlsBtn.style.cssText = 'margin-top:10px;background:rgba(91,208,255,0.12);border:1px solid rgba(91,208,255,0.5);color:#5bd0ff;font:0.74rem ui-monospace,monospace;letter-spacing:0.14em;padding:7px 16px;border-radius:6px;cursor:pointer;';
+  controlsBtn.addEventListener('click', () => { void audio.unlockAudio(); renderControllerPrefs(state, booth); });
+
   // Hand-over: a finishing player signs out so the next drop-in gets the login
   // (and the Signet nudge) fresh, instead of silently inheriting this identity.
   const who = el('div', { parent: overlay });
@@ -1528,6 +1606,10 @@ export function renderBoothLobby(state: GameState, booth: number): void {
       signOut.disabled = true;
       try { await auth.signOut(state.session); } catch { /* ignore */ }
       clearGuestIdentity();              // wipe any local guest record too — clean slate
+      // Reset the controller scheme to the walk-up default so the next drop-in
+      // doesn't inherit the previous player's chosen prefs.
+      setPadFlightMode('flydirect');
+      setPadAutoThrust(false);
       state.session = null;
       renderBoothLobby(state, booth);    // no session → renderAuth (login for the next player)
     })();
