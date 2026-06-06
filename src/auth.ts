@@ -12,10 +12,11 @@
  * can at least free our own state and surface the error to the player.
  */
 
-import type { ConsumeCallbackResult, SignetSession } from 'signet-login';
+import type { ConsumeCallbackResult, SignetSession, SignetAuthEvent } from 'signet-login';
 import { getActiveRelays } from './relays.js';
 import { serialiseSigner } from './sign-queue.js';
-import { getGuestRecord, loadOrCreateGuest, seedGuestIdentity } from './guest.js';
+import { getGuestRecord, loadOrCreateGuest } from './guest.js';
+import { FaucetSigner, fetchKioskInfo } from './faucet-signer.js';
 
 /**
  * Wrap a freshly-resolved session's signer so every signEvent goes through
@@ -374,20 +375,38 @@ export async function createGuestSession(
 }
 
 /**
- * Establish a baked-in kiosk identity from a configured 64-char hex key.
+ * Establish an unattended-booth session that signs via the self-hosted
+ * faucet's KIOSK_NSEC (server-side), so the key never reaches the browser.
  *
- * For an unattended self-hosted deploy that must sign (replays, NIP-98 uploads)
- * without an interactive "Sign in with Signet" — which on these flows lands
- * auth-only (no live signer). Pins the local identity to `hexKey` and returns a
- * full local-signing session (the guest signer can sign). Throws on a malformed
- * key so the caller can fall through to the normal picker.
+ * For a self-hosted deploy that must sign (replays, NIP-98 uploads) without an
+ * interactive "Sign in with Signet" — which on these flows lands auth-only.
+ * Probes /api/kiosk/info; if no kiosk identity is configured (normal/production
+ * deploys), returns null so the caller falls through to the normal picker.
  */
-export async function createKioskSession(hexKey: string): Promise<SignetSession> {
-  const hex = hexKey.trim().toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(hex)) {
-    throw new Error('kiosk key must be a 64-char hex private key');
-  }
-  seedGuestIdentity(hex, 'Pallasite Kiosk');
-  // followPallasite=false — a kiosk shouldn't rewrite a contact list.
-  return createGuestSession('Pallasite Kiosk', { followPallasite: false });
+export async function createKioskSession(): Promise<SignetSession | null> {
+  const info = await fetchKioskInfo();
+  if (!info || !info.pubkey) return null;
+  const signer = new FaucetSigner(info.pubkey);
+  // Synthetic kind-21236 auth event, signed by the kiosk key via the faucet.
+  // Mirrors the guest path: downstream reads tags but doesn't re-verify.
+  const authEvent = (await signer.signEvent({
+    kind: 21236,
+    content: '',
+    tags: [
+      ['app', 'pallasite'],
+      ['method', 'kiosk'],
+      ['challenge', crypto.randomUUID()],
+    ],
+    created_at: Math.floor(Date.now() / 1000),
+  })) as SignetAuthEvent;
+  const session: SignetSession = {
+    pubkey: info.pubkey,
+    method: 'bunker',
+    signer,
+    authEvent,
+    displayName: 'Pallasite Kiosk',
+  };
+  const wrapped = wrapSession(session);
+  if (!wrapped) throw new Error('kiosk-session-wrap-failed');
+  return wrapped;
 }

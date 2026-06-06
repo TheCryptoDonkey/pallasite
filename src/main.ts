@@ -2681,18 +2681,16 @@ async function boot(): Promise<void> {
   // session lands. Every state.session reader below is null-guarded.
   void (async () => {
     let session = (await handleAuthCallback()) ?? (await tryRestore());
-    // Self-hosted kiosk: with a baked-in key configured and no other session,
-    // boot straight into a local signing identity so an unattended box can
-    // sign (replays, NIP-98 uploads) instead of landing auth-only. Unset in
-    // normal builds (e.g. production) — this is a no-op there.
+    // Self-hosted booth: when the faucet is configured with a kiosk identity
+    // (KIOSK_NSEC) and there's no other session, boot straight into a session
+    // that signs server-side via /api/kiosk/sign — so an unattended box signs
+    // (replays, NIP-98 uploads) instead of landing auth-only. On normal
+    // deploys /api/kiosk/info reports disabled (or 404s) and this is a no-op.
     if (!session) {
-      const kioskKey = import.meta.env.VITE_PALLASITE_KIOSK_NSEC;
-      if (kioskKey) {
-        try {
-          session = await createKioskSession(kioskKey);
-        } catch (err) {
-          console.warn('[kiosk] baked identity failed — falling back to the picker:', err);
-        }
+      try {
+        session = await createKioskSession();
+      } catch (err) {
+        console.warn('[kiosk] session setup failed — falling back to the picker:', err);
       }
     }
     if (!session) return;
