@@ -97,6 +97,23 @@ export function clearGuestIdentity(): boolean {
 }
 
 /**
+ * Pin the local identity to a specific private key (kiosk / baked-in nsec),
+ * so an unattended self-hosted instance signs with a known, stable key.
+ *
+ * Writes the record only when the key is absent or differs, so a returning
+ * kiosk keeps its `createdAt`. Writing it BEFORE `loadOrCreateGuest` means the
+ * key is treated as an existing identity (skips the fresh-create profile
+ * publish). `nsecHex` must be 64-char hex; malformed input is ignored.
+ */
+export function seedGuestIdentity(nsecHex: string, name: string): void {
+  const hex = nsecHex.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(hex)) return;
+  const stored = readStored();
+  if (stored && stored.nsecHex === hex) return;
+  writeStored({ nsecHex: hex, name: name.slice(0, MAX_NAME_LEN) || 'Anonymous', createdAt: Date.now(), v: 1 });
+}
+
+/**
  * Read the stored guest record without instantiating a signer. Used by
  * the title screen to decide whether to show a name prompt or a
  * "welcome back" line, and by the settings panel for disclosure.

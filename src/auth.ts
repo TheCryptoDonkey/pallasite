@@ -15,7 +15,7 @@
 import type { ConsumeCallbackResult, SignetSession } from 'signet-login';
 import { getActiveRelays } from './relays.js';
 import { serialiseSigner } from './sign-queue.js';
-import { getGuestRecord, loadOrCreateGuest } from './guest.js';
+import { getGuestRecord, loadOrCreateGuest, seedGuestIdentity } from './guest.js';
 
 /**
  * Wrap a freshly-resolved session's signer so every signEvent goes through
@@ -371,4 +371,23 @@ export async function createGuestSession(
   const wrapped = wrapSession(session);
   if (!wrapped) throw new Error('guest-session-wrap-failed');
   return wrapped;
+}
+
+/**
+ * Establish a baked-in kiosk identity from a configured 64-char hex key.
+ *
+ * For an unattended self-hosted deploy that must sign (replays, NIP-98 uploads)
+ * without an interactive "Sign in with Signet" — which on these flows lands
+ * auth-only (no live signer). Pins the local identity to `hexKey` and returns a
+ * full local-signing session (the guest signer can sign). Throws on a malformed
+ * key so the caller can fall through to the normal picker.
+ */
+export async function createKioskSession(hexKey: string): Promise<SignetSession> {
+  const hex = hexKey.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(hex)) {
+    throw new Error('kiosk key must be a 64-char hex private key');
+  }
+  seedGuestIdentity(hex, 'Pallasite Kiosk');
+  // followPallasite=false — a kiosk shouldn't rewrite a contact list.
+  return createGuestSession('Pallasite Kiosk', { followPallasite: false });
 }
