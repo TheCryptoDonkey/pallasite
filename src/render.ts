@@ -2037,59 +2037,6 @@ function drawShield(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elap
  *  everywhere. P1 keeps the classic green; P2 is a contrasting ally cyan. */
 export const PLAYER_COLOURS = ['#58ff58', '#5bd0ff', '#ffb24a', '#ff7ad0', '#b48cff', '#8cffb4', '#ff6b6b', '#ffd84a'];
 
-/** Floating per-player identity marker drawn over each ship in couch / co-op /
- *  shared-screen play so two pilots on one TV can tell at a glance which ship is
- *  theirs. Drawn on the 2D canvas above wherever the ship sits, so it shows for
- *  every ship tier — including the WebGL mesh, which skips the 2D hull path. */
-function drawPlayerTag(ctx: CanvasRenderingContext2D, ship: Ship, index: number): void {
-  if (!ship.alive) return;
-  const colour = PLAYER_COLOURS[index % PLAYER_COLOURS.length];
-  const ring = ship.radius + 6;
-  const fontPx = Math.max(13, ship.radius * 1.5);
-  const label = `P${index + 1}`;
-  ctx.save();
-  ctx.translate(ship.pos.x, ship.pos.y);
-  // Identity ring hugging the hull.
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = colour;
-  ctx.shadowColor = colour;
-  ctx.shadowBlur = 8;
-  ctx.globalAlpha = 0.9;
-  ctx.beginPath();
-  ctx.arc(0, 0, ring, 0, Math.PI * 2);
-  ctx.stroke();
-  // Labelled pill floating above the ship.
-  ctx.font = `bold ${fontPx}px ui-monospace, monospace`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  const labelY = -(ring + fontPx * 1.15);
-  const padX = fontPx * 0.42;
-  const padY = fontPx * 0.26;
-  const tw = ctx.measureText(label).width;
-  ctx.shadowBlur = 0;
-  ctx.globalAlpha = 0.85;
-  ctx.fillStyle = 'rgba(4, 8, 18, 0.82)';
-  ctx.fillRect(-tw / 2 - padX, labelY - fontPx / 2 - padY, tw + padX * 2, fontPx + padY * 2);
-  ctx.globalAlpha = 0.95;
-  ctx.lineWidth = 1.5;
-  ctx.strokeStyle = colour;
-  ctx.strokeRect(-tw / 2 - padX, labelY - fontPx / 2 - padY, tw + padX * 2, fontPx + padY * 2);
-  // Chevron linking the pill down to the ship.
-  ctx.beginPath();
-  ctx.moveTo(-fontPx * 0.26, labelY + fontPx / 2 + padY);
-  ctx.lineTo(0, labelY + fontPx / 2 + padY + fontPx * 0.34);
-  ctx.lineTo(fontPx * 0.26, labelY + fontPx / 2 + padY);
-  ctx.closePath();
-  ctx.fillStyle = colour;
-  ctx.fill();
-  // Label text on top.
-  ctx.fillStyle = colour;
-  ctx.shadowColor = colour;
-  ctx.shadowBlur = 6;
-  ctx.fillText(label, 0, labelY);
-  ctx.restore();
-}
-
 function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapsed: number, idleSway = false, forceCanvas = false, tint?: string): void {
   if (!ship.alive) return;
   // Hide ship entirely during hyperspace cloak — except when the warp is
@@ -4538,11 +4485,16 @@ function drawIdentityChip(ctx: CanvasRenderingContext2D, x: number, baseY: numbe
 function drawBoothIdentities(ctx: CanvasRenderingContext2D, s: GameState, w: number, h: number, insets: SafeInsets): void {
   if (!showPlayerIdentity) return;
   const baseY = h - insets.bottom - 44;
+  // Colour each chip by the player's GLOBAL slot, not a fixed P1/P2, so the
+  // chip matches that pilot's ship tint on every screen. On a linked booth the
+  // local pilot is slot 0 on Booth 1 but slot 1 on Booth 2 — keying the chip on
+  // localSlot keeps "my HUD colour == my ship colour" true on both.
+  const base = renderMode.localSlot ?? 0;
   if (s.session) {
-    drawIdentityChip(ctx, 24 + insets.left, baseY, 'left', identityName(s.profile, s.session.displayName, s.session.pubkey), s.profile?.picture, PLAYER_COLOURS[0]);
+    drawIdentityChip(ctx, 24 + insets.left, baseY, 'left', identityName(s.profile, s.session.displayName, s.session.pubkey), s.profile?.picture, PLAYER_COLOURS[base % PLAYER_COLOURS.length]);
   }
   if (s.coopIdentity2 && s.players.length > 1) {
-    drawIdentityChip(ctx, w - 24 - insets.right, baseY, 'right', identityName(s.coopIdentity2.profile, s.coopIdentity2.displayName, s.coopIdentity2.pubkey), s.coopIdentity2.profile?.picture, PLAYER_COLOURS[1]);
+    drawIdentityChip(ctx, w - 24 - insets.right, baseY, 'right', identityName(s.coopIdentity2.profile, s.coopIdentity2.displayName, s.coopIdentity2.pubkey), s.coopIdentity2.profile?.picture, PLAYER_COLOURS[(base + 1) % PLAYER_COLOURS.length]);
   }
 }
 
@@ -5889,7 +5841,10 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
     if (!pl.ship.alive) continue;
     const p = mapRadar(pl.ship.pos.x, pl.ship.pos.y);
     const local = i === localSlot;
-    const colour = local ? '#58ff58' : playerColours[i % playerColours.length];
+    // Colour every blip by its global slot so it matches that pilot's ship
+    // tint + HUD chip; the local pilot stands out by a brighter outline and a
+    // larger blip below, not by hue.
+    const colour = playerColours[i % playerColours.length];
     oc.fillStyle = colour;
     oc.strokeStyle = local ? 'rgba(232,255,232,0.95)' : 'rgba(255,255,255,0.58)';
     oc.lineWidth = local ? 2.2 : 1;
@@ -6260,20 +6215,19 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       drawGhostShip(ctx, state);
       drawGhostAttract(ctx, state, now);
       const idleSway = state.phase === 'title' || state.phase === 'wavestart';
-      // Show per-player identity markers on a shared screen (couch co-op /
-      // small deathmatch) so two pilots on one TV can find their own ship.
-      // Capped at booth-sized lobbies; a 64-player online arena would just be
-      // clutter, and the local marker + radar cover that case already.
-      const tagPlayers = state.players.length >= 2 && state.players.length <= 8 && state.phase !== 'title';
+      // Tint each ship by its player colour (keyed on global slot) on a shared
+      // screen / linked booth so every pilot recognises their ship by the same
+      // colour as their HUD identity chip and radar blip. Capped at booth-sized
+      // lobbies; a 64-player online arena would just be clutter, and the local
+      // marker + radar cover that case already. No floating P1/P2 marker — the
+      // colour match is the identity cue.
+      const tintPlayers = state.players.length >= 2 && state.players.length <= 8 && state.phase !== 'title';
       for (let pi = 0; pi < state.players.length; pi++) {
         const pl = state.players[pi];
         if (pl.ship.alive || pl.ship.hyperspaceCloakMs > 0) {
           if (!visibleInDeathmatchView(pl.ship.pos.x, pl.ship.pos.y, pl.ship.radius + 80)) continue;
           drawShield(ctx, pl.ship, now, state.elapsed);
-          // Tint each ship by its player colour on a shared screen so two pilots
-          // tell their ships apart; solo / large arenas keep the skin colour.
-          drawShip(ctx, pl.ship, now, state.elapsed, idleSway, false, tagPlayers ? PLAYER_COLOURS[pi % PLAYER_COLOURS.length] : undefined);
-          if (tagPlayers) drawPlayerTag(ctx, pl.ship, pi);
+          drawShip(ctx, pl.ship, now, state.elapsed, idleSway, false, tintPlayers ? PLAYER_COLOURS[pi % PLAYER_COLOURS.length] : undefined);
         }
       }
       if (deathmatchRun && dx === 0 && dy === 0) {

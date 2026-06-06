@@ -1,6 +1,11 @@
-/** Soak test: Stage 2b 4-player linked-booth hybrid under injected latency.
- *  Drives input on both booths and compares canary state across them every
- *  couple of seconds — any mismatch at a shared frame is a lockstep desync. */
+/** Soak test: linked-booth coop hybrid under injected latency. Drives input on
+ *  both booths and compares canary state across them every couple of seconds —
+ *  any mismatch at a shared frame is a desync.
+ *
+ *  Defaults to the 4-ship lockstep hybrid (2 pilots/booth). Flags:
+ *    --pilots=1     1 pilot/booth → the 2-player LINK BOOTHS default (slots 0,1)
+ *    --rollback=1   run on rollback netcode instead of lockstep
+ *  e.g. the new default booth link:  pnpm test:booth:soak --pilots=1 --rollback=1 */
 import { chromium } from 'playwright';
 import { spawn, type ChildProcess } from 'node:child_process';
 
@@ -8,6 +13,13 @@ const VITE_PORT = 5180;
 const BROKER_PORT = 8788;
 const VITE = `http://localhost:${VITE_PORT}`;
 const DURATION_MS = 60_000;
+const arg = (k: string): string | undefined => process.argv.find((a) => a.startsWith(`--${k}=`))?.split('=')[1];
+const PILOTS = Math.max(1, Math.min(2, parseInt(arg('pilots') || '2', 10) || 2)); // pilots per booth
+const ROLLBACK = arg('rollback') === '1' || process.argv.includes('--rollback');
+const PLAYERS = PILOTS * 2;          // total ships across both booths
+const B2_SLOT = PILOTS;              // Booth 2's primary slot (1 when 1/booth, 2 when 2/booth)
+const ownedFrom = (base: number): string => Array.from({ length: PILOTS }, (_, i) => base + i).join(',');
+const NETCODE = ROLLBACK ? 'rollback' : 'lockstep';
 const safe = async <T>(fn: () => Promise<T>, dflt: T): Promise<T> => { try { return await fn(); } catch { return dflt; } };
 const ok = (l: string, c: boolean, x = '') => console.log(`${c ? 'PASS' : 'FAIL'}  ${l}${x ? '  · ' + x : ''}`);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -24,8 +36,8 @@ try {
 
   const link = 'praguesoak';
   const peer = `ws://localhost:${BROKER_PORT}/?s=${link}&r=peer`;
-  const url = (slot: number, owned: string, _booth: number) =>
-    `${VITE}/?peer=${encodeURIComponent(peer)}&session=${link}&slot=${slot}&localSlots=${owned}&players=4&mode=coop-campaign&desync-hunt=1`;
+  const url = (slot: number, owned: string) =>
+    `${VITE}/?peer=${encodeURIComponent(peer)}&session=${link}&slot=${slot}&localSlots=${owned}&players=${PLAYERS}&mode=coop-campaign&desync-hunt=1${ROLLBACK ? '&rollback=1' : ''}`;
 
   const browser = await chromium.launch();
   const p1 = await (await browser.newContext({ viewport: { width: 900, height: 560 } })).newPage();
@@ -34,14 +46,14 @@ try {
   for (const [pg, tag] of [[p1, 'B1'], [p2, 'B2']] as const) pg.on('pageerror', (e) => errs.push(`${tag} ${e.message}`));
 
   await Promise.all([
-    p1.goto(url(0, '0,1', 1), { waitUntil: 'domcontentloaded' }),
-    p2.goto(url(2, '2,3', 2), { waitUntil: 'domcontentloaded' }),
+    p1.goto(url(0, ownedFrom(0)), { waitUntil: 'domcontentloaded' }),
+    p2.goto(url(B2_SLOT, ownedFrom(B2_SLOT)), { waitUntil: 'domcontentloaded' }),
   ]);
 
-  const reach = async (pg: typeof p1) => { try { await pg.waitForFunction(() => { const s = (window as any).__pallasiteState; const pd = (window as any).__pallasitePeerDebug?.(); return s && s.players?.length === 4 && ['playing', 'wavestart', 'warp'].includes(s.phase) && pd?.active && pd.remoteLatest >= 0; }, { timeout: 25000 }); return true; } catch { return false; } };
+  const reach = async (pg: typeof p1) => { try { await pg.waitForFunction((want) => { const s = (window as any).__pallasiteState; const pd = (window as any).__pallasitePeerDebug?.(); return s && s.players?.length === want && ['playing', 'wavestart', 'warp'].includes(s.phase) && pd?.active && pd.remoteLatest >= 0; }, PLAYERS, { timeout: 25000 }); return true; } catch { return false; } };
   const [r1, r2] = await Promise.all([reach(p1), reach(p2)]);
-  ok('both booths reach 4-player coop', r1 && r2);
-  if (!r1 || !r2) throw new Error('did not reach 4-player coop');
+  ok(`both booths reach ${PLAYERS}-player coop (${NETCODE})`, r1 && r2);
+  if (!r1 || !r2) throw new Error(`did not reach ${PLAYERS}-player coop`);
 
   // Drive the primary pilot on each booth (slot 0 / slot 2). The 2nd local
   // slot has no input routing yet, so it stays idle — fine for a desync soak.
@@ -67,7 +79,7 @@ try {
   const phasesSeen = new Set<string>();
 
   while (Date.now() - start < DURATION_MS) {
-    await Promise.all([drive(p1, 0, tick), drive(p2, 2, tick)]);
+    await Promise.all([drive(p1, 0, tick), drive(p2, B2_SLOT, tick)]);
     tick++;
     await sleep(250);
     if (tick % 8 === 0) {                 // ~every 2s
@@ -92,7 +104,7 @@ try {
   ok('stalls bounded under latency', maxStall < 180, `max ${maxStall} frames`);
   ok('frame gap stays in lockstep window', maxGap < 220, `max ${maxGap} frames`);
   ok('progressed into live play', phasesSeen.has('playing'), `phases ${[...phasesSeen].join(',')}, reached wave ${maxWave}`);
-  ok('still 4-player at the end', !!(fs1 && fs2 && fs1.players === 4 && fs2.players === 4), JSON.stringify([fs1, fs2]));
+  ok(`still ${PLAYERS}-player at the end`, !!(fs1 && fs2 && fs1.players === PLAYERS && fs2.players === PLAYERS), JSON.stringify([fs1, fs2]));
   if (errs.length) console.log('   page errors:', errs.slice(0, 4).join(' | '));
   await browser.close();
 } finally {

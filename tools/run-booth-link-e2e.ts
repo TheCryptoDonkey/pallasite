@@ -1,8 +1,10 @@
 /**
  * Booth cross-booth link e2e — the input paths a hook-driven soak can't reach.
  *
- * Part 1: the booth lobby's LINK BOOTHS button builds the correct 4-player
- *         hybrid launch URL (Booth 1 owns slots 0,1 · Booth 2 owns 2,3).
+ * Part 1: the booth lobby's LINK BOOTHS button builds the correct launch URL —
+ *         the 1-pilot-per-booth default (2-player rollback coop: Booth 1 → slot
+ *         0, Booth 2 → slot 1) AND the ?pilots=2,2 four-ship override (Booth 1
+ *         owns 0,1 · Booth 2 owns 2,3).
  * Part 2: REAL keyboard (Booth 1) + a gamepad (Booth 2), driven through the
  *         actual keydown handler and gamepad poll, route into the lockstep
  *         mirrors, propagate, and stay deterministic — regression cover for the
@@ -35,27 +37,42 @@ try {
   ok('vite up', await waitHttp(`${VITE}/`, 20000));
   const browser = await chromium.launch();
 
-  // ── Part 1: LINK BOOTHS → hybrid launch URL ────────────────────────────
-  for (const booth of [1, 2] as const) {
+  // ── Part 1: LINK BOOTHS → launch URL ───────────────────────────────────
+  // Drive the real lobby button (renderEventLobbyAction binds 'click') and read
+  // where it navigates — proof the lobby launches the right URL for each mode.
+  const linkBoothsUrl = async (booth: 1 | 2, pilots?: string): Promise<URL | null> => {
     const page = await (await browser.newContext({ viewport: { width: 900, height: 560 } })).newPage();
-    await page.goto(`${VITE}/?p${booth}&link=${link}`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${VITE}/?p${booth}&link=${link}${pilots ? `&pilots=${pilots}` : ''}`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => /WHO ARE YOU|BOOTH/i.test(document.body.innerText), { timeout: 15000 }).catch(() => undefined);
     // Complete guest if the login screen is up (arcade picker submits on its DONE button's pointerdown).
     if (/WHO ARE YOU/i.test(await page.evaluate(() => document.body.innerText))) {
       await page.locator('button', { hasText: /^DONE$/ }).first().dispatchEvent('pointerdown').catch(() => undefined);
       await page.waitForFunction(() => /BOOTH/i.test(document.body.innerText), { timeout: 8000 }).catch(() => undefined);
     }
-    // Click LINK BOOTHS (renderEventLobbyAction binds 'click') and read where it
-    // navigates — proof the lobby button launches the right hybrid URL.
     await page.locator('button', { hasText: /LINK BOOTHS/i }).first().click({ timeout: 5000 }).catch(() => undefined);
     await page.waitForFunction(() => location.search.includes('localSlots'), { timeout: 8000 }).catch(() => undefined);
-    const assigned = page.url();
-    const u = assigned.includes('localSlots') ? new URL(assigned) : null;
-    const base = (booth - 1) * 2;
-    ok(`Booth ${booth}: LINK BOOTHS → 4-player coop hybrid URL`,
-      !!u && u.searchParams.get('players') === '4' && u.searchParams.get('mode') === 'coop-campaign' && u.searchParams.get('localSlots') === `${base},${base + 1}` && u.searchParams.get('slot') === String(base),
-      assigned ? assigned.replace(/^[^?]*/, '') : '(no navigation captured)');
+    const u = page.url().includes('localSlots') ? new URL(page.url()) : null;
     await page.context().close();
+    return u;
+  };
+  // Default: 1 pilot per booth → 2-player rollback coop (Booth 1 = slot 0, Booth 2 = slot 1).
+  for (const booth of [1, 2] as const) {
+    const slot = booth - 1;
+    const u = await linkBoothsUrl(booth);
+    ok(`Booth ${booth}: LINK BOOTHS → 2-player rollback coop URL (1 pilot/booth default)`,
+      !!u && u.searchParams.get('players') === '2' && u.searchParams.get('mode') === 'coop-campaign'
+        && u.searchParams.get('localSlots') === `${slot}` && u.searchParams.get('slot') === String(slot)
+        && u.searchParams.get('rollback') === '1',
+      u ? u.search : '(no navigation captured)');
+  }
+  // Override: ?pilots=2,2 → 4-ship hybrid (Booth 1 owns 0,1 · Booth 2 owns 2,3).
+  for (const booth of [1, 2] as const) {
+    const base = (booth - 1) * 2;
+    const u = await linkBoothsUrl(booth, '2,2');
+    ok(`Booth ${booth}: LINK BOOTHS ?pilots=2,2 → 4-ship hybrid URL`,
+      !!u && u.searchParams.get('players') === '4' && u.searchParams.get('mode') === 'coop-campaign'
+        && u.searchParams.get('localSlots') === `${base},${base + 1}` && u.searchParams.get('slot') === String(base),
+      u ? u.search : '(no navigation captured)');
   }
 
   // ── Part 2: real keyboard + gamepad input, deterministic ───────────────
