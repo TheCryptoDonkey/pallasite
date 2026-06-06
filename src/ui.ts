@@ -1531,20 +1531,23 @@ export function renderBoothLobby(state: GameState, booth: number): void {
     });
   }, 'compact');
 
-  // LINK BOOTHS — cross-booth co-op, up to TWO pilots per booth (four ships,
-  // one campaign) over the multi-slot lockstep. Each booth owns a fixed
-  // two-slot region (Booth 1 → 0,1; Booth 2 → 2,3) so no slot is ever unowned
-  // (an empty region slot would stall the whole session). Shared link session
-  // (default 'praguebooths', override ?link=<code>); ?pilots=N,M (set
-  // identically on both booths) sets 1 or 2 pilots each. Built directly because
-  // coop-campaign hard-codes 2 players in the URL builder.
+  // LINK BOOTHS — cross-booth co-op, ONE pilot per booth by default (two ships,
+  // one campaign): Booth 1 → slot 0, Booth 2 → slot 1, a true two-human peer
+  // link. Each booth owns its slot region so no slot is ever unowned (an empty
+  // region slot would stall the whole session). Runs on rollback netcode
+  // (instant local ship, predicted remote) — the booth is the place to prove it;
+  // ?rollback=0 on the lobby URL drops back to lockstep as an escape hatch.
+  // Shared link session (default 'praguebooths', override ?link=<code>);
+  // ?pilots=N,M (set identically on both booths) opts up to 2 pilots each (four
+  // ships) for couch-at-each-booth. Built directly because coop-campaign
+  // hard-codes 2 players in the URL builder.
   renderEventLobbyAction(extras, 'LINK BOOTHS', 'Team up with the other Prague booth — one campaign.', () => {
     void audio.unlockAudio();
     tryEnterFullscreen();
     const q = new URLSearchParams(window.location.search);
     const link = (q.get('link') || '').replace(/[^a-z0-9]/gi, '').slice(0, 32) || 'praguebooths';
-    const counts = (q.get('pilots') || '2,2').split(',').map(n => Math.max(1, Math.min(2, parseInt(n, 10) || 2)));
-    const b1 = counts[0] ?? 2, b2 = counts[1] ?? 2;
+    const counts = (q.get('pilots') || '1,1').split(',').map(n => Math.max(1, Math.min(2, parseInt(n, 10) || 1)));
+    const b1 = counts[0] ?? 1, b2 = counts[1] ?? 1;
     const offset = booth === 1 ? 0 : b1;
     const myCount = booth === 1 ? b1 : b2;
     const owned = Array.from({ length: myCount }, (_, i) => offset + i).join(',');
@@ -1555,6 +1558,8 @@ export function renderBoothLobby(state: GameState, booth: number): void {
       localSlots: owned,
       players: String(b1 + b2),
       mode: 'coop-campaign',
+      // Rollback on by default for the booth link; ?rollback=0 falls back to lockstep.
+      rollback: q.get('rollback') === '0' ? '0' : '1',
     });
     window.location.assign(`${window.location.origin}/?${params.toString()}&p${booth}=1`);
   }, 'compact');
