@@ -33,6 +33,18 @@ export function getDisplayMode(): DisplayMode {
     const d = document as Document & { webkitFullscreenElement?: Element };
     if (d.fullscreenElement || d.webkitFullscreenElement) return 'modern';
   }
+  // Browser/OS fullscreen (F11) and chromium --kiosk are a *window state*, not
+  // the JS Fullscreen API — `document.fullscreenElement` is null for them, yet
+  // they report `display-mode: fullscreen`. The on-site booth runs --kiosk; when
+  // PLAY enters the JS Fullscreen API and the player then hits Esc, only that
+  // JS-API layer exits while the kiosk window stays fullscreen. Without this,
+  // getDisplayMode would fall to the desktop 'retro' default and the canvas would
+  // collapse to the centred 1280×720 letterbox box. Keying off display-mode keeps
+  // any fullscreen booth modern across that Esc — and needs no URL flag, so it
+  // also covers a kiosk launched at a param-less URL.
+  if (typeof window !== 'undefined' && window.matchMedia?.('(display-mode: fullscreen)')?.matches) {
+    return 'modern';
+  }
   // 600bn Sanctum always uses modern (full-viewport, no retro letterbox)
   // regardless of device or saved pref — the conference deploy is
   // designed around the modern aspect, photoreal textures, etc.
