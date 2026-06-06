@@ -478,6 +478,76 @@ export async function postHeartbeat(
   }
 }
 
+export type SoloScoreResult =
+  | { ok: true; id: string; published: { ok: number; total: number } }
+  | { ok: false; error: string; detail?: string };
+
+export interface SoloScoreInput {
+  score: number;
+  wave: number;
+  duration_ms: number;
+  /** Unique per-run id (e.g. String(runStartedAt)) — widens the kind 30762
+   *  d-tag so each run persists as its own addressable event. */
+  run_id: string;
+  started_at?: number;
+  finished_at?: number;
+  mode?: RunMode;
+  room?: 'main' | '600bn';
+  cheated?: boolean;
+}
+
+/**
+ * POST /api/score — game-signed solo score on every game-over, decoupled from
+ * the payout flow. The player NIP-98 auths (identity proof only); the faucet
+ * game-signs + publishes the kind 30762 (verified on Gamestr) with no payout,
+ * so scores reach the leaderboard whether or not the player claims sats.
+ *
+ * Best-effort: callers fire-and-forget. Returns `not_deployed` on 404 so a
+ * client running ahead of the faucet rollout degrades quietly.
+ */
+export async function submitSoloScore(
+  session: SignetSession,
+  input: SoloScoreInput,
+): Promise<SoloScoreResult> {
+  if (!session.signer.capabilities.canSignEvents) return { ok: false, error: 'no_signer' };
+  const url = `${location.origin}${API_BASE}/score`;
+  const bodyJson = JSON.stringify(input);
+  const payloadHash = await sha256Hex(bodyJson);
+  const authTemplate = {
+    kind: 27235,
+    created_at: Math.floor(Date.now() / 1000),
+    content: '',
+    tags: [['u', url], ['method', 'POST'], ['payload', payloadHash]],
+  };
+  let signedAuth;
+  try {
+    signedAuth = await Promise.race([
+      session.signer.signEvent(authTemplate),
+      new Promise<never>((_, reject) => { window.setTimeout(() => reject(new Error('signer-timeout')), 30_000); }),
+    ]);
+  } catch (err) {
+    return { ok: false, error: 'sign_failed', detail: err instanceof Error ? err.message : String(err) };
+  }
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/score`, {
+      method: 'POST',
+      headers: {
+        authorization: `Nostr ${utf8Base64(JSON.stringify(signedAuth))}`,
+        'content-type': 'application/json',
+      },
+      body: bodyJson,
+    });
+  } catch (err) {
+    return { ok: false, error: 'network_error', detail: err instanceof Error ? err.message : String(err) };
+  }
+  if (res.status === 404) return { ok: false, error: 'not_deployed' };
+  let data: unknown;
+  try { data = await res.json(); } catch { return { ok: false, error: 'bad_response', detail: `HTTP ${res.status}` }; }
+  if (typeof data !== 'object' || data === null) return { ok: false, error: 'bad_response' };
+  return data as SoloScoreResult;
+}
+
 export type CoopScoreResult =
   | { ok: true; published: { id: string; variant: 'individual' | 'team'; ok: number; total: number }[] }
   | { ok: false; error: string; detail?: string };
