@@ -269,7 +269,10 @@ function applyPad(state: GameState, padIndex: number, slot: number, pad: Gamepad
     // masked confirm forever (A "did nothing" while B/arrows worked). A (0) =
     // select; B (1) / View (8) / Menu (9) = back.
     const aBtn = pressed(pad, 0);
-    const bBtn = pressed(pad, 1) || pressed(pad, 8) || pressed(pad, 9);
+    // Back is B (1) ONLY — deliberately not Start/Menu/View: those are the
+    // buttons quirky pads tend to resting-report, which would both mask A and
+    // (if mapped) fire a stray Escape on menu entry.
+    const bBtn = pressed(pad, 1);
     if (aBtn && !mem.menuA) dispatchKey('Enter');
     if (bBtn && !mem.menuB) dispatchKey('Escape');
     mem.menuA = aBtn; mem.menuB = bBtn;
