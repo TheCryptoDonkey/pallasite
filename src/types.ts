@@ -782,7 +782,7 @@ export interface GameState {
    *  own Nostr/guest details at a kiosk. Display-only in Stage 1 (P1's `session`
    *  still drives signing/scoring); bridged across the couch reload via
    *  sessionStorage. null when there's no distinct P2 identity. */
-  coopIdentity2: { pubkey: string; displayName: string; profile: import('./profile.js').NostrProfile | null } | null;
+  coopIdentity2: { pubkey: string; displayName: string; profile: import('./profile.js').NostrProfile | null; session: SignetSession | null } | null;
 
   /** transient toast text */
   toast: string | null;
