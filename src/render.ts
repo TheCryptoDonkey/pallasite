@@ -4490,6 +4490,57 @@ function drawDeathmatchHudExtras(ctx: CanvasRenderingContext2D, s: GameState, w:
   ctx.restore();
 }
 
+// ── Booth player-identity HUD (avatar + name per player) ──────────────────────
+let showPlayerIdentity = false;
+/** Enable the per-player avatar+name HUD (booth / kiosk). Off for normal solo. */
+export function setShowPlayerIdentity(v: boolean): void { showPlayerIdentity = v; }
+
+const avatarImgCache = new Map<string, HTMLImageElement>();
+function avatarImage(url: string | undefined): HTMLImageElement | null {
+  if (!url) return null;
+  let img = avatarImgCache.get(url);
+  if (!img) { img = new Image(); img.decoding = 'async'; img.src = url; avatarImgCache.set(url, img); }
+  return img.complete && img.naturalWidth > 0 ? img : null;
+}
+
+function identityName(profile: import('./profile.js').NostrProfile | null | undefined, displayName: string | undefined, pubkey: string): string {
+  return profile?.display_name?.trim() || profile?.name?.trim() || (displayName && displayName.trim()) || (pubkey ? pubkey.slice(0, 8) + '…' : 'guest');
+}
+
+/** Avatar circle + name chip, anchored bottom-left (P1) or bottom-right (P2). */
+function drawIdentityChip(ctx: CanvasRenderingContext2D, x: number, baseY: number, anchor: 'left' | 'right', name: string, picture: string | undefined, colour: string): void {
+  const r = 16, gap = 8;
+  const cx = anchor === 'left' ? x + r : x - r;
+  const cy = baseY + r;
+  const img = avatarImage(picture);
+  if (img) {
+    ctx.save();
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.clip();
+    ctx.drawImage(img, cx - r, cy - r, 2 * r, 2 * r);
+    ctx.restore();
+  }
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.strokeStyle = colour; ctx.lineWidth = 2; ctx.stroke();
+  ctx.font = 'bold 15px ui-monospace, monospace';
+  ctx.fillStyle = colour; ctx.shadowColor = colour; ctx.shadowBlur = 6;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = anchor;
+  ctx.fillText(name.slice(0, 18), anchor === 'left' ? x + 2 * r + gap : x - 2 * r - gap, cy);
+  ctx.restore();
+}
+
+function drawBoothIdentities(ctx: CanvasRenderingContext2D, s: GameState, w: number, h: number, insets: SafeInsets): void {
+  if (!showPlayerIdentity) return;
+  const baseY = h - insets.bottom - 44;
+  if (s.session) {
+    drawIdentityChip(ctx, 24 + insets.left, baseY, 'left', identityName(s.profile, s.session.displayName, s.session.pubkey), s.profile?.picture, PLAYER_COLOURS[0]);
+  }
+  if (s.coopIdentity2 && s.players.length > 1) {
+    drawIdentityChip(ctx, w - 24 - insets.right, baseY, 'right', identityName(s.coopIdentity2.profile, s.coopIdentity2.displayName, s.coopIdentity2.pubkey), s.coopIdentity2.profile?.picture, PLAYER_COLOURS[1]);
+  }
+}
+
 function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   const p0 = s.players[0];
   ctx.save();
@@ -4709,6 +4760,10 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
   // surfaced has been unbundled while the real classic-Defender mode
   // is built. Wave / Score / Sats etc. above are enough for the
   // interim wide-arena visual demo.
+
+  // Booth: signed-in player avatar + name in the bottom corners.
+  const h = renderMode.kind === 'modern' ? renderMode.vh : WORLD_H;
+  drawBoothIdentities(ctx, s, w, h, insets);
 
   ctx.restore();
 }
