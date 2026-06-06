@@ -4051,7 +4051,7 @@ export function updateGame(s: GameState): void {
       if (p.targetHeading !== null) {
         // Heading-mode (joystick): rotate ship smoothly toward the stick angle
         // at a fixed angular rate. Snaps when within one frame's worth of rate.
-        const HEADING_LERP_RATE = 8;  // rad/s — feels responsive without jitter
+        const HEADING_LERP_RATE = 20;  // rad/s — track the stick tightly so the ship points where you push. Was 8: too slow, the ship lagged ~45° behind the stick during play and felt imprecise to aim.
         let diff = p.targetHeading - p.ship.rot;
         while (diff >  Math.PI) diff -= 2 * Math.PI;
         while (diff < -Math.PI) diff += 2 * Math.PI;
