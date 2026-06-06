@@ -14,7 +14,7 @@ import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, r
 import { postHeartbeat } from './faucet.js';
 import { currentMode, getStoredMode, isStoredDefenderMode, type RunMode } from './mode.js';
 import { deathmatchActive } from './deathmatch.js';
-import { pollGamepads } from './gamepads.js';
+import { pollGamepads, getPadFlightMode, getPadAutoThrust } from './gamepads.js';
 import {
   startStreamSession,
   publishStreamFrame,
@@ -247,6 +247,13 @@ let applyTraceCount = 0;
 
 /** True when ?couch=1 is present — enables two-player local co-op. */
 const couchMode = new URLSearchParams(window.location.search).has('couch');
+
+/** Booth contexts (couch on a TV, or a ?p1/?p2 kiosk / linked booth) are
+ *  walk-up — force the pickup-and-go pad scheme regardless of the saved
+ *  preference. Everywhere else honours the player's Settings choice. */
+const boothPickupAndGo = couchMode
+  || new URLSearchParams(window.location.search).has('p1')
+  || new URLSearchParams(window.location.search).has('p2');
 
 // Remote-peer duel mode: `?peer=ws://broker.host/path&session=abc&slot=0|1`.
 // Both clients open the same session URL with mirrored slot numbers; the
@@ -1922,6 +1929,8 @@ function loop(now: number): void {
   pollGamepads(state, {
     pilotSlots: localPilotSlots,
     peerActive: isPeerActive(),
+    flightMode: boothPickupAndGo ? 'flydirect' : getPadFlightMode(),
+    autoThrust: !boothPickupAndGo && getPadAutoThrust(),
     localKeys,
     localHeading,
     localThrust,

@@ -9,6 +9,7 @@ import type { DeathmatchRules, GameState } from './types.js';
 import { WAVE_LORE, gameOverArcLine } from './types.js';
 import { getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRelay, removeRelay, resetRelays } from './relays.js';
 import { getTouchMode, setTouchMode, type TouchInputMode } from './touch.js';
+import { getPadFlightMode, setPadFlightMode, getPadAutoThrust, setPadAutoThrust, getPadBindings, setPadBinding, resetPadBindings, setPadInputSuppressed, PAD_ACTIONS, PAD_BUTTON_NAMES, type PadFlightMode, type PadAction } from './gamepads.js';
 import { getDisplayMode, setDisplayMode, type DisplayMode } from './display.js';
 import {
   VISUAL_CATEGORIES,
@@ -259,23 +260,60 @@ interface OnboardingCard {
   body: string;
 }
 
-const ONBOARDING_CARDS: readonly OnboardingCard[] = [
-  {
-    step: '1 / 3',
-    title: 'DRIFT',
-    body: 'Rotate ◀ ▶ to face. Thrust ▲ to drift. There is no friction here. Mass keeps moving until you point the other way.',
+type InputKind = 'gamepad' | 'touch' | 'keyboard';
+
+/** Which control hints to show. A connected/awake pad wins (booth kiosks drive
+ *  the menu with it, so it is always awake by the time onboarding shows); then
+ *  a coarse pointer means touch; otherwise keyboard. */
+function detectInputKind(): InputKind {
+  try {
+    const pads = typeof navigator !== 'undefined' && navigator.getGamepads ? navigator.getGamepads() : [];
+    for (const p of pads) if (p && p.connected) return 'gamepad';
+  } catch { /* ignore */ }
+  const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+  if (coarse || (typeof window !== 'undefined' && 'ontouchstart' in window)) return 'touch';
+  return 'keyboard';
+}
+
+/** Per-input control copy for the first two onboarding cards. Each teaches
+ *  flying (DRIFT) then firing + the two specials (FIRE) in that input's terms. */
+const CONTROL_COPY: Record<InputKind, { drift: string; fire: string }> = {
+  gamepad: {
+    drift: 'Push the left stick to fly — the ship points where you push and drifts on. Squeeze the right trigger for an extra burst. There is no friction here; you keep moving until you turn.',
+    fire: 'Left trigger or A fires — or push the right stick to aim and auto-fire. Right bumper raises a shield; left bumper jumps to hyperspace when you are cornered. Quick consecutive kills chain a multiplier up to 5×. Hunt the gold rocks for sats.',
   },
-  {
-    step: '2 / 3',
-    title: 'FIRE',
-    body: 'Space to fire. Quick consecutive kills chain a multiplier up to 5×. Pallasite rocks drop sats. Hunt the gold.',
+  touch: {
+    drift: 'Drag the stick to fly — the ship points where you push, then drifts on. There is no friction here; you keep moving until you turn.',
+    fire: 'Tap FIRE to shoot. ⛨ raises a shield; ⚡ jumps to hyperspace when you are cornered. Quick consecutive kills chain a multiplier up to 5×. Hunt the gold rocks for sats.',
   },
-  {
-    step: '3 / 3',
-    title: 'BANK',
-    body: 'Survive each wave to bank what you earned. Twenty-five waves to the horizon. Sign in with Nostr to bank real sats and stake your name on the leaderboard.',
+  keyboard: {
+    drift: 'Rotate ◀ ▶ to face. Thrust ▲ to drift. There is no friction here; mass keeps moving until you point the other way.',
+    fire: 'Space to fire. ▼ raises a shield; Shift jumps to hyperspace when you are cornered. Quick consecutive kills chain a multiplier up to 5×. Hunt the gold rocks for sats.',
   },
-];
+};
+
+/** Build the three onboarding cards with control hints for the live input. */
+function buildOnboardingCards(): OnboardingCard[] {
+  const kind = detectInputKind();
+  const c = CONTROL_COPY[kind];
+  // The default gamepad copy describes pickup-and-go (Point & Fly); swap in the
+  // wording for whichever scheme is actually selected so the card matches the pad.
+  let drift = c.drift;
+  if (kind === 'gamepad') {
+    const m = getPadFlightMode();
+    if (m === 'throttle') drift = 'Point the left stick to aim — the ship turns to face it. Squeeze the right trigger to thrust that way. There is no friction here; you drift on until you turn.';
+    else if (m === 'classic') drift = 'Tap the d-pad left or right to rotate, and squeeze the right trigger (or d-pad up) to thrust. There is no friction here; you drift on until you turn.';
+  }
+  return [
+    { step: '1 / 3', title: 'DRIFT', body: drift },
+    { step: '2 / 3', title: 'FIRE', body: c.fire },
+    {
+      step: '3 / 3',
+      title: 'BANK',
+      body: 'Survive each wave to bank what you earned. Twenty-five waves to the horizon. Sign in with Nostr to bank real sats and stake your name on the leaderboard.',
+    },
+  ];
+}
 
 /**
  * First-run cinematic. Three brand-voice cards then a BEGIN button that
@@ -292,6 +330,7 @@ function renderOnboarding(onBegin: () => void): void {
   const overlay = el('div', { className: 'overlay', parent: root, attrs: { 'data-onboarding': 'open' } });
   setupOverlayArrowNav(overlay);
 
+  const cards = buildOnboardingCards();
   let idx = 0;
 
   const stepEl = el('p', { parent: overlay });
@@ -318,16 +357,16 @@ function renderOnboarding(onBegin: () => void): void {
   };
 
   const renderCard = (): void => {
-    const card = ONBOARDING_CARDS[idx];
+    const card = cards[idx];
     stepEl.textContent = `STEP ${card.step}`;
     titleEl.textContent = card.title;
     bodyEl.textContent = card.body;
-    const isLast = idx === ONBOARDING_CARDS.length - 1;
+    const isLast = idx === cards.length - 1;
     nextBtn.textContent = isLast ? 'BEGIN · IGNITE' : 'NEXT ▶';
   };
 
   nextBtn.addEventListener('click', () => {
-    if (idx === ONBOARDING_CARDS.length - 1) {
+    if (idx === cards.length - 1) {
       finish();
     } else {
       idx += 1;
@@ -8790,6 +8829,136 @@ export function renderSettings(onBack: () => void): void {
   // Ship skins -- earned cosmetics drawn in render.ts. Locked entries show
   // their unlock criterion; unlocked ones are click-to-select.
   renderSkinsPanel(overlay);
+
+  // Gamepad flight model — pickup-and-go (push the stick to fly) vs aim +
+  // throttle (stick aims, right trigger throttles). The booth forces
+  // pickup-and-go at runtime; this is the preference everywhere else.
+  const padHeading = el('p', { parent: overlay, text: 'GAMEPAD' });
+  padHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
+
+  const padPanel = el('div', { parent: overlay });
+  padPanel.style.cssText = 'display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap;';
+  const padOpts: ReadonlyArray<{ value: PadFlightMode; label: string; hint: string }> = [
+    { value: 'flydirect', label: 'POINT & FLY',    hint: 'Pickup-and-go — push the left stick to aim and fly together' },
+    { value: 'throttle',  label: 'AIM + THROTTLE', hint: 'Left stick aims, right trigger throttles — hold a firing line' },
+    { value: 'classic',   label: 'CLASSIC',        hint: 'Arcade rotate — d-pad turns (stick too), right trigger or d-pad up thrusts' },
+  ];
+  const padHint = el('p', { parent: overlay });
+  padHint.style.cssText = 'font-size:0.75rem;color:rgba(180,140,255,0.65);letter-spacing:0.04em;margin:0;height:1em;text-align:center;';
+
+  const padBtns = new Map<PadFlightMode, HTMLButtonElement>();
+  function paintPad(): void {
+    const cur = getPadFlightMode();
+    for (const [v, btn] of padBtns) {
+      const on = v === cur;
+      btn.style.cssText = [
+        'background:' + (on ? 'rgba(88,255,88,0.20)' : 'transparent'),
+        'border:2px solid ' + (on ? '#58ff58' : 'rgba(180,140,255,0.4)'),
+        'color:' + (on ? '#58ff58' : 'rgba(220,210,255,0.85)'),
+        "font-family:'VT323',ui-monospace,monospace",
+        'font-size:1rem', 'padding:6px 18px', 'letter-spacing:0.18em',
+        'cursor:pointer', 'border-radius:6px', 'min-width:104px',
+        on ? 'box-shadow:0 0 12px rgba(88,255,88,0.3);text-shadow:0 0 6px rgba(88,255,88,0.55)' : '',
+      ].filter(Boolean).join(';');
+    }
+    padHint.textContent = padOpts.find(o => o.value === cur)?.hint ?? '';
+  }
+  for (const opt of padOpts) {
+    const btn = el('button', { parent: padPanel, text: opt.label });
+    padBtns.set(opt.value, btn);
+    btn.addEventListener('click', () => { setPadFlightMode(opt.value); paintPad(); });
+  }
+  paintPad();
+  const padNote = el('p', { parent: overlay, text: 'Right stick aims + auto-fires in every mode. Booth kiosks always use Point & Fly.' });
+  padNote.style.cssText = 'font-size:0.72rem;color:rgba(180,140,255,0.5);letter-spacing:0.04em;margin:2px 0 0;text-align:center;';
+
+  // Auto-thrust — accessibility (XAG-107): tap the throttle to cruise instead
+  // of holding the trigger. Tap again to stop.
+  const autoWrap = el('div', { parent: overlay });
+  autoWrap.style.cssText = 'display:flex;justify-content:center;align-items:center;gap:14px;margin-top:6px;';
+  const autoLab = el('span', { parent: autoWrap, text: 'AUTO-THRUST' });
+  autoLab.style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
+  const autoBtn = el('button', { parent: autoWrap, text: 'OFF' }) as HTMLButtonElement;
+  function paintAuto(): void {
+    const on = getPadAutoThrust();
+    autoBtn.textContent = on ? 'ON' : 'OFF';
+    autoBtn.style.cssText = [
+      'background:' + (on ? 'rgba(88,255,88,0.18)' : 'transparent'),
+      'border:2px solid ' + (on ? '#58ff58' : 'rgba(180,140,255,0.4)'),
+      'color:' + (on ? '#58ff58' : 'rgba(220,210,255,0.85)'),
+      "font-family:'VT323',ui-monospace,monospace",
+      'font-size:1rem', 'padding:6px 18px', 'letter-spacing:0.18em',
+      'cursor:pointer', 'border-radius:6px', 'min-width:64px',
+    ].join(';');
+  }
+  paintAuto();
+  autoBtn.addEventListener('click', () => { setPadAutoThrust(!getPadAutoThrust()); paintAuto(); });
+  const autoNote = el('p', { parent: overlay, text: 'Tap the thrust trigger to cruise, tap again to stop — no holding.' });
+  autoNote.style.cssText = 'font-size:0.72rem;color:rgba(180,140,255,0.5);letter-spacing:0.04em;margin:2px 0 0;text-align:center;';
+
+  // Remap buttons — accessibility (XAG-107): full in-game rebinding. Rotate/aim
+  // live on the sticks (the GAMEPAD mode above); these are the action buttons.
+  const remapHeading = el('p', { parent: overlay, text: 'REMAP BUTTONS' });
+  remapHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:8px 0 -4px;';
+  const remapPanel = el('div', { parent: overlay });
+  remapPanel.style.cssText = 'display:flex;flex-direction:column;gap:6px;min-width:340px;max-width:480px;width:100%;';
+  const ACTION_LABELS: Record<PadAction, string> = { fire: 'FIRE', thrust: 'THRUST', shield: 'SHIELD', hyperspace: 'HYPERSPACE', pause: 'PAUSE' };
+  let capturing: PadAction | null = null;
+  let captureBaseline: boolean[] = [];
+  const remapBtns = new Map<PadAction, HTMLButtonElement>();
+  const bindingLabel = (a: PadAction): string =>
+    getPadBindings()[a].map((i) => PAD_BUTTON_NAMES[i] ?? ('#' + i)).join(' / ') || '—';
+  function paintRemap(): void {
+    for (const a of PAD_ACTIONS) {
+      const btn = remapBtns.get(a);
+      if (!btn) continue;
+      const live = capturing === a;
+      btn.textContent = live ? 'PRESS A BUTTON…' : bindingLabel(a);
+      btn.style.color = live ? '#ffd84a' : 'rgba(220,210,255,0.9)';
+      btn.style.borderColor = live ? '#ffd84a' : 'rgba(180,140,255,0.4)';
+    }
+  }
+  function padSnapshot(): boolean[] {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (const p of pads) if (p && p.connected) return Array.from(p.buttons, (b) => b.pressed || b.value > 0.5);
+    return [];
+  }
+  function stopCapture(): void { capturing = null; setPadInputSuppressed(false); paintRemap(); }
+  function captureLoop(): void {
+    if (!capturing || !remapPanel.isConnected) { stopCapture(); return; }
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    let pad: Gamepad | null = null;
+    for (const p of pads) if (p && p.connected) { pad = p; break; }
+    if (pad) {
+      for (let i = 0; i < pad.buttons.length; i++) {
+        const down = pad.buttons[i].pressed || pad.buttons[i].value > 0.5;
+        if (down && !captureBaseline[i]) { setPadBinding(capturing, [i]); stopCapture(); return; }
+      }
+    }
+    requestAnimationFrame(captureLoop);
+  }
+  for (const a of PAD_ACTIONS) {
+    const row = el('div', { parent: remapPanel });
+    row.style.cssText = 'display:grid;grid-template-columns:120px 1fr;gap:12px;align-items:center;';
+    el('label', { parent: row, text: ACTION_LABELS[a] })
+      .style.cssText = 'font-size:0.82rem;color:rgba(180,140,255,0.95);letter-spacing:0.16em;';
+    const btn = el('button', { parent: row, text: bindingLabel(a) }) as HTMLButtonElement;
+    btn.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:0.95rem;padding:6px 12px;letter-spacing:0.1em;background:rgba(15,8,32,0.5);color:rgba(220,210,255,0.9);border:2px solid rgba(180,140,255,0.4);border-radius:6px;cursor:pointer;";
+    btn.addEventListener('click', () => {
+      if (capturing) stopCapture();
+      capturing = a;
+      captureBaseline = padSnapshot();
+      setPadInputSuppressed(true);
+      paintRemap();
+      requestAnimationFrame(captureLoop);
+    });
+    remapBtns.set(a, btn);
+  }
+  const resetBtn = el('button', { parent: remapPanel, text: 'RESET TO DEFAULTS' });
+  resetBtn.style.cssText = "align-self:center;margin-top:4px;font-family:'VT323',ui-monospace,monospace;font-size:0.9rem;padding:6px 16px;letter-spacing:0.12em;background:transparent;color:rgba(255,120,120,0.9);border:2px solid rgba(255,120,120,0.5);border-radius:6px;cursor:pointer;";
+  resetBtn.addEventListener('click', () => { resetPadBindings(); stopCapture(); });
+  const remapNote = el('p', { parent: overlay, text: 'Rotate / aim stay on the sticks (set by the GAMEPAD mode above).' });
+  remapNote.style.cssText = 'font-size:0.72rem;color:rgba(180,140,255,0.5);letter-spacing:0.04em;margin:2px 0 0;text-align:center;';
 
   // Touch input mode — only meaningful on touch devices but harmless to show
   // on desktop (it just doesn't apply until a touch event reveals controls).

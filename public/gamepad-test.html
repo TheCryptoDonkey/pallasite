@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Pallasite · Controller Test</title>
+<style>
+  :root { --bg:#03060d; --fg:#dcd2ff; --dim:#8c78ff; --gold:#ffd84a; --grn:#58ff58; --cyan:#5bd0ff; --red:#ff6b6b; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font-family:ui-monospace,Menlo,Consolas,monospace; -webkit-font-smoothing:antialiased; }
+  body { padding:18px clamp(12px,4vw,40px); }
+  h1 { font-size:1.1rem; letter-spacing:0.32em; color:var(--dim); margin:0 0 4px; font-weight:600; }
+  .sub { font-size:0.78rem; color:rgba(220,210,255,0.55); margin:0 0 16px; letter-spacing:0.06em; }
+  .status { font-size:0.85rem; padding:10px 14px; border:1px solid rgba(140,120,255,0.3); border-radius:6px;
+    background:rgba(140,120,255,0.06); margin-bottom:16px; line-height:1.5; }
+  .status b { color:var(--gold); }
+  .wrap { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:18px; align-items:start; }
+  .card { border:1px solid rgba(140,120,255,0.22); border-radius:8px; padding:14px; background:rgba(8,12,26,0.5); }
+  .card h2 { font-size:0.72rem; letter-spacing:0.22em; color:var(--dim); margin:0 0 10px; }
+  canvas { display:block; width:100%; height:auto; background:rgba(2,5,13,0.6); border-radius:6px; }
+  .read { font-size:0.82rem; line-height:1.7; margin-top:10px; }
+  .read span { color:var(--gold); }
+  .verdict { margin-top:8px; font-size:0.82rem; font-weight:600; }
+  .verdict.good { color:var(--grn); } .verdict.bad { color:var(--red); } .verdict.wait { color:rgba(220,210,255,0.5); }
+  .bars { display:flex; gap:14px; }
+  .bar { flex:1; }
+  .bar .track { height:14px; border:1px solid rgba(140,120,255,0.3); border-radius:7px; overflow:hidden; background:rgba(2,5,13,0.6); }
+  .bar .fill { height:100%; width:0%; background:linear-gradient(90deg,var(--cyan),var(--grn)); transition:width 40ms linear; }
+  .bar label { font-size:0.72rem; color:rgba(220,210,255,0.6); display:flex; justify-content:space-between; margin-bottom:4px; }
+  .btns { display:grid; grid-template-columns:repeat(auto-fill,minmax(118px,1fr)); gap:7px; }
+  .btn { border:1px solid rgba(140,120,255,0.25); border-radius:5px; padding:7px 8px; font-size:0.72rem;
+    background:rgba(2,5,13,0.5); transition:background 60ms,border-color 60ms,color 60ms; line-height:1.35; }
+  .btn .ix { color:rgba(220,210,255,0.4); font-size:0.66rem; }
+  .btn .act { display:block; font-weight:600; }
+  .btn.on { background:var(--grn); color:#021; border-color:var(--grn); }
+  .btn.on .ix { color:rgba(0,30,10,0.55); }
+  a.back { color:var(--dim); font-size:0.8rem; text-decoration:none; border-bottom:1px dotted; }
+</style>
+</head>
+<body>
+  <h1>CONTROLLER TEST</h1>
+  <p class="sub">Pallasite · press any button or nudge a stick to wake the pad · <a class="back" href="/">back to game</a></p>
+  <div class="status" id="status">No controller detected yet — <b>press a button</b> on the pad.</div>
+
+  <div class="wrap">
+    <div class="card">
+      <h2>LEFT STICK · AIM</h2>
+      <canvas id="lstick" width="240" height="240"></canvas>
+      <div class="read">x <span id="lx">0.00</span> · y <span id="ly">0.00</span> · mag <span id="lm">0.00</span><br>angle <span id="la">—</span></div>
+      <div class="verdict wait" id="lverdict">Roll the stick slowly around its full rim to test…</div>
+    </div>
+
+    <div class="card">
+      <h2>RIGHT STICK · (unused in game)</h2>
+      <canvas id="rstick" width="240" height="240"></canvas>
+      <div class="read">x <span id="rx">0.00</span> · y <span id="ry">0.00</span> · mag <span id="rm">0.00</span><br>angle <span id="ra">—</span></div>
+    </div>
+
+    <div class="card">
+      <h2>TRIGGERS</h2>
+      <div class="bars">
+        <div class="bar"><label>LT · FIRE <span id="ltv">0.00</span></label><div class="track"><div class="fill" id="ltf"></div></div></div>
+        <div class="bar"><label>RT · THRUST <span id="rtv">0.00</span></label><div class="track"><div class="fill" id="rtf"></div></div></div>
+      </div>
+      <h2 style="margin-top:18px">BUTTONS · game action</h2>
+      <div class="btns" id="btns"></div>
+    </div>
+  </div>
+
+<script>
+// Game button map (Xbox / standard) — kept in sync with src/gamepads.ts.
+var ACTIONS = {
+  0:'A · Fire', 1:'B · Shield', 2:'X · Hyperspace', 3:'Y · Pause',
+  4:'LB · Hyperspace', 5:'RB · Shield', 6:'LT · Fire', 7:'RT · Thrust',
+  8:'View', 9:'Start · Pause', 10:'L3', 11:'R3',
+  12:'D-pad ↑', 13:'D-pad ↓', 14:'D-pad ←', 15:'D-pad →', 16:'Guide'
+};
+var $ = function(id){ return document.getElementById(id); };
+
+// Build the button grid lazily once we know the button count.
+var btnEls = [];
+function buildButtons(n){
+  if (btnEls.length === n) return;
+  var box = $('btns'); box.innerHTML = ''; btnEls = [];
+  for (var i=0;i<n;i++){
+    var d = document.createElement('div');
+    d.className = 'btn';
+    d.innerHTML = '<span class="ix">'+i+'</span><span class="act">'+(ACTIONS[i]||('btn '+i))+'</span>';
+    box.appendChild(d); btnEls.push(d);
+  }
+}
+
+// Stick canvas with a fading position trail — a smooth analog stick traces a
+// clean circle; a stick quantised to 8 directions snaps the dot to an
+// octagon's points (the "45°" feel).
+function makeStick(canvas){
+  var ctx = canvas.getContext('2d');
+  var W = canvas.width, H = canvas.height, cx = W/2, cy = H/2, R = W/2 - 16;
+  var trail = [];
+  return function(x, y){
+    ctx.clearRect(0,0,W,H);
+    // rings + 45° spokes (reference for the octagon test)
+    ctx.strokeStyle = 'rgba(140,120,255,0.18)';
+    ctx.beginPath(); ctx.arc(cx,cy,R,0,Math.PI*2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx,cy,R*0.3,0,Math.PI*2); ctx.stroke();
+    ctx.strokeStyle = 'rgba(140,120,255,0.10)';
+    for (var k=0;k<8;k++){ var a=k*Math.PI/4; ctx.beginPath(); ctx.moveTo(cx,cy);
+      ctx.lineTo(cx+Math.cos(a)*R, cy+Math.sin(a)*R); ctx.stroke(); }
+    // crosshair
+    ctx.strokeStyle='rgba(140,120,255,0.25)';
+    ctx.beginPath(); ctx.moveTo(cx-R,cy); ctx.lineTo(cx+R,cy); ctx.moveTo(cx,cy-R); ctx.lineTo(cx,cy+R); ctx.stroke();
+    var px = cx + x*R, py = cy + y*R;
+    if (Math.hypot(x,y) > 0.08){ trail.push([px,py]); if (trail.length>140) trail.shift(); }
+    // trail
+    for (var t=0;t<trail.length;t++){
+      var al = t/trail.length;
+      ctx.fillStyle = 'rgba(91,208,255,'+(al*0.6).toFixed(3)+')';
+      ctx.beginPath(); ctx.arc(trail[t][0], trail[t][1], 1.6, 0, Math.PI*2); ctx.fill();
+    }
+    // live dot
+    ctx.fillStyle = '#58ff58';
+    ctx.beginPath(); ctx.arc(px,py,6,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='rgba(2,5,13,0.8)'; ctx.lineWidth=2; ctx.stroke();
+  };
+}
+var drawL = makeStick($('lstick'));
+var drawR = makeStick($('rstick'));
+
+// Smoothness analysis on the left stick: collect distinct 5° angle buckets seen
+// while the stick is pushed past half. A smooth analog stick fills most of the
+// 72 buckets; an 8-way one clusters into ~8.
+var angleBuckets = {}, sampleCount = 0;
+function analyse(x,y){
+  var mag = Math.hypot(x,y);
+  if (mag < 0.5) return;
+  sampleCount++;
+  var deg = Math.atan2(y,x)*180/Math.PI;
+  angleBuckets[Math.round(deg/5)*5] = true;
+}
+function verdict(){
+  var v = $('lverdict');
+  var n = Object.keys(angleBuckets).length;
+  if (sampleCount < 120){ v.className='verdict wait'; v.textContent='Roll the stick slowly around its full rim to test… ('+sampleCount+' samples)'; return; }
+  if (n <= 12){ v.className='verdict bad'; v.textContent='⚠ Quantised: only '+n+' distinct directions — stick is reporting ~8-way (45° steps).'; }
+  else { v.className='verdict good'; v.textContent='✓ Smooth analog: '+n+' distinct directions of 72 — continuous, not 45°-stepped.'; }
+}
+
+function fmt(v){ return (v>=0?' ':'')+v.toFixed(2); }
+function loop(){
+  var pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  var pad = null;
+  for (var i=0;i<pads.length;i++){ if (pads[i] && pads[i].connected){ pad = pads[i]; break; } }
+  if (pad){
+    $('status').innerHTML = 'Connected: <b>'+pad.id+'</b> · mapping <b>'+(pad.mapping||'(non-standard)')+'</b> · '+pad.axes.length+' axes · '+pad.buttons.length+' buttons';
+    buildButtons(pad.buttons.length);
+    var lx = pad.axes[0]||0, ly = pad.axes[1]||0, rx = pad.axes[2]||0, ry = pad.axes[3]||0;
+    drawL(lx,ly); drawR(rx,ry);
+    var lm = Math.hypot(lx,ly), rm = Math.hypot(rx,ry);
+    $('lx').textContent=fmt(lx); $('ly').textContent=fmt(ly); $('lm').textContent=lm.toFixed(2);
+    $('la').textContent = lm>0.2 ? Math.round(Math.atan2(ly,lx)*180/Math.PI)+'°' : '—';
+    $('rx').textContent=fmt(rx); $('ry').textContent=fmt(ry); $('rm').textContent=rm.toFixed(2);
+    $('ra').textContent = rm>0.2 ? Math.round(Math.atan2(ry,rx)*180/Math.PI)+'°' : '—';
+    analyse(lx,ly); verdict();
+    var lt = pad.buttons[6]?pad.buttons[6].value:0, rt = pad.buttons[7]?pad.buttons[7].value:0;
+    $('ltv').textContent=lt.toFixed(2); $('rtv').textContent=rt.toFixed(2);
+    $('ltf').style.width=(lt*100)+'%'; $('rtf').style.width=(rt*100)+'%';
+    for (var b=0;b<btnEls.length;b++){
+      var bb = pad.buttons[b];
+      var on = bb && (bb.pressed || bb.value>0.5);
+      btnEls[b].classList.toggle('on', !!on);
+    }
+  }
+  requestAnimationFrame(loop);
+}
+window.addEventListener('gamepadconnected', function(){});
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
