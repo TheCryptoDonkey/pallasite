@@ -32,7 +32,7 @@ import {
   type ActiveStreamSession,
 } from './stream-session.js';
 import { getActiveSkinId } from './skins.js';
-import { handleAuthCallback, tryRestore, sweepSignetArtefacts } from './auth.js';
+import { handleAuthCallback, tryRestore, sweepSignetArtefacts, createKioskSession } from './auth.js';
 import * as audio from './audio.js';
 import { getMusicDebugSnapshot, musicForceRefresh, musicSetTrackForState, preloadAllTracks, musicSetPaused, musicSetMuted, musicResetElements, musicWarmUpAll, currentTrackId, musicSuppressStatePlay, musicPoolActive } from './music.js';
 import { stemsTickForState } from './music-stems.js';
@@ -2680,7 +2680,21 @@ async function boot(): Promise<void> {
   // starts, and the title flips from the sign-in screen to signed-in once the
   // session lands. Every state.session reader below is null-guarded.
   void (async () => {
-    const session = (await handleAuthCallback()) ?? (await tryRestore());
+    let session = (await handleAuthCallback()) ?? (await tryRestore());
+    // Self-hosted kiosk: with a baked-in key configured and no other session,
+    // boot straight into a local signing identity so an unattended box can
+    // sign (replays, NIP-98 uploads) instead of landing auth-only. Unset in
+    // normal builds (e.g. production) — this is a no-op there.
+    if (!session) {
+      const kioskKey = import.meta.env.VITE_PALLASITE_KIOSK_NSEC;
+      if (kioskKey) {
+        try {
+          session = await createKioskSession(kioskKey);
+        } catch (err) {
+          console.warn('[kiosk] baked identity failed — falling back to the picker:', err);
+        }
+      }
+    }
     if (!session) return;
     state.session = session;
     // Kick off profile fetch — UI updates when it lands.
