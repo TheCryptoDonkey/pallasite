@@ -2948,20 +2948,19 @@ async function boot(): Promise<void> {
   // the per-frame stream tick (entity-mapping + WebSocket publish + replay
   // capture) and the 4s presence heartbeat — is bundled behind one flag.
   //
-  // On mobile this is a per-frame main-thread tax (a 60Hz setInterval plus
-  // ~10Hz entity serialisation) for little product value: almost nobody
-  // watches a random phone run live. So it defaults OFF on mobile and ON on
-  // desktop. Overrides let us A/B the perf hit on the SAME device:
-  //   ?stream=1 — force the watch surface ON anywhere (capture / debug)
-  //   ?stream=0 — force it OFF anywhere
-  // Trade-off when off: no live spectating AND no end-of-run kind 30764 ghost
-  // replay for that device (the replay buffer fills inside the stream tick).
+  // Default OFF everywhere. The live-watch surface (watch.pallasite.app) and
+  // the kind 30762 'active' presence heartbeat are opt-in: almost nobody
+  // watches a live run, so keeping it off by default spares every run the
+  // per-frame serialisation tax AND stops the steady stream of 'active'
+  // publishes hitting the relay. The Prague booths included — a couple of
+  // kiosks don't need a spectator feed.
+  //   ?stream=1 — opt this run IN (capture / debug / a dedicated spectator feed)
+  //   ?stream=0 — explicit OFF (redundant with the default, kept for clarity)
+  // Trade-off: with streaming off there's no end-of-run kind 30764 ghost
+  // replay for this device either — the replay buffer fills inside the stream
+  // tick. Decouple the two if replays ever need to outlive the watch surface.
   const streamFlag = new URLSearchParams(window.location.search).get('stream');
-  const streamingEnabled = streamFlag === '1'
-    ? true
-    : streamFlag === '0'
-      ? false
-      : !mobileRuntimeActive();
+  const streamingEnabled = streamFlag === '1';
   console.log(`[stream] live-watch surface ${streamingEnabled ? 'ENABLED' : 'DISABLED'} (mobile=${mobileRuntimeActive()}, ?stream=${streamFlag ?? 'unset'})`);
 
   // Live-presence heartbeat — fires while a run is in progress so the
