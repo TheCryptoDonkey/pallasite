@@ -440,6 +440,10 @@ function setupOverlayArrowNav(overlay: HTMLElement, onBack?: () => void): void {
       window.removeEventListener('keydown', handler);
       return;
     }
+    // A modal <dialog> (e.g. the Signet login picker) is open on top and owns
+    // ALL nav input — bail so this overlay's nav doesn't also process the
+    // gamepad's synthetic keys behind it and fight over focus.
+    if (document.querySelector('dialog[open]')) return;
     // Escape = Back/Close. The gamepad maps B (and the pause button) to Escape
     // in menu phases, so this is how a pad backs out of a menu — players expect
     // B = Back. Handled BEFORE the input-focus skip so a focused slider (e.g. a
