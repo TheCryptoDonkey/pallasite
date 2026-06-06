@@ -88,7 +88,7 @@ import { requestZapInvoice, requestZapTo, devLnurl, hasWebLN, payViaWebLN, type 
 import { subscribeRecentRuns, timeAgo, dismissWatchEntry, getDismissedWatchEntries, LIVE_FRESHNESS_MS, type WatchEntry } from './watch.js';
 import { decodeNpub, encodeNpub, encodeNsec } from './bech32.js';
 import { subscribeZapTotals, type ZapTotalsByPubkey } from './zaps.js';
-import { isGuestSession, setGuestName, clearGuestIdentity, getGuestPrivkeyHex, getGuestRecord } from './guest.js';
+import { isGuestSession, setGuestName, clearGuestIdentity, getGuestPrivkeyHex, getGuestRecord, loadOrCreateGuest } from './guest.js';
 import { getReplayBuffer, type ReplayFrameRaw } from './stream-session.js';
 import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, gzipReplayFrames, findReplayByAuthor, fetchReplayByScoreEventId, fetchReplayByEventId, type GhostRun } from './ghost.js';
 import { publishPallasiteMark } from './mark.js';
@@ -1624,6 +1624,11 @@ export function renderBoothLobby(state: GameState, booth: number): void {
     })();
   });
 
+  // Zap-us QR — the booth's persistent "send us sats" surface (matches the
+  // attract + title screens). Centred so a spectator can scan without
+  // touching the machine; the recap auto-skips, this doesn't.
+  renderZapUsQR(overlay, state, { caption: 'ZAP US ⚡' });
+
   // Operator escape — long-press the logo (700ms) to drop the kiosk flag and
   // reach the full menu + settings. Deliberately hidden from walk-ups.
   bindLogoLongPress(titleLogo, () => window.location.assign('/'));
@@ -1772,6 +1777,11 @@ export function renderAttract(state: GameState): void {
       renderAuth(state, () => renderTitle(state));
     }
   });
+
+  // Zap-us QR on attract — a walk-up at the booth can scan and send sats
+  // before ever pressing PLAY (and the game-over recap auto-skips to title,
+  // so this is the always-present place to catch them).
+  renderZapUsQR(overlay, state, { caption: 'ZAP US ⚡' });
 
   // Footer — terms, privacy, version. Always visible on attract so the
   // legal surface is one tap away without cluttering the auth or
@@ -9997,6 +10007,48 @@ const GAMESTR_SOLO_MODES = new Set<RunMode>(['campaign', 'drift', 'bossrush', 'a
  *  (REPLAY KILL, claim-picker re-render) don't double-publish a run. */
 let lastSoloScorePublishedRun = '';
 
+/**
+ * Publish a GAME-SIGNED (verified-on-Gamestr) solo score for the current run,
+ * once. Decoupled from the sat-claim flow, so a score reaches the leaderboard
+ * on every game-over / completion regardless of whether the player claims.
+ *
+ * Signing identity: prefer the player's session; if it CAN'T sign (auth-only,
+ * e.g. the Signet redirect) OR there's no session, fall back to a persistent
+ * local GUEST key so the score still lands instead of being silently dropped.
+ * The faucet game-signs the kind 30762 either way (the session only proves
+ * identity / sets the p-tag), so it's always a verified score on Gamestr.
+ *
+ * Solo arcade modes only — co-op has its own game-signed path
+ * (submitCoopScore); deathmatch/duel are PvP.
+ */
+function publishSoloScoreForRun(state: GameState): void {
+  const soloMode = currentMode();
+  if (!GAMESTR_SOLO_MODES.has(soloMode)) return;
+  if (state.players[0].score <= 0 || state.runStartedAt <= 0) return;
+  const runId = String(state.runStartedAt);
+  if (runId === lastSoloScorePublishedRun) return;
+  lastSoloScorePublishedRun = runId;
+  void (async () => {
+    let signer = state.session?.signer.capabilities.canSignEvents ? state.session : null;
+    if (!signer) {
+      try {
+        signer = await loadOrCreateGuest({ name: scoreboardNameFor(state), followPallasite: false });
+      } catch {
+        return;
+      }
+    }
+    await submitSoloScore(signer, {
+      score: state.players[0].score,
+      wave: state.wave,
+      duration_ms: Math.max(0, Math.floor(state.runTimeMs)),
+      run_id: runId,
+      mode: soloMode,
+      ...(getFlavour() === '600bn' ? { room: '600bn' as const } : {}),
+      cheated: state.cheatedThisRun,
+    }).catch(() => undefined);
+  })();
+}
+
 export function renderGameOver(state: GameState): void {
   // Push the current skin unlock set to Nostr at the end of every run.
   // kind 30764 is replaceable (d="pallasite-skins") so this is idempotent
@@ -10006,31 +10058,10 @@ export function renderGameOver(state: GameState): void {
     void publishSkinUnlocks(state.session).catch(() => undefined);
   }
 
-  // Publish a GAME-SIGNED (verified on Gamestr) score on every game-over,
-  // decoupled from the sat-claim flow — so a score reaches the leaderboard
-  // whether or not the player claims sats, and even if payouts are off.
-  // Once per run, best-effort, solo arcade modes only.
-  const soloMode = currentMode();
-  if (
-    state.session?.signer.capabilities.canSignEvents
-    && GAMESTR_SOLO_MODES.has(soloMode)
-    && state.players[0].score > 0
-    && state.runStartedAt > 0
-  ) {
-    const runId = String(state.runStartedAt);
-    if (runId !== lastSoloScorePublishedRun) {
-      lastSoloScorePublishedRun = runId;
-      void submitSoloScore(state.session, {
-        score: state.players[0].score,
-        wave: state.wave,
-        duration_ms: Math.max(0, Math.floor(state.runTimeMs)),
-        run_id: runId,
-        mode: soloMode,
-        ...(getFlavour() === '600bn' ? { room: '600bn' as const } : {}),
-        cheated: state.cheatedThisRun,
-      }).catch(() => undefined);
-    }
-  }
+  // Publish a verified Gamestr score for this run (death path). Decoupled
+  // from the sat-claim flow; falls back to a guest identity when the session
+  // can't sign, so auth-only / not-signed-in runs still score.
+  publishSoloScoreForRun(state);
 
   // High-score handling — auto-save under the player's session display
   // name (guest's chosen name, or NIP-01 best-name for a real signer)
@@ -11563,6 +11594,9 @@ export function renderCompletion(state: GameState): void {
     }, board);
     state.initialsEnteredThisRun = true;
   }
+  // Publish a verified Gamestr score for a COMPLETED run too (winning the
+  // Forge is a player's best score — it must reach the leaderboard).
+  publishSoloScoreForRun(state);
   // Slice 5 — beating the Forge earns THE CHOICE (Return / Step Through) before
   // the recap. 600bn (Sanctum) has no W25 gate, so it goes straight to credits.
   if (getFlavour() === '600bn') { renderCompletionRecap(state); return; }
