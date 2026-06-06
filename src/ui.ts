@@ -10179,35 +10179,6 @@ async function maybePublishCoopCampaignScore(
     status.style.color = '#ff8050';
     status.textContent = `Co-op publish failed: ${err instanceof Error ? err.message : String(err)}`;
   }
-
-  // Per-player: also bank P2's OWN individual score under P2's npub (signed by
-  // their own signer), on top of the combined team event above (which stays
-  // under P1). P1's npub carries the team total; P2 gets credit for their own
-  // score. No collision — different npubs, both kind 30762.
-  const p2 = state.coopIdentity2;
-  const p2score = state.players[1]?.score ?? 0;
-  if (p2?.session && p2score > 0 && p2.session.signer.capabilities.canSignEvents && !state.cheatedThisRun) {
-    const line = el('p', { parent });
-    line.style.cssText = 'font-size:0.78rem;margin:4px 0 0;color:rgba(180,200,255,0.72);letter-spacing:0.04em;text-align:center;';
-    line.textContent = "Banking Player 2's score to their npub…";
-    try {
-      const r = await publishCoopCampaignScore(p2.session, {
-        score: p2score,
-        wave: state.wave,
-        durationMs: Math.max(0, Math.floor(state.runTimeMs)),
-        players: state.players.length,
-        seed: getActiveSeed(),
-        cheated: state.cheatedThisRun,
-      });
-      line.style.color = r.publishedTo.length > 0 ? '#58ff58' : '#ff8050';
-      line.textContent = r.publishedTo.length > 0
-        ? `✓ Player 2's score banked to their npub (${r.publishedTo.length} relays)`
-        : "Player 2's score stayed local; relays rejected it.";
-    } catch (err) {
-      line.style.color = '#ff8050';
-      line.textContent = `Player 2 publish failed: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  }
 }
 
 async function maybePublishScore(
