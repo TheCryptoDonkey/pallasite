@@ -2672,15 +2672,24 @@ async function boot(): Promise<void> {
   // serialised signEvent queue, so heartbeat + replay chunks + ghost
   // publishes + claim signs are gated one-at-a-time through bark/bunker
   // instead of racing. No extra wrapping needed here.
-  state.session = (await handleAuthCallback()) ?? (await tryRestore());
-  // Kick off profile fetch in the background — UI updates when it lands
-  if (state.session) {
-    void import('./profile.js').then(({ fetchProfile, getCachedProfile }) => {
-      const cached = getCachedProfile(state.session!.pubkey);
-      if (cached) state.profile = cached;
-      void fetchProfile(state.session!.pubkey).then(p => { if (p) state.profile = p; });
-    });
-  }
+  // Resolve the session WITHOUT blocking first paint. handleAuthCallback can
+  // take several seconds on a redirect return (it upgrades a bunker over the
+  // relays), and tryRestore likewise reconnects a stored bunker. Awaiting here
+  // left the canvas black until it resolved (the render loop starts at the end
+  // of boot). Instead, resolve in the background: boot continues, the loop
+  // starts, and the title flips from the sign-in screen to signed-in once the
+  // session lands. Every state.session reader below is null-guarded.
+  void (async () => {
+    const session = (await handleAuthCallback()) ?? (await tryRestore());
+    if (!session) return;
+    state.session = session;
+    // Kick off profile fetch — UI updates when it lands.
+    const { fetchProfile, getCachedProfile } = await import('./profile.js');
+    const cached = getCachedProfile(session.pubkey);
+    if (cached) state.profile = cached;
+    const p = await fetchProfile(session.pubkey);
+    if (p) state.profile = p;
+  })();
   // NIP-07 extensions sometimes inject `window.nostr` after page load —
   // tryRestore at boot can land before the extension is ready, leaving us
   // with an auth-only stub session. Watch for the signer to come online and
