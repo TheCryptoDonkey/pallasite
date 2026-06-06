@@ -42,6 +42,16 @@ export function getDisplayMode(): DisplayMode {
   if (getFlavour() === '600bn') {
     return 'modern';
   }
+  // Booth kiosks (?p1 / ?p2 — the big-screen event deploy) are built around the
+  // modern full-viewport aspect, like 600bn. Critically this must survive a
+  // fullscreen EXIT: hitting Esc drops fullscreen (the browser does this
+  // unpreventably), and without this the kiosk falls through to the desktop
+  // 'retro' default — and the stripped booth lobby has no display toggle to get
+  // modern back. Force modern whenever the booth flag is present in the URL.
+  if (typeof window !== 'undefined') {
+    const q = new URLSearchParams(window.location.search);
+    if (q.has('p1') || q.has('p2')) return 'modern';
+  }
   // Portrait orientation forces modern. The retro mode caps the canvas
   // at the native 1280×720 source and pixel-upscales to fit; on a
   // portrait phone (tall, narrow) the 16:9 world collapses into a thin
