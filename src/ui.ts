@@ -434,10 +434,25 @@ export function gateBehindOnboarding(onReady: () => void): void {
  * loud :focus-visible CSS treatment kicks in even though the focus
  * arrived programmatically rather than via Tab.
  */
-function setupOverlayArrowNav(overlay: HTMLElement): void {
+function setupOverlayArrowNav(overlay: HTMLElement, onBack?: () => void): void {
   const handler = (e: KeyboardEvent): void => {
     if (!document.body.contains(overlay)) {
       window.removeEventListener('keydown', handler);
+      return;
+    }
+    // Escape = Back/Close. The gamepad maps B (and the pause button) to Escape
+    // in menu phases, so this is how a pad backs out of a menu — players expect
+    // B = Back. Handled BEFORE the input-focus skip so a focused slider (e.g. a
+    // settings volume row) doesn't swallow it.
+    if (e.code === 'Escape') {
+      e.preventDefault();
+      if (onBack) { onBack(); return; }
+      // Fallback for overlays that didn't pass an explicit back: click a
+      // back/close/done/cancel-style button if the overlay has one.
+      const back = Array.from(overlay.querySelectorAll<HTMLButtonElement>('button:not([disabled])'))
+        .reverse()
+        .find((b) => /^(←\s*)?(back|close|done|cancel|exit)\b/i.test((b.textContent ?? '').trim()));
+      back?.click();
       return;
     }
     // Skip when an input/textarea is focused — the form field owns
@@ -8866,7 +8881,7 @@ function renderSkinsPanel(parent: HTMLElement): void {
 export function renderSettings(onBack: () => void): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
-  setupOverlayArrowNav(overlay);
+  setupOverlayArrowNav(overlay, onBack);
   el('h2', { parent: overlay, text: 'SETTINGS' });
   const sub = el('p', { parent: overlay, text: 'AUDIO' });
   sub.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:0 0 -8px;';
