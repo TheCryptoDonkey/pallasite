@@ -34,8 +34,11 @@ export const EXPERIMENTAL_RELAYS: readonly string[] = ['wss://relay.trotters.cc'
 export const DEFAULT_RELAYS = [
   'wss://relay.trotters.cc',
   'wss://nos.lol',
+  // Gamestr.io reads scores from these four — keep them in the set so the
+  // in-game leaderboard and gamestr stay in sync. (Dropped nostr.wine, a
+  // paid relay that rejected our writes.)
   'wss://relay.damus.io',
   'wss://relay.nostr.band',
   'wss://relay.primal.net',
-  'wss://nostr.wine',
+  'wss://relay.ditto.pub',
 ] as const;
