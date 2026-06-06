@@ -4989,7 +4989,11 @@ function startControllerGuestFlow(state: GameState, refresh: () => void): void {
   const close = (): void => { modal.remove(); window.removeEventListener('keydown', onKey); };
   const onKey = (e: KeyboardEvent): void => { if (e.code === 'Escape') close(); };
   window.addEventListener('keydown', onKey);
-  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+  // Backdrop dismiss — click + non-mouse pointerup (body touch-action:none
+  // suppresses tap→click on mobile; this modal is appended to root).
+  const dismissBackdrop = (e: Event): void => { if (e.target === modal) close(); };
+  modal.addEventListener('click', dismissBackdrop);
+  modal.addEventListener('pointerup', (e) => { if (e.pointerType !== 'mouse') dismissBackdrop(e); });
 
   const status = el('div', { parent: inner });
   status.style.cssText = 'min-height:1.2em;font-size:0.78rem;color:rgba(220,210,255,0.7);text-align:center;';
@@ -5029,7 +5033,7 @@ function startControllerGuestFlow(state: GameState, refresh: () => void): void {
   cancelRow.style.cssText = 'display:flex;justify-content:center;margin-top:6px;';
   const cancelBtn = el('button', { parent: cancelRow, text: 'CANCEL' }) as HTMLButtonElement;
   cancelBtn.style.cssText = 'padding:8px 18px;background:transparent;border:1px solid rgba(220,210,255,0.3);color:rgba(220,210,255,0.75);border-radius:6px;font-family:ui-monospace,monospace;font-size:0.78rem;letter-spacing:0.14em;cursor:pointer;';
-  cancelBtn.addEventListener('click', close);
+  onTap(cancelBtn, close);
 }
 
 /** Home page shown on mobile.pallasite.app when there's no pairing
@@ -12003,7 +12007,7 @@ function createZapPopover(amountSats: number): HTMLElement {
     'font-size:1.1rem',
     'cursor:pointer', 'padding:2px 8px', 'border-radius:4px',
   ].join(';');
-  cancel.addEventListener('click', () => pop.remove());
+  onTap(cancel, () => pop.remove());
 
   // Auto-dismiss after 90s
   const timer = window.setTimeout(() => pop.remove(), 90_000);
@@ -12044,6 +12048,7 @@ function populateZapPopover(pop: HTMLElement, invoice: string, amountSats: numbe
     'border-radius:6px',
     'text-decoration:none',
     'display:inline-block',
+    'touch-action:manipulation',  // native link click — re-enable under body touch-action:none
   ].join(';');
 
   const copy = el('button', { parent: actions, text: 'COPY' });
@@ -12058,7 +12063,7 @@ function populateZapPopover(pop: HTMLElement, invoice: string, amountSats: numbe
     'cursor:pointer',
     'border-radius:6px',
   ].join(';');
-  copy.addEventListener('click', async () => {
+  onTap(copy, async () => {
     try {
       await navigator.clipboard.writeText(invoice);
       copy.textContent = '✓';
@@ -12081,7 +12086,7 @@ function populateZapPopover(pop: HTMLElement, invoice: string, amountSats: numbe
     'cursor:pointer',
     'border-radius:6px',
   ].join(';');
-  paid.addEventListener('click', () => {
+  onTap(paid, () => {
     pop.remove();
     renderZapThanks(amountSats);
   });
