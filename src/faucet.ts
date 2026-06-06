@@ -274,6 +274,10 @@ export interface ClaimInput {
    *  Sanctum teaser daily-cap budget and stamps a `['t','600bn']` tag
    *  on the score event. Defaults server-side to 'main' when omitted. */
   room?: 'main' | '600bn';
+  /** Display name + NIP-05 (gamestr-spec) — stamped as `playerName` / `nip05`
+   *  tags on the kind 30762 so the leaderboard shows a name, not a pubkey. */
+  player_name?: string;
+  nip05?: string;
   telemetry?: Record<string, unknown>;
 }
 
@@ -493,6 +497,10 @@ export interface SoloScoreInput {
   finished_at?: number;
   mode?: RunMode;
   room?: 'main' | '600bn';
+  /** Display name + NIP-05 (gamestr-spec) — the faucet stamps these as
+   *  `playerName` / `nip05` tags so the score shows a name, not a raw pubkey. */
+  player_name?: string;
+  nip05?: string;
   cheated?: boolean;
 }
 
