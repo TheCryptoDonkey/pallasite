@@ -84,7 +84,7 @@ import {
 } from './deathmatch.js';
 import { followUser, shareCompletion, endorseSubject, rankFromWave } from './social.js';
 import { shareRunCard } from './sharecard.js';
-import { requestZapInvoice, requestZapTo, hasWebLN, payViaWebLN, type ZapRecipient } from './zap.js';
+import { requestZapInvoice, requestZapTo, devLnurl, hasWebLN, payViaWebLN, type ZapRecipient } from './zap.js';
 import { subscribeRecentRuns, timeAgo, dismissWatchEntry, getDismissedWatchEntries, LIVE_FRESHNESS_MS, type WatchEntry } from './watch.js';
 import { decodeNpub, encodeNpub, encodeNsec } from './bech32.js';
 import { subscribeZapTotals, type ZapTotalsByPubkey } from './zaps.js';
@@ -1046,6 +1046,10 @@ export function renderTitle(state: GameState): void {
   // the title screen never blocks on a network round-trip — show a placeholder
   // while it loads, swap in the real list when the relays answer.
   renderGlobalLeaderboard(overlay, state, selectedBoard);
+
+  // Zap-us QR — passers-by / players can send sats anytime, not just after a
+  // run. Static LNURL-pay; we never pay out for this.
+  renderZapUsQR(overlay, state, { caption: 'ZAP US ⚡' });
 
   renderLegalFooter(overlay);
 
@@ -11364,6 +11368,10 @@ function renderRunCredits(
   // Prominent zap CTA — the entire reason this stage exists per the user
   // brief: "make zaps easy and frictionless".
   const zapWrap = el('div', { parent: overlay });
+  // Centered static LNURL-pay QR first — scan-to-send-any-amount, works with
+  // no session (plain LNURL pay), the venue "pay us with sats" path. The
+  // amount-preset buttons below stay as the in-app / WebLN one-click option.
+  renderZapUsQR(zapWrap, state);
   renderZapButton(zapWrap, state);
 
   // Social actions only land for Nostr mode (follow + announce buttons).
@@ -12253,6 +12261,35 @@ function openGuestKeyExport(pubkeyHex: string, privkeyHex: string): void {
   modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
   const onKey = (e: KeyboardEvent): void => { if (e.code === 'Escape') close(); };
   window.addEventListener('keydown', onKey);
+}
+
+/**
+ * Centered "zap us" QR — a STATIC LNURL-pay for the operator's lightning
+ * address. One always-valid QR: any wallet scans it and the payer chooses the
+ * amount, so spectators/players send US sats with no payout from us (the
+ * Prague money model). Shown on the title screen and the solo game-over recap.
+ * Tapping the QR opens the full zap modal (amount presets + optional NIP-57
+ * zap receipt) for those who'd rather pick an amount in-app.
+ */
+function renderZapUsQR(parent: HTMLElement, state: GameState, opts?: { caption?: string; size?: number }): HTMLElement {
+  const size = opts?.size ?? 168;
+  const wrap = el('div', { parent });
+  wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:6px;margin:16px auto 8px;max-width:340px;';
+  const cap = el('p', { parent: wrap, text: opts?.caption ?? 'ENJOYED IT? ZAP US ⚡' });
+  cap.style.cssText = 'margin:0;font-size:0.76rem;letter-spacing:0.16em;color:rgba(255,216,74,0.9);text-align:center;';
+  const box = el('div', { parent: wrap });
+  box.style.cssText = `width:${size}px;height:${size}px;background:#fff;padding:8px;border-radius:10px;box-sizing:content-box;cursor:pointer;`;
+  box.setAttribute('role', 'button');
+  box.setAttribute('aria-label', 'Zap us — scan to send sats, or tap to choose an amount');
+  // Static LNURL-pay; the wallet resolves it and picks the amount. Best-effort
+  // draw — a render failure just leaves the caption + address visible.
+  try { void renderQRInto(box, devLnurl()); } catch { /* ignore */ }
+  const addr = el('p', { parent: wrap, text: DEV.lightningAddress });
+  addr.style.cssText = 'margin:0;font-size:0.72rem;color:rgba(220,210,255,0.7);user-select:all;';
+  const hint = el('p', { parent: wrap, text: 'Scan with any Lightning wallet · tap for amounts' });
+  hint.style.cssText = 'margin:0;font-size:0.64rem;color:rgba(200,200,200,0.5);letter-spacing:0.04em;text-align:center;';
+  onTap(box, () => openZapModal(state));
+  return wrap;
 }
 
 function openZapModal(state: GameState): void {

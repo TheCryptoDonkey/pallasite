@@ -127,6 +127,19 @@ export async function requestZapTo(opts: {
   return { invoice, isZap: false, amountSats: Math.floor(amountSats) };
 }
 
+/**
+ * Static LNURL-pay string (bech32, uppercase `LNURL1…`) for the operator's
+ * lightning address — derived deterministically from the lud16, no network
+ * round-trip. The "zap us" QR encodes this: any wallet scans it, resolves the
+ * LNURL, and the payer picks the amount. One always-valid QR, no expiring
+ * invoice. (For a fixed amount / NIP-57 zap receipt use {@link requestZapInvoice}.)
+ */
+export function devLnurl(): string {
+  const [name, domain] = DEV.lightningAddress.split('@');
+  if (!name || !domain) throw new Error('invalid dev lightning address');
+  return encodeLNURL(`https://${domain}/.well-known/lnurlp/${name}`);
+}
+
 /** Zap the dev (sugar over {@link requestZapTo}). */
 export async function requestZapInvoice(
   session: SignetSession | null,
