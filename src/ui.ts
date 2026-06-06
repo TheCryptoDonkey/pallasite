@@ -41,6 +41,7 @@ import {
 } from './a11y.js';
 import { getHapticsEnabled, setHapticsEnabled, hapticsSupported } from './haptics.js';
 import * as auth from './auth.js';
+import type { SignetSession } from 'signet-login';
 import { addLocalHighScore, getLocalHighScores, isHighScore, subscribeGlobalHighScores, clearLocalHighScores, publishCoopCampaignScore, type GlobalHighScore, type ScoreBoardId } from './score.js';
 import { submitClaim, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, fetchFlagged, requestDeleteFlag, requestLnurlWithdraw, pollLnurlWithdrawStatus, fetchAdminState, setAdminCaps, setAdminPause, applyAdminPreset, saveAdminSettings, fetchAdminPlayer, setAdminPlayerFlag, adjustAdminPlayerBalance, setAdminPlayerTier, isAdminSession, type PlayerTier, type FlaggedEntry, type AdminStateResult, type AdminPlayer } from './faucet.js';
 import {
@@ -91,7 +92,7 @@ import { isGuestSession, setGuestName, clearGuestIdentity, getGuestPrivkeyHex, g
 import { getReplayBuffer, type ReplayFrameRaw } from './stream-session.js';
 import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, gzipReplayFrames, findReplayByAuthor, fetchReplayByScoreEventId, fetchReplayByEventId, type GhostRun } from './ghost.js';
 import { publishPallasiteMark } from './mark.js';
-import { preloadBackground, render, setRenderMode, setHudHidden, type RenderModeInfo } from './render.js';
+import { preloadBackground, render, setRenderMode, setHudHidden, PLAYER_COLOURS, type RenderModeInfo } from './render.js';
 import { createTheatreState, populateTheatreState } from './theatre-adapter.js';
 import { musicSetTrackForState } from './music.js';
 import { savePersonalGhost } from './personal-ghost.js';
@@ -118,13 +119,23 @@ const root = document.getElementById('ui-root')!;
 
 let onStartCb: (() => void) | null = null;
 let onResumeCb: (() => void) | null = null;
+let onStartCouchCb: (() => void) | null = null;
 
 export function bindActions(opts: {
   onStart: () => void;
   onResume: () => void;
+  onStartCouch?: () => void;
 }): void {
   onStartCb = opts.onStart;
   onResumeCb = opts.onResume;
+  onStartCouchCb = opts.onStartCouch ?? null;
+}
+
+/** Start a two-player couch run in place (no reload), enabling couch input
+ *  routing at runtime. Used by the booth dual-login so both signed-in
+ *  identities survive. Falls back to the normal start if unbound. */
+function startCouchInPlace(): void {
+  (onStartCouchCb ?? onStartCb)?.();
 }
 
 /** Programmatically trigger the bound start callback (the same code path
@@ -1334,6 +1345,63 @@ export function renderEventLobby(state: GameState): void {
  *  Login (renderAuth: Nostr or one-tap guest) happens first; here a pilot picks
  *  how many play THIS screen, or links to the other booth. Campaign only — no
  *  mode picker, difficulty, skins, settings, daily, deathmatch or join noise. */
+/** Render an avatar + name chip for a player identity into `parent`, repainting
+ *  when the kind-0 profile lands. Reused on the lobby, the co-op ready screen,
+ *  and (later) the HUD / game-over. */
+function renderIdentityChip(parent: HTMLElement, pubkey: string, fallbackName: string, label: string, colour: string): void {
+  const chip = el('div', { parent });
+  chip.style.cssText = 'display:flex;align-items:center;gap:10px;';
+  let profile = getCachedProfile(pubkey);
+  const paint = (): void => {
+    chip.innerHTML = '';
+    if (profile?.picture) {
+      const img = document.createElement('img');
+      img.src = profile.picture;
+      img.alt = '';
+      img.style.cssText = `width:40px;height:40px;border-radius:50%;border:2px solid ${colour};object-fit:cover;`;
+      img.onerror = () => { img.style.display = 'none'; };
+      chip.appendChild(img);
+    }
+    const name = bestName(profile, pubkey) || fallbackName || 'guest';
+    const t = document.createElement('div');
+    t.style.cssText = 'text-align:left;';
+    t.innerHTML = `<div style="font-size:0.62rem;letter-spacing:0.2em;color:${colour};">${escapeHtml(label)}</div>`
+      + `<div style="font-size:0.92rem;color:#fff;font-weight:bold;">${escapeHtml(name)}</div>`;
+    chip.appendChild(t);
+  };
+  paint();
+  if (!profile) void fetchProfile(pubkey).then(p => { if (p) { profile = p; paint(); } });
+}
+
+/** Co-op "ready" screen: both signed-in identities (P1 + P2) side by side, then
+ *  START → couch run in place. Reached from the booth lobby's 2 PLAYERS flow
+ *  once Player 2 has signed in with their own details. */
+function renderCoopReady(state: GameState, booth: number): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+  el('h2', { parent: overlay, text: 'READY' });
+  el('p', { parent: overlay, text: `BTC PRAGUE · BOOTH ${booth} · CO-OP` })
+    .style.cssText = 'font-size:0.8rem;color:#8cffb4;letter-spacing:0.22em;margin:-8px 0 6px;';
+  const row = el('div', { parent: overlay });
+  row.style.cssText = 'display:flex;gap:32px;align-items:center;justify-content:center;margin:16px 0;flex-wrap:wrap;';
+  if (state.session) renderIdentityChip(row, state.session.pubkey, state.session.displayName ?? 'guest', 'PLAYER 1', PLAYER_COLOURS[0]);
+  if (state.coopIdentity2) renderIdentityChip(row, state.coopIdentity2.pubkey, state.coopIdentity2.displayName, 'PLAYER 2', PLAYER_COLOURS[1]);
+  const startRow = el('div', { className: 'menu-row', parent: overlay });
+  const start = el('button', { className: 'menu-btn', parent: startRow, text: '▶ START' }) as HTMLButtonElement;
+  start.style.cssText += 'font-size:1.2rem;padding:12px 44px;letter-spacing:0.2em;background:rgba(255,216,74,0.18);border-color:#ffd84a;color:#ffd84a;';
+  start.addEventListener('click', () => {
+    setStoredMode('campaign');
+    setStoredDailyPref(false);
+    lockInDifficulty(getStoredDifficulty());
+    gateBehindOnboarding(() => startCouchInPlace());
+  });
+  setTimeout(() => tryFocusVisible(start), 0);
+  const back = el('button', { parent: overlay, text: '◀ BACK' });
+  back.style.cssText = 'margin-top:10px;background:none;border:1px solid rgba(180,140,255,0.3);color:rgba(200,180,255,0.7);font:0.72rem ui-monospace,monospace;letter-spacing:0.14em;padding:6px 14px;border-radius:6px;cursor:pointer;';
+  back.addEventListener('click', () => { state.coopIdentity2 = null; renderBoothLobby(state, booth); });
+}
+
 export function renderBoothLobby(state: GameState, booth: number): void {
   // No identity yet → Signet login (Nostr or guest), then land back here.
   if (!state.session) { renderAuth(state, () => renderBoothLobby(state, booth)); return; }
@@ -1375,10 +1443,20 @@ export function renderBoothLobby(state: GameState, booth: number): void {
 
   // 2 PLAYERS — local couch. Reload into the couch autostart, carrying the
   // booth flag so the post-game loop returns to this lobby.
-  renderEventLobbyAction(extras, '2 PLAYERS · ONE SCREEN', 'Two pilots, two pads, this screen — no lag.', () => {
+  renderEventLobbyAction(extras, '2 PLAYERS · ONE SCREEN', 'Two pilots, two pads — each signs in with their own details.', () => {
     void audio.unlockAudio();
     tryEnterFullscreen();
-    window.location.assign(`/?couch=1&autostart=1&p${booth}`);
+    // P1 is the lobby session. Capture a SECOND identity for P2 (without
+    // clobbering P1's state.session), then the ready screen → couch in place
+    // (no reload, so both in-memory sessions survive).
+    renderAuth(state, () => renderCoopReady(state, booth), {
+      heading: 'PLAYER 2 — WHO ARE YOU?',
+      sub: 'Player 2 signs in with their own Nostr identity (or guest). Player 1 stays signed in.',
+      onResolved: (s) => {
+        state.coopIdentity2 = { pubkey: s.pubkey, displayName: s.displayName ?? '', profile: getCachedProfile(s.pubkey) };
+        if (!state.coopIdentity2.profile) void fetchProfile(s.pubkey).then(p => { if (p && state.coopIdentity2) state.coopIdentity2.profile = p; });
+      },
+    });
   }, 'compact');
 
   // LINK BOOTHS — cross-booth co-op, up to TWO pilots per booth (four ships,
@@ -1417,8 +1495,32 @@ export function renderBoothLobby(state: GameState, booth: number): void {
   // (and the Signet nudge) fresh, instead of silently inheriting this identity.
   const who = el('div', { parent: overlay });
   who.style.cssText = 'display:flex;align-items:center;justify-content:center;gap:12px;margin-top:20px;flex-wrap:wrap;';
-  el('span', { parent: who, text: `Playing as ${state.session.displayName ?? 'guest'}` })
-    .style.cssText = 'font-size:0.74rem;color:rgba(180,140,255,0.7);letter-spacing:0.06em;';
+  // Identity: avatar + resolved Nostr name for the signed-in player. The booth
+  // is a Signet/Nostr showcase, so surface who's playing. Uses the cached
+  // profile immediately, then refreshes from the relays once kind 0 lands.
+  const ident = el('div', { parent: who });
+  ident.style.cssText = 'display:flex;align-items:center;gap:10px;';
+  const pubkey = state.session.pubkey;
+  if (!state.profile) { const c = getCachedProfile(pubkey); if (c) state.profile = c; }
+  const paintIdent = (): void => {
+    ident.innerHTML = '';
+    const pic = state.profile?.picture;
+    if (pic) {
+      const img = document.createElement('img');
+      img.src = pic;
+      img.alt = '';
+      img.style.cssText = 'width:34px;height:34px;border-radius:50%;border:1.5px solid rgba(140,255,180,0.6);object-fit:cover;';
+      img.onerror = () => { img.style.display = 'none'; };
+      ident.appendChild(img);
+    }
+    const name = bestName(state.profile, pubkey) || (state.session?.displayName ?? 'guest');
+    const t = document.createElement('span');
+    t.style.cssText = 'font-size:0.82rem;color:rgba(220,210,255,0.85);letter-spacing:0.06em;';
+    t.innerHTML = `Playing as <span style="color:#8cffb4;font-weight:bold;">${escapeHtml(name)}</span>`;
+    ident.appendChild(t);
+  };
+  paintIdent();
+  if (!state.profile) void fetchProfile(pubkey).then(p => { if (p) { state.profile = p; paintIdent(); } });
   const signOut = el('button', { parent: who, text: 'FINISHED? SIGN OUT' }) as HTMLButtonElement;
   signOut.style.cssText = 'background:rgba(255,120,120,0.12);border:1px solid rgba(255,120,120,0.5);color:#ff8a8a;font:0.72rem ui-monospace,monospace;letter-spacing:0.12em;padding:6px 14px;border-radius:6px;cursor:pointer;';
   signOut.addEventListener('click', () => {
@@ -1586,14 +1688,18 @@ export function renderAttract(state: GameState): void {
   renderLegalFooter(overlay);
 }
 
-export function renderAuth(state: GameState, onDone: () => void): void {
+export function renderAuth(state: GameState, onDone: () => void, opts?: { onResolved?: (s: SignetSession) => void; heading?: string; sub?: string }): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
 
-  el('h2', { parent: overlay, text: 'WHO ARE YOU?' });
+  // When onResolved is supplied (capturing a SECOND player's identity at a
+  // booth), it takes the resolved session instead of overwriting state.session.
+  const resolve = (s: SignetSession): void => { if (opts?.onResolved) opts.onResolved(s); else state.session = s; };
 
-  const sub = el('p', { parent: overlay, text: 'Sign in with Nostr to take your name, your zaps, and your replays everywhere — or play as a guest and we\'ll create a local identity for you.' });
+  el('h2', { parent: overlay, text: opts?.heading ?? 'WHO ARE YOU?' });
+
+  const sub = el('p', { parent: overlay, text: opts?.sub ?? 'Sign in with Nostr to take your name, your zaps, and your replays everywhere — or play as a guest and we\'ll create a local identity for you.' });
   sub.style.cssText = 'font-size:0.85rem;color:rgba(220,210,255,0.7);margin:6px auto 18px;max-width:560px;text-align:center;line-height:1.5;';
 
   // Option 1 — sign in with Nostr (existing Signet flow). The
@@ -1613,7 +1719,7 @@ export function renderAuth(state: GameState, onDone: () => void): void {
       try {
         const session = await auth.signIn();
         if (session) {
-          state.session = session;
+          resolve(session);
           onDone();
           return;
         }
@@ -1656,7 +1762,7 @@ export function renderAuth(state: GameState, onDone: () => void): void {
         // gets the auto-follow.
         const followCheckEl = overlay.querySelector<HTMLInputElement>('input[data-follow-pallasite]');
         const followPallasite = followCheckEl?.checked ?? true;
-        state.session = await auth.createGuestSession(name, { followPallasite });
+        resolve(await auth.createGuestSession(name, { followPallasite }));
         onDone();
       } catch (err) {
         guestStatus.textContent = `Couldn't create local identity: ${err instanceof Error ? err.message : String(err)}`;
