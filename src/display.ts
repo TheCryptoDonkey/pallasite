@@ -42,15 +42,18 @@ export function getDisplayMode(): DisplayMode {
   if (getFlavour() === '600bn') {
     return 'modern';
   }
-  // Booth kiosks (?p1 / ?p2 — the big-screen event deploy) are built around the
-  // modern full-viewport aspect, like 600bn. Critically this must survive a
-  // fullscreen EXIT: hitting Esc drops fullscreen (the browser does this
-  // unpreventably), and without this the kiosk falls through to the desktop
+  // Booth kiosks (?p1 / ?p2 / ?couch — the big-screen event deploys) are built
+  // around the modern full-viewport aspect, like 600bn. Critically this must
+  // survive a fullscreen EXIT: hitting Esc drops fullscreen (the browser does
+  // this unpreventably), and without this the kiosk falls through to the desktop
   // 'retro' default — and the stripped booth lobby has no display toggle to get
-  // modern back. Force modern whenever the booth flag is present in the URL.
+  // modern back. `?couch` is the on-a-TV two-player booth: chromium --kiosk
+  // fullscreen is a window state, NOT the JS Fullscreen API, so the check above
+  // never fires for it — without this it letterboxes to a tiny 1280×720 centre.
+  // Force modern whenever a booth flag is present in the URL.
   if (typeof window !== 'undefined') {
     const q = new URLSearchParams(window.location.search);
-    if (q.has('p1') || q.has('p2')) return 'modern';
+    if (q.has('p1') || q.has('p2') || q.has('couch')) return 'modern';
   }
   // Portrait orientation forces modern. The retro mode caps the canvas
   // at the native 1280×720 source and pixel-upscales to fit; on a
@@ -82,6 +85,12 @@ export function getDisplayMode(): DisplayMode {
 export function setDisplayMode(m: DisplayMode): void {
   try { localStorage.setItem(KEY, m); } catch { /* ignore */ }
   applyDisplayMode(m);
+  // Re-fit immediately so the canvas backing store + CSS size switch to the new
+  // mode without needing a reload/resize — otherwise the toggle flips the body
+  // flag but the canvas stays at the old mode's dimensions (looks unchanged).
+  if (typeof window !== 'undefined') {
+    (window as unknown as { __pallasiteFit?: () => void }).__pallasiteFit?.();
+  }
 }
 
 /** Mirror a computed mode to the body data-attribute without touching
