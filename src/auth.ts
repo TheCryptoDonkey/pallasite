@@ -27,6 +27,19 @@ import { getGuestRecord, loadOrCreateGuest } from './guest.js';
  */
 function wrapSession(session: SignetSession | null): SignetSession | null {
   if (!session) return null;
+  // Announce the resolved signer capability the moment a session is set, so a
+  // silent auth-only fallback (login OK but can't sign — heartbeats/scores/
+  // claims get skipped) is visible instead of being discovered mid-run.
+  // Inspect live via window.__signetSignerInfo.
+  try {
+    const canSign = session.signer?.capabilities?.canSignEvents === true;
+    const info = { method: session.method, canSignEvents: canSign, pubkey: session.pubkey };
+    (globalThis as { __signetSignerInfo?: typeof info }).__signetSignerInfo = info;
+    console.warn(
+      `[auth] session ready — method=${session.method} canSignEvents=${canSign} pubkey=${session.pubkey?.slice(0, 12)}…`
+      + (canSign ? '' : '  ⚠ AUTH-ONLY: this session CANNOT sign. The signer device handed back no live bunker (no bunker:// URI, or the reconnect to it failed). Signing-dependent features will be skipped until you get a live signer.'),
+    );
+  } catch { /* diagnostics must never break login */ }
   return { ...session, signer: serialiseSigner(session.signer) };
 }
 
