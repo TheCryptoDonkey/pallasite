@@ -2651,7 +2651,7 @@ function withdrawErrorMessage(error: string, detail?: string): string {
     case 'ln_invoice_failed': return 'Could not get an invoice from your wallet.';
     case 'payment_failed': return 'Payment failed. Try later.';
     case 'invoice_mismatch': return 'Invoice did not match expected amount.';
-    case 'no_signer': return 'Cannot sign with this session.';
+    case 'no_signer': return 'Identity-only sign-in cannot withdraw. Sign in with a browser extension or bunker.';
     case 'sign_failed': {
       if (!detail) return 'Could not sign request. Check your signer.';
       if (/timeout|signer-timeout|queue-timeout/i.test(detail)) return 'Signer did not respond. Open your Nostr extension and unlock it.';
@@ -10114,7 +10114,7 @@ function claimErrorMessage(error: string, detail?: string): string {
     case 'invoice_mismatch': return 'Invoice did not match expected amount.';
     case 'signer_unavailable': return 'Game signer unreachable. Try later.';
     case 'service_not_configured': return 'Faucet not configured yet.';
-    case 'no_signer': return 'Cannot sign with this session.';
+    case 'no_signer': return 'Identity-only sign-in cannot claim. Sign in with a browser extension or bunker.';
     case 'sign_failed': {
       if (!detail) return 'Could not sign claim. Check your signer extension.';
       if (/timeout|signer-timeout|queue-timeout/i.test(detail)) {
@@ -10197,9 +10197,48 @@ async function maybePublishScore(
     return;
   }
   if (!state.session.signer.capabilities.canSignEvents) {
-    const note = el('p', { parent });
-    note.style.cssText = 'font-size:0.85rem;color:#999;margin:8px 0 0 0';
-    note.textContent = 'Signed-in session cannot sign — switch to a NIP-07 extension or NIP-46 bunker to claim.';
+    // Identity-only session (e.g. the Signet same-tab redirect, which proves
+    // who you are but hands back an EphemeralSigner). Rather than a dead-end
+    // note, offer a one-tap re-sign into a signing-capable session and then
+    // drop straight back into the claim flow.
+    const wrap = el('div', { parent });
+    wrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;align-items:center;margin:8px 0 0 0';
+    const note = el('p', { parent: wrap });
+    note.style.cssText = 'font-size:0.85rem;color:#999;margin:0;line-height:1.4;text-align:center';
+    note.textContent = 'This sign-in proves your identity but cannot sign a payout. Sign in with a browser extension to claim.';
+    const signInBtn = el('button', { className: 'menu-btn', parent: wrap, text: 'SIGN IN TO CLAIM' }) as HTMLButtonElement;
+    signInBtn.style.cssText = 'padding:6px 14px;font-size:0.85rem;cursor:pointer';
+    onTap(signInBtn, () => {
+      void (async () => {
+        signInBtn.disabled = true;
+        note.style.color = '#5b9dff';
+        note.textContent = 'Opening your signer…';
+        try {
+          // Force NIP-07 (in-page extension): the full picker would offer the
+          // Signet redirect, which unloads the page and loses this run's
+          // unclaimed payout. Bunker stays available from the title screen.
+          const upgraded = await auth.signInWith('nip07');
+          if (upgraded?.signer.capabilities.canSignEvents) {
+            state.session = upgraded;
+            // Re-render the recap with the now-signing session — the normal
+            // buildPayload → savePendingClaim → submitClaim flow takes over and
+            // the CLAIM picker appears. renderGameOver is already re-entrant
+            // (REPLAY KILL re-renders it), so this is safe.
+            renderGameOver(state);
+            return;
+          }
+          note.style.color = '#ff8050';
+          note.textContent = upgraded
+            ? 'That signer cannot sign events. Try a browser extension, or a bunker from the title screen.'
+            : 'No browser extension responded. Unlock one, or sign in with a bunker from the title screen.';
+          signInBtn.disabled = false;
+        } catch (err) {
+          note.style.color = '#ff8050';
+          note.textContent = err instanceof Error ? err.message : 'Sign-in failed.';
+          signInBtn.disabled = false;
+        }
+      })();
+    });
     return;
   }
   if (state.cheatedThisRun) {
