@@ -10028,11 +10028,15 @@ function publishSoloScoreForRun(state: GameState): void {
   const runId = String(state.runStartedAt);
   if (runId === lastSoloScorePublishedRun) return;
   lastSoloScorePublishedRun = runId;
+  const playerName = scoreboardNameFor(state);
   void (async () => {
     let signer = state.session?.signer.capabilities.canSignEvents ? state.session : null;
+    // nip05 only when signing as the real session — it must verify against the
+    // p-tag pubkey, and the guest fallback publishes under a different key.
+    const nip05 = signer ? state.profile?.nip05 : undefined;
     if (!signer) {
       try {
-        signer = await loadOrCreateGuest({ name: scoreboardNameFor(state), followPallasite: false });
+        signer = await loadOrCreateGuest({ name: playerName, followPallasite: false });
       } catch {
         return;
       }
@@ -10043,6 +10047,8 @@ function publishSoloScoreForRun(state: GameState): void {
       duration_ms: Math.max(0, Math.floor(state.runTimeMs)),
       run_id: runId,
       mode: soloMode,
+      player_name: playerName,
+      ...(nip05 ? { nip05 } : {}),
       ...(getFlavour() === '600bn' ? { room: '600bn' as const } : {}),
       cheated: state.cheatedThisRun,
     }).catch(() => undefined);
@@ -10611,6 +10617,11 @@ async function maybePublishScore(
         sats_claimed: state.players[0].sats,
         cheated: state.cheatedThisRun,
         mode: currentMode(),
+        // Display name + NIP-05 so the claim's kind 30762 shows a name on
+        // Gamestr. Claims always sign as the real session, so the nip05
+        // verifies against the p-tag pubkey.
+        player_name: scoreboardNameFor(state),
+        ...(state.profile?.nip05 ? { nip05: state.profile.nip05 } : {}),
         ...(seed ? { daily_seed: seed } : {}),
         // Flag 600bn-flavour runs so the faucet enforces the
         // daily_cap_600bn budget + appends the ['t','600bn'] tag on
