@@ -5,6 +5,10 @@
  * stored Signet session, and routes between title/playing/paused/game-over.
  */
 
+// First: backfill crypto.randomUUID / crypto.subtle.digest when running over
+// plain http on a LAN (offline booth box), where they're otherwise undefined.
+// No-op in secure contexts. Must precede any module that touches crypto.
+import './secure-context-shim.js';
 import { makeInitialState, startGame, updateGame, pauseGame, resumeGame, tryHyperspace, tryActivateShield, cheatJumpToWave, cheatJumpToBonus, skipDeathReplay, skipWaveStart, skipWarp, toastNow, FIXED_STEP_S } from './game.js';
 import { getFlavour } from './flavour.js';
 import { lockInDifficulty, getStoredDifficulty, setStoredDifficulty } from './difficulty.js';
