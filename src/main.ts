@@ -1947,8 +1947,11 @@ function loop(now: number): void {
   pollGamepads(state, {
     pilotSlots: localPilotSlots,
     peerActive: isPeerActive(),
-    flightMode: boothPickupAndGo ? 'flydirect' : getPadFlightMode(),
-    autoThrust: !boothPickupAndGo && getPadAutoThrust(),
+    // Honour the player's chosen scheme everywhere — the default is already
+    // Point & Fly (the walk-up-friendly pickup-and-go), and a booth hand-over
+    // (SIGN OUT) resets it to default, so each drop-in still starts simple.
+    flightMode: getPadFlightMode(),
+    autoThrust: getPadAutoThrust(),
     localKeys,
     localHeading,
     localThrust,
