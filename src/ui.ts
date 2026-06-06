@@ -43,7 +43,7 @@ import { getHapticsEnabled, setHapticsEnabled, hapticsSupported } from './haptic
 import * as auth from './auth.js';
 import type { SignetSession } from 'signet-login';
 import { addLocalHighScore, getLocalHighScores, isHighScore, subscribeGlobalHighScores, clearLocalHighScores, publishCoopCampaignScore, type GlobalHighScore, type ScoreBoardId } from './score.js';
-import { submitClaim, submitCoopScore, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, fetchFlagged, requestDeleteFlag, requestLnurlWithdraw, pollLnurlWithdrawStatus, fetchAdminState, setAdminCaps, setAdminPause, applyAdminPreset, saveAdminSettings, fetchAdminPlayer, setAdminPlayerFlag, adjustAdminPlayerBalance, setAdminPlayerTier, isAdminSession, type PlayerTier, type FlaggedEntry, type AdminStateResult, type AdminPlayer } from './faucet.js';
+import { submitClaim, submitCoopScore, submitSoloScore, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, fetchFlagged, requestDeleteFlag, requestLnurlWithdraw, pollLnurlWithdrawStatus, fetchAdminState, setAdminCaps, setAdminPause, applyAdminPreset, saveAdminSettings, fetchAdminPlayer, setAdminPlayerFlag, adjustAdminPlayerBalance, setAdminPlayerTier, isAdminSession, type PlayerTier, type FlaggedEntry, type AdminStateResult, type AdminPlayer } from './faucet.js';
 import {
   fetchReviewCases,
   generateJuryIdentity,
@@ -9985,6 +9985,14 @@ function shortRelay(url: string): string {
 
 // ── Game over screen ──────────────────────────────────────────────────────────
 
+/** Solo arcade modes that publish a Gamestr score on game-over. Co-op has its
+ *  own game-signed path (submitCoopScore); deathmatch/duel are PvP; sanctum/
+ *  defender are special surfaces. Matches the faucet's /api/score mode enum. */
+const GAMESTR_SOLO_MODES = new Set<RunMode>(['campaign', 'drift', 'bossrush', 'arena']);
+/** Run id of the last solo score published, so renderGameOver re-entries
+ *  (REPLAY KILL, claim-picker re-render) don't double-publish a run. */
+let lastSoloScorePublishedRun = '';
+
 export function renderGameOver(state: GameState): void {
   // Push the current skin unlock set to Nostr at the end of every run.
   // kind 30764 is replaceable (d="pallasite-skins") so this is idempotent
@@ -9992,6 +10000,32 @@ export function renderGameOver(state: GameState): void {
   // mid-run), the new set propagates without a separate signal path.
   if (state.session) {
     void publishSkinUnlocks(state.session).catch(() => undefined);
+  }
+
+  // Publish a GAME-SIGNED (verified on Gamestr) score on every game-over,
+  // decoupled from the sat-claim flow — so a score reaches the leaderboard
+  // whether or not the player claims sats, and even if payouts are off.
+  // Once per run, best-effort, solo arcade modes only.
+  const soloMode = currentMode();
+  if (
+    state.session?.signer.capabilities.canSignEvents
+    && GAMESTR_SOLO_MODES.has(soloMode)
+    && state.players[0].score > 0
+    && state.runStartedAt > 0
+  ) {
+    const runId = String(state.runStartedAt);
+    if (runId !== lastSoloScorePublishedRun) {
+      lastSoloScorePublishedRun = runId;
+      void submitSoloScore(state.session, {
+        score: state.players[0].score,
+        wave: state.wave,
+        duration_ms: Math.max(0, Math.floor(state.runTimeMs)),
+        run_id: runId,
+        mode: soloMode,
+        ...(getFlavour() === '600bn' ? { room: '600bn' as const } : {}),
+        cheated: state.cheatedThisRun,
+      }).catch(() => undefined);
+    }
   }
 
   // High-score handling — auto-save under the player's session display
