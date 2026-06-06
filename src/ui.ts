@@ -12383,7 +12383,7 @@ function openZapModal(state: GameState): void {
   for (const amount of presets) {
     const b = el('button', { parent: presetRow, text: amount >= 1000 ? `${amount / 1000}k` : amount.toString() });
     presetButtons.push(b);
-    b.addEventListener('click', () => {
+    onTap(b, () => {
       chosenAmount = amount;
       customInput.value = '';
       refreshPresets();
@@ -12443,7 +12443,7 @@ function openZapModal(state: GameState): void {
     'margin-top:14px',
     'transition:all 0.12s ease',
   ].join(';');
-  genBtn.addEventListener('click', async () => {
+  onTap(genBtn, async () => {
     if (chosenAmount < 1) {
       status.textContent = 'Pick an amount.';
       status.style.color = '#ff8a3a';
@@ -12501,7 +12501,7 @@ function openZapModal(state: GameState): void {
         'cursor:pointer',
         'border-radius:6px',
       ].join(';');
-      webln.addEventListener('click', async () => {
+      onTap(webln, async () => {
         webln.disabled = true;
         webln.textContent = 'PAYING…';
         try {
@@ -12530,7 +12530,7 @@ function openZapModal(state: GameState): void {
       'cursor:pointer',
       'border-radius:6px',
     ].join(';');
-    copy.addEventListener('click', async () => {
+    onTap(copy, async () => {
       try {
         await navigator.clipboard.writeText(invoice);
         copy.textContent = '✓ COPIED';
@@ -12554,6 +12554,10 @@ function openZapModal(state: GameState): void {
       'border-radius:6px',
       'text-decoration:none',
       'display:inline-block',
+      // Native link activation is a click; body has touch-action:none which
+      // suppresses tap→click, so opt this back in or the wallet link is dead
+      // on mobile (same class of bug as the buttons, which use onTap).
+      'touch-action:manipulation',
     ].join(';');
   }
 
@@ -12572,12 +12576,13 @@ function openZapModal(state: GameState): void {
     'cursor:pointer',
     'border-radius:6px',
   ].join(';');
-  close.addEventListener('click', () => modal.remove());
+  onTap(close, () => modal.remove());
 
-  // Close on backdrop click
-  modal.addEventListener('click', e => {
-    if (e.target === modal) modal.remove();
-  });
+  // Close on backdrop tap (click + non-mouse pointerup, since mobile click is
+  // unreliable here — same reason the buttons use onTap).
+  const dismissBackdrop = (e: Event): void => { if (e.target === modal) modal.remove(); };
+  modal.addEventListener('click', dismissBackdrop);
+  modal.addEventListener('pointerup', e => { if (e.pointerType !== 'mouse') dismissBackdrop(e); });
 
   // Close on Escape
   const escHandler = (e: KeyboardEvent): void => {
