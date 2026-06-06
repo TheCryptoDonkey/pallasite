@@ -12250,7 +12250,7 @@ function openGuestKeyExport(pubkeyHex: string, privkeyHex: string): void {
   npubText.style.cssText = 'flex:1;padding:8px 10px;background:rgba(2,5,13,0.6);border:1px solid rgba(140,255,180,0.25);border-radius:6px;font-size:0.78rem;color:#fff5d8;word-break:break-all;line-height:1.4;user-select:all;';
   const npubCopy = el('button', { parent: npubRow, text: 'COPY' }) as HTMLButtonElement;
   npubCopy.style.cssText = 'flex:0 0 auto;padding:8px 14px;background:rgba(140,255,180,0.12);border:1px solid rgba(140,255,180,0.55);border-radius:6px;color:#8cffb4;font-family:inherit;font-size:0.78rem;letter-spacing:0.14em;cursor:pointer;';
-  npubCopy.addEventListener('click', () => {
+  onTap(npubCopy, () => {
     void navigator.clipboard?.writeText(npubBech).then(
       () => { npubCopy.textContent = 'COPIED'; window.setTimeout(() => { npubCopy.textContent = 'COPY'; }, 1400); },
       () => { npubCopy.textContent = 'FAIL'; },
@@ -12276,7 +12276,7 @@ function openGuestKeyExport(pubkeyHex: string, privkeyHex: string): void {
   const revealBtn = el('button', { parent: nsecRow, text: 'REVEAL' }) as HTMLButtonElement;
   revealBtn.style.cssText = 'flex:0 0 auto;padding:8px 14px;background:rgba(255,120,120,0.12);border:1px solid rgba(255,120,120,0.55);border-radius:6px;color:#ff8a8a;font-family:inherit;font-size:0.78rem;letter-spacing:0.14em;cursor:pointer;';
   let revealed = false;
-  revealBtn.addEventListener('click', () => {
+  onTap(revealBtn, () => {
     revealed = !revealed;
     nsecText.textContent = revealed ? nsecBech : '••••••••••••••••••••••••••••••••';
     nsecText.style.color = revealed ? '#fff5d8' : 'rgba(255,160,120,0.85)';
@@ -12284,7 +12284,7 @@ function openGuestKeyExport(pubkeyHex: string, privkeyHex: string): void {
   });
   const nsecCopy = el('button', { parent: nsecRow, text: 'COPY' }) as HTMLButtonElement;
   nsecCopy.style.cssText = 'flex:0 0 auto;padding:8px 14px;background:rgba(255,120,120,0.12);border:1px solid rgba(255,120,120,0.55);border-radius:6px;color:#ff8a8a;font-family:inherit;font-size:0.78rem;letter-spacing:0.14em;cursor:pointer;';
-  nsecCopy.addEventListener('click', () => {
+  onTap(nsecCopy, () => {
     void navigator.clipboard?.writeText(nsecBech).then(
       () => { nsecCopy.textContent = 'COPIED'; window.setTimeout(() => { nsecCopy.textContent = 'COPY'; }, 1400); },
       () => { nsecCopy.textContent = 'FAIL'; },
@@ -12302,8 +12302,12 @@ function openGuestKeyExport(pubkeyHex: string, privkeyHex: string): void {
   const closeBtn = el('button', { className: 'menu-btn', parent: closeRow, text: 'DONE' }) as HTMLButtonElement;
   closeBtn.style.cssText += 'font-size:0.85rem;padding:8px 24px;letter-spacing:0.18em;';
   const close = (): void => { modal.remove(); window.removeEventListener('keydown', onKey); };
-  closeBtn.addEventListener('click', close);
-  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+  onTap(closeBtn, close);
+  // Backdrop dismiss — click + non-mouse pointerup (body has touch-action:none,
+  // which suppresses tap→click on mobile).
+  const dismissBackdrop = (e: Event): void => { if (e.target === modal) close(); };
+  modal.addEventListener('click', dismissBackdrop);
+  modal.addEventListener('pointerup', (e) => { if (e.pointerType !== 'mouse') dismissBackdrop(e); });
   const onKey = (e: KeyboardEvent): void => { if (e.code === 'Escape') close(); };
   window.addEventListener('keydown', onKey);
 }
