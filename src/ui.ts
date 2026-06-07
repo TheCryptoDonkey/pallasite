@@ -5047,10 +5047,10 @@ function renderControllerIdentityCardInner(
     });
   }
   specs.push({
-    label: '📱 SIGN IN WITH SIGNET',
-    sub: 'OAuth-style sign-in via Signet · open-source, self-hostable',
+    label: '📱 SIGNET ON ANOTHER DEVICE',
+    sub: 'QR relay sign-in · keep My Signet open so this pad can request signatures',
     accent: 'rgba(255,216,74,0.55)',
-    onClick: () => { void runSignIn('redirect', 'Signet'); },
+    onClick: () => { void runSignIn('qr', 'Signet QR'); },
   });
   specs.push({
     label: '🔑 PASTE NSEC',

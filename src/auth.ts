@@ -74,7 +74,7 @@ export interface SignetVerifyOptions {
   acceptUnconfirmed?: boolean;
 }
 
-export type SignInMethod = 'nip07' | 'redirect' | 'bunker' | 'nsec' | 'amber';
+export type SignInMethod = 'nip07' | 'redirect' | 'qr' | 'bunker' | 'nsec' | 'amber';
 
 declare global {
   interface Window {
@@ -217,15 +217,16 @@ export async function signIn(): Promise<SignetSession | null> {
   // sees. Fall back to the SDK default only if zero relays are enabled.
   const active = getActiveRelays();
   const relayUrl = active[0];
-  // Open the SDK's own picker — four buttons: NIP-07, Sign in with Signet
-  // (same-tab redirect), Signet on another device (QR + relay), bunker URI.
-  // We don't pass `mode` or `preferredMethod`, so the user picks; the
-  // same-tab Signet button calls startRedirect inside the modal and
-  // navigates this tab away.
+  // Force the Signet relay/QR path. Same-tab redirect proves identity but
+  // cannot keep signing when the user's key is local to mysignet.app on
+  // another device: that page unloads before Pallasite can use its in-page
+  // bunker. Pallasite needs a continuing signer for scores/claims, so the
+  // generic Signet entry goes straight to QR.
   const session = await withTimeout(
     window.Signet.login({
       appName: APP_NAME,
       theme: 'dark',
+      preferredMethod: 'qr',
       ...(relayUrl ? { relayUrl } : {}),
     }),
     SIGN_IN_TIMEOUT_MS,
