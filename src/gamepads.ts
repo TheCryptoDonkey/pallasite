@@ -53,6 +53,42 @@ export function setPadFlightMode(m: PadFlightMode): void {
   try { localStorage.setItem(FLIGHT_MODE_KEY, m); } catch { /* ignore */ }
 }
 
+// ── Per-slot flight model (booth wizard: each pilot picks their own scheme) ────
+// Keyed by game player slot. An unset slot falls back to the global flight mode.
+// Set by the booth setup wizard's per-player control pick; cleared on hand-over.
+const flightModeBySlot = new Map<number, PadFlightMode>();
+
+export function getPadFlightModeForSlot(slot: number): PadFlightMode {
+  return flightModeBySlot.get(slot) ?? getPadFlightMode();
+}
+
+export function setPadFlightModeForSlot(slot: number, m: PadFlightMode): void {
+  flightModeBySlot.set(slot, m);
+}
+
+export function clearPadFlightModeBySlot(): void {
+  flightModeBySlot.clear();
+}
+
+// ── Booth pad → slot binding (join order) ─────────────────────────────────────
+// The booth join wizard records which physical gamepad.index drives which game
+// slot (first pad to press A → slot 0). When set, pollGamepads routes by it so a
+// pilot's chosen scheme + ship colour follow the person, not the browser's pad
+// index. Empty everywhere else → positional couch/solo routing.
+let boothPadSlotBinding: Array<{ slot: number; padIndex: number }> = [];
+
+export function setBoothPadSlotBinding(binding: ReadonlyArray<{ slot: number; padIndex: number }>): void {
+  boothPadSlotBinding = binding.map((b) => ({ slot: b.slot, padIndex: b.padIndex }));
+}
+
+export function getBoothPadSlotBinding(): ReadonlyArray<{ slot: number; padIndex: number }> {
+  return boothPadSlotBinding;
+}
+
+export function clearBoothPadSlotBinding(): void {
+  boothPadSlotBinding = [];
+}
+
 // ── Auto-thrust (accessibility: tap to cruise rather than hold the trigger) ───
 const AUTO_THRUST_KEY = 'pallasite:padAutoThrust';
 let autoThrustCache: boolean | null = null;
@@ -165,10 +201,19 @@ interface PadMemory {
   menuB: boolean;
 }
 
-const memory: PadMemory[] = [];
+// Keyed by gamepad.index (stable per physical pad), not by position — so the
+// booth binding can route a specific pad to its slot and its frame-to-frame
+// state stays attached to that pad across reconnect reshuffles.
+const memory = new Map<number, PadMemory>();
 
 function freshMemory(): PadMemory {
   return { engaged: false, fire: false, shield: false, hyper: false, pause: false, thrust: false, cruise: false, heldKeys: {}, menuDir: null, menuA: false, menuB: false };
+}
+
+function memFor(padIndex: number): PadMemory {
+  let m = memory.get(padIndex);
+  if (!m) { m = freshMemory(); memory.set(padIndex, m); }
+  return m;
 }
 
 function dispatchKey(code: string): void {
@@ -181,6 +226,47 @@ function pressed(pad: Gamepad, i: number): boolean {
   return !!b && (b.pressed || b.value > 0.5);
 }
 
+/** Shared menu-nav state for one pad — the subset driveMenuFromPad edges on.
+ *  PadMemory satisfies this structurally, so applyPad passes its mem while the
+ *  booth wizard passes a tiny standalone object per active pad. */
+export interface MenuNavState {
+  menuDir: 'up' | 'down' | 'left' | 'right' | null;
+  menuA: boolean;
+  menuB: boolean;
+}
+
+/** True when standard-mapping button `i` is down (digital or analog-past-half).
+ *  Exported so the booth wizard can edge-detect A (0) / Start (9) itself. */
+export function padButtonDown(pad: Gamepad, i: number): boolean {
+  return pressed(pad, i);
+}
+
+/** Drive overlay menu navigation from one pad: left stick / d-pad → synthetic
+ *  Arrow keys (on direction change), A (0) → Enter, B (1) → Escape (both
+ *  rising-edge). The single source of truth for "a pad walks a menu", shared by
+ *  the in-game menu phases (applyPad) and the booth setup wizard's single-pad
+ *  nav. Confirm/back use the STANDARD face-button indices, independent of the
+ *  remappable in-game bindings — a pad that resting-reports Start/Menu can't mask
+ *  A (the bug the old per-action gating caused). B (1) only for back, never
+ *  Start/Menu/View. */
+export function driveMenuFromPad(pad: Gamepad, nav: MenuNavState): void {
+  const dx = (pad.axes[0] ?? 0) + (pressed(pad, 15) ? 1 : 0) - (pressed(pad, 14) ? 1 : 0);
+  const dy = (pad.axes[1] ?? 0) + (pressed(pad, 13) ? 1 : 0) - (pressed(pad, 12) ? 1 : 0);
+  let dir: MenuNavState['menuDir'] = null;
+  if (Math.abs(dx) > 0.55 || Math.abs(dy) > 0.55) {
+    dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+  }
+  if (dir && dir !== nav.menuDir) {
+    dispatchKey(dir === 'up' ? 'ArrowUp' : dir === 'down' ? 'ArrowDown' : dir === 'left' ? 'ArrowLeft' : 'ArrowRight');
+  }
+  nav.menuDir = dir;
+  const aBtn = pressed(pad, 0);
+  const bBtn = pressed(pad, 1);
+  if (aBtn && !nav.menuA) dispatchKey('Enter');
+  if (bBtn && !nav.menuB) dispatchKey('Escape');
+  nav.menuA = aBtn; nav.menuB = bBtn;
+}
+
 /** Poll every connected pad and route it onto its pilot's slot. Call once per
  *  rAF, before the sim steps run. */
 export function pollGamepads(state: GameState, routing: GamepadRouting): void {
@@ -188,23 +274,38 @@ export function pollGamepads(state: GameState, routing: GamepadRouting): void {
   if (typeof navigator === 'undefined' || typeof navigator.getGamepads !== 'function') return;
   const all = navigator.getGamepads();
   if (!all) return;
+
+  // Booth wizard binding: route each recorded physical pad (by gamepad.index) to
+  // the slot it joined as, so routing follows JOIN ORDER (first A → slot 0), not
+  // the browser's pad-index order. Falls through to positional routing when unset.
+  if (boothPadSlotBinding.length) {
+    for (const { slot, padIndex } of boothPadSlotBinding) {
+      if (slot < 0 || slot >= state.players.length) continue;
+      const pad = all[padIndex];
+      if (!pad || !pad.connected) continue;
+      applyPad(state, slot, pad, routing, memFor(pad.index));
+    }
+    return;
+  }
+
+  // Default couch / solo: pad at connected-position i drives pilotSlots[i].
   const connected: Gamepad[] = [];
   for (const p of all) if (p && p.connected) connected.push(p);
-
   const maxPads = Math.min(connected.length, routing.pilotSlots.length);
-  for (let padIndex = 0; padIndex < maxPads; padIndex++) {
-    const slot = routing.pilotSlots[padIndex];
+  for (let i = 0; i < maxPads; i++) {
+    const slot = routing.pilotSlots[i];
     if (slot < 0 || slot >= state.players.length) continue;
-    while (memory.length <= padIndex) memory.push(freshMemory());
-    applyPad(state, padIndex, slot, connected[padIndex], routing);
+    applyPad(state, slot, connected[i], routing, memFor(connected[i].index));
   }
 }
 
-function applyPad(state: GameState, padIndex: number, slot: number, pad: Gamepad, routing: GamepadRouting): void {
+function applyPad(state: GameState, slot: number, pad: Gamepad, routing: GamepadRouting, mem: PadMemory): void {
   const player = state.players[slot];
   if (!player) return;
-  const mem = memory[padIndex];
   const peer = routing.peerActive;
+  // Per-slot flight model (booth wizard sets it per pilot); else the per-frame
+  // global the loop passed in.
+  const flightMode = flightModeBySlot.get(slot) ?? routing.flightMode;
 
   const ax = pad.axes[0] ?? 0;
   const ay = pad.axes[1] ?? 0;
@@ -249,33 +350,11 @@ function applyPad(state: GameState, padIndex: number, slot: number, pad: Gamepad
   const setTurn = (dir: number): void => { setKey('ArrowLeft', dir < 0); setKey('ArrowRight', dir > 0); };
 
   if (MENU_PHASES.has(state.phase)) {
-    // Menu phases: the stick / d-pad walk the overlay buttons, fire / pause
-    // confirm, shield dismisses — a kiosk is fully driveable from the pad (e.g.
-    // SPAWN AGAIN after a death). Synthetic keys go through the normal handlers.
-    const dx = (pad.axes[0] ?? 0) + (pressed(pad, 15) ? 1 : 0) - (pressed(pad, 14) ? 1 : 0);
-    const dy = (pad.axes[1] ?? 0) + (pressed(pad, 13) ? 1 : 0) - (pressed(pad, 12) ? 1 : 0);
-    let dir: PadMemory['menuDir'] = null;
-    if (Math.abs(dx) > 0.55 || Math.abs(dy) > 0.55) {
-      dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
-    }
-    if (dir && dir !== mem.menuDir) {
-      dispatchKey(dir === 'up' ? 'ArrowUp' : dir === 'down' ? 'ArrowDown' : dir === 'left' ? 'ArrowLeft' : 'ArrowRight');
-    }
-    mem.menuDir = dir;
-    // Confirm / back use the STANDARD face buttons by index — independent of
-    // the in-game fire/shield/pause bindings and of each other. The old logic
-    // gated fire→Enter behind !(mem.fire || mem.pause); a pad that resting-
-    // reports its Start/extra button as 'pause' kept mem.pause true and so
-    // masked confirm forever (A "did nothing" while B/arrows worked). A (0) =
-    // select; B (1) / View (8) / Menu (9) = back.
-    const aBtn = pressed(pad, 0);
-    // Back is B (1) ONLY — deliberately not Start/Menu/View: those are the
-    // buttons quirky pads tend to resting-report, which would both mask A and
-    // (if mapped) fire a stray Escape on menu entry.
-    const bBtn = pressed(pad, 1);
-    if (aBtn && !mem.menuA) dispatchKey('Enter');
-    if (bBtn && !mem.menuB) dispatchKey('Escape');
-    mem.menuA = aBtn; mem.menuB = bBtn;
+    // Menu phases: the stick / d-pad walk the overlay buttons, A confirms, B
+    // backs — a kiosk is fully driveable from the pad (e.g. SPAWN AGAIN after a
+    // death). Shared with the booth setup wizard's single-pad nav via
+    // driveMenuFromPad; synthetic keys go through the normal handlers.
+    driveMenuFromPad(pad, mem);
     // Park the in-game holds so nothing carries into the next run.
     setHeading(null); setThrust(false); setFire(false); setTurn(0);
     mem.cruise = false;
@@ -297,7 +376,7 @@ function applyPad(state: GameState, padIndex: number, slot: number, pad: Gamepad
   // way and auto-fire. Otherwise the flight model decides what the left stick
   // does: 'classic' rate-turns (arcade rotate buttons); the other two set an
   // absolute heading (point-and-fly / aim).
-  const classic = routing.flightMode === 'classic';
+  const classic = flightMode === 'classic';
   if (rmag > DEADZONE) {
     setHeading(Math.atan2(ry, rx)); setTurn(0); setFire(true);
   } else if (classic) {
@@ -317,7 +396,7 @@ function applyPad(state: GameState, padIndex: number, slot: number, pad: Gamepad
   // Thrust: the throttle always drives. In 'flydirect' a left-stick push also
   // thrusts (point-and-fly), unless the right stick is steering the aim; in
   // 'classic' d-pad up thrusts like the arcade thrust button.
-  const stickThrust = routing.flightMode === 'flydirect' && rmag <= DEADZONE && mag > DEADZONE;
+  const stickThrust = flightMode === 'flydirect' && rmag <= DEADZONE && mag > DEADZONE;
   const dpadThrust = classic && pressed(pad, 12);
   setThrust(throttle || stickThrust || dpadThrust);
 

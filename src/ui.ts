@@ -9,7 +9,7 @@ import type { DeathmatchRules, GameState } from './types.js';
 import { WAVE_LORE, gameOverArcLine } from './types.js';
 import { getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRelay, removeRelay, resetRelays } from './relays.js';
 import { getTouchMode, setTouchMode, type TouchInputMode } from './touch.js';
-import { getPadFlightMode, setPadFlightMode, getPadAutoThrust, setPadAutoThrust, getPadBindings, setPadBinding, resetPadBindings, setPadInputSuppressed, PAD_ACTIONS, PAD_BUTTON_NAMES, type PadFlightMode, type PadAction } from './gamepads.js';
+import { getPadFlightMode, setPadFlightMode, getPadAutoThrust, setPadAutoThrust, getPadFlightModeForSlot, setPadFlightModeForSlot, clearPadFlightModeBySlot, setBoothPadSlotBinding, clearBoothPadSlotBinding, driveMenuFromPad, padButtonDown, getPadBindings, setPadBinding, resetPadBindings, setPadInputSuppressed, PAD_ACTIONS, PAD_BUTTON_NAMES, type PadFlightMode, type PadAction, type MenuNavState } from './gamepads.js';
 import { getDisplayMode, setDisplayMode, type DisplayMode } from './display.js';
 import {
   VISUAL_CATEGORIES,
@@ -1592,13 +1592,9 @@ export function renderEventLobby(state: GameState): void {
   }
 }
 
-/** Prague booth kiosk lobby — the stripped surface `?p1`/`?p2` boot into.
- *  Login (renderAuth: Nostr or one-tap guest) happens first; here a pilot picks
- *  how many play THIS screen, or links to the other booth. Campaign only — no
- *  mode picker, difficulty, skins, settings, daily, deathmatch or join noise. */
 /** Render an avatar + name chip for a player identity into `parent`, repainting
- *  when the kind-0 profile lands. Reused on the lobby, the co-op ready screen,
- *  and (later) the HUD / game-over. */
+ *  when the kind-0 profile lands. Reused on the booth join wizard's control-pick
+ *  step and (later) the HUD / game-over. */
 function renderIdentityChip(parent: HTMLElement, pubkey: string, fallbackName: string, label: string, colour: string): void {
   const chip = el('div', { parent });
   chip.style.cssText = 'display:flex;align-items:center;gap:10px;';
@@ -1635,111 +1631,118 @@ function deferProfileFetch(pubkey: string, onProfile: (profile: NostrProfile) =>
   }
 }
 
-/** Co-op "ready" screen: both signed-in identities (P1 + P2) side by side, then
- *  START → couch run in place. Reached from the booth lobby's 2 PLAYERS flow
- *  once Player 2 has signed in with their own details. */
-function renderCoopReady(state: GameState, booth: number): void {
-  clearOverlay();
-  const overlay = el('div', { className: 'overlay', parent: root });
-  setupOverlayArrowNav(overlay);
-  el('h2', { parent: overlay, text: 'READY' });
-  el('p', { parent: overlay, text: `BTC PRAGUE · BOOTH ${booth} · CO-OP` })
-    .style.cssText = 'font-size:0.8rem;color:#8cffb4;letter-spacing:0.22em;margin:-8px 0 6px;';
-  const row = el('div', { parent: overlay });
-  row.style.cssText = 'display:flex;gap:32px;align-items:center;justify-content:center;margin:16px 0;flex-wrap:wrap;';
-  if (state.session) renderIdentityChip(row, state.session.pubkey, state.session.displayName ?? 'guest', 'PLAYER 1', PLAYER_COLOURS[0]);
-  if (state.coopIdentity2) renderIdentityChip(row, state.coopIdentity2.pubkey, state.coopIdentity2.displayName, 'PLAYER 2', PLAYER_COLOURS[1]);
-  const startRow = el('div', { className: 'menu-row', parent: overlay });
-  const start = el('button', { className: 'menu-btn', parent: startRow, text: '▶ START' }) as HTMLButtonElement;
-  start.style.cssText += 'font-size:1.2rem;padding:12px 44px;letter-spacing:0.2em;background:rgba(255,216,74,0.18);border-color:#ffd84a;color:#ffd84a;';
-  start.addEventListener('click', () => {
-    setStoredMode('campaign');
-    setStoredDailyPref(false);
-    lockInDifficulty(getStoredDifficulty());
-    gateBehindOnboarding(() => startCouchInPlace());
-  });
-  setTimeout(() => tryFocusVisible(start), 0);
-  const back = el('button', { parent: overlay, text: '◀ BACK' });
-  back.style.cssText = 'margin-top:10px;background:none;border:1px solid rgba(180,140,255,0.3);color:rgba(200,180,255,0.7);font:0.72rem ui-monospace,monospace;letter-spacing:0.14em;padding:6px 14px;border-radius:6px;cursor:pointer;';
-  back.addEventListener('click', () => { state.coopIdentity2 = null; renderBoothLobby(state, booth); });
+// ── Booth setup wizard (?p1/?p2) ──────────────────────────────────────────────
+// Gamepad-first walk-up flow: press Ⓐ to join (how many pads press Ⓐ decides 1P
+// vs 2P), then each joined pilot signs in (Nostr or guest) and picks their own
+// flight scheme, then the run starts (solo, or local couch for two). The wizard
+// owns the gamepads for its whole lifetime: it suppresses the main loop's pad
+// routing and runs ONE rAF poll that — on the join screen — edge-detects Ⓐ/Start
+// per pad, and — on a per-pilot setup step — drives just that pilot's pad through
+// the menus via driveMenuFromPad. LINK BOOTHS (cross-booth) stays a separate path.
+//
+// A gamepad press is not a browser user-gesture, so audio.unlockAudio() /
+// tryEnterFullscreen() are best-effort here — reliable via a real tap (touch
+// booth) or the operator's initial page-load click. Launch the booth in kiosk
+// fullscreen and give it one operator tap to unlock audio.
+
+/** The three pad flight schemes, shared by the per-pilot control pick. */
+const PAD_SCHEME_OPTS: ReadonlyArray<{ value: PadFlightMode; label: string; hint: string }> = [
+  { value: 'flydirect', label: 'POINT & FLY',    hint: 'Pickup-and-go — push the left stick to aim and fly together' },
+  { value: 'throttle',  label: 'AIM + THROTTLE', hint: 'Left stick aims, right trigger throttles — hold a firing line' },
+  { value: 'classic',   label: 'CLASSIC',        hint: 'Arcade — d-pad turns, right trigger (or d-pad up) thrusts' },
+];
+
+interface BoothPilot { padIndex: number; slot: number; session: SignetSession | null; }
+
+interface BoothWizard {
+  active: boolean;
+  booth: number;
+  mode: 'join' | 'nav';
+  /** gamepad.index of the pad driving the menus during a per-pilot setup step. */
+  activePad: number | null;
+  nav: MenuNavState;
+  /** Per-pad (gamepad.index) edge memory for the join screen's Ⓐ / Start. */
+  joinEdge: Map<number, { a: boolean; start: boolean }>;
+  pilots: BoothPilot[];
+  raf: number | null;
 }
 
-/** Player-facing controller preferences — a focused subset of Settings reachable
- *  straight from the booth lobby (the full Settings stays operator-only behind
- *  the logo long-press). Lets a walk-up pick their gamepad flight scheme +
- *  auto-thrust and test their pad, without the audio / lobby / score operator
- *  controls. */
-function renderControllerPrefs(state: GameState, booth: number): void {
-  clearOverlay();
-  const overlay = el('div', { className: 'overlay', parent: root });
-  setupOverlayArrowNav(overlay);
-  el('h2', { parent: overlay, text: 'CONTROLLER' });
-  el('p', { parent: overlay, text: 'Pick how your gamepad flies. The right stick aims + auto-fires in every mode.' })
-    .style.cssText = 'font-size:0.84rem;color:rgba(220,210,255,0.72);margin:4px auto 16px;max-width:520px;text-align:center;line-height:1.5;';
+let boothWizard: BoothWizard | null = null;
 
-  const padOpts: ReadonlyArray<{ value: PadFlightMode; label: string; hint: string }> = [
-    { value: 'flydirect', label: 'POINT & FLY',    hint: 'Pickup-and-go — push the left stick to aim and fly together' },
-    { value: 'throttle',  label: 'AIM + THROTTLE', hint: 'Left stick aims, right trigger throttles — hold a firing line' },
-    { value: 'classic',   label: 'CLASSIC',        hint: 'Arcade — d-pad turns, right trigger (or d-pad up) thrusts' },
-  ];
-  const panel = el('div', { parent: overlay });
-  panel.style.cssText = 'display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap;';
-  const hint = el('p', { parent: overlay });
-  hint.style.cssText = 'font-size:0.8rem;color:rgba(180,140,255,0.75);min-height:1.2em;margin:8px 0 0;text-align:center;max-width:520px;';
-  const btns = new Map<PadFlightMode, HTMLButtonElement>();
-  const paint = (): void => {
-    const cur = getPadFlightMode();
-    for (const [v, b] of btns) {
-      const on = v === cur;
-      b.style.cssText = [
-        'background:' + (on ? 'rgba(88,255,88,0.2)' : 'transparent'),
-        'border:2px solid ' + (on ? '#58ff58' : 'rgba(180,140,255,0.4)'),
-        'color:' + (on ? '#58ff58' : 'rgba(220,210,255,0.85)'),
-        "font-family:'VT323',ui-monospace,monospace", 'font-size:1.15rem', 'padding:10px 22px',
-        'letter-spacing:0.16em', 'cursor:pointer', 'border-radius:6px', 'min-width:140px',
-      ].join(';');
-    }
-    hint.textContent = padOpts.find((o) => o.value === cur)?.hint ?? '';
-  };
-  for (const opt of padOpts) {
-    const b = el('button', { parent: panel, text: opt.label }) as HTMLButtonElement;
-    btns.set(opt.value, b);
-    b.addEventListener('click', () => { setPadFlightMode(opt.value); paint(); });
-  }
-  paint();
-
-  const autoWrap = el('div', { parent: overlay });
-  autoWrap.style.cssText = 'display:flex;justify-content:center;align-items:center;gap:14px;margin-top:18px;';
-  el('span', { parent: autoWrap, text: 'AUTO-THRUST' }).style.cssText = 'font-size:0.9rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
-  const autoBtn = el('button', { parent: autoWrap, text: 'OFF' }) as HTMLButtonElement;
-  const paintAuto = (): void => {
-    const on = getPadAutoThrust();
-    autoBtn.textContent = on ? 'ON' : 'OFF';
-    autoBtn.style.cssText = [
-      'background:' + (on ? 'rgba(88,255,88,0.18)' : 'transparent'),
-      'border:2px solid ' + (on ? '#58ff58' : 'rgba(180,140,255,0.4)'),
-      'color:' + (on ? '#58ff58' : 'rgba(220,210,255,0.85)'),
-      "font-family:'VT323',ui-monospace,monospace", 'font-size:1rem', 'padding:6px 18px',
-      'letter-spacing:0.18em', 'cursor:pointer', 'border-radius:6px', 'min-width:64px',
-    ].join(';');
-  };
-  paintAuto();
-  autoBtn.addEventListener('click', () => { setPadAutoThrust(!getPadAutoThrust()); paintAuto(); });
-  el('p', { parent: overlay, text: 'Tap the thrust trigger to cruise instead of holding it.' })
-    .style.cssText = 'font-size:0.74rem;color:rgba(180,140,255,0.55);margin:4px 0 0;text-align:center;';
-
-  const row = el('div', { className: 'menu-row', parent: overlay });
-  const test = el('button', { className: 'menu-btn secondary', parent: row, text: '🎮 TEST CONTROLLER' });
-  test.addEventListener('click', () => { window.location.assign('/gamepad-test'); });
-  const back = el('button', { className: 'menu-btn', parent: row, text: '◀ BACK' });
-  back.addEventListener('click', () => renderBoothLobby(state, booth));
-  setTimeout(() => tryFocusVisible(back), 0);
+function stopBoothWizard(): void {
+  if (!boothWizard) return;
+  if (boothWizard.raf !== null) cancelAnimationFrame(boothWizard.raf);
+  boothWizard.active = false;
+  boothWizard = null;
+  setPadInputSuppressed(false);   // hand the pads back to the in-game loop
 }
 
+/** Entry for `?p1`/`?p2`. (Re)starts the wizard on a clean cohort: each new
+ *  group joins + signs in from scratch (replacing the old SIGN OUT hand-over).
+ *  state.session is left as-is (a redirect sign-in may have just set it) — the
+ *  per-pilot auth step always overwrites it with this cohort's choice. */
 export function renderBoothLobby(state: GameState, booth: number): void {
-  // No identity yet → Signet login (Nostr or guest), then land back here.
-  if (!state.session) { renderAuth(state, () => renderBoothLobby(state, booth)); return; }
+  stopBoothWizard();
+  state.coopIdentity2 = null;
+  clearPadFlightModeBySlot();
+  clearBoothPadSlotBinding();
+  setPadFlightMode('flydirect');
+  setPadAutoThrust(false);
 
+  const w: BoothWizard = {
+    active: true, booth, mode: 'join', activePad: null,
+    nav: { menuDir: null, menuA: false, menuB: false },
+    joinEdge: new Map(), pilots: [], raf: null,
+  };
+  boothWizard = w;
+  setPadInputSuppressed(true);   // the wizard owns the pads now
+  const tick = (): void => {
+    if (!w.active || boothWizard !== w) return;
+    pollBoothWizard(state, w);
+    w.raf = requestAnimationFrame(tick);
+  };
+  w.raf = requestAnimationFrame(tick);
+  renderBoothJoin(state, booth);
+}
+
+/** One rAF of wizard pad input. Join mode: a pad's Ⓐ joins the next free slot
+ *  (or, if that pad already joined, begins); Start (9) begins. Nav mode: only the
+ *  active pilot's pad walks the current overlay (sign-in / scheme pick). */
+function pollBoothWizard(state: GameState, w: BoothWizard): void {
+  if (typeof navigator === 'undefined' || typeof navigator.getGamepads !== 'function') return;
+  const all = navigator.getGamepads();
+  if (!all) return;
+  if (w.mode === 'join') {
+    for (const pad of all) {
+      if (w.mode !== 'join') break;          // a join/begin flipped us to nav
+      if (!pad || !pad.connected) continue;
+      let edge = w.joinEdge.get(pad.index);
+      if (!edge) { edge = { a: false, start: false }; w.joinEdge.set(pad.index, edge); }
+      const a = padButtonDown(pad, 0);
+      const start = padButtonDown(pad, 9);
+      if (a && !edge.a) onBoothJoinPress(state, w, pad.index);
+      if (start && !edge.start && w.pilots.length > 0) beginBoothSetup(state, w);
+      edge.a = a; edge.start = start;
+    }
+    return;
+  }
+  if (w.activePad === null) return;
+  const pad = all[w.activePad];
+  if (pad && pad.connected) driveMenuFromPad(pad, w.nav);
+}
+
+/** Ⓐ on the join screen: an unjoined pad takes the next free slot; a pad that has
+ *  already joined begins setup — so a lone pilot just taps Ⓐ twice to go solo. */
+function onBoothJoinPress(state: GameState, w: BoothWizard, padIndex: number): void {
+  if (w.pilots.some((p) => p.padIndex === padIndex)) { beginBoothSetup(state, w); return; }
+  if (w.pilots.length >= 2) return;            // booth is two-up
+  void audio.unlockAudio();
+  w.pilots.push({ padIndex, slot: w.pilots.length, session: null });
+  renderBoothJoin(state, w.booth);
+}
+
+function renderBoothJoin(state: GameState, booth: number): void {
+  const w = boothWizard;
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
@@ -1753,143 +1756,189 @@ export function renderBoothLobby(state: GameState, booth: number): void {
 
   const kicker = el('p', { parent: overlay, text: `BTC PRAGUE · BOOTH ${booth}` });
   kicker.style.cssText = 'font-size:1rem;color:#8cffb4;letter-spacing:0.28em;text-shadow:0 0 8px rgba(140,255,180,0.4);margin:-12px 0 0;';
-  const intro = el('p', { parent: overlay, text: 'Grab a pad and drop in — campaign run, two pilots welcome.' });
+  const intro = el('p', { parent: overlay, text: 'Grab a pad and press Ⓐ to drop in. Two pilots welcome — one screen, one campaign.' });
   intro.style.cssText = 'font-size:0.88rem;color:rgba(220,210,255,0.76);letter-spacing:0.08em;text-align:center;max-width:520px;line-height:1.45;margin:0;';
 
-  const actions = el('div', { parent: overlay });
-  actions.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:10px;margin:10px auto 0;width:100%;';
+  const joined = w?.pilots.length ?? 0;
 
-  // PLAY — the dominant action: solo campaign on this screen, starts in place.
-  renderEventLobbyAction(actions, '▶ PLAY', 'One pilot, this screen — straight into the campaign.', () => {
-    void audio.unlockAudio();
-    tryEnterFullscreen();
-    setStoredMode('campaign');
-    setStoredDailyPref(false);
-    lockInDifficulty(getStoredDifficulty());
-    gateBehindOnboarding(() => onStartCb?.());
-  }, 'hero');
-
-  // Secondary co-op options, kept small so PLAY dominates.
-  const more = el('p', { parent: overlay, text: 'OR TEAM UP' });
-  more.style.cssText = 'font-size:0.66rem;letter-spacing:0.32em;color:rgba(180,140,255,0.5);margin:16px 0 -2px;';
-  const extras = el('div', { parent: overlay });
-  extras.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:8px;width:100%;';
-
-  // 2 PLAYERS — local couch. Reload into the couch autostart, carrying the
-  // booth flag so the post-game loop returns to this lobby.
-  renderEventLobbyAction(extras, '2 PLAYERS · ONE SCREEN', 'Two pilots, two pads — each signs in with their own details.', () => {
-    void audio.unlockAudio();
-    tryEnterFullscreen();
-    // P1 is the lobby session. Capture a SECOND identity for P2 (without
-    // clobbering P1's state.session), then the ready screen → couch in place
-    // (no reload, so both in-memory sessions survive).
-    renderAuth(state, () => renderCoopReady(state, booth), {
-      heading: 'PLAYER 2 — WHO ARE YOU?',
-      sub: 'Player 2 signs in with their own Nostr identity (or guest). Player 1 stays signed in.',
-      onResolved: (s) => {
-        state.coopIdentity2 = { pubkey: s.pubkey, displayName: s.displayName ?? '', profile: getCachedProfile(s.pubkey), session: s };
-        if (!state.coopIdentity2.profile) void fetchProfile(s.pubkey).then(p => { if (p && state.coopIdentity2) state.coopIdentity2.profile = p; });
-      },
+  // Two slot cards. Each is clickable too (touch booths + headless tests): a
+  // click joins that slot exactly as a pad's Ⓐ does.
+  const cards = el('div', { parent: overlay });
+  cards.style.cssText = 'display:flex;gap:18px;justify-content:center;flex-wrap:wrap;margin:18px 0 6px;';
+  for (let slot = 0; slot < 2; slot++) {
+    const taken = slot < joined;
+    const colour = PLAYER_COLOURS[slot];
+    const card = el('button', { parent: cards }) as HTMLButtonElement;
+    card.style.cssText = [
+      'display:flex', 'flex-direction:column', 'align-items:center', 'justify-content:center', 'gap:8px',
+      'width:min(240px,42vw)', 'padding:26px 18px', 'border-radius:10px', 'cursor:pointer',
+      'background:' + (taken ? 'rgba(40,40,60,0.55)' : 'rgba(20,12,36,0.72)'),
+      'border:2.5px solid ' + (taken ? colour : 'rgba(255,216,74,0.45)'),
+      taken ? `box-shadow:0 0 22px ${colour}55` : '',
+    ].filter(Boolean).join(';');
+    el('span', { parent: card, text: `PLAYER ${slot + 1}` })
+      .style.cssText = `font-family:'VT323',ui-monospace,monospace;font-size:1.5rem;letter-spacing:0.18em;color:${taken ? colour : 'rgba(220,210,255,0.85)'};`;
+    el('span', { parent: card, text: taken ? '✓ READY' : 'PRESS Ⓐ' })
+      .style.cssText = `font-family:'VT323',ui-monospace,monospace;font-size:2rem;letter-spacing:0.16em;color:${taken ? colour : '#ffd84a'};`;
+    card.addEventListener('click', () => {
+      const cw = boothWizard; if (!cw || cw.mode !== 'join') return;
+      void audio.unlockAudio();
+      if (slot < cw.pilots.length) { beginBoothSetup(state, cw); return; }
+      if (slot === cw.pilots.length) { cw.pilots.push({ padIndex: -1 - slot, slot, session: null }); renderBoothJoin(state, booth); }
     });
-  }, 'compact');
+  }
 
-  // LINK BOOTHS — cross-booth co-op, ONE pilot per booth by default (two ships,
-  // one campaign): Booth 1 → slot 0, Booth 2 → slot 1, a true two-human peer
-  // link. Each booth owns its slot region so no slot is ever unowned (an empty
-  // region slot would stall the whole session). Runs on rollback netcode
-  // (instant local ship, predicted remote) — the booth is the place to prove it;
-  // ?rollback=0 on the lobby URL drops back to lockstep as an escape hatch.
-  // Shared link session (default 'praguebooths', override ?link=<code>);
-  // ?pilots=N,M (set identically on both booths) opts up to 2 pilots each (four
-  // ships) for couch-at-each-booth. Built directly because coop-campaign
-  // hard-codes 2 players in the URL builder.
-  renderEventLobbyAction(extras, 'LINK BOOTHS', 'Team up with the other Prague booth — one campaign.', () => {
-    void audio.unlockAudio();
-    tryEnterFullscreen();
-    const q = new URLSearchParams(window.location.search);
-    const link = (q.get('link') || '').replace(/[^a-z0-9]/gi, '').slice(0, 32) || 'praguebooths';
-    const counts = (q.get('pilots') || '1,1').split(',').map(n => Math.max(1, Math.min(2, parseInt(n, 10) || 1)));
-    const b1 = counts[0] ?? 1, b2 = counts[1] ?? 1;
-    const offset = booth === 1 ? 0 : b1;
-    const myCount = booth === 1 ? b1 : b2;
-    const owned = Array.from({ length: myCount }, (_, i) => offset + i).join(',');
-    const params = new URLSearchParams({
-      peer: buildBrokerPeerUrl(link),
-      session: link,
-      slot: String(offset),
-      localSlots: owned,
-      players: String(b1 + b2),
-      mode: 'coop-campaign',
-      // Rollback on by default for the booth link; ?rollback=0 falls back to lockstep.
-      rollback: q.get('rollback') === '0' ? '0' : '1',
-    });
-    window.location.assign(`${window.location.origin}/?${params.toString()}&p${booth}=1`);
-  }, 'compact');
+  // START — once at least one pilot has joined. A joined pad's Ⓐ (or Start) does
+  // the same; this is the focusable click/touch equivalent.
+  const startRow = el('div', { className: 'menu-row', parent: overlay });
+  if (joined > 0) {
+    const startBtn = el('button', { className: 'menu-btn', parent: startRow, text: joined > 1 ? '▶ START · 2 PLAYERS' : '▶ START · SOLO' }) as HTMLButtonElement;
+    startBtn.style.cssText += 'font-size:1.1rem;padding:12px 36px;letter-spacing:0.18em;background:rgba(255,216,74,0.18);border-color:#ffd84a;color:#ffd84a;';
+    startBtn.addEventListener('click', () => { const cw = boothWizard; if (cw && cw.mode === 'join') beginBoothSetup(state, cw); });
+    setTimeout(() => tryFocusVisible(startBtn), 0);
+  } else {
+    el('p', { parent: startRow, text: 'Waiting for a pilot…' })
+      .style.cssText = 'font-size:0.8rem;color:rgba(180,140,255,0.6);letter-spacing:0.14em;';
+  }
 
-  // Compact control legend so every drop-in sees the layout (booth = Point & Fly).
-  const legend = el('p', { parent: overlay, text: '🎮 Push the left stick to fly · RT fire · RB shield · LB hyperspace      ⌨ Arrows + Space' });
-  legend.style.cssText = 'font-size:0.72rem;color:rgba(140,255,180,0.6);letter-spacing:0.05em;text-align:center;margin:16px 0 0;max-width:560px;line-height:1.5;';
+  // Control legend (booth default is Point & Fly; each pilot can change it next).
+  const legend = el('p', { parent: overlay, text: '🎮 Push the left stick to fly · RT fire · RB shield · LB hyperspace' });
+  legend.style.cssText = 'font-size:0.72rem;color:rgba(140,255,180,0.6);letter-spacing:0.05em;text-align:center;margin:14px 0 0;max-width:560px;line-height:1.5;';
 
-  // Player-facing controller prefs (gamepad scheme + auto-thrust + pad test) —
-  // no operator settings, no secret gesture.
-  const controlsBtn = el('button', { parent: overlay, text: '🎮 CONTROLS' });
-  controlsBtn.style.cssText = 'margin-top:10px;background:rgba(91,208,255,0.12);border:1px solid rgba(91,208,255,0.5);color:#5bd0ff;font:0.74rem ui-monospace,monospace;letter-spacing:0.14em;padding:7px 16px;border-radius:6px;cursor:pointer;';
-  controlsBtn.addEventListener('click', () => { void audio.unlockAudio(); renderControllerPrefs(state, booth); });
+  // LINK BOOTHS — a separate thing: cross-booth networked co-op. Kept small.
+  const link = el('button', { parent: overlay, text: '🔗 LINK BOOTHS' });
+  link.style.cssText = 'margin-top:14px;background:rgba(91,208,255,0.12);border:1px solid rgba(91,208,255,0.5);color:#5bd0ff;font:0.74rem ui-monospace,monospace;letter-spacing:0.14em;padding:7px 16px;border-radius:6px;cursor:pointer;';
+  link.addEventListener('click', () => startLinkedBooth(booth));
 
-  // Hand-over: a finishing player signs out so the next drop-in gets the login
-  // (and the Signet nudge) fresh, instead of silently inheriting this identity.
-  const who = el('div', { parent: overlay });
-  who.style.cssText = 'display:flex;align-items:center;justify-content:center;gap:12px;margin-top:20px;flex-wrap:wrap;';
-  // Identity: avatar + resolved Nostr name for the signed-in player. The booth
-  // is a Signet/Nostr showcase, so surface who's playing. Uses the cached
-  // profile immediately, then refreshes from the relays once kind 0 lands.
-  const ident = el('div', { parent: who });
-  ident.style.cssText = 'display:flex;align-items:center;gap:10px;';
-  const pubkey = state.session.pubkey;
-  if (!state.profile) { const c = getCachedProfile(pubkey); if (c) state.profile = c; }
-  const paintIdent = (): void => {
-    ident.innerHTML = '';
-    const pic = state.profile?.picture;
-    if (pic) {
-      const img = document.createElement('img');
-      img.src = pic;
-      img.alt = '';
-      img.style.cssText = 'width:34px;height:34px;border-radius:50%;border:1.5px solid rgba(140,255,180,0.6);object-fit:cover;';
-      img.onerror = () => { img.style.display = 'none'; };
-      ident.appendChild(img);
-    }
-    const name = state.profile ? bestName(state.profile, pubkey) : (state.session?.displayName ?? 'guest');
-    const t = document.createElement('span');
-    t.style.cssText = 'font-size:0.82rem;color:rgba(220,210,255,0.85);letter-spacing:0.06em;';
-    t.innerHTML = `Playing as <span style="color:#8cffb4;font-weight:bold;">${escapeHtml(name)}</span>`;
-    ident.appendChild(t);
-  };
-  paintIdent();
-  if (!state.profile) deferProfileFetch(pubkey, p => { state.profile = p; paintIdent(); });
-  const signOut = el('button', { parent: who, text: 'FINISHED? SIGN OUT' }) as HTMLButtonElement;
-  signOut.style.cssText = 'background:rgba(255,120,120,0.12);border:1px solid rgba(255,120,120,0.5);color:#ff8a8a;font:0.72rem ui-monospace,monospace;letter-spacing:0.12em;padding:6px 14px;border-radius:6px;cursor:pointer;';
-  signOut.addEventListener('click', () => {
-    void (async () => {
-      signOut.disabled = true;
-      try { await auth.signOut(state.session); } catch { /* ignore */ }
-      clearGuestIdentity();              // wipe any local guest record too — clean slate
-      // Reset the controller scheme to the walk-up default so the next drop-in
-      // doesn't inherit the previous player's chosen prefs.
-      setPadFlightMode('flydirect');
-      setPadAutoThrust(false);
-      state.session = null;
-      renderBoothLobby(state, booth);    // no session → renderAuth (login for the next player)
-    })();
-  });
-
-  // Zap-us QR — the booth's persistent "send us sats" surface (matches the
-  // attract + title screens). Centred so a spectator can scan without
-  // touching the machine; the recap auto-skips, this doesn't.
+  // Zap-us QR — persistent "send us sats" surface, same as attract / title.
   renderZapUsQR(overlay, state, { caption: 'ZAP US ⚡' });
 
-  // Operator escape — long-press the logo (700ms) to drop the kiosk flag and
-  // reach the full menu + settings. Deliberately hidden from walk-ups.
-  bindLogoLongPress(titleLogo, () => window.location.assign('/'));
+  // Operator escape — long-press the logo to drop the kiosk flag → full menu.
+  bindLogoLongPress(titleLogo, () => { stopBoothWizard(); window.location.assign('/'); });
+}
+
+/** A pilot pressed begin → run each joined pilot through sign-in, then a control
+ *  pick, in order; then start the run. */
+function beginBoothSetup(state: GameState, w: BoothWizard): void {
+  if (w.pilots.length === 0) return;
+  void audio.unlockAudio();
+  tryEnterFullscreen();
+  setupBoothPilot(state, w, 0);
+}
+
+function setupBoothPilot(state: GameState, w: BoothWizard, i: number): void {
+  if (i >= w.pilots.length) { startBoothRun(w); return; }
+  const pilot = w.pilots[i];
+  armBoothNav(w, pilot);
+  const n = i + 1;
+  // Sign in — Nostr or guest. P1 → state.session; P2 → state.coopIdentity2 (the
+  // existing couch-in-place second-identity field).
+  renderAuth(state, () => renderBoothSchemePick(state, w, i), {
+    heading: `PLAYER ${n} — SIGN IN`,
+    sub: w.pilots.length > 1
+      ? `Player ${n} signs in with their own Nostr identity (or guest).`
+      : 'Sign in with Nostr to carry your name + zaps everywhere — or play as a guest.',
+    onResolved: (s) => {
+      pilot.session = s;
+      if (i === 0) {
+        state.session = s;
+        state.profile = getCachedProfile(s.pubkey);
+        if (!state.profile) void fetchProfile(s.pubkey).then((p) => { if (p && state.session?.pubkey === s.pubkey) state.profile = p; });
+      } else {
+        state.coopIdentity2 = { pubkey: s.pubkey, displayName: s.displayName ?? '', profile: getCachedProfile(s.pubkey), session: s };
+        if (!state.coopIdentity2.profile) void fetchProfile(s.pubkey).then((p) => { if (p && state.coopIdentity2) state.coopIdentity2.profile = p; });
+      }
+    },
+  });
+}
+
+/** Hand the menus to one pilot's pad, debouncing the Ⓐ that's likely still held
+ *  from the previous step so it doesn't instantly confirm the first focusable. */
+function armBoothNav(w: BoothWizard, pilot: BoothPilot): void {
+  w.mode = 'nav';
+  w.activePad = pilot.padIndex >= 0 ? pilot.padIndex : null;
+  w.nav = { menuDir: null, menuA: true, menuB: true };
+}
+
+function renderBoothSchemePick(state: GameState, w: BoothWizard, i: number): void {
+  const pilot = w.pilots[i];
+  armBoothNav(w, pilot);   // re-arm: the Ⓐ that confirmed sign-in is likely held
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+  const n = i + 1;
+  el('h2', { parent: overlay, text: `PLAYER ${n} — CONTROLS` });
+
+  if (pilot.session) {
+    const who = el('div', { parent: overlay });
+    who.style.cssText = 'display:flex;justify-content:center;margin:2px 0 12px;';
+    renderIdentityChip(who, pilot.session.pubkey, pilot.session.displayName ?? 'guest', `PLAYER ${n}`, PLAYER_COLOURS[pilot.slot]);
+  }
+
+  el('p', { parent: overlay, text: 'Pick how your pad flies. The right stick aims + auto-fires in every mode.' })
+    .style.cssText = 'font-size:0.84rem;color:rgba(220,210,255,0.72);margin:0 auto 14px;max-width:520px;text-align:center;line-height:1.5;';
+
+  const panel = el('div', { parent: overlay });
+  panel.style.cssText = 'display:flex;gap:12px;align-items:stretch;justify-content:center;flex-wrap:wrap;';
+  const cur = getPadFlightModeForSlot(pilot.slot);
+  let focusBtn: HTMLButtonElement | null = null;
+  for (const opt of PAD_SCHEME_OPTS) {
+    const on = opt.value === cur;
+    const b = el('button', { parent: panel }) as HTMLButtonElement;
+    b.style.cssText = [
+      'display:flex', 'flex-direction:column', 'gap:6px', 'width:min(220px,40vw)', 'padding:14px 16px', 'text-align:left',
+      'background:' + (on ? 'rgba(88,255,88,0.16)' : 'rgba(20,12,36,0.72)'),
+      'border:2px solid ' + (on ? '#58ff58' : 'rgba(180,140,255,0.4)'),
+      'border-radius:8px', 'cursor:pointer',
+    ].join(';');
+    el('span', { parent: b, text: opt.label }).style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:1.3rem;letter-spacing:0.14em;color:#ffd84a;";
+    el('span', { parent: b, text: opt.hint }).style.cssText = 'font-size:0.74rem;color:rgba(220,210,255,0.7);line-height:1.4;';
+    b.addEventListener('click', () => { setPadFlightModeForSlot(pilot.slot, opt.value); setupBoothPilot(state, w, i + 1); });
+    if (on) focusBtn = b;
+  }
+  if (focusBtn) { const fb = focusBtn; setTimeout(() => tryFocusVisible(fb), 0); }
+
+  el('p', { parent: overlay, text: 'Press Ⓐ on your choice.' })
+    .style.cssText = 'font-size:0.74rem;color:rgba(180,140,255,0.6);letter-spacing:0.14em;margin:14px 0 0;text-align:center;';
+}
+
+function startBoothRun(w: BoothWizard): void {
+  const twoUp = w.pilots.length > 1;
+  // Bind each real pad (by gamepad.index) to its slot so join order = P1 / P2.
+  setBoothPadSlotBinding(w.pilots.filter((p) => p.padIndex >= 0).map((p) => ({ slot: p.slot, padIndex: p.padIndex })));
+  stopBoothWizard();   // re-enable the in-game pad loop
+  setStoredMode('campaign');
+  setStoredDailyPref(false);
+  lockInDifficulty(getStoredDifficulty());
+  gateBehindOnboarding(() => { if (twoUp) startCouchInPlace(); else onStartCb?.(); });
+}
+
+/** LINK BOOTHS — cross-booth networked co-op (a separate path from the local
+ *  press-Ⓐ flow). One pilot per booth by default; ?pilots=N,M opts up to 2 each.
+ *  Booth 1 → slot 0, Booth 2 → its offset; each booth owns its slot region so no
+ *  slot is ever unowned. Rollback on by default; ?rollback=0 falls back to
+ *  lockstep. Built directly because coop-campaign hard-codes 2 players. */
+function startLinkedBooth(booth: number): void {
+  void audio.unlockAudio();
+  tryEnterFullscreen();
+  const q = new URLSearchParams(window.location.search);
+  const link = (q.get('link') || '').replace(/[^a-z0-9]/gi, '').slice(0, 32) || 'praguebooths';
+  const counts = (q.get('pilots') || '1,1').split(',').map((nn) => Math.max(1, Math.min(2, parseInt(nn, 10) || 1)));
+  const b1 = counts[0] ?? 1, b2 = counts[1] ?? 1;
+  const offset = booth === 1 ? 0 : b1;
+  const myCount = booth === 1 ? b1 : b2;
+  const owned = Array.from({ length: myCount }, (_, i) => offset + i).join(',');
+  const params = new URLSearchParams({
+    peer: buildBrokerPeerUrl(link),
+    session: link,
+    slot: String(offset),
+    localSlots: owned,
+    players: String(b1 + b2),
+    mode: 'coop-campaign',
+    rollback: q.get('rollback') === '0' ? '0' : '1',
+  });
+  stopBoothWizard();
+  window.location.assign(`${window.location.origin}/?${params.toString()}&p${booth}=1`);
 }
 
 export function renderAttract(state: GameState): void {
