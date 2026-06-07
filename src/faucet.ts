@@ -300,6 +300,9 @@ export type ClaimResult =
       ok: false;
       error: string;
       detail?: string;
+      /** Present on error === 'cooldown' (per-player velocity floor):
+       *  ms the player must wait before this pubkey can claim again. */
+      retry_after_ms?: number;
     };
 
 export interface WithdrawInput {
