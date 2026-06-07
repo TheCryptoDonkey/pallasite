@@ -14,7 +14,7 @@ import { getFlavour } from './flavour.js';
 import { lockInDifficulty, getStoredDifficulty, setStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadCriticalCampaignAssets, setRenderMode, getRenderModeKind, drawAsciiHud, setShowPlayerIdentity, type CriticalAssetReport } from './render.js';
-import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderDuelLobby, renderDuelConnecting, renderEventLobby, renderGamepadTestPage, simulateStart } from './ui.js';
+import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderControllerHostPairing, renderDuelLobby, renderDuelConnecting, renderEventLobby, renderGamepadTestPage, simulateStart } from './ui.js';
 import { postHeartbeat } from './faucet.js';
 import { currentMode, getStoredMode, isStoredDefenderMode, type RunMode } from './mode.js';
 import { deathmatchActive } from './deathmatch.js';
@@ -32,7 +32,7 @@ import {
   type ActiveStreamSession,
 } from './stream-session.js';
 import { getActiveSkinId } from './skins.js';
-import { handleAuthCallback, tryRestore, sweepSignetArtefacts, createKioskSession } from './auth.js';
+import { handleAuthCallback, tryRestore, sweepSignetArtefacts, createKioskSession, isAuthOnlySignerError } from './auth.js';
 import * as audio from './audio.js';
 import { getMusicDebugSnapshot, musicForceRefresh, musicSetTrackForState, preloadAllTracks, musicSetPaused, musicSetMuted, musicResetElements, musicWarmUpAll, currentTrackId, musicSuppressStatePlay, musicPoolActive } from './music.js';
 import { stemsTickForState } from './music-stems.js';
@@ -2684,7 +2684,18 @@ async function boot(): Promise<void> {
   // starts, and the title flips from the sign-in screen to signed-in once the
   // session lands. Every state.session reader below is null-guarded.
   void (async () => {
-    let session = (await handleAuthCallback()) ?? (await tryRestore());
+    let shouldOfferPhoneSignerQr = false;
+    let session = null as Awaited<ReturnType<typeof handleAuthCallback>>;
+    try {
+      session = await handleAuthCallback();
+    } catch (err) {
+      if (isAuthOnlySignerError(err)) {
+        shouldOfferPhoneSignerQr = true;
+      } else {
+        console.warn('[auth] callback handling failed:', err);
+      }
+    }
+    if (!session) session = await tryRestore();
     // Self-hosted booth: when the faucet is configured with a kiosk identity
     // (KIOSK_NSEC) and there's no other session, boot straight into a session
     // that signs server-side via /api/kiosk/sign — so an unattended box signs
@@ -2721,14 +2732,18 @@ async function boot(): Promise<void> {
         }
       }
     }
-    if (!session) return;
-    state.session = session;
-    // Kick off profile fetch — UI updates when it lands.
-    const { fetchProfile, getCachedProfile } = await import('./profile.js');
-    const cached = getCachedProfile(session.pubkey);
-    if (cached) state.profile = cached;
-    const p = await fetchProfile(session.pubkey);
-    if (p) state.profile = p;
+    if (session) {
+      state.session = session;
+      // Kick off profile fetch — UI updates when it lands.
+      const { fetchProfile, getCachedProfile } = await import('./profile.js');
+      const cached = getCachedProfile(session.pubkey);
+      if (cached) state.profile = cached;
+      const p = await fetchProfile(session.pubkey);
+      if (p) state.profile = p;
+    }
+    if (shouldOfferPhoneSignerQr && state.phase === 'title' && !isControllerSurface()) {
+      renderControllerHostPairing(state, () => renderTitle(state), { purpose: 'signer' });
+    }
   })();
   // NIP-07 extensions sometimes inject `window.nostr` after page load —
   // tryRestore at boot can land before the extension is ready, leaving us

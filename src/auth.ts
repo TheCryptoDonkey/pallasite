@@ -41,6 +41,11 @@ export class AuthOnlySignerError extends Error {
   }
 }
 
+export function isAuthOnlySignerError(err: unknown): err is AuthOnlySignerError {
+  return err instanceof AuthOnlySignerError
+    || (err instanceof Error && err.name === 'AuthOnlySignerError');
+}
+
 /**
  * Wrap a freshly-resolved session's signer so every signEvent goes through
  * the global serialised queue. Centralised here so every login path —
@@ -307,6 +312,10 @@ export async function handleAuthCallback(): Promise<SignetSession | null> {
     if (result.kind !== 'no-callback') sweepSignetArtefacts();
     return result.kind === 'session' ? requireLiveSigner(result.session) : null;
   } catch (err) {
+    if (isAuthOnlySignerError(err)) {
+      sweepSignetArtefacts();
+      throw err;
+    }
     // The SDK already logs invalid-callback diagnostics. Sweep artefacts
     // and swallow so a stray bookmark with stale params can't strand the UI.
     console.warn('[auth] handleRedirectCallback threw:', err);
