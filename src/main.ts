@@ -3425,6 +3425,7 @@ function watchForSignerUpgrade(): void {
   const POLL_SLOW_MS = 2_000;      // back off after the burst — cheap forever
   const startedAt = Date.now();
   let upgrading = false;
+  let redirectAuthOnlyProvider: unknown | null = null;
 
   const reschedule = (): void => {
     const elapsed = Date.now() - startedAt;
@@ -3442,6 +3443,7 @@ function watchForSignerUpgrade(): void {
     }
     if (sess.signer.capabilities.canSignEvents) return;  // already upgraded — stop polling
     if (upgrading) { reschedule(); return; }
+    if (sess.method !== 'redirect') redirectAuthOnlyProvider = null;
 
     // 'redirect' here can be either a genuine same-tab-redirect-only login
     // (can't be upgraded without a fresh user-initiated sign-in) OR a
@@ -3450,8 +3452,9 @@ function watchForSignerUpgrade(): void {
     // method in localStorage across the runtime downgrade, so a retry
     // tryRestore() once window.nostr appears will recreate a real Nip07Signer.
     // Bunker sessions get re-upgraded the same way — SDK reconnects to the
-    // bunker URI. Try restore for all three; the genuine-redirect case is
-    // a cheap no-op.
+    // bunker URI. Genuine same-tab redirect cannot upgrade unless the stored
+    // SDK method was really a NIP-07 soft-downgrade, so remember when a
+    // particular provider has already failed to upgrade it.
     if (sess.method !== 'nip07' && sess.method !== 'bunker' && sess.method !== 'redirect') {
       reschedule();
       return;
@@ -3460,8 +3463,13 @@ function watchForSignerUpgrade(): void {
     // nip07 + downgraded-redirect both need window.nostr to be present
     // before tryRestore() can produce a signing signer. Skip until the
     // extension wakes up.
+    const nostrProvider = (window as { nostr?: unknown }).nostr;
     const needsNostr = sess.method === 'nip07' || sess.method === 'redirect';
-    if (needsNostr && !(window as { nostr?: unknown }).nostr) {
+    if (needsNostr && !nostrProvider) {
+      reschedule();
+      return;
+    }
+    if (sess.method === 'redirect' && redirectAuthOnlyProvider === nostrProvider) {
       reschedule();
       return;
     }
@@ -3487,6 +3495,7 @@ function watchForSignerUpgrade(): void {
         if (state.phase === 'title') renderTitle(state);
         return;
       }
+      if (sess.method === 'redirect') redirectAuthOnlyProvider = nostrProvider ?? null;
     } catch { /* ignore — try again on the next tick */ }
     finally { upgrading = false; }
     reschedule();
