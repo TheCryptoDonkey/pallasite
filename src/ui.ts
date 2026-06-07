@@ -8113,8 +8113,26 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
     const wipe = el('button', { className: 'menu-btn secondary', parent: row, text: 'SIGN OUT' }) as HTMLButtonElement;
     wipe.style.cssText += 'font-size:0.72rem;padding:4px 12px;letter-spacing:0.14em;color:rgba(255,120,120,0.85);border-color:rgba(255,120,120,0.4);';
     wipe.title = 'Forget this local identity. You\'ll be asked for your name again next time you visit.';
-    wipe.addEventListener('click', () => {
-      if (!window.confirm('Forget this local identity? Your scores stay on relays but this device will create a new keypair next time.')) return;
+    const confirmBox = el('div', { parent });
+    confirmBox.style.cssText = 'display:none;flex-direction:column;align-items:center;gap:8px;margin-top:6px;padding:10px 12px;border:1px solid rgba(255,120,120,0.35);border-radius:8px;background:rgba(255,80,80,0.08);';
+    const confirmText = el('p', { parent: confirmBox, text: 'Forget this local identity? Your scores stay on relays. This device will ask for a new name next time.' });
+    confirmText.style.cssText = 'margin:0;max-width:420px;text-align:center;font-size:0.76rem;line-height:1.45;color:rgba(255,190,190,0.9);letter-spacing:0.04em;';
+    const confirmRow = el('div', { className: 'menu-row', parent: confirmBox });
+    const keepBtn = el('button', { className: 'menu-btn secondary', parent: confirmRow, text: 'KEEP PLAYING' }) as HTMLButtonElement;
+    keepBtn.style.cssText += 'font-size:0.72rem;padding:4px 12px;letter-spacing:0.14em;';
+    const confirmBtn = el('button', { className: 'menu-btn secondary', parent: confirmRow, text: 'SIGN OUT' }) as HTMLButtonElement;
+    confirmBtn.style.cssText += 'font-size:0.72rem;padding:4px 12px;letter-spacing:0.14em;color:rgba(255,120,120,0.95);border-color:rgba(255,120,120,0.55);';
+    onTap(wipe, () => {
+      row.style.display = 'none';
+      confirmBox.style.display = 'flex';
+      setTimeout(() => tryFocusVisible(confirmBtn), 0);
+    });
+    onTap(keepBtn, () => {
+      confirmBox.style.display = 'none';
+      row.style.display = '';
+      setTimeout(() => tryFocusVisible(wipe), 0);
+    });
+    onTap(confirmBtn, () => {
       clearGuestIdentity();
       state.session = null;
       state.profile = null;
