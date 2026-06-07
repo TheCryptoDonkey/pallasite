@@ -2,8 +2,8 @@
  * Auth state — wraps signet-login.
  *
  * Three login paths offered, all funnelled through Signet.login(). The game
- * doesn't care which method the user picks — it just gets a SignetSession
- * back with a signer that may or may not be capable of signing further events.
+ * requires a live signer for scores, claims, replays, uploads, and zaps; an
+ * identity-only auth response is rejected at the auth boundary.
  *
  * Both calls are wrapped with timeouts because window.nostr / NIP-46 bunker
  * relays have no native cancellation — if the signer is cold or unreachable
@@ -19,6 +19,13 @@ import { getGuestRecord, loadOrCreateGuest } from './guest.js';
 import { FaucetSigner, fetchKioskInfo } from './faucet-signer.js';
 
 let lastSignerInfoLogKey = '';
+
+export class AuthOnlySignerError extends Error {
+  constructor() {
+    super('My Signet approved identity only, but Pallasite needs a live signer. Turn on Bunker in My Signet for this identity, paste a bunker URI, use a browser extension, or play as guest.');
+    this.name = 'AuthOnlySignerError';
+  }
+}
 
 /**
  * Wrap a freshly-resolved session's signer so every signEvent goes through
@@ -48,6 +55,19 @@ function wrapSession(session: SignetSession | null): SignetSession | null {
     }
   } catch { /* diagnostics must never break login */ }
   return { ...session, signer: serialiseSigner(session.signer) };
+}
+
+async function requireLiveSigner(session: SignetSession | null): Promise<SignetSession | null> {
+  const wrapped = wrapSession(session);
+  if (!wrapped) return null;
+  if (wrapped.signer?.capabilities?.canSignEvents === true) return wrapped;
+
+  // signet-login persists successful auth responses by default. For Pallasite,
+  // auth-only is not a usable success state: it disables scores, claims,
+  // replays, NIP-98 uploads, and zaps. Clear it immediately so refresh/restore
+  // does not keep bringing back the same dead session.
+  try { await window.Signet?.logout(wrapped); } catch { /* best-effort cleanup */ }
+  throw new AuthOnlySignerError();
 }
 
 /**
@@ -217,22 +237,16 @@ export async function signIn(): Promise<SignetSession | null> {
   // sees. Fall back to the SDK default only if zero relays are enabled.
   const active = getActiveRelays();
   const relayUrl = active[0];
-  // Force the Signet relay/QR path. Same-tab redirect proves identity but
-  // cannot keep signing when the user's key is local to mysignet.app on
-  // another device: that page unloads before Pallasite can use its in-page
-  // bunker. Pallasite needs a continuing signer for scores/claims, so the
-  // generic Signet entry goes straight to QR.
   const session = await withTimeout(
     window.Signet.login({
       appName: APP_NAME,
       theme: 'dark',
-      preferredMethod: 'qr',
       ...(relayUrl ? { relayUrl } : {}),
     }),
     SIGN_IN_TIMEOUT_MS,
     () => new SignInTimeoutError(),
   );
-  return wrapSession(session);
+  return requireLiveSigner(session);
 }
 
 /**
@@ -256,7 +270,7 @@ export async function signInWith(method: SignInMethod): Promise<SignetSession | 
     SIGN_IN_TIMEOUT_MS,
     () => new SignInTimeoutError(),
   );
-  return wrapSession(session);
+  return requireLiveSigner(session);
 }
 
 /**
@@ -278,7 +292,7 @@ export async function handleAuthCallback(): Promise<SignetSession | null> {
     // covering the title screen — belt-and-braces sweep here keeps the
     // title interactive even if the SDK leaves something behind.
     if (result.kind !== 'no-callback') sweepSignetArtefacts();
-    return result.kind === 'session' ? wrapSession(result.session) : null;
+    return result.kind === 'session' ? requireLiveSigner(result.session) : null;
   } catch (err) {
     // The SDK already logs invalid-callback diagnostics. Sweep artefacts
     // and swallow so a stray bookmark with stale params can't strand the UI.
@@ -325,12 +339,22 @@ export async function tryRestore(): Promise<SignetSession | null> {
   if (window.Signet || hasStoredSignetSession()) {
     try {
       if (!(await ensureSignetLoaded()) || !window.Signet) throw new Error('signet-load-failed');
+      const storedMethod = (() => {
+        try { return localStorage.getItem(SIGNET_STORAGE_KEYS.method); }
+        catch { return null; }
+      })();
       const session = await withTimeout(
         window.Signet.restoreSession(),
         RESTORE_TIMEOUT_MS,
         () => new Error('restore-timeout'),
       );
-      if (session) return wrapSession(session);
+      if (session) {
+        if (session.signer?.capabilities?.canSignEvents !== true && storedMethod !== 'nip07') {
+          try { await window.Signet.logout(session); } catch { /* best-effort cleanup */ }
+          return null;
+        }
+        return wrapSession(session);
+      }
     } catch {
       // Restore is best-effort on boot — silently fall through to the
       // guest path if the signer doesn't respond in time.
