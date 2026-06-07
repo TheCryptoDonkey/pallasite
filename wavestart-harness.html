@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>wavestart harness</title>
+<style>html,body{margin:0;background:#06080f;color:#8cffb4;font:14px/1.6 ui-monospace,monospace;padding:24px}</style>
+</head>
+<body>
+<pre id="out">running wavestart check...</pre>
+<script type="module">
+// Wave-intro freeze regression. During the 'wavestart' banner the sim still
+// ticks (asteroids drift, scheduled transitions fire) but the PLAYER is frozen:
+// no rotate, thrust or fire until play actually begins — so the intro never
+// reads as a level that has already started. This pins that contract:
+//
+//   1) FROZEN PILOT — with thrust + turn + fire held for the whole banner, the
+//      ship does not move, does not rotate, and fires no bullets while
+//      phase === 'wavestart'.
+//   2) LIVE FIELD   — the sim is only ship-frozen, not paused: the asteroid
+//      field still drifts during the banner (proves the freeze is surgical, not
+//      a blanket early-return).
+//   3) HANDOFF      — once the banner expires and phase flips to 'playing', the
+//      same held input moves the ship again (control is restored, not stuck).
+//
+// Uses a STANDARD wave (wave 2): act-boundary waves (1/10/17/25) have their own
+// full-screen story card, wave 2 is the plain banner that used to leak live play.
+import { makeInitialState, startGame, updateGame, beginWave } from '/src/game.ts';
+import { setRenderMode } from '/src/render.ts';
+
+const SEED = 0x1234abcd;
+const RETRO_MODE = {
+  kind: 'retro', vw: 1280, vh: 720, dpr: 1, scale: 1, tx: 0, ty: 0,
+  insets: { top: 0, right: 0, bottom: 0, left: 0 },
+};
+
+// Thrust + turn + fire, all held — the exact inputs the bug let through.
+function holdInput(s) {
+  const k = s.players[0].keys;
+  k['ArrowUp'] = true;
+  k['ArrowLeft'] = true;
+  k['Space'] = true;
+}
+
+function shipPos(s) { return { x: s.players[0].ship.pos.x, y: s.players[0].ship.pos.y, rot: s.players[0].ship.rot }; }
+function fieldSpread(s) { let t = 0; for (const a of s.asteroids) t += Math.abs(a.pos.x) + Math.abs(a.pos.y); return t; }
+
+const out = document.getElementById('out');
+let verdict;
+try {
+  const t0 = performance.now();
+  const failures = [];
+
+  setRenderMode(RETRO_MODE);
+  const s = makeInitialState();
+  startGame(s, SEED);
+  beginWave(s, 2);                       // standard wave → plain banner
+  if (s.phase !== 'wavestart') failures.push('expected wavestart after beginWave(2), got ' + s.phase);
+
+  const ship0 = shipPos(s);
+  const field0 = fieldSpread(s);
+
+  // ── 1) FROZEN PILOT — hold input well inside the banner (120 of ~240 steps).
+  let maxBullets = 0;
+  let leftEarly = false;
+  for (let i = 0; i < 120; i++) {
+    holdInput(s);
+    updateGame(s);
+    if (s.phase !== 'wavestart') { leftEarly = true; break; }
+    maxBullets = Math.max(maxBullets, s.bullets.length);
+  }
+  const ship1 = shipPos(s);
+  const moved = Math.hypot(ship1.x - ship0.x, ship1.y - ship0.y);
+  const rotated = Math.abs(ship1.rot - ship0.rot);
+  const field1 = fieldSpread(s);
+
+  if (leftEarly) failures.push('phase left wavestart before the 120-step intro check completed');
+  if (moved > 0.001) failures.push('ship MOVED ' + moved.toFixed(3) + 'px during wavestart (should be frozen)');
+  if (rotated > 0.0001) failures.push('ship ROTATED ' + rotated.toFixed(4) + 'rad during wavestart (should be frozen)');
+  if (maxBullets > 0) failures.push('ship FIRED ' + maxBullets + ' bullet(s) during wavestart (should be frozen)');
+
+  // ── 2) LIVE FIELD — asteroids must have drifted (sim still ticking).
+  if (Math.abs(field1 - field0) < 1) failures.push('asteroid field did not move during wavestart (sim over-frozen, not just the pilot)');
+
+  // ── 3) HANDOFF — let the banner expire, then control must return.
+  let flipped = false;
+  for (let i = 0; i < 400; i++) {
+    holdInput(s);
+    updateGame(s);
+    if (s.phase === 'playing') { flipped = true; break; }
+  }
+  if (!flipped) failures.push('phase never reached playing after the wavestart banner');
+  const shipP0 = shipPos(s);
+  for (let i = 0; i < 30; i++) { holdInput(s); updateGame(s); }
+  const movedPlaying = Math.hypot(s.players[0].ship.pos.x - shipP0.x, s.players[0].ship.pos.y - shipP0.y);
+  if (flipped && movedPlaying < 0.5) failures.push('ship did NOT move once playing (control not restored): ' + movedPlaying.toFixed(3) + 'px');
+
+  const ms = Math.round(performance.now() - t0);
+  if (failures.length === 0) {
+    verdict = 'WAVESTART-PASS';
+    out.textContent = 'WAVESTART-PASS\n\n' +
+      'pilot frozen for the whole wave-intro banner (no move / rotate / fire),\n' +
+      'field still drifting, control restored on handoff to playing.\n\n' +
+      'seed = 0x' + SEED.toString(16) + '\n' +
+      'intro: moved=' + moved.toFixed(3) + 'px rot=' + rotated.toFixed(4) + ' bullets=' + maxBullets + '\n' +
+      'field drift=' + Math.abs(field1 - field0).toFixed(1) + '\n' +
+      'playing: moved=' + movedPlaying.toFixed(1) + 'px\n' + ms + 'ms';
+  } else {
+    verdict = 'WAVESTART-FAIL';
+    out.textContent = 'WAVESTART-FAIL\n\n' + failures.map((f) => ' - ' + f).join('\n') + '\n\n' + ms + 'ms';
+  }
+} catch (e) {
+  verdict = 'WAVESTART-ERROR';
+  out.textContent = 'WAVESTART-ERROR\n\n' + ((e && e.stack) || e);
+}
+document.title = verdict;
+</script>
+</body>
+</html>

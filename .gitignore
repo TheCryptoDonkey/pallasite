@@ -34,16 +34,17 @@ yarn-error.log*
 *.tsbuildinfo
 .cache/
 
-# Local dev harnesses. determinism / lockstep / peer / regression / rollback
-# harnesses are tracked (they're load-bearing for multiplayer + B3 work);
-# anything else following the *-harness.html naming is local experimentation
-# and stays out.
+# Local dev harnesses. determinism / lockstep / peer / regression / rollback /
+# wavestart harnesses are tracked (they're load-bearing for multiplayer + B3 +
+# wave-intro work); anything else following the *-harness.html naming is local
+# experimentation and stays out.
 *-harness.html
 !determinism-harness.html
 !lockstep-harness.html
 !peer-harness.html
 !regression-harness.html
 !rollback-harness.html
+!wavestart-harness.html
 
 # Duel recorder output (tools/record-duel.ts writes the spectator's video
 # here as a .webm chunk + transcodes to duel-demo.mp4). Local artefacts;

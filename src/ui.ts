@@ -2681,10 +2681,14 @@ function renderPendingClaimBanner(parent: HTMLElement, state: GameState): void {
   });
 }
 
-/** Minimum balance before the WITHDRAW button activates. Avoids LN payment
- *  minima (some LSPs reject sub-10-sat invoices) and gives a satisfying
- *  "saving up" feel rather than nudging every player to withdraw 3 sats. */
-const WITHDRAW_THRESHOLD_SATS = 100;
+/** Minimum balance before the WITHDRAW button activates. Sits just above the
+ *  faucet's own withdraw floor (MIN_WITHDRAW_SATS / lnurl_min_sats = 10) so a
+ *  single decent run can actually cash out — a 100-sat gate left small venue
+ *  runs (e.g. 26 sats) with no way to get paid, only "bank to balance". 21 is
+ *  high enough to dodge sub-10-sat LSP invoice minima and dust-fee waste while
+ *  still letting most runs pay out. Gates both the title WITHDRAW button and the
+ *  game-over direct-payout options (canDirectPayout). */
+const WITHDRAW_THRESHOLD_SATS = 21;
 
 function renderBalanceChip(parent: HTMLElement, state: GameState): void {
   if (!state.session) return;
@@ -10935,6 +10939,10 @@ async function maybePublishScore(
         started_at: startedAt,
         finished_at: finishedAt,
         sats_claimed: state.players[0].sats,
+        // Same per-run id /api/score used (String(state.runStartedAt)), so the
+        // claim's kind 30762 reuses that run's d-tag and REPLACES the 0-sat
+        // score placeholder rather than leaving a duplicate on the relays.
+        run_id: String(state.runStartedAt),
         cheated: state.cheatedThisRun,
         mode: currentMode(),
         // Display name + NIP-05 so the claim's kind 30762 shows a name on
@@ -11482,6 +11490,20 @@ function renderVersusBanner(parent: HTMLElement, state: GameState): void {
   card(1);
 }
 
+/** Sign out from an end-of-run surface: ends the Signet session (a no-op for
+ *  guest identities), forgets a local guest so the device is a clean slate, and
+ *  clears the in-memory session before returning to attract — the same reset the
+ *  title's account panel performs, surfaced where a player on the public site
+ *  actually lands after a run. */
+async function signOutAndReturnToAttract(state: GameState): Promise<void> {
+  const wasGuest = state.session ? isGuestSession(state.session) : false;
+  try { await auth.signOut(state.session); } catch { /* ignore */ }
+  if (wasGuest) clearGuestIdentity();
+  state.session = null;
+  state.profile = null;
+  renderAttract(state);
+}
+
 function renderRunCredits(
   state: GameState,
   opts: { headerText: string; subText?: string; isCompletion?: boolean; idleSeconds?: number; endingChoice?: 'return' | 'forged' },
@@ -11902,6 +11924,19 @@ function renderRunCredits(
   }
   const home = el('button', { className: 'menu-btn secondary', parent: row, text: 'SKIP TO TITLE' });
   onTap(home, goToTitle);
+
+  // Sign out — surfaced on the recap because this is where a player on the
+  // public site actually wants to hand the device over or switch accounts; the
+  // only other sign-out was buried in the title's account panel. Its own row so
+  // it never sits beside SPAWN AGAIN as a mis-tap. Guests get it too (forgets
+  // the local identity). Omitted on booth kiosks — those re-sign every group
+  // through the join wizard, so a stray sign-out here would just confuse staff.
+  if (state.session && !boothKiosk) {
+    const signOutRow = el('div', { className: 'menu-row', parent: overlay });
+    const signOut = el('button', { className: 'menu-btn secondary', parent: signOutRow, text: 'SIGN OUT' }) as HTMLButtonElement;
+    signOut.style.cssText += 'font-size:0.78rem;color:rgba(255,120,120,0.85);border-color:rgba(255,120,120,0.4);';
+    onTap(signOut, () => { cleanup(); void signOutAndReturnToAttract(state); });
+  }
 
   renderLegalFooter(overlay);
 }
