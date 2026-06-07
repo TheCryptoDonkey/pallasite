@@ -20,6 +20,19 @@ import { FaucetSigner, fetchKioskInfo } from './faucet-signer.js';
 
 let lastSignerInfoLogKey = '';
 
+const SIGNET_AUTH_RELAY_PRIORITY = [
+  'wss://relay.trotters.cc',
+  'wss://nos.lol',
+  'wss://relay.primal.net',
+  'wss://relay.ditto.pub',
+  'wss://relay.damus.io',
+] as const;
+
+function pickSignetAuthRelay(): string | undefined {
+  const active = getActiveRelays();
+  return SIGNET_AUTH_RELAY_PRIORITY.find(relay => active.includes(relay)) ?? active[0];
+}
+
 export class AuthOnlySignerError extends Error {
   constructor() {
     super('My Signet approved identity only, but Pallasite needs a live signer. Turn on Bunker in My Signet for this identity, paste a bunker URI, use a browser extension, or play as guest.');
@@ -235,8 +248,7 @@ export async function signIn(): Promise<SignetSession | null> {
   // wss://relay.damus.io default doesn't match what publishing/scoring use,
   // so a relay-mode handshake there would be cross-traffic the game never
   // sees. Fall back to the SDK default only if zero relays are enabled.
-  const active = getActiveRelays();
-  const relayUrl = active[0];
+  const relayUrl = pickSignetAuthRelay();
   const session = await withTimeout(
     window.Signet.login({
       appName: APP_NAME,
@@ -258,8 +270,7 @@ export async function signIn(): Promise<SignetSession | null> {
  */
 export async function signInWith(method: SignInMethod): Promise<SignetSession | null> {
   if (!(await ensureSignetLoaded()) || !window.Signet) return null;
-  const active = getActiveRelays();
-  const relayUrl = active[0];
+  const relayUrl = pickSignetAuthRelay();
   const session = await withTimeout(
     window.Signet.login({
       appName: APP_NAME,
