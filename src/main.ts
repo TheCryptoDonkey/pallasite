@@ -18,7 +18,7 @@ import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, r
 import { postHeartbeat } from './faucet.js';
 import { currentMode, getStoredMode, isStoredDefenderMode, type RunMode } from './mode.js';
 import { deathmatchActive } from './deathmatch.js';
-import { pollGamepads, getPadFlightMode, getPadAutoThrust } from './gamepads.js';
+import { pollGamepads, getPadFlightMode, getPadAutoThrust, getPadFlightModeForSlot, getBoothPadSlotBinding } from './gamepads.js';
 import {
   startStreamSession,
   publishStreamFrame,
@@ -130,6 +130,13 @@ function requestedDeathmatchRules(): Partial<DeathmatchRules> | undefined {
 // Test hook: the headless E2E runner reads live sim state (frame, phase,
 // players) here without scraping the DOM. Production code never references it.
 (window as unknown as { __pallasiteState?: GameState }).__pallasiteState = state;
+// Booth-wizard probe: the join-flow E2E reads the per-slot pad scheme + the
+// recorded pad→slot binding here without scraping the DOM. Zero-cost in prod.
+(window as unknown as { __pallasiteBoothPads?: () => unknown }).__pallasiteBoothPads = () => ({
+  binding: getBoothPadSlotBinding(),
+  slot0: getPadFlightModeForSlot(0),
+  slot1: getPadFlightModeForSlot(1),
+});
 // In peer mode, p.keys is clobbered by every applyPlayerInput from the
 // delayed input log, so it doesn't reflect the live keyboard. localKeys is
 // the input-source mirror that the lockstep sample reads from; exposing it
@@ -2746,30 +2753,12 @@ async function boot(): Promise<void> {
         console.warn('[kiosk] session setup failed — falling back to the picker:', err);
       }
     }
-    // Remote booth (?p1/?p2 loading the PUBLIC pallasite.app faucet): the
-    // kiosk signer above is LAN-gated at the proxy and unreachable over the
-    // internet, so it returns null here. Fall back to a persistent local
-    // GUEST identity (canSignEvents=true, schnorr in-browser) so the booth
-    // can sign NIP-98 claim auths + replay pointers and never lands
-    // auth-only. Gated to ?p1/?p2 so ordinary public visitors still get the
-    // normal sign-in picker rather than a silent auto-identity. A self-
-    // hosted LAN booth keeps using the kiosk signer above (this is skipped
-    // because that path already returned a session).
-    if (!session) {
-      const q = new URLSearchParams(window.location.search);
-      const boothSlot = q.has('p2') ? 2 : q.has('p1') ? 1 : 0;
-      if (boothSlot > 0) {
-        try {
-          const { loadOrCreateGuest } = await import('./guest.js');
-          session = await loadOrCreateGuest({
-            name: `BTC Prague · Booth ${boothSlot}`,
-            followPallasite: false,
-          });
-        } catch (err) {
-          console.warn('[booth] guest session setup failed:', err);
-        }
-      }
-    }
+    // Booth (?p1/?p2): NO silent auto-identity. The press-Ⓐ join wizard
+    // (renderBoothLobby) signs in EACH joined pilot explicitly — Nostr or guest —
+    // before the run starts, so the booth still never lands auth-only, and every
+    // pilot is who they chose to be rather than a shared "Booth N" guest. (A
+    // self-hosted LAN kiosk signer, if configured, was already resolved above;
+    // the wizard's per-pilot sign-in overrides it for whoever is actually playing.)
     if (session) {
       state.session = session;
       if (shouldRefreshBoothLobbyAfterSession && state.phase === 'title') {
