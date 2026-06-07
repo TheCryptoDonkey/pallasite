@@ -77,6 +77,14 @@ export function isMobileViewport(): boolean {
   return touch && narrow;
 }
 
+/** Desktop macOS fullscreen activates Game Mode / Game Overlay, and the OS can
+ *  claim wireless-controller buttons before the browser sees them. iPadOS can
+ *  present a Mac-like UA, so require no touch points before calling it desktop. */
+function isDesktopMac(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return /Macintosh|Mac OS X/.test(navigator.userAgent) && (navigator.maxTouchPoints ?? 0) === 0;
+}
+
 export function canInstallNow(): boolean {
   return deferredInstallPrompt !== null;
 }
@@ -101,6 +109,10 @@ export async function triggerInstall(): Promise<boolean> {
  *  when the API is missing (iOS Safari). */
 export function tryEnterFullscreen(): void {
   if (typeof document === 'undefined') return;
+  // On desktop macOS, browser fullscreen can hand the session to macOS Game
+  // Mode/Game Overlay. That overlay may bind controller buttons such as Home /
+  // Guide and feel like the OS has "grabbed" the pad, so don't auto-enter it.
+  if (isDesktopMac()) return;
   const docEl = document.documentElement as HTMLElement & {
     webkitRequestFullscreen?: () => Promise<void>;
   };
