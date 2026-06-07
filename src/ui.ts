@@ -194,6 +194,89 @@ export function clearOverlay(): void {
   root.innerHTML = '';
 }
 
+export function renderGamepadTestPage(): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+
+  el('h2', { parent: overlay, text: 'CONTROLLER TEST' });
+  const status = el('p', { parent: overlay, text: 'No controller detected yet - press any button or nudge a stick.' });
+  status.style.cssText = 'font-size:0.86rem;color:rgba(220,210,255,0.7);letter-spacing:0.05em;max-width:760px;text-align:center;';
+
+  const grid = el('div', { parent: overlay });
+  grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;max-width:900px;width:100%;';
+
+  const makeCard = (title: string): HTMLElement => {
+    const card = el('div', { parent: grid });
+    card.style.cssText = 'border:1px solid rgba(140,120,255,0.25);background:rgba(8,12,26,0.55);border-radius:8px;padding:14px;min-height:120px;';
+    const h = el('p', { parent: card, text: title });
+    h.style.cssText = 'margin:0 0 10px;color:#ffd84a;font-size:0.8rem;letter-spacing:0.18em;';
+    return card;
+  };
+
+  const axesCard = makeCard('STICKS');
+  const axesRead = el('pre', { parent: axesCard });
+  axesRead.style.cssText = 'margin:0;color:#dcd2ff;font-size:0.82rem;line-height:1.55;white-space:pre-wrap;';
+
+  const triggerCard = makeCard('TRIGGERS');
+  const triggerRead = el('pre', { parent: triggerCard });
+  triggerRead.style.cssText = 'margin:0;color:#dcd2ff;font-size:0.82rem;line-height:1.55;white-space:pre-wrap;';
+
+  const buttonsCard = makeCard('BUTTONS');
+  const buttonsGrid = el('div', { parent: buttonsCard });
+  buttonsGrid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(88px,1fr));gap:6px;';
+
+  const row = el('div', { className: 'menu-row', parent: overlay });
+  const back = el('button', { className: 'menu-btn', parent: row, text: '< BACK TO GAME' });
+  back.addEventListener('click', () => { window.location.assign('/'); });
+
+  const labels: Record<number, string> = {
+    0: 'A', 1: 'B', 2: 'X', 3: 'Y', 4: 'LB', 5: 'RB', 6: 'LT', 7: 'RT',
+    8: 'View', 9: 'Menu', 10: 'L3', 11: 'R3', 12: 'D-Up', 13: 'D-Down',
+    14: 'D-Left', 15: 'D-Right', 16: 'Guide',
+  };
+  let buttonEls: HTMLElement[] = [];
+  const ensureButtons = (n: number): void => {
+    if (buttonEls.length === n) return;
+    buttonsGrid.innerHTML = '';
+    buttonEls = [];
+    for (let i = 0; i < n; i++) {
+      const b = el('div', { parent: buttonsGrid, text: `${i} ${labels[i] ?? 'B' + i}` });
+      b.style.cssText = 'border:1px solid rgba(140,120,255,0.25);border-radius:5px;padding:6px 8px;font-size:0.74rem;color:rgba(220,210,255,0.75);background:rgba(2,5,13,0.5);';
+      buttonEls.push(b);
+    }
+  };
+  const fmt = (n: number | undefined): string => (n ?? 0).toFixed(2).padStart(5, ' ');
+  const tick = (): void => {
+    if (!overlay.isConnected) return;
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    let pad: Gamepad | null = null;
+    for (const p of pads) {
+      if (p && p.connected) { pad = p; break; }
+    }
+    if (!pad) {
+      status.textContent = 'No controller detected yet - press any button or nudge a stick.';
+      axesRead.textContent = 'left  x  0.00  y  0.00\nright x  0.00  y  0.00';
+      triggerRead.textContent = 'LT 0.00\nRT 0.00';
+      ensureButtons(0);
+      requestAnimationFrame(tick);
+      return;
+    }
+    status.textContent = `Connected: ${pad.id} | mapping: ${pad.mapping || 'non-standard'} | axes: ${pad.axes.length} | buttons: ${pad.buttons.length}`;
+    axesRead.textContent = `left  x ${fmt(pad.axes[0])}  y ${fmt(pad.axes[1])}\nright x ${fmt(pad.axes[2])}  y ${fmt(pad.axes[3])}`;
+    triggerRead.textContent = `LT ${fmt(pad.buttons[6]?.value)}\nRT ${fmt(pad.buttons[7]?.value)}`;
+    ensureButtons(pad.buttons.length);
+    for (let i = 0; i < buttonEls.length; i++) {
+      const pressed = !!pad.buttons[i] && (pad.buttons[i].pressed || pad.buttons[i].value > 0.5);
+      buttonEls[i].style.background = pressed ? '#58ff58' : 'rgba(2,5,13,0.5)';
+      buttonEls[i].style.color = pressed ? '#021' : 'rgba(220,210,255,0.75)';
+      buttonEls[i].style.borderColor = pressed ? '#58ff58' : 'rgba(140,120,255,0.25)';
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
 /**
  * Bind a tap handler that fires reliably on touch devices.
  *
@@ -1513,7 +1596,7 @@ function renderControllerPrefs(state: GameState, booth: number): void {
 
   const row = el('div', { className: 'menu-row', parent: overlay });
   const test = el('button', { className: 'menu-btn secondary', parent: row, text: '🎮 TEST CONTROLLER' });
-  test.addEventListener('click', () => { try { window.open('/gamepad-test.html', '_blank'); } catch { /* ignore */ } });
+  test.addEventListener('click', () => { window.location.assign('/gamepad-test'); });
   const back = el('button', { className: 'menu-btn', parent: row, text: '◀ BACK' });
   back.addEventListener('click', () => renderBoothLobby(state, booth));
   setTimeout(() => tryFocusVisible(back), 0);

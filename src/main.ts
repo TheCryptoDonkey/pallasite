@@ -14,7 +14,7 @@ import { getFlavour } from './flavour.js';
 import { lockInDifficulty, getStoredDifficulty, setStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadCriticalCampaignAssets, setRenderMode, getRenderModeKind, drawAsciiHud, setShowPlayerIdentity, type CriticalAssetReport } from './render.js';
-import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderDuelLobby, renderDuelConnecting, renderEventLobby, simulateStart } from './ui.js';
+import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderDuelLobby, renderDuelConnecting, renderEventLobby, renderGamepadTestPage, simulateStart } from './ui.js';
 import { postHeartbeat } from './faucet.js';
 import { currentMode, getStoredMode, isStoredDefenderMode, type RunMode } from './mode.js';
 import { deathmatchActive } from './deathmatch.js';
@@ -1948,19 +1948,21 @@ function loop(now: number): void {
   // pad 1 the second. In peer mode it writes the lockstep input mirrors (a
   // linked booth's two pads → its two owned slots); in couch / solo it pokes
   // the players directly. No-op when no pad is in use.
-  pollGamepads(state, {
-    pilotSlots: localPilotSlots,
-    peerActive: isPeerActive(),
-    // Honour the player's chosen scheme everywhere — the default is already
-    // Point & Fly (the walk-up-friendly pickup-and-go), and a booth hand-over
-    // (SIGN OUT) resets it to default, so each drop-in still starts simple.
-    flightMode: getPadFlightMode(),
-    autoThrust: getPadAutoThrust(),
-    localKeys,
-    localHeading,
-    localThrust,
-    edgeFlags,
-  });
+  if (document.body.dataset.surface !== 'gamepad-test') {
+    pollGamepads(state, {
+      pilotSlots: localPilotSlots,
+      peerActive: isPeerActive(),
+      // Honour the player's chosen scheme everywhere — the default is already
+      // Point & Fly (the walk-up-friendly pickup-and-go), and a booth hand-over
+      // (SIGN OUT) resets it to default, so each drop-in still starts simple.
+      flightMode: getPadFlightMode(),
+      autoThrust: getPadAutoThrust(),
+      localKeys,
+      localHeading,
+      localThrust,
+      edgeFlags,
+    });
+  }
   // Peer catch-up: a late-joining peerwatch, AI-slot takeover, or slow-starting
   // 4P tab can receive remote input faster than its local sim is advancing.
   // The real-time accumulator can only afford one or two sim steps per rAF, so
@@ -3320,6 +3322,9 @@ async function boot(): Promise<void> {
     if (path === '/jury') {
       document.body.dataset.surface = 'jury';
       renderJuryPage(state);
+    } else if (path === '/gamepad-test' || path === '/gamepad-test.html') {
+      document.body.dataset.surface = 'gamepad-test';
+      renderGamepadTestPage();
     } else if (path === '/controller') {
       document.body.dataset.surface = 'controller';
       renderControllerPage(state);
