@@ -2611,13 +2611,13 @@ function renderPendingClaimBanner(parent: HTMLElement, state: GameState): void {
           if (isTerminalClaimError(result.error)) {
             clearPendingClaim();
             status.style.color = '#ff8050';
-            status.textContent = claimErrorMessage(result.error, result.detail);
+            status.textContent = claimErrorMessage(result.error, result.detail, result.retry_after_ms);
             btn.remove();
             dismissBtn.textContent = 'CLOSE';
             dismissBtn.disabled = false;
           } else {
             status.style.color = '#ff8050';
-            status.textContent = claimErrorMessage(result.error, result.detail);
+            status.textContent = claimErrorMessage(result.error, result.detail, result.retry_after_ms);
             btn.disabled = false;
             dismissBtn.disabled = false;
           }
@@ -10552,8 +10552,12 @@ export function setStoredLnAddress(v: string): void {
   }
 }
 
-function claimErrorMessage(error: string, detail?: string): string {
+function claimErrorMessage(error: string, detail?: string, retryAfterMs?: number): string {
   switch (error) {
+    case 'cooldown': {
+      const secs = Math.max(1, Math.ceil((retryAfterMs ?? 0) / 1000));
+      return `Claiming too fast — wait ${secs}s, then claim again.`;
+    }
     case 'cap_reached': return 'Lifetime cap reached for this tier.';
     case 'rate_limited': return 'Too many claims this hour. Try later.';
     case 'daily_cap_reached': return 'Daily faucet cap hit. Try tomorrow.';
@@ -10913,7 +10917,7 @@ async function maybePublishScore(
     const result = await submitClaim(session, payload);
     if (!result.ok) {
       if (isTerminalClaimError(result.error)) clearPendingClaim();
-      setStatus(claimErrorMessage(result.error, result.detail), '#ff8050');
+      setStatus(claimErrorMessage(result.error, result.detail, result.retry_after_ms), '#ff8050');
       setEnabled(true);
       return { ok: false };
     }
