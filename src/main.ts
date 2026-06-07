@@ -14,7 +14,7 @@ import { getFlavour } from './flavour.js';
 import { lockInDifficulty, getStoredDifficulty, setStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadCriticalCampaignAssets, setRenderMode, getRenderModeKind, drawAsciiHud, setShowPlayerIdentity, type CriticalAssetReport } from './render.js';
-import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderControllerHostPairing, renderDuelLobby, renderDuelConnecting, renderEventLobby, renderGamepadTestPage, simulateStart } from './ui.js';
+import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderSignerRecovery, renderDuelLobby, renderDuelConnecting, renderEventLobby, renderGamepadTestPage, simulateStart } from './ui.js';
 import { postHeartbeat } from './faucet.js';
 import { currentMode, getStoredMode, isStoredDefenderMode, type RunMode } from './mode.js';
 import { deathmatchActive } from './deathmatch.js';
@@ -2684,13 +2684,13 @@ async function boot(): Promise<void> {
   // starts, and the title flips from the sign-in screen to signed-in once the
   // session lands. Every state.session reader below is null-guarded.
   void (async () => {
-    let shouldOfferPhoneSignerQr = false;
+    let shouldOfferSignerRecovery = false;
     let session = null as Awaited<ReturnType<typeof handleAuthCallback>>;
     try {
       session = await handleAuthCallback();
     } catch (err) {
       if (isAuthOnlySignerError(err)) {
-        shouldOfferPhoneSignerQr = true;
+        shouldOfferSignerRecovery = true;
       } else {
         console.warn('[auth] callback handling failed:', err);
       }
@@ -2741,8 +2741,8 @@ async function boot(): Promise<void> {
       const p = await fetchProfile(session.pubkey);
       if (p) state.profile = p;
     }
-    if (shouldOfferPhoneSignerQr && state.phase === 'title' && !isControllerSurface()) {
-      renderControllerHostPairing(state, () => renderTitle(state), { purpose: 'signer' });
+    if (shouldOfferSignerRecovery && state.phase === 'title' && !isControllerSurface()) {
+      renderSignerRecovery(state);
     }
   })();
   // NIP-07 extensions sometimes inject `window.nostr` after page load —

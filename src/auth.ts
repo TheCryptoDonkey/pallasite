@@ -122,6 +122,7 @@ declare global {
         appName: string;
         theme?: 'light' | 'dark' | 'auto';
         relayUrl?: string;
+        signetAppOrigin?: string;
         mode?: 'relay' | 'redirect';
         redirectCallback?: string;
         preferredMethod?: SignInMethod;
@@ -151,6 +152,7 @@ const RESTORE_TIMEOUT_MS = 5_000;
 const SDK_CACHE_BUST = encodeURIComponent(BUILD_ID);
 const SIGNET_VERIFY_SRC = `/signet-verify.iife.js?v=${SDK_CACHE_BUST}`;
 const SIGNET_LOGIN_SRC = `/signet-login.iife.js?v=${SDK_CACHE_BUST}`;
+const SIGNET_APP_ORIGIN_STORAGE_KEY = 'pallasite:signet.appOrigin';
 const SIGNET_STORAGE_KEYS = {
   pubkey: 'signet:login.pubkey',
   method: 'signet:login.method',
@@ -249,6 +251,41 @@ function hasStoredSignetSession(): boolean {
   }
 }
 
+function normaliseSignetAppOrigin(raw: string | null): string | undefined {
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw.trim());
+    const host = url.hostname.toLowerCase();
+    const isLocalHost = host === 'localhost' || host === '127.0.0.1' || host.endsWith('.local');
+    const isMySignetHost = host === 'mysignet.app' || host === 'www.mysignet.app';
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && (isLocalHost || isMySignetHost))) {
+      return undefined;
+    }
+    url.pathname = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return undefined;
+  }
+}
+
+function configuredSignetAppOrigin(): string | undefined {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const fromUrl = normaliseSignetAppOrigin(
+      params.get('mysignet') ?? params.get('signetAppOrigin') ?? params.get('signet_app_origin'),
+    );
+    if (fromUrl) {
+      localStorage.setItem(SIGNET_APP_ORIGIN_STORAGE_KEY, fromUrl);
+      return fromUrl;
+    }
+    return normaliseSignetAppOrigin(localStorage.getItem(SIGNET_APP_ORIGIN_STORAGE_KEY));
+  } catch {
+    return undefined;
+  }
+}
+
 export async function signIn(): Promise<SignetSession | null> {
   if (!(await ensureSignetLoaded()) || !window.Signet) return null;
   // Use the player's chosen relay for the cross-device QR path — the SDK's
@@ -256,11 +293,13 @@ export async function signIn(): Promise<SignetSession | null> {
   // so a relay-mode handshake there would be cross-traffic the game never
   // sees. Fall back to the SDK default only if zero relays are enabled.
   const relayUrl = pickSignetAuthRelay();
+  const signetAppOrigin = configuredSignetAppOrigin();
   const session = await withTimeout(
     window.Signet.login({
       appName: APP_NAME,
       theme: 'dark',
       ...(relayUrl ? { relayUrl } : {}),
+      ...(signetAppOrigin ? { signetAppOrigin } : {}),
     }),
     SIGN_IN_TIMEOUT_MS,
     () => new SignInTimeoutError(),
@@ -278,12 +317,14 @@ export async function signIn(): Promise<SignetSession | null> {
 export async function signInWith(method: SignInMethod): Promise<SignetSession | null> {
   if (!(await ensureSignetLoaded()) || !window.Signet) return null;
   const relayUrl = pickSignetAuthRelay();
+  const signetAppOrigin = configuredSignetAppOrigin();
   const session = await withTimeout(
     window.Signet.login({
       appName: APP_NAME,
       theme: 'dark',
       preferredMethod: method,
       ...(relayUrl ? { relayUrl } : {}),
+      ...(signetAppOrigin ? { signetAppOrigin } : {}),
     }),
     SIGN_IN_TIMEOUT_MS,
     () => new SignInTimeoutError(),
