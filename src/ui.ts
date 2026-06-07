@@ -459,15 +459,17 @@ function setupOverlayArrowNav(overlay: HTMLElement, onBack?: () => void): void {
       back?.click();
       return;
     }
-    // Skip when an input/textarea is focused — the form field owns
-    // its own keys (typing names, code entry).
-    const active = document.activeElement as HTMLElement | null;
-    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
-
     const isArrow = e.code === 'ArrowUp' || e.code === 'ArrowDown'
                  || e.code === 'ArrowLeft' || e.code === 'ArrowRight';
     const isActivate = e.code === 'Enter' || e.code === 'Space';
     if (!isArrow && !isActivate) return;
+
+    // Skip when an input/textarea is focused for real keyboard events — the
+    // form field owns typing and cursor movement. Synthetic controller/gamepad
+    // nav is different: if focus is stranded in a field, arrows should escape
+    // back to overlay buttons instead of making the pad feel dead.
+    const active = document.activeElement as HTMLElement | null;
+    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') && e.isTrusted) return;
 
     const buttons = Array.from(overlay.querySelectorAll<HTMLButtonElement>('button:not([disabled])'))
       .filter((b) => b.offsetParent !== null);
@@ -586,9 +588,9 @@ function tryFocusVisible(btn: HTMLButtonElement): void {
  * PWA in d-pad mode (which emits ArrowUp/Down/Left/Right via the
  * gamepad bridge) can navigate through them via setupOverlayArrowNav,
  * land on ▲ / ▼ / ◀ / ▶ / BKSP / DONE, and activate with Enter
- * (the PWA's A button). Keyboard users get the same buttons via Tab,
- * plus typing a letter / digit directly types into the active slot
- * and auto-advances the cursor.
+ * (the PWA's A button). Keyboard users get the same buttons via
+ * arrows/Tab, plus typing a letter / digit directly types into the
+ * active slot and auto-advances the cursor.
  *
  * Returns a `getCurrentName()` accessor so callers (the IGNITE
  * fallback path) can read the in-progress value without waiting for
@@ -733,8 +735,20 @@ function renderArcadeName(
   // covers mouse + keyboard activation (Enter / Space on focused
   // button fires synthetic click).
   const bindTap = (btn: HTMLElement, fn: () => void): void => {
-    btn.addEventListener('pointerdown', (e) => { e.preventDefault(); fn(); });
-    btn.addEventListener('click', (e) => { e.preventDefault(); });
+    let handledPointer = false;
+    btn.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      handledPointer = true;
+      fn();
+    });
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (handledPointer) {
+        handledPointer = false;
+        return;
+      }
+      fn();
+    });
   };
   bindTap(upBtn,    () => cycle(1));
   bindTap(downBtn,  () => cycle(-1));
@@ -744,13 +758,11 @@ function renderArcadeName(
   bindTap(doneBtn,  () => commit());
 
   // Keyboard fast path — typing a letter / digit replaces the active
-  // slot and advances the cursor. Avoids forcing kb users through the
-  // arcade ▲▼ dance when they can just type.
+  // slot and advances the cursor. Arrow / Enter remains overlay button
+  // navigation so OS-mapped gamepads behave like gamepads.
   //
   // Capture phase + stopImmediatePropagation on consumed keys so the
-  // global IGNITE-on-Enter handler in main.ts doesn't fire mid-edit,
-  // and the overlay arrow-key button-cycle handler doesn't fight us
-  // for ↑↓←→ when focus is inside this widget.
+  // global IGNITE-on-Enter handler in main.ts doesn't fire mid-edit.
   const keyHandler = (e: KeyboardEvent): void => {
     if (submitted) return;
     if (!document.body.contains(wrap)) {
@@ -762,13 +774,23 @@ function renderArcadeName(
     // field (e.g. the bunker URI input) is swallowed by this capture
     // handler before the input sees it.
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    // Only intercept arrow keys when focus is on one of OUR buttons
-    // or the wrap itself — otherwise the user is trying to navigate
-    // the surrounding overlay and we shouldn't steal arrows.
     const active = document.activeElement as Element | null;
-    const focusInside = active === wrap || wrap.contains(active);
+    const activeIsButton = active instanceof HTMLButtonElement;
+    const isOverlayNavKey = e.code === 'ArrowUp' || e.code === 'ArrowDown'
+      || e.code === 'ArrowLeft' || e.code === 'ArrowRight'
+      || e.code === 'Enter' || e.code === 'Space';
+    // Gamepads can arrive two ways:
+    //   - our Gamepad API bridge dispatches synthetic Arrow / Enter events;
+    //   - macOS / Steam / browser accessibility can translate the pad into
+    //     trusted keyboard events. In both cases, focused buttons must behave
+    //     like menu buttons, not like the name editor's text shortcuts.
+    if (isOverlayNavKey && activeIsButton) return;
+    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
+    // Arrow keys belong to overlay navigation. The editor still exposes real
+    // ▲▼◀▶ buttons for changing characters/cursor, and direct letter typing
+    // below remains the fast path for keyboard users.
     if (e.code === 'ArrowUp' || e.code === 'ArrowDown' || e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
-      if (!focusInside) return;
+      return;
     }
     let consumed = true;
     switch (e.code) {
