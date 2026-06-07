@@ -1909,7 +1909,12 @@ export function beginWave(s: GameState, wave: number): void {
     // higher values cram more rocks per wave. The 5-13 curve is the
     // 16:9 rebalance of the old 4-10: the world is ~33% wider.
     const multiplier = getGameConfig().asteroid_count_multiplier;
-    const count = Math.max(1, Math.round(Math.min(13, 4 + wave) * multiplier));
+    // Waves 10-11 are a known difficulty spike: the rock count has just
+    // plateaued at its 13 cap exactly as the sniper (W10) and tank (W11) UFOs
+    // debut. Thin the field by two on these two waves so the new UFO threat
+    // reads as the headline rather than piling onto a maxed-out rock field.
+    const spikeRelief = wave === 10 || wave === 11 ? 2 : 0;
+    const count = Math.max(1, Math.round(Math.min(13, 4 + wave) * multiplier) - spikeRelief);
     for (let i = 0; i < count; i++) {
       s.asteroids.push(spawnAsteroid('large', wave));
     }
@@ -1945,6 +1950,11 @@ export function beginWave(s: GameState, wave: number): void {
   audio.setHeartbeatPeriod(Math.max(0.35, 1.0 - wave * 0.06));
   // Preload the next wave's background so the warp transition is seamless
   preloadBackground(wave + 1);
+  // The ship is parked and frozen for the whole wave-intro (updateGame skips
+  // ship input while phase === 'wavestart'), so kill any thrust loop still
+  // droning from the moment the previous wave cleared — otherwise it holds
+  // through the banner with no way for the player to release it.
+  audio.thrustOff();
   // Half-beat of silence first — duck the music so the wave name lands cleanly,
   // then fire the chime + reveal at WAVE_REVEAL_DELAY_MS, then unduck and resume.
   audio.setMusicDuck(0.3);
@@ -4048,7 +4058,12 @@ export function updateGame(s: GameState): void {
       if (p.ship.shieldHitFlash < 0.005) p.ship.shieldHitFlash = 0;
     }
 
-    if (p.ship.alive && p.ship.hyperspaceCloakMs <= 0) {
+    // Ship control is frozen during the wave-intro banner ('wavestart'): the
+    // sim still ticks (asteroids drift, scheduled transitions fire) but the
+    // player cannot rotate, thrust or fire until play actually begins, so the
+    // intro never reads as a level that has already started. 'bonus' and
+    // 'sanctum' keep full control — only the wave-intro is frozen.
+    if (p.ship.alive && p.ship.hyperspaceCloakMs <= 0 && s.phase !== 'wavestart') {
       if (p.targetHeading !== null) {
         // Heading-mode (joystick): rotate ship smoothly toward the stick angle
         // at a fixed angular rate. Snaps when within one frame's worth of rate.
@@ -4201,10 +4216,15 @@ export function updateGame(s: GameState): void {
   if (!suppressSpawn && s.nextUfoSpawn <= 0 && minionCount === 0) {
     spawnUfo(s);
     const cfg = getGameConfig();
-    const baseInterval = Math.max(
+    let baseInterval = Math.max(
       cfg.ufo_respawn_min_ms,
       cfg.ufo_respawn_base_ms - s.wave * cfg.ufo_respawn_per_wave_ms,
     );
+    // Waves 10-11 debut the sniper + tank UFOs, but by this wave the respawn
+    // timer has already bottomed out at its floor — so a fresh nasty UFO
+    // arrives the instant the last one dies. Stretch the gap ~60% on these two
+    // waves so each new type lands as an event, not a relentless harasser.
+    if (s.wave === 10 || s.wave === 11) baseInterval *= 1.6;
     // 600bn flavour wants the $600B badge UFOs MUCH more frequent —
     // they're a marquee visual element of the cross-promo wave, not
     // a periodic harasser. ~4s respawn instead of ~17s.

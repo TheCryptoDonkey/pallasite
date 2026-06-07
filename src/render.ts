@@ -6177,7 +6177,17 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     !deathmatchViewBounds || boundsIntersectCircle(deathmatchViewBounds, x, y, r + 120)
   );
 
-  for (const dx of ghostXs) {
+  // Wave-intro hold: hide the whole play field (ship, rocks, coins, projectiles)
+  // during the 'wavestart' banner so the intro reads as an interstitial, not
+  // live play — the sim is frozen for the same window (see updateGame). Standard
+  // waves hide for the entire banner; act-boundary waves (1/10/17/25) hide only
+  // while their full-screen story card is opaque, then reveal the field behind
+  // the lifting card. The WebGL mesh overlay below keys off the same flag so its
+  // separate canvas matches the 2D layer.
+  const introHidesField = state.phase === 'wavestart'
+    && (intertitleHoldMs(state) === 0 || isIntertitleHolding(state));
+
+  if (!introHidesField) for (const dx of ghostXs) {
     for (const dy of ghostYs) {
       const isGhost = dx !== 0 || dy !== 0;
       if (isGhost) { ctx.save(); ctx.translate(dx, dy); }
@@ -6304,7 +6314,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     const ufosMesh = shipTier === 'mesh' || asteroidTier === 'mesh';
     // While an act-boundary intertitle holds the screen black, feed the
     // overlay empty lists so its canvas stays clear of the story card.
-    const holding = isIntertitleHolding(state) || state.phase === 'title';
+    const holding = introHidesField || state.phase === 'title';
     const meshMargin = 260;
     const meshVisible = (x: number, y: number, r = 0): boolean => {
       if (!followActive || !deathmatchRun) return true;

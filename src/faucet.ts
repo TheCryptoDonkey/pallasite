@@ -270,6 +270,10 @@ export interface ClaimInput {
    *  600bn flavour — so no bespoke tag is added to the gamestr schema. */
   mode?: RunMode;
   daily_seed?: string;
+  /** Per-run id — the SAME value sent to /api/score. The faucet reuses it as
+   *  the kind 30762 d-tag suffix so the claim REPLACES that run's 0-sat score
+   *  placeholder instead of leaving a duplicate event on the relays. */
+  run_id?: string;
   /** Deploy flavour the run came from. '600bn' routes through the
    *  Sanctum teaser daily-cap budget and stamps a `['t','600bn']` tag
    *  on the score event. Defaults server-side to 'main' when omitted. */
