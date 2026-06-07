@@ -29,6 +29,7 @@ export type PeerSlot = number;
 export type PeerMsgOut =
   | { type: 'hello-peer'; session: string; slot: PeerSlot; version: 1; players?: number; aiFill?: boolean; humanSlots?: number[]; binaryFrames?: boolean }
   | { type: 'frame'; frame: number; slot: PeerSlot; input: number }
+  | { type: 'frame-set'; frame: number; entries: Array<[PeerSlot, number]> }
   | { type: 'frames'; slot: PeerSlot; base: number; inputs: number[] }
   | { type: 'hash'; frame: number; slot: PeerSlot; hash: number }
   | { type: 'bye'; slot: PeerSlot };
@@ -38,6 +39,7 @@ export type PeerMsgOut =
  *  broker-originated lifecycle events; `session-error` is fatal. */
 export type PeerMsgIn =
   | { type: 'frame'; frame: number; slot: PeerSlot; input: number }
+  | { type: 'frame-set'; frame: number; entries: Array<[PeerSlot, number]> }
   | { type: 'frames'; slot: PeerSlot; base: number; inputs: number[] }
   | { type: 'hash'; frame: number; slot: PeerSlot; hash: number }
   | { type: 'peer-joined'; slot: PeerSlot; binaryFrames?: boolean }
@@ -90,6 +92,8 @@ export interface Peer {
   /** Buffer-and-send the local input for the given frame. `slot` overrides the
    *  bound local slot — a booth owning several slots sends one per slot. */
   sendFrame(frame: number, encoded: number, slot?: number): void;
+  /** Send several slot-tagged inputs for one sim frame as one wire payload. */
+  sendFrameSet?(frame: number, entries: Array<{ slot: number; input: number }>): void;
   /** Send a periodic state hash for desync detection. */
   sendHash(frame: number, hash: number): void;
   /** Drain remote frame deliveries received since the last call. Returns
@@ -538,6 +542,17 @@ export class WebSocketPeer implements Peer {
     this.lastSendFrame = frame;
   }
 
+  sendFrameSet(frame: number, entries: Array<{ slot: number; input: number }>): void {
+    if (!this.worker || entries.length <= 0) return;
+    this.worker.postMessage({
+      kind: 'send-frame-set',
+      frame,
+      entries: entries.map(e => [e.slot, e.input >>> 0]),
+    });
+    this.sentFrameCount += entries.length;
+    this.lastSendFrame = frame;
+  }
+
   sendHash(frame: number, hash: number): void {
     if (!this.worker) return;
     this.worker.postMessage({ kind: 'send-hash', frame, hash });
@@ -643,6 +658,18 @@ function buildPeerWorkerSource(): string {
       out.sort(function (a, b) { return a.slot - b.slot; });
       return out;
     }
+    function normaliseFrameSetEntries(raw) {
+      if (!Array.isArray(raw)) return [];
+      var out = [];
+      for (var i = 0; i < raw.length; i++) {
+        var item = raw[i];
+        var slot = Array.isArray(item) ? Math.floor(Number(item[0])) : Math.floor(Number(item && item.slot));
+        var input = Array.isArray(item) ? Number(item[1]) : Number(item && item.input);
+        if (!Number.isFinite(slot) || slot < 0 || slot >= expectedPlayers) continue;
+        out.push([slot, (input || 0) >>> 0]);
+      }
+      return out;
+    }
     function allExpectedJoined() {
       for (var i = 0; i < expectedPlayers; i++) {
         if (!joinedSlots[i]) return false;
@@ -699,7 +726,7 @@ function buildPeerWorkerSource(): string {
       view.setUint32(8, input >>> 0, true);
       return buf;
     }
-    function binaryPeerFrames(base, inputs) {
+    function binaryPeerFramesSlot(base, inputs, slot) {
       var count = Math.min(255, inputs.length);
       var buf = new ArrayBuffer(9 + count * 4);
       var bytes = new Uint8Array(buf);
@@ -707,11 +734,14 @@ function buildPeerWorkerSource(): string {
       bytes[0] = PEER_BINARY_MAGIC;
       bytes[1] = PEER_BINARY_VERSION;
       bytes[2] = PEER_BINARY_FRAMES;
-      bytes[3] = localSlot & 255;
+      bytes[3] = slot & 255;
       view.setUint32(4, base >>> 0, true);
       bytes[8] = count;
       for (var i = 0; i < count; i++) view.setUint32(9 + i * 4, inputs[i] >>> 0, true);
       return buf;
+    }
+    function binaryPeerFrames(base, inputs) {
+      return binaryPeerFramesSlot(base, inputs, localSlot);
     }
     function binaryPeerHash(frame, hash) {
       var buf = new ArrayBuffer(12);
@@ -744,33 +774,36 @@ function buildPeerWorkerSource(): string {
     function sendPayload(obj) {
       return sendTextPayload(JSON.stringify(obj));
     }
-    function sendFrameGroup(base, inputs) {
+    function sendFrameGroupForSlot(slot, base, inputs) {
       if (inputs.length <= 0) return;
       if (binaryWire) {
         if (inputs.length === 1) {
-          if (sendTextPayload(binaryPeerFrame(base, inputs[0]))) {
+          if (sendTextPayload(slot === localSlot ? binaryPeerFrame(base, inputs[0]) : binaryPeerFrameSlot(base, inputs[0], slot))) {
             wsSentFrameCount++;
             wsSentFramePayloadCount++;
           }
           return;
         }
-        if (sendTextPayload(binaryPeerFrames(base, inputs))) {
+        if (sendTextPayload(slot === localSlot ? binaryPeerFrames(base, inputs) : binaryPeerFramesSlot(base, inputs, slot))) {
           wsSentFrameCount += inputs.length;
           wsSentFramePayloadCount++;
         }
         return;
       }
       if (inputs.length === 1) {
-        if (sendPayload({ type: 'frame', frame: base, slot: localSlot, input: inputs[0] })) {
+        if (sendPayload({ type: 'frame', frame: base, slot: slot, input: inputs[0] })) {
           wsSentFrameCount++;
           wsSentFramePayloadCount++;
         }
         return;
       }
-      if (sendPayload({ type: 'frames', slot: localSlot, base: base, inputs: inputs })) {
+      if (sendPayload({ type: 'frames', slot: slot, base: base, inputs: inputs })) {
         wsSentFrameCount += inputs.length;
         wsSentFramePayloadCount++;
       }
+    }
+    function sendFrameGroup(base, inputs) {
+      sendFrameGroupForSlot(localSlot, base, inputs);
     }
     function binaryPeerFrameSlot(frame, input, slot) {
       var buf = new ArrayBuffer(12);
@@ -784,9 +817,6 @@ function buildPeerWorkerSource(): string {
       view.setUint32(8, input >>> 0, true);
       return buf;
     }
-    // Non-batched send of ONE frame tagged with an explicit slot — a booth that
-    // owns several slots emits one frame per owned slot, without disturbing the
-    // single-slot batch path that normal duels use.
     function sendFrameForSlot(frame, input, slot) {
       if (binaryWire) {
         if (sendTextPayload(binaryPeerFrameSlot(frame, input, slot))) { wsSentFrameCount++; wsSentFramePayloadCount++; }
@@ -794,16 +824,32 @@ function buildPeerWorkerSource(): string {
       }
       if (sendPayload({ type: 'frame', frame: frame, slot: slot, input: input })) { wsSentFrameCount++; wsSentFramePayloadCount++; }
     }
+    function sendFrameSet(frame, entries) {
+      entries = normaliseFrameSetEntries(entries);
+      if (entries.length <= 0) return;
+      if (entries.length === 1) {
+        sendFrameForSlot(frame, entries[0][1], entries[0][0]);
+        return;
+      }
+      if (sendPayload({ type: 'frame-set', frame: frame, entries: entries })) {
+        wsSentFrameCount += entries.length;
+        wsSentFramePayloadCount++;
+      }
+    }
     function flushFrameBatch() {
       if (frameFlushTimer !== null) {
         clearTimeout(frameFlushTimer);
         frameFlushTimer = null;
       }
-      if (pendingFrameCount <= 0) return;
-      var frames = Object.keys(pendingFrames).map(function (k) { return Number(k); }).filter(Number.isFinite).sort(function (a, b) { return a - b; });
-      var values = pendingFrames;
-      pendingFrames = {};
-      pendingFrameCount = 0;
+      if (pendingFrameCount > 0) {
+        flushFrameValues(localSlot, pendingFrames);
+        pendingFrames = {};
+        pendingFrameCount = 0;
+      }
+    }
+    function flushFrameValues(slot, values) {
+      var frames = Object.keys(values).map(function (k) { return Number(k); }).filter(Number.isFinite).sort(function (a, b) { return a - b; });
+      if (frames.length <= 0) return;
       var base = -1;
       var inputs = [];
       var last = -1;
@@ -818,13 +864,13 @@ function buildPeerWorkerSource(): string {
           inputs.push(input);
           last = f;
         } else {
-          sendFrameGroup(base, inputs);
+          sendFrameGroupForSlot(slot, base, inputs);
           base = f;
           last = f;
           inputs = [input];
         }
       }
-      sendFrameGroup(base, inputs);
+      sendFrameGroupForSlot(slot, base, inputs);
     }
     function queueFrame(frame, input) {
       if (!batchFrames) {
@@ -882,6 +928,13 @@ function buildPeerWorkerSource(): string {
           wsRecvFrameCount += inputs.length;
           wsRecvFramePayloadCount++;
           post({ kind: 'frames', slot: msg.slot, base: msg.base, inputs: inputs });
+        } else if (msg.type === 'frame-set') {
+          var entries = normaliseFrameSetEntries(msg.entries);
+          wsRecvFrameCount += entries.length;
+          wsRecvFramePayloadCount++;
+          for (var ei = 0; ei < entries.length; ei++) {
+            post({ kind: 'frame', frame: msg.frame, slot: entries[ei][0], input: entries[ei][1] });
+          }
         } else if (msg.type === 'hash') {
           post({ kind: 'hash', frame: msg.frame, slot: msg.slot, hash: msg.hash });
         } else if (msg.type === 'session-config') {
@@ -950,6 +1003,9 @@ function buildPeerWorkerSource(): string {
       } else if (msg.kind === 'send-frame-slot') {
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
         sendFrameForSlot(msg.frame, msg.input, msg.slot);
+      } else if (msg.kind === 'send-frame-set') {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        sendFrameSet(msg.frame, msg.entries);
       } else if (msg.kind === 'send-hash') {
         flushFrameBatch();
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -1249,6 +1305,18 @@ function buildSpectatorWorkerSource(): string {
       for (var i = 0; i < raw.length; i++) out.push((Number(raw[i]) || 0) >>> 0);
       return out;
     }
+    function normaliseFrameSetEntries(raw) {
+      if (!Array.isArray(raw)) return [];
+      var out = [];
+      for (var i = 0; i < raw.length; i++) {
+        var item = raw[i];
+        var slot = Array.isArray(item) ? toInt(item[0], -1) : toInt(item && item.slot, -1);
+        var input = Array.isArray(item) ? Number(item[1]) : Number(item && item.input);
+        if (slot < 0) continue;
+        out.push([slot, (input || 0) >>> 0]);
+      }
+      return out;
+    }
     function forwardPeerMessage(msg) {
       if (!msg || typeof msg.type !== 'string') return;
       if (msg.type === 'peerwatch-ready' || msg.type === 'session-config') {
@@ -1276,6 +1344,13 @@ function buildSpectatorWorkerSource(): string {
       }
       if (msg.type === 'frames') {
         post({ kind: 'frames', slot: toInt(msg.slot, -1), base: toInt(msg.base, -1), inputs: normaliseInputs(msg.inputs) });
+        return;
+      }
+      if (msg.type === 'frame-set') {
+        var entries = normaliseFrameSetEntries(msg.entries);
+        for (var i = 0; i < entries.length; i++) {
+          post({ kind: 'frame', frame: toInt(msg.frame, -1), slot: entries[i][0], input: entries[i][1] });
+        }
         return;
       }
       if (msg.type === 'hash') {

@@ -62,7 +62,7 @@ import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow, getSanctu
 import * as audio from './audio.js';
 import { listTracks, currentTrackId, musicPreviewPlay, musicForceRefresh, musicStop, musicNotifyClaimSuccess, musicWarmUpAll, musicResetElements, getMusicDebugSnapshot, listAlbums, getActiveAlbumId, setActiveAlbum, musicSetFreeplay } from './music.js';
 import { getMusicAnalyser } from './audio.js';
-import { fetchProfile, getCachedProfile, bestName } from './profile.js';
+import { fetchProfile, getCachedProfile, bestName, type NostrProfile } from './profile.js';
 import { type Difficulty, getStoredDifficulty, setStoredDifficulty, lockInDifficulty } from './difficulty.js';
 import { getStoredDailyPref, setStoredDailyPref, todayUTC, getActiveSeed } from './seed.js';
 import { getStoredMode, setStoredMode, lockInMode, currentMode, MODE_LIST, isCoopCampaignMode, type RunMode } from './mode.js';
@@ -1613,7 +1613,7 @@ function renderIdentityChip(parent: HTMLElement, pubkey: string, fallbackName: s
       img.onerror = () => { img.style.display = 'none'; };
       chip.appendChild(img);
     }
-    const name = bestName(profile, pubkey) || fallbackName || 'guest';
+    const name = profile ? bestName(profile, pubkey) : (fallbackName || 'guest');
     const t = document.createElement('div');
     t.style.cssText = 'text-align:left;';
     t.innerHTML = `<div style="font-size:0.62rem;letter-spacing:0.2em;color:${colour};">${escapeHtml(label)}</div>`
@@ -1621,7 +1621,18 @@ function renderIdentityChip(parent: HTMLElement, pubkey: string, fallbackName: s
     chip.appendChild(t);
   };
   paint();
-  if (!profile) void fetchProfile(pubkey).then(p => { if (p) { profile = p; paint(); } });
+  if (!profile) deferProfileFetch(pubkey, p => { profile = p; paint(); });
+}
+
+function deferProfileFetch(pubkey: string, onProfile: (profile: NostrProfile) => void): void {
+  const refresh = () => {
+    void fetchProfile(pubkey, { timeoutMs: 2500 }).then(p => { if (p) onProfile(p); });
+  };
+  if (typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(refresh, { timeout: 3000 });
+  } else {
+    window.setTimeout(refresh, 600);
+  }
 }
 
 /** Co-op "ready" screen: both signed-in identities (P1 + P2) side by side, then
@@ -1847,14 +1858,14 @@ export function renderBoothLobby(state: GameState, booth: number): void {
       img.onerror = () => { img.style.display = 'none'; };
       ident.appendChild(img);
     }
-    const name = bestName(state.profile, pubkey) || (state.session?.displayName ?? 'guest');
+    const name = state.profile ? bestName(state.profile, pubkey) : (state.session?.displayName ?? 'guest');
     const t = document.createElement('span');
     t.style.cssText = 'font-size:0.82rem;color:rgba(220,210,255,0.85);letter-spacing:0.06em;';
     t.innerHTML = `Playing as <span style="color:#8cffb4;font-weight:bold;">${escapeHtml(name)}</span>`;
     ident.appendChild(t);
   };
   paintIdent();
-  if (!state.profile) void fetchProfile(pubkey).then(p => { if (p) { state.profile = p; paintIdent(); } });
+  if (!state.profile) deferProfileFetch(pubkey, p => { state.profile = p; paintIdent(); });
   const signOut = el('button', { parent: who, text: 'FINISHED? SIGN OUT' }) as HTMLButtonElement;
   signOut.style.cssText = 'background:rgba(255,120,120,0.12);border:1px solid rgba(255,120,120,0.5);color:#ff8a8a;font:0.72rem ui-monospace,monospace;letter-spacing:0.12em;padding:6px 14px;border-radius:6px;cursor:pointer;';
   signOut.addEventListener('click', () => {

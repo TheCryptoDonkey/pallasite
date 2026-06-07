@@ -4,6 +4,7 @@
  *
  *  Defaults to the 4-ship lockstep hybrid (2 pilots/booth). Flags:
  *    --pilots=1     1 pilot/booth → the 2-player LINK BOOTHS default (slots 0,1)
+ *    --pilots=2,1   asymmetric booth ownership → Booth 1 owns 0,1; Booth 2 owns 2
  *    --rollback=1   run on rollback netcode instead of lockstep
  *  e.g. the new default booth link:  pnpm test:booth:soak --pilots=1 --rollback=1 */
 import { chromium } from 'playwright';
@@ -14,11 +15,15 @@ const BROKER_PORT = 8788;
 const VITE = `http://localhost:${VITE_PORT}`;
 const DURATION_MS = 60_000;
 const arg = (k: string): string | undefined => process.argv.find((a) => a.startsWith(`--${k}=`))?.split('=')[1];
-const PILOTS = Math.max(1, Math.min(2, parseInt(arg('pilots') || '2', 10) || 2)); // pilots per booth
+const parsePilots = (raw: string | undefined): [number, number] => {
+  const parts = (raw || '2').split(',').map((v) => Math.max(1, Math.min(2, parseInt(v, 10) || 2)));
+  return [parts[0] ?? 2, parts[1] ?? parts[0] ?? 2];
+};
+const [B1_PILOTS, B2_PILOTS] = parsePilots(arg('pilots'));
 const ROLLBACK = arg('rollback') === '1' || process.argv.includes('--rollback');
-const PLAYERS = PILOTS * 2;          // total ships across both booths
-const B2_SLOT = PILOTS;              // Booth 2's primary slot (1 when 1/booth, 2 when 2/booth)
-const ownedFrom = (base: number): string => Array.from({ length: PILOTS }, (_, i) => base + i).join(',');
+const PLAYERS = B1_PILOTS + B2_PILOTS; // total ships across both booths
+const B2_SLOT = B1_PILOTS;             // Booth 2's primary slot (1 when 1/booth, 2 when Booth 1 has 2)
+const ownedFrom = (base: number, count: number): string => Array.from({ length: count }, (_, i) => base + i).join(',');
 const NETCODE = ROLLBACK ? 'rollback' : 'lockstep';
 const safe = async <T>(fn: () => Promise<T>, dflt: T): Promise<T> => { try { return await fn(); } catch { return dflt; } };
 const ok = (l: string, c: boolean, x = '') => console.log(`${c ? 'PASS' : 'FAIL'}  ${l}${x ? '  · ' + x : ''}`);
@@ -46,8 +51,8 @@ try {
   for (const [pg, tag] of [[p1, 'B1'], [p2, 'B2']] as const) pg.on('pageerror', (e) => errs.push(`${tag} ${e.message}`));
 
   await Promise.all([
-    p1.goto(url(0, ownedFrom(0)), { waitUntil: 'domcontentloaded' }),
-    p2.goto(url(B2_SLOT, ownedFrom(B2_SLOT)), { waitUntil: 'domcontentloaded' }),
+    p1.goto(url(0, ownedFrom(0, B1_PILOTS)), { waitUntil: 'domcontentloaded' }),
+    p2.goto(url(B2_SLOT, ownedFrom(B2_SLOT, B2_PILOTS)), { waitUntil: 'domcontentloaded' }),
   ]);
 
   const reach = async (pg: typeof p1) => { try { await pg.waitForFunction((want) => { const s = (window as any).__pallasiteState; const pd = (window as any).__pallasitePeerDebug?.(); return s && s.players?.length === want && ['playing', 'wavestart', 'warp'].includes(s.phase) && pd?.active && pd.remoteLatest >= 0; }, PLAYERS, { timeout: 25000 }); return true; } catch { return false; } };
@@ -72,10 +77,12 @@ try {
   const peerDbg = (pg: typeof p1) => safe(() => pg.evaluate(() => (window as any).__pallasitePeerDebug?.() ?? null), null);
   const stateLite = (pg: typeof p1) => safe(() => pg.evaluate(() => { const s = (window as any).__pallasiteState; return s ? { phase: s.phase, players: s.players?.length ?? 0, frame: s.frame, wave: s.wave, alive: s.players?.filter((p: any) => p.ship?.alive).length ?? 0 } : null; }), null);
   const canary = (pg: typeof p1) => safe(() => pg.evaluate(() => Array.from(((window as any).__pallasiteCanaryHistory as Map<number, string>) ?? new Map()).map(([f, s]) => [f, s]) as [number, string][]), [] as [number, string][]);
+  const confirmedDesync = (pg: typeof p1) => safe(() => pg.evaluate(() => document.body.getAttribute('data-peer-desync')), null);
 
   const start = Date.now();
   let tick = 0, maxStall = 0, maxGap = 0, disconnects = 0, checks = 0, maxWave = 1;
   const desyncFrames: number[] = [];
+  const confirmedDesyncFrames = new Set<string>();
   const phasesSeen = new Set<string>();
 
   while (Date.now() - start < DURATION_MS) {
@@ -84,8 +91,10 @@ try {
     await sleep(250);
     if (tick % 8 === 0) {                 // ~every 2s
       checks++;
-      const [d1, d2, s1, s2, h1, h2] = await Promise.all([peerDbg(p1), peerDbg(p2), stateLite(p1), stateLite(p2), canary(p1), canary(p2)]);
+      const [d1, d2, s1, s2, h1, h2, cd1, cd2] = await Promise.all([peerDbg(p1), peerDbg(p2), stateLite(p1), stateLite(p2), canary(p1), canary(p2), confirmedDesync(p1), confirmedDesync(p2)]);
       if (!s1 || !s2) { process.stdout.write('\n   a booth left play (game-over / nav) — stopping, reporting collected data\n'); break; }
+      if (cd1) confirmedDesyncFrames.add(String(cd1));
+      if (cd2) confirmedDesyncFrames.add(String(cd2));
       if (d1) maxStall = Math.max(maxStall, d1.maxStallFrames ?? 0);
       if (d2) maxStall = Math.max(maxStall, d2.maxStallFrames ?? 0);
       if (!d1?.active || !d2?.active) disconnects++;
@@ -99,7 +108,11 @@ try {
   process.stdout.write('\n');
 
   const [fs1, fs2] = await Promise.all([stateLite(p1), stateLite(p2)]);
-  ok('NO desync across booths (canary match)', desyncFrames.length === 0, desyncFrames.length ? `first at frame ${desyncFrames[0]} (${desyncFrames.length} frames)` : `${checks} checks over ${DURATION_MS / 1000}s`);
+  if (ROLLBACK) {
+    ok('NO confirmed rollback desync across booths', confirmedDesyncFrames.size === 0, confirmedDesyncFrames.size ? `confirmed ${[...confirmedDesyncFrames].join(',')}; speculative history ${desyncFrames.length}` : `confirmed clean; speculative history ${desyncFrames.length}`);
+  } else {
+    ok('NO desync across booths (canary match)', desyncFrames.length === 0, desyncFrames.length ? `first at frame ${desyncFrames[0]} (${desyncFrames.length} frames)` : `${checks} checks over ${DURATION_MS / 1000}s`);
+  }
   ok('no disconnects', disconnects === 0, `${disconnects}/${checks}`);
   ok('stalls bounded under latency', maxStall < 180, `max ${maxStall} frames`);
   ok('frame gap stays in lockstep window', maxGap < 220, `max ${maxGap} frames`);

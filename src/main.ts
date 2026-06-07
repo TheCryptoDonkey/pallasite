@@ -560,6 +560,13 @@ function browserPerfSnapshot(): unknown {
       totalMs: Number(peerPerfLongTaskMs.toFixed(3)),
       maxMs: Number(peerPerfLongTaskMaxMs.toFixed(3)),
     },
+    wire: counters ? {
+      sentFrames: (counters as { wsSentFrameCount?: number }).wsSentFrameCount ?? 0,
+      sentPayloads: (counters as { wsSentFramePayloadCount?: number }).wsSentFramePayloadCount ?? 0,
+      recvFrames: wsRecv,
+      recvPayloads: (counters as { wsRecvFramePayloadCount?: number }).wsRecvFramePayloadCount ?? 0,
+      binaryFrames: (counters as { binaryFramesActive?: boolean }).binaryFramesActive === true,
+    } : null,
     workerMainLagFrames: Math.max(0, wsRecv - mainRecv),
   };
 }
@@ -993,6 +1000,19 @@ function currentConfirmedFrame(): number {
   return Number.isFinite(c) ? c : -1;
 }
 
+function recordDesyncHistory(appliedInputs?: ReadonlyArray<number>): void {
+  if (!desyncHuntEnabled || !isPeerActive() || (!peer && !spectator) || state.frame <= 0) return;
+  const history = (window as unknown as { __pallasiteCanaryHistory?: Map<number, string> }).__pallasiteCanaryHistory;
+  if (!history) return;
+  history.set(state.frame, serializeForCanary(state, appliedInputs));
+  // Keep ~2000 frames (~33 seconds at 60Hz). The first divergence is what
+  // matters; rollback re-sim writes corrected frames back over predictions.
+  if (history.size > 2000) {
+    const oldest = Math.min(...history.keys());
+    history.delete(oldest);
+  }
+}
+
 /** Advance the sim one frame under rollback: apply each slot's input (predicting
  *  absent remote inputs), step, snapshot, and tentatively hash on canary
  *  periods. Shared by the live frame and the rollback re-sim so they can never
@@ -1000,6 +1020,7 @@ function currentConfirmedFrame(): number {
  *  does NOT re-sample. */
 function rollbackSimulateStep(appliedSink: number[] | null): void {
   if (!inputLog || !rollbackRing) return;
+  const appliedForHistory = appliedSink ?? (desyncHuntEnabled ? [] : null);
   for (let i = 0; i < state.players.length; i++) {
     const rf = rollbackReadFrame(i);
     let enc = rf >= 0 ? inputLog.get(rf, i) : -1;
@@ -1012,6 +1033,7 @@ function rollbackSimulateStep(appliedSink: number[] | null): void {
       if (predictedInput.has(key)) predictedInput.delete(key);
     }
     if (appliedSink) appliedSink.push(enc);
+    else if (appliedForHistory) appliedForHistory.push(enc);
     if (state.players[i].ai) continue;
     const input = enc >= 0 ? decodePlayerInput(enc) : EMPTY_INPUT;
     applyPlayerInput(state.players[i], input);
@@ -1022,6 +1044,7 @@ function rollbackSimulateStep(appliedSink: number[] | null): void {
   }
   updateGame(state);
   rollbackRing.capture(state);
+  recordDesyncHistory(appliedForHistory ?? undefined);
   if (state.frame > 0 && (state.frame % PEER_HASH_PERIOD) === 0) {
     pendingHashes.set(state.frame, hashState(state));
   }
@@ -2077,6 +2100,7 @@ function loop(now: number): void {
         : peer
           ? localOwnedSlots
           : (state.players.length >= 2 ? [0, 1] : [0]);
+      const localFrameSends: Array<{ slot: number; input: number }> = [];
       for (const i of localSampleSlots) {
         let encoded = inputLog.get(state.frame, i);
         let sampledThisFrame = false;
@@ -2092,9 +2116,20 @@ function loop(now: number): void {
           inputLog.record(state.frame, i, encoded);
           sampledThisFrame = true;
         }
-        // Single-slot peers (duel / deathmatch / 1-each coop) keep the batched
-        // send path untouched; only a multi-slot booth tags each slot explicitly.
-        if (peer && sampledThisFrame) peer.sendFrame(state.frame, encoded, localOwnedSlots.length > 1 ? i : undefined);
+        if (peer && sampledThisFrame) localFrameSends.push({ slot: i, input: encoded });
+      }
+      if (peer && localFrameSends.length > 0) {
+        // Single-slot peers keep the existing consecutive-frame batching path.
+        // Multi-slot booths send every locally-owned slot for THIS sim frame in
+        // one payload, which cuts wire packet count without adding input delay.
+        if (localFrameSends.length === 1) {
+          const only = localFrameSends[0];
+          peer.sendFrame(state.frame, only.input, localOwnedSlots.length > 1 ? only.slot : undefined);
+        } else if (peer.sendFrameSet) {
+          peer.sendFrameSet(state.frame, localFrameSends);
+        } else {
+          for (const send of localFrameSends) peer.sendFrame(state.frame, send.input, send.slot);
+        }
       }
       // 2) Drain remote frames into the log. Duel: the OTHER slot only.
       //    Spectator: whichever slot each delivery is tagged with (both).
@@ -2241,16 +2276,7 @@ function loop(now: number): void {
     // (not just the nearest canary period) where peers first diverge.
     // Memory bound to a ring so even long runs don't blow up.
     if (!rollbackAdvanced && desyncHuntEnabled && peerActive && (peer || spectator) && state.frame > 0) {
-      const history = (window as unknown as { __pallasiteCanaryHistory?: Map<number, string> }).__pallasiteCanaryHistory;
-      if (history) {
-        history.set(state.frame, serializeForCanary(state, appliedThisStep));
-        // Keep ~2000 frames (~33 seconds at 60Hz). The first divergence
-        // is what matters; we don't need a longer window than that.
-        if (history.size > 2000) {
-          const oldest = Math.min(...history.keys());
-          history.delete(oldest);
-        }
-      }
+      recordDesyncHistory(appliedThisStep);
     }
     if (!rollbackAdvanced && peerActive && peer && !spectator && state.frame > 0 && (state.frame % PEER_HASH_PERIOD) === 0) {
       const h = hashState(state);
@@ -2686,6 +2712,18 @@ async function boot(): Promise<void> {
   void (async () => {
     let shouldOfferSignerRecovery = false;
     let session = null as Awaited<ReturnType<typeof handleAuthCallback>>;
+    const shouldRefreshBoothLobbyAfterSession = (() => {
+      try {
+        const q = new URLSearchParams(window.location.search);
+        const path = window.location.pathname.replace(/\/+$/, '');
+        return path === ''
+          && !mpMode
+          && !spectator
+          && (q.has('p1') || q.has('p2'));
+      } catch {
+        return false;
+      }
+    })();
     try {
       session = await handleAuthCallback();
     } catch (err) {
@@ -2734,12 +2772,27 @@ async function boot(): Promise<void> {
     }
     if (session) {
       state.session = session;
-      // Kick off profile fetch — UI updates when it lands.
-      const { fetchProfile, getCachedProfile } = await import('./profile.js');
-      const cached = getCachedProfile(session.pubkey);
-      if (cached) state.profile = cached;
-      const p = await fetchProfile(session.pubkey);
-      if (p) state.profile = p;
+      if (shouldRefreshBoothLobbyAfterSession && state.phase === 'title') {
+        renderAttract(state);
+      }
+      // Profile cache is useful, but relay WebSockets shouldn't sit on the
+      // booth boot path. Paint cached identity now, then refresh in idle time.
+      void import('./profile.js').then(({ fetchProfile, getCachedProfile }) => {
+        const cached = getCachedProfile(session.pubkey);
+        if (cached) state.profile = cached;
+        const refresh = () => {
+          void fetchProfile(session.pubkey, shouldRefreshBoothLobbyAfterSession ? { timeoutMs: 2000 } : undefined).then(p => {
+            if (p && state.session?.pubkey === p.pubkey) state.profile = p;
+          });
+        };
+        if (shouldRefreshBoothLobbyAfterSession && typeof window.requestIdleCallback === 'function') {
+          window.requestIdleCallback(refresh, { timeout: 2500 });
+        } else if (shouldRefreshBoothLobbyAfterSession) {
+          window.setTimeout(refresh, 800);
+        } else {
+          refresh();
+        }
+      });
     }
     if (shouldOfferSignerRecovery && state.phase === 'title' && !isControllerSurface()) {
       renderSignerRecovery(state);
