@@ -17,6 +17,7 @@ import { getActiveRelays } from './relays.js';
 import { serialiseSigner } from './sign-queue.js';
 import { getGuestRecord, loadOrCreateGuest } from './guest.js';
 import { FaucetSigner, fetchKioskInfo } from './faucet-signer.js';
+import { BUILD_ID } from './version.js';
 
 let lastSignerInfoLogKey = '';
 
@@ -122,7 +123,7 @@ declare global {
       }) => Promise<SignetSession | null>;
       restoreSession: () => Promise<SignetSession | null>;
       logout: (s?: SignetSession) => Promise<void>;
-      handleRedirectCallback: () => Promise<ConsumeCallbackResult>;
+      handleRedirectCallback: (options?: { waitForBunker?: boolean }) => Promise<ConsumeCallbackResult>;
       verifyAge?: (
         requiredAgeRange: string,
         options?: SignetVerifyOptions,
@@ -142,8 +143,9 @@ export const GAME_ID = 'pallasite';
 const SIGN_IN_TIMEOUT_MS = 180_000;
 /** Session restoration on boot is best-effort; don't block the title screen. */
 const RESTORE_TIMEOUT_MS = 5_000;
-const SIGNET_VERIFY_SRC = '/signet-verify.iife.js';
-const SIGNET_LOGIN_SRC = '/signet-login.iife.js';
+const SDK_CACHE_BUST = encodeURIComponent(BUILD_ID);
+const SIGNET_VERIFY_SRC = `/signet-verify.iife.js?v=${SDK_CACHE_BUST}`;
+const SIGNET_LOGIN_SRC = `/signet-login.iife.js?v=${SDK_CACHE_BUST}`;
 const SIGNET_STORAGE_KEYS = {
   pubkey: 'signet:login.pubkey',
   method: 'signet:login.method',
@@ -296,7 +298,7 @@ export async function handleAuthCallback(): Promise<SignetSession | null> {
   if (!hasSignetRedirectCallback() && !window.Signet?.handleRedirectCallback) return null;
   if (!(await ensureSignetLoaded()) || !window.Signet?.handleRedirectCallback) return null;
   try {
-    const result = await window.Signet.handleRedirectCallback();
+    const result = await window.Signet.handleRedirectCallback({ waitForBunker: true });
     // Whether the callback resolved to a session, denied, or invalid, the
     // SDK should have torn down its dialog. Reports of "buttons don't work
     // after returning from sign-in" are consistent with a stale dialog
