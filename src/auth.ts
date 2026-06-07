@@ -18,6 +18,8 @@ import { serialiseSigner } from './sign-queue.js';
 import { getGuestRecord, loadOrCreateGuest } from './guest.js';
 import { FaucetSigner, fetchKioskInfo } from './faucet-signer.js';
 
+let lastSignerInfoLogKey = '';
+
 /**
  * Wrap a freshly-resolved session's signer so every signEvent goes through
  * the global serialised queue. Centralised here so every login path —
@@ -36,10 +38,14 @@ function wrapSession(session: SignetSession | null): SignetSession | null {
     const canSign = session.signer?.capabilities?.canSignEvents === true;
     const info = { method: session.method, canSignEvents: canSign, pubkey: session.pubkey };
     (globalThis as { __signetSignerInfo?: typeof info }).__signetSignerInfo = info;
-    console.warn(
-      `[auth] session ready — method=${session.method} canSignEvents=${canSign} pubkey=${session.pubkey?.slice(0, 12)}…`
-      + (canSign ? '' : '  ⚠ AUTH-ONLY: this session CANNOT sign. The signer device handed back no live bunker (no bunker:// URI, or the reconnect to it failed). Signing-dependent features will be skipped until you get a live signer.'),
-    );
+    const logKey = `${session.method}:${canSign ? 'sign' : 'auth'}:${session.pubkey}`;
+    if (logKey !== lastSignerInfoLogKey) {
+      lastSignerInfoLogKey = logKey;
+      console.warn(
+        `[auth] session ready — method=${session.method} canSignEvents=${canSign} pubkey=${session.pubkey?.slice(0, 12)}…`
+        + (canSign ? '' : '  ⚠ AUTH-ONLY: this session CANNOT sign. The signer device handed back no live bunker (no bunker:// URI, or the reconnect to it failed). Signing-dependent features will be skipped until you get a live signer.'),
+      );
+    }
   } catch { /* diagnostics must never break login */ }
   return { ...session, signer: serialiseSigner(session.signer) };
 }
