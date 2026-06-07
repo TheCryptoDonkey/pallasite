@@ -138,6 +138,10 @@ function startCouchInPlace(): void {
   (onStartCouchCb ?? onStartCb)?.();
 }
 
+function offerPhoneSignerQr(state: GameState, onClose: () => void = () => renderTitle(state)): void {
+  renderControllerHostPairing(state, onClose, { purpose: 'signer' });
+}
+
 /** Programmatically trigger the bound start callback (the same code path
  *  the IGNITE button takes). Used by duel mode to auto-start both clients
  *  the moment peer-joined fires, so the two sims advance in lockstep
@@ -1996,10 +2000,16 @@ export function renderAuth(state: GameState, onDone: () => void, opts?: { onReso
         signInStatus.textContent = 'No signer attached.';
         signInStatus.style.color = '#ff8a3a';
       } catch (err) {
-        signInStatus.textContent = err instanceof auth.SignInTimeoutError
-          ? `Timeout — ${err.message}`
-          : `Sign-in failed: ${err instanceof Error ? err.message : String(err)}`;
-        signInStatus.style.color = '#ff5050';
+        if (auth.isAuthOnlySignerError(err)) {
+          signInStatus.textContent = 'Signer is not live. Pair a phone signer to approve signatures now.';
+          signInStatus.style.color = '#ffd84a';
+          offerPhoneSignerQr(state, onDone);
+        } else {
+          signInStatus.textContent = err instanceof auth.SignInTimeoutError
+            ? `Timeout — ${err.message}`
+            : `Sign-in failed: ${err instanceof Error ? err.message : String(err)}`;
+          signInStatus.style.color = '#ff5050';
+        }
       } finally {
         signing = false;
       }
@@ -4700,16 +4710,27 @@ export function disconnectActiveControllerHost(): void {
   activeControllerHost = null;
 }
 
-export function renderControllerHostPairing(state: GameState, onClose: () => void): void {
+interface ControllerHostPairingOptions {
+  purpose?: 'controller' | 'signer';
+}
+
+export function renderControllerHostPairing(
+  state: GameState,
+  onClose: () => void,
+  opts: ControllerHostPairingOptions = {},
+): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
+  const signerMode = opts.purpose === 'signer';
 
-  el('h2', { parent: overlay, text: 'USE PHONE AS CONTROLLER' });
+  el('h2', { parent: overlay, text: signerMode ? 'PAIR PHONE SIGNER' : 'USE PHONE AS CONTROLLER' });
 
   const desc = el('p', { parent: overlay });
   desc.style.cssText = 'margin:8px 0 14px;font-size:0.95rem;color:rgba(220,210,255,0.85);max-width:520px;line-height:1.55;';
-  desc.textContent = 'Open the QR on your phone to drive this screen. Pairing key is one-shot — it lives for this session only.';
+  desc.textContent = signerMode
+    ? 'Scan this on the device that can sign. Pallasite will ask that device to approve the exact game signatures it needs.'
+    : 'Open the QR on your phone to drive this screen. Pairing key is one-shot — it lives for this session only.';
 
   // Bigger QR slot for cleaner phone-camera detection at desk distance.
   // 200px was tight on a 1080p+ host monitor — a phone aimed from 30cm
@@ -4770,9 +4791,16 @@ export function renderControllerHostPairing(state: GameState, onClose: () => voi
     void renderQRInto(qrSlot, host.pairingUrl);
     codeP.textContent = host.sessionId.slice(0, 4).toUpperCase() + '·' + host.sessionId.slice(4, 8).toUpperCase();
     const renderPairedState = (): void => {
-      status.textContent = 'Phone connected.';
-      status.style.color = 'rgba(91,255,140,0.95)';
-      hint.textContent = 'Close this dialog and IGNITE — your phone will keep driving the ship.';
+      const hasSigner = host.signer?.caps?.canSignEvents !== false && !!host.signer?.pubkey;
+      status.textContent = signerMode
+        ? (hasSigner ? 'Phone signer connected.' : 'Phone connected — sign in on the phone.')
+        : 'Phone connected.';
+      status.style.color = hasSigner || !signerMode ? 'rgba(91,255,140,0.95)' : 'rgba(255,216,74,0.9)';
+      hint.textContent = signerMode
+        ? (hasSigner
+            ? 'Leave this paired. When Pallasite needs a signature, approve it on your phone.'
+            : 'On the phone, sign in with bunker, nsec, extension, Amber, or Signet. This screen will switch once the phone announces a signer.')
+        : 'Close this dialog and IGNITE — your phone will keep driving the ship.';
       primaryBtn.textContent = 'KEEP CONNECTED · ESC';
       secondaryBtn.textContent = 'DISCONNECT';
       secondaryBtn.style.display = '';
@@ -4781,7 +4809,9 @@ export function renderControllerHostPairing(state: GameState, onClose: () => voi
       renderPairedState();
     } else {
       status.textContent = 'Waiting for phone to scan…';
-      hint.textContent = `Or visit ${host.pairingUrl} on your phone.`;
+      hint.textContent = signerMode
+        ? `Or open ${host.pairingUrl} on the signer device.`
+        : `Or visit ${host.pairingUrl} on your phone.`;
     }
     host.onStatus((s) => {
       if (s.kind === 'paired') {
@@ -4809,6 +4839,7 @@ export function renderControllerHostPairing(state: GameState, onClose: () => voi
     host.onSigner((signer) => {
       if (!signer) {
         signerLine.style.display = 'none';
+        if (signerMode && paired) renderPairedState();
         return;
       }
       // Shorten npub for the banner — full bech32 is 63 chars which
@@ -4825,6 +4856,7 @@ export function renderControllerHostPairing(state: GameState, onClose: () => voi
       const displayName = signer.name ?? npubShort;
       signerLine.textContent = `🔐 Phone signing as ${displayName}`;
       signerLine.style.display = '';
+      if (signerMode && paired) renderPairedState();
     });
   };
   void startOrReuseHost();
@@ -8012,7 +8044,10 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
             state.session = signedIn;
             renderSessionPanel(parent, state);
           }
-        } catch { /* errors already surfaced by the SDK modal */ }
+        } catch (err) {
+          if (auth.isAuthOnlySignerError(err)) offerPhoneSignerQr(state);
+          // Other errors are already surfaced by the SDK modal.
+        }
       })();
     });
     const exportBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'EXPORT KEY' }) as HTMLButtonElement;
@@ -8233,10 +8268,16 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
           status.style.color = '#ff8a3a';
         }
       } catch (err) {
-        status.textContent = err instanceof auth.SignInTimeoutError
-          ? `Timeout — ${err.message}`
-          : `Sign-in failed: ${err instanceof Error ? err.message : String(err)}`;
-        status.style.color = '#ff5050';
+        if (auth.isAuthOnlySignerError(err)) {
+          status.textContent = 'Signer is not live. Pair a phone signer to approve signatures now.';
+          status.style.color = '#ffd84a';
+          offerPhoneSignerQr(state);
+        } else {
+          status.textContent = err instanceof auth.SignInTimeoutError
+            ? `Timeout — ${err.message}`
+            : `Sign-in failed: ${err instanceof Error ? err.message : String(err)}`;
+          status.style.color = '#ff5050';
+        }
       } finally {
         window.clearInterval(ticker);
         signing = false;
@@ -10569,39 +10610,11 @@ async function maybePublishScore(
     wrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;align-items:center;margin:8px 0 0 0';
     const note = el('p', { parent: wrap });
     note.style.cssText = 'font-size:0.85rem;color:#999;margin:0;line-height:1.4;text-align:center';
-    note.textContent = 'This sign-in proves your identity but cannot sign a payout. Sign in with a browser extension to claim.';
-    const signInBtn = el('button', { className: 'menu-btn', parent: wrap, text: 'SIGN IN TO CLAIM' }) as HTMLButtonElement;
+    note.textContent = 'This sign-in proves your identity but cannot sign a payout. Pair a phone signer to approve the claim now.';
+    const signInBtn = el('button', { className: 'menu-btn', parent: wrap, text: 'PAIR PHONE SIGNER' }) as HTMLButtonElement;
     signInBtn.style.cssText = 'padding:6px 14px;font-size:0.85rem;cursor:pointer';
     onTap(signInBtn, () => {
-      void (async () => {
-        signInBtn.disabled = true;
-        note.style.color = '#5b9dff';
-        note.textContent = 'Opening your signer…';
-        try {
-          // Force NIP-07 (in-page extension): the full picker would offer the
-          // Signet redirect, which unloads the page and loses this run's
-          // unclaimed payout. Bunker stays available from the title screen.
-          const upgraded = await auth.signInWith('nip07');
-          if (upgraded?.signer.capabilities.canSignEvents) {
-            state.session = upgraded;
-            // Re-render the recap with the now-signing session — the normal
-            // buildPayload → savePendingClaim → submitClaim flow takes over and
-            // the CLAIM picker appears. renderGameOver is already re-entrant
-            // (REPLAY KILL re-renders it), so this is safe.
-            renderGameOver(state);
-            return;
-          }
-          note.style.color = '#ff8050';
-          note.textContent = upgraded
-            ? 'That signer cannot sign events. Try a browser extension, or a bunker from the title screen.'
-            : 'No browser extension responded. Unlock one, or sign in with a bunker from the title screen.';
-          signInBtn.disabled = false;
-        } catch (err) {
-          note.style.color = '#ff8050';
-          note.textContent = err instanceof Error ? err.message : 'Sign-in failed.';
-          signInBtn.disabled = false;
-        }
-      })();
+      offerPhoneSignerQr(state, () => renderGameOver(state));
     });
     return;
   }
