@@ -1377,6 +1377,7 @@ bindActions({
 // ── Input ─────────────────────────────────────────────────────────────────────
 
 window.addEventListener('keydown', e => {
+  if (document.body.dataset.surface === 'gamepad-test') return;
   // Any deliberate key during the death replay short-circuits to gameover.
   // Two filters protect against accidental skips: OS auto-repeats from a
   // movement key the player was still holding when they died (these fire
@@ -1583,6 +1584,7 @@ window.addEventListener('keydown', e => {
 });
 
 window.addEventListener('keyup', e => {
+  if (document.body.dataset.surface === 'gamepad-test') return;
   // Mirror the keydown routing for the second local pilot — release the right
   // slot's mirror (peer) or player keys (couch).
   if (secondLocalSlot >= 0 && state.players.length > secondLocalSlot) {

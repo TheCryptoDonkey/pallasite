@@ -197,10 +197,9 @@ export function clearOverlay(): void {
 export function renderGamepadTestPage(): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
-  setupOverlayArrowNav(overlay);
 
   el('h2', { parent: overlay, text: 'CONTROLLER TEST' });
-  const status = el('p', { parent: overlay, text: 'No controller detected yet - press any button or nudge a stick.' });
+  const status = el('p', { parent: overlay, text: 'Gamepad API empty - press A/B/X/Y or nudge a stick while this tab is focused.' });
   status.style.cssText = 'font-size:0.86rem;color:rgba(220,210,255,0.7);letter-spacing:0.05em;max-width:760px;text-align:center;';
 
   const grid = el('div', { parent: overlay });
@@ -213,6 +212,14 @@ export function renderGamepadTestPage(): void {
     h.style.cssText = 'margin:0 0 10px;color:#ffd84a;font-size:0.8rem;letter-spacing:0.18em;';
     return card;
   };
+
+  const apiCard = makeCard('BROWSER');
+  const apiRead = el('pre', { parent: apiCard });
+  apiRead.style.cssText = 'margin:0;color:#dcd2ff;font-size:0.82rem;line-height:1.55;white-space:pre-wrap;';
+
+  const keyCard = makeCard('KEY EVENTS');
+  const keyRead = el('pre', { parent: keyCard });
+  keyRead.style.cssText = 'margin:0;color:#dcd2ff;font-size:0.82rem;line-height:1.55;white-space:pre-wrap;';
 
   const axesCard = makeCard('STICKS');
   const axesRead = el('pre', { parent: axesCard });
@@ -229,6 +236,38 @@ export function renderGamepadTestPage(): void {
   const row = el('div', { className: 'menu-row', parent: overlay });
   const back = el('button', { className: 'menu-btn', parent: row, text: '< BACK TO GAME' });
   back.addEventListener('click', () => { window.location.assign('/'); });
+
+  let lastGamepadEvent = 'none';
+  let lastKey = 'none';
+  let keyDownCount = 0;
+  let keyUpCount = 0;
+  const onGamepadConnected = (e: GamepadEvent): void => {
+    lastGamepadEvent = `connected #${e.gamepad.index} ${e.gamepad.id}`;
+  };
+  const onGamepadDisconnected = (e: GamepadEvent): void => {
+    lastGamepadEvent = `disconnected #${e.gamepad.index} ${e.gamepad.id}`;
+  };
+  const onKeyDown = (e: KeyboardEvent): void => {
+    keyDownCount++;
+    lastKey = `down code=${e.code || '-'} key=${e.key || '-'} trusted=${e.isTrusted ? 'yes' : 'no'} repeat=${e.repeat ? 'yes' : 'no'}`;
+  };
+  const onKeyUp = (e: KeyboardEvent): void => {
+    keyUpCount++;
+    lastKey = `up   code=${e.code || '-'} key=${e.key || '-'} trusted=${e.isTrusted ? 'yes' : 'no'} repeat=${e.repeat ? 'yes' : 'no'}`;
+  };
+  window.addEventListener('gamepadconnected', onGamepadConnected);
+  window.addEventListener('gamepaddisconnected', onGamepadDisconnected);
+  window.addEventListener('keydown', onKeyDown, true);
+  window.addEventListener('keyup', onKeyUp, true);
+  let listenersRemoved = false;
+  const cleanup = (): void => {
+    if (listenersRemoved) return;
+    listenersRemoved = true;
+    window.removeEventListener('gamepadconnected', onGamepadConnected);
+    window.removeEventListener('gamepaddisconnected', onGamepadDisconnected);
+    window.removeEventListener('keydown', onKeyDown, true);
+    window.removeEventListener('keyup', onKeyUp, true);
+  };
 
   const labels: Record<number, string> = {
     0: 'A', 1: 'B', 2: 'X', 3: 'Y', 4: 'LB', 5: 'RB', 6: 'LT', 7: 'RT',
@@ -248,14 +287,20 @@ export function renderGamepadTestPage(): void {
   };
   const fmt = (n: number | undefined): string => (n ?? 0).toFixed(2).padStart(5, ' ');
   const tick = (): void => {
-    if (!overlay.isConnected) return;
-    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    if (!overlay.isConnected) { cleanup(); return; }
+    const hasApi = typeof navigator.getGamepads === 'function';
+    const pads = hasApi ? navigator.getGamepads() : [];
+    const padsSeen = pads ? Array.from(pads).filter(Boolean).length : 0;
     let pad: Gamepad | null = null;
     for (const p of pads) {
       if (p && p.connected) { pad = p; break; }
     }
+    apiRead.textContent = `Gamepad API ${hasApi ? 'available' : 'unavailable'}\nvisible pads ${padsSeen}\npage focus ${document.hasFocus() ? 'yes' : 'no'}\nvisibility ${document.visibilityState}\nevent ${lastGamepadEvent}`;
+    keyRead.textContent = `keydowns ${keyDownCount}\nkeyups   ${keyUpCount}\nlast ${lastKey}`;
     if (!pad) {
-      status.textContent = 'No controller detected yet - press any button or nudge a stick.';
+      status.textContent = hasApi
+        ? 'Gamepad API empty - press A/B/X/Y or nudge a stick while this tab is focused.'
+        : 'Gamepad API unavailable in this browser.';
       axesRead.textContent = 'left  x  0.00  y  0.00\nright x  0.00  y  0.00';
       triggerRead.textContent = 'LT 0.00\nRT 0.00';
       ensureButtons(0);
