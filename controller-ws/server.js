@@ -765,6 +765,7 @@ function peerForwardDelayMs(msg, fromSlot, toSlot) {
 }
 
 function peerFramePayloadCount(msg) {
+  if (msg && msg.type === 'frame-set' && Array.isArray(msg.entries)) return Math.max(0, msg.entries.length);
   if (msg && msg.type === 'frames' && Array.isArray(msg.inputs)) return Math.max(0, msg.inputs.length);
   return 1;
 }
@@ -773,6 +774,9 @@ function peerFrameLatestFrame(msg) {
   if (!msg) return -1;
   if (msg.type === 'frames' && Array.isArray(msg.inputs)) {
     return Math.max(-1, Math.floor(Number(msg.base)) + msg.inputs.length - 1);
+  }
+  if (msg.type === 'frame-set') {
+    return Number.isFinite(Number(msg.frame)) ? Math.floor(Number(msg.frame)) : -1;
   }
   return Number.isFinite(Number(msg.frame)) ? Math.floor(Number(msg.frame)) : -1;
 }
@@ -919,8 +923,8 @@ function attachPeer(slot, session, ws) {
     }
     if (ws._peerSlot < 0) return;
 
-    if (msg.type === 'frame' || msg.type === 'frames' || msg.type === 'hash') {
-      if (msg.type === 'frame' || msg.type === 'frames') {
+    if (msg.type === 'frame' || msg.type === 'frame-set' || msg.type === 'frames' || msg.type === 'hash') {
+      if (msg.type === 'frame' || msg.type === 'frame-set' || msg.type === 'frames') {
         const latest = peerFrameLatestFrame(msg);
         if (latest > (slot.peerLatestFrame ?? -1)) slot.peerLatestFrame = latest;
       }
@@ -940,7 +944,7 @@ function attachPeer(slot, session, ws) {
       // joining after the buffer has wrapped won't see frames 0..N,
       // which means their lockstep sim is dead-on-arrival — same as
       // pre-buffer behaviour, but with a generous grace window.
-      if (msg.type === 'frame' || msg.type === 'frames') {
+      if (msg.type === 'frame' || msg.type === 'frame-set' || msg.type === 'frames') {
         rememberPeerFramePayload(slot, payload, msg);
       }
       // Fan out the same payload to every peerwatch socket on this

@@ -30,7 +30,7 @@ procs.push(spawn('pnpm', ['exec', 'vite', '--port', String(VITE_PORT), '--strict
 
 const link = 'praguelinke2e';
 const peer = `ws://localhost:${BROKER_PORT}/?s=${link}&r=peer`;
-const hybridUrl = (slot: number, owned: string) => `${VITE}/?peer=${encodeURIComponent(peer)}&session=${link}&slot=${slot}&localSlots=${owned}&players=4&mode=coop-campaign&desync-hunt=1`;
+const hybridUrl = (slot: number, owned: string) => `${VITE}/?peer=${encodeURIComponent(peer)}&session=${link}&slot=${slot}&localSlots=${owned}&players=4&mode=coop-campaign&rollback=1&desync-hunt=1`;
 
 try {
   ok('broker up', await waitHttp(`http://localhost:${BROKER_PORT}/`, 12000));
@@ -116,10 +116,14 @@ try {
     for (const [f, s] of h1 as [number, string][]) if (m2.has(f)) { compared++; if (m2.get(f) !== s) desync++; }
   }
   const after = await safe(() => p1.evaluate(() => ({ s0: (window as any).__pallasiteState.players[0].ship.rot, s1: (window as any).__pallasiteState.players[1].ship.rot })), null);
+  const confirmedDesync = await Promise.all([
+    safe(() => p1.evaluate(() => document.body.getAttribute('data-peer-desync')), null),
+    safe(() => p2.evaluate(() => document.body.getAttribute('data-peer-desync')), null),
+  ]);
 
   ok('real keyboard turned slot-0 AND slot-1 (P1+P2 keys routed)', !!(before && after) && (Math.abs(after.s0 - before.s0) > 0.05 && Math.abs(after.s1 - before.s1) > 0.05));
   ok('phases stayed in sync (skip-gate held — no local wavestart skip)', [...phasesP1].sort().join() === [...phasesP2].sort().join(), `B1=${[...phasesP1]} B2=${[...phasesP2]}`);
-  ok('NO desync with real keyboard + gamepad input', desync === 0, `${desync}/${compared} frames`);
+  ok('NO confirmed desync with real keyboard + gamepad input', confirmedDesync.every(v => !v), `confirmed=${confirmedDesync.filter(Boolean).join(',') || 'clean'} speculative=${desync}/${compared}`);
 
   await browser.close();
 } finally {
