@@ -296,7 +296,7 @@ async function main(): Promise<void> {
           booth2: text.includes('BOOTH 2'),
           booth3: text.includes('BOOTH 3'),
           solo: text.includes('PLAY SOLO'),
-          coop: text.includes('HOST CO-OP'),
+          coop: text.includes('2 PLAYERS'),   // local couch co-op button ('2 PLAYERS · 1 SCREEN')
           dm: text.includes('HOST DEATHMATCH'),
           code: !!document.querySelector('input[placeholder="SESSION CODE"]'),
         };
