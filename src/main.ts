@@ -2693,6 +2693,30 @@ async function boot(): Promise<void> {
         console.warn('[kiosk] session setup failed — falling back to the picker:', err);
       }
     }
+    // Remote booth (?p1/?p2 loading the PUBLIC pallasite.app faucet): the
+    // kiosk signer above is LAN-gated at the proxy and unreachable over the
+    // internet, so it returns null here. Fall back to a persistent local
+    // GUEST identity (canSignEvents=true, schnorr in-browser) so the booth
+    // can sign NIP-98 claim auths + replay pointers and never lands
+    // auth-only. Gated to ?p1/?p2 so ordinary public visitors still get the
+    // normal sign-in picker rather than a silent auto-identity. A self-
+    // hosted LAN booth keeps using the kiosk signer above (this is skipped
+    // because that path already returned a session).
+    if (!session) {
+      const q = new URLSearchParams(window.location.search);
+      const boothSlot = q.has('p2') ? 2 : q.has('p1') ? 1 : 0;
+      if (boothSlot > 0) {
+        try {
+          const { loadOrCreateGuest } = await import('./guest.js');
+          session = await loadOrCreateGuest({
+            name: `BTC Prague · Booth ${boothSlot}`,
+            followPallasite: false,
+          });
+        } catch (err) {
+          console.warn('[booth] guest session setup failed:', err);
+        }
+      }
+    }
     if (!session) return;
     state.session = session;
     // Kick off profile fetch — UI updates when it lands.
