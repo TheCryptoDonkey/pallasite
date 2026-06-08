@@ -346,8 +346,15 @@ async function buildGuestAuthEvent(signer: GuestSigner): Promise<SignetAuthEvent
 export async function loadOrCreateGuest(opts: {
   name: string;
   followPallasite?: boolean;
+  /** Shared-device (booth / kiosk) walk-up: always mint a NEW named identity
+   *  rather than reading the device's stored guest record, and DON'T persist it.
+   *  A booth screen is used by a fresh person each go — reusing the stored
+   *  record handed every walk-up the first player's name + npub (their typed
+   *  name was silently discarded and the kind 0 / kind 3 publish skipped). Not
+   *  persisting keeps the next walk-up from inheriting THIS player's identity. */
+  fresh?: boolean;
 }): Promise<SignetSession> {
-  let stored = readStored();
+  let stored = opts.fresh ? null : readStored();
   let isFreshlyCreated = false;
   if (!stored) {
     const sk = new Uint8Array(32);
@@ -363,7 +370,9 @@ export async function loadOrCreateGuest(opts: {
       createdAt: Date.now(),
       v: 1,
     };
-    writeStored(stored);
+    // Ephemeral on a shared booth: persisting would let the next walk-up's
+    // loadOrCreateGuest read this record back and inherit the name + npub.
+    if (!opts.fresh) writeStored(stored);
     isFreshlyCreated = true;
   }
   const signer = new GuestSigner(stored.nsecHex);
