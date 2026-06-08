@@ -176,17 +176,23 @@ function attachButton(parent: HTMLElement, spec: ButtonSpec, state: GameState, g
 }
 
 /**
- * Heading-mode virtual joystick with floating origin: the touchdown point
- * becomes the stick centre for that gesture (nipplejs `dynamic` mode), so
- * thumb position is never dictated by where CSS placed the pad. Stick angle
- * drives the ship's target heading; deflection magnitude past a threshold
- * engages thrust.
+ * Heading-mode virtual joystick — an ABSOLUTE arcade stick: heading + thrust
+ * come from the finger's offset from the pad's fixed CENTRE (push toward where
+ * you want to go), not from a floating touch-down point. The full 70px throw
+ * sits inside the 168px pad, so a normal push never needs to leave it.
  *
- *   - Drag: sets `state.targetHeading` (game lerps ship rotation toward it
- *     at ~8 rad/s) and `state.thrustOverride` (true past THRUST_THRESHOLD).
- *   - Quick tap (released within TAP_TIME_MS, drag < TAP_MOVE_PX): fires one
- *     bullet from the left thumb without affecting heading.
+ *   - Push: sets `state.targetHeading` (game lerps ship rotation toward it at
+ *     8 rad/s) and `state.thrustOverride` (true past THRUST_THRESHOLD).
+ *   - Quick tap near centre (released within TAP_TIME_MS, drift < TAP_MOVE_PX):
+ *     fires one bullet from the left thumb without affecting heading.
  *   - Release: clears both state hooks so keyboard/no-input resumes.
+ *
+ * The live drag is tracked on the WINDOW for the gesture's lifetime, so an
+ * overshoot past the pad keeps steering instead of dropping. This is the iOS
+ * fix: the previous wiring listened on the pad and released on `pointerleave`,
+ * and with a floating origin the thumb crossed the pad edge almost immediately
+ * — Safari's `setPointerCapture` doesn't reliably hold a touch pointer, so the
+ * leave fired and the stick died mid-flight ("joystick is broken" on iPhone).
  */
 function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, getLocalSlot: () => number, mirror: TouchInputMirror | null): void {
   const MAX_RADIUS       = 70;    // px — knob travel; bumped from 60 for finger comfort
@@ -199,8 +205,7 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, g
   // never cached. Solo/couch always returns 0; duel returns mpSlot.
 
   let activeId: number | null = null;
-  let originX = 0, originY = 0;
-  let padCx = 0, padCy = 0;     // pad's CSS centre, cached at pointerdown so pointermove doesn't trigger layout reads each frame
+  let padCx = 0, padCy = 0;     // pad's CSS centre = the stick's fixed origin, cached at pointerdown so pointermove doesn't trigger a layout read each frame
   let pressedAt = 0;
   let maxDriftPx = 0;
   let didEngage = false;  // true once we cross the heading deadzone — disables tap-fire
@@ -214,40 +219,17 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, g
     mirror?.setThrust(slot, false);
   }
 
-  pad.addEventListener('pointerdown', e => {
-    e.preventDefault();
-    activeId = e.pointerId;
-    const rect = pad.getBoundingClientRect();
-    padCx = rect.left + rect.width / 2;
-    padCy = rect.top + rect.height / 2;
-    originX = e.clientX;
-    originY = e.clientY;
-    pressedAt = performance.now();
-    maxDriftPx = 0;
-    didEngage = false;
-    pad.setPointerCapture(e.pointerId);
-    void audio.unlockAudio();
-    pad.classList.add('active');
-    // Snap the knob to under the finger (no animation) so the visual centre is
-    // where the user touched, not where CSS positioned the pad.
-    knob.classList.remove('snapping');
-    knob.style.transform = `translate(${(originX - padCx).toFixed(1)}px, ${(originY - padCy).toFixed(1)}px)`;
-  });
-
-  pad.addEventListener('pointermove', e => {
-    if (e.pointerId !== activeId) return;
-    const dx = e.clientX - originX;
-    const dy = e.clientY - originY;
+  // Drive heading + thrust from the finger's offset from pad centre (absolute).
+  function applyFinger(clientX: number, clientY: number): void {
+    const dx = clientX - padCx;
+    const dy = clientY - padCy;
     const dist = Math.hypot(dx, dy);
     if (dist > maxDriftPx) maxDriftPx = dist;
     const clipped = Math.min(dist || 1, MAX_RADIUS);
     const clipDx = (dx / (dist || 1)) * clipped;
     const clipDy = (dy / (dist || 1)) * clipped;
-    // Knob translate is relative to its CSS home (pad centre); compose the
-    // floating-origin offset with the clipped drag delta.
-    const knobX = (originX - padCx) + clipDx;
-    const knobY = (originY - padCy) + clipDy;
-    knob.style.transform = `translate(${knobX.toFixed(1)}px, ${knobY.toFixed(1)}px)`;
+    // Knob translate is relative to its CSS home (the pad centre).
+    knob.style.transform = `translate(${clipDx.toFixed(1)}px, ${clipDy.toFixed(1)}px)`;
     const magnitude = clipped / MAX_RADIUS;  // 0..1
     const slot = getLocalSlot();
     const p = state.players[slot];
@@ -268,11 +250,20 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, g
       mirror?.setHeading(slot, null);
       mirror?.setThrust(slot, false);
     }
-  });
+  }
 
-  function release(e: PointerEvent): void {
+  function onMove(e: PointerEvent): void {
+    if (e.pointerId !== activeId) return;
+    e.preventDefault();  // suppress iOS scroll / rubber-band during the drag
+    applyFinger(e.clientX, e.clientY);
+  }
+
+  function endGesture(e: PointerEvent): void {
     if (e.pointerId !== activeId) return;
     activeId = null;
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', endGesture);
+    window.removeEventListener('pointercancel', endGesture);
     knob.classList.add('snapping');
     knob.style.transform = '';
     setTimeout(() => knob.classList.remove('snapping'), SNAP_BACK_MS);
@@ -296,16 +287,36 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, g
       });
     }
   }
-  pad.addEventListener('pointerup',     release);
-  pad.addEventListener('pointercancel', release);
-  pad.addEventListener('pointerleave',  release);
-  pad.addEventListener('contextmenu',   e => e.preventDefault());
+
+  pad.addEventListener('pointerdown', e => {
+    if (activeId !== null) return;   // one finger owns the stick; ignore a second
+    e.preventDefault();
+    activeId = e.pointerId;
+    const rect = pad.getBoundingClientRect();
+    padCx = rect.left + rect.width / 2;
+    padCy = rect.top + rect.height / 2;
+    pressedAt = performance.now();
+    maxDriftPx = 0;
+    didEngage = false;
+    void audio.unlockAudio();
+    pad.classList.add('active');
+    knob.classList.remove('snapping');
+    // Best-effort capture (harmless where it works); the window listeners below
+    // are the reliable path on iOS where capture of a touch pointer can fail.
+    try { pad.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    window.addEventListener('pointermove', onMove, { passive: false });
+    window.addEventListener('pointerup', endGesture);
+    window.addEventListener('pointercancel', endGesture);
+    // Reflect the initial touch immediately (absolute aim from pad centre).
+    applyFinger(e.clientX, e.clientY);
+  });
+  pad.addEventListener('contextmenu', e => e.preventDefault());
 
   // PWA backgrounded mid-press: synthesise a release so the knob isn't stuck
   // and the ship doesn't keep thrusting in the void while the user takes a call.
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden' && activeId !== null) {
-      release({ pointerId: activeId } as PointerEvent);
+      endGesture({ pointerId: activeId } as PointerEvent);
     }
   });
 }
