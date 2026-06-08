@@ -289,8 +289,13 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, g
   }
 
   pad.addEventListener('pointerdown', e => {
-    if (activeId !== null) return;   // one finger owns the stick; ignore a second
     e.preventDefault();
+    // Always (re)acquire — a fresh touch takes over the stick; never refuse it.
+    // If a previous gesture's pointerup was dropped (iOS drops them on a system
+    // edge-swipe or under load), refusing a new touch would strand the ship
+    // flying with no way to retake control ("stuck, flies off, can't change
+    // it"). endGesture's pointerId check stops a stale finger's late up from
+    // clobbering this new gesture.
     activeId = e.pointerId;
     const rect = pad.getBoundingClientRect();
     padCx = rect.left + rect.width / 2;
@@ -301,9 +306,11 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, g
     void audio.unlockAudio();
     pad.classList.add('active');
     knob.classList.remove('snapping');
-    // Best-effort capture (harmless where it works); the window listeners below
-    // are the reliable path on iOS where capture of a touch pointer can fail.
-    try { pad.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    // Track the drag on the WINDOW so it survives the thumb leaving the pad.
+    // Deliberately NO setPointerCapture: implicit touch capture already routes
+    // the events, and an explicit capture that iOS only half-holds can swallow
+    // the terminating pointerup — the exact stuck-stick we're avoiding. Stable
+    // fn refs mean addEventListener de-dupes across re-acquires.
     window.addEventListener('pointermove', onMove, { passive: false });
     window.addEventListener('pointerup', endGesture);
     window.addEventListener('pointercancel', endGesture);
