@@ -457,11 +457,12 @@ export async function signOut(currentSession: SignetSession | null): Promise<voi
  */
 export async function createGuestSession(
   name: string,
-  opts: { followPallasite?: boolean } = {},
+  opts: { followPallasite?: boolean; fresh?: boolean } = {},
 ): Promise<SignetSession> {
   const session = await loadOrCreateGuest({
     name,
     followPallasite: opts.followPallasite ?? true,
+    fresh: opts.fresh ?? false,
   });
   const wrapped = wrapSession(session);
   if (!wrapped) throw new Error('guest-session-wrap-failed');

@@ -1838,6 +1838,9 @@ function setupBoothPilot(state: GameState, w: BoothWizard, i: number): void {
     sub: w.pilots.length > 1
       ? `Player ${n} signs in with their own Nostr identity (or guest).`
       : 'Sign in with Nostr to carry your name + zaps everywhere — or play as a guest.',
+    // Shared booth device: a guest sign-in here is a NEW walk-up each time, so
+    // mint a fresh named identity rather than inheriting the stored record.
+    freshGuest: true,
     onResolved: (s) => {
       pilot.session = s;
       if (i === 0) {
@@ -2096,7 +2099,7 @@ export function renderAttract(state: GameState): void {
   renderLegalFooter(overlay);
 }
 
-export function renderAuth(state: GameState, onDone: () => void, opts?: { onResolved?: (s: SignetSession) => void; heading?: string; sub?: string }): void {
+export function renderAuth(state: GameState, onDone: () => void, opts?: { onResolved?: (s: SignetSession) => void; heading?: string; sub?: string; freshGuest?: boolean }): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
@@ -2176,7 +2179,10 @@ export function renderAuth(state: GameState, onDone: () => void, opts?: { onReso
         // gets the auto-follow.
         const followCheckEl = overlay.querySelector<HTMLInputElement>('input[data-follow-pallasite]');
         const followPallasite = followCheckEl?.checked ?? true;
-        resolve(await auth.createGuestSession(name, { followPallasite }));
+        // Booth / kiosk: each walk-up is a different person, so mint a fresh
+        // named identity (publishing their kind 0 + Pallasite follow) instead of
+        // reusing the device's stored guest record from the previous player.
+        resolve(await auth.createGuestSession(name, { followPallasite, fresh: opts?.freshGuest }));
         onDone();
       } catch (err) {
         guestStatus.textContent = `Couldn't create local identity: ${err instanceof Error ? err.message : String(err)}`;
