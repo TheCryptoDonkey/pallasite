@@ -4065,23 +4065,15 @@ export function updateGame(s: GameState): void {
     // 'sanctum' keep full control — only the wave-intro is frozen.
     if (p.ship.alive && p.ship.hyperspaceCloakMs <= 0 && s.phase !== 'wavestart') {
       if (p.targetHeading !== null) {
-        // Heading-mode (joystick / point-and-fly): rotate the ship toward the
-        // stick angle, snapping when within one frame's worth of the rate.
-        //
-        // Two tracking rates, keyed off whether the ship is actually thrusting:
-        //   • Flying (thrust on): a gentle rate so the ship banks smoothly into
-        //     the new heading and its travel stays coupled to where the nose
-        //     points — the "point and fly" feel. Turning too fast here snaps the
-        //     nose ahead of the ship's momentum, so it reads as sliding /
-        //     "flying forward" off-axis. That was the touch-joystick regression:
-        //     the gamepad-aim tuning forced a single fast 20 rad/s rate on every
-        //     heading consumer, which wrecked the on-screen point-and-fly feel.
-        //   • Aiming in place (no thrust): a tight rate so the nose snaps to
-        //     where you point — good for lining up a shot and for twin-stick aim.
-        // `thrust` is decoded deterministically from the input log in peer mode
-        // (both the held-thrust and thrustOverride bits), so both rates are
-        // desync-safe — no netcode change needed to split them.
-        const HEADING_LERP_RATE = thrust ? 9 : 20;  // rad/s — smooth to fly, snappy to aim
+        // Heading-mode (joystick / point-and-fly): rotate the ship smoothly
+        // toward the stick angle at a fixed rate, snapping when within one
+        // frame's worth. 8 rad/s is the long-standing "really nice" point-and-fly
+        // feel; the gamepad-aim work briefly pushed this to 20, which made the
+        // touch stick twitchy (the nose snapped ahead of the ship's momentum).
+        // The genuine iOS breakage was the joystick INPUT handling — a floating
+        // origin that dropped the drag off the pad edge — fixed in touch.ts, not
+        // this rate.
+        const HEADING_LERP_RATE = 8;  // rad/s
         let diff = p.targetHeading - p.ship.rot;
         while (diff >  Math.PI) diff -= 2 * Math.PI;
         while (diff < -Math.PI) diff += 2 * Math.PI;
