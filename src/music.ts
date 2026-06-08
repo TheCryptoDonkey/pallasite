@@ -1066,6 +1066,10 @@ let readyZeroLastForceMs = 0;
 let webAudioSilentSince = 0;
 let lastVerifyCurrentTime = -1;
 let triedAudioKick = false;
+// Consecutive verify ticks with real signal. The rebuild latch (triedAudioKick)
+// only clears after signal SUSTAINS, so a one-tick post-rebuild blip on a build
+// where the rebuild doesn't truly take can't trap us re-rebuilding forever.
+let signalSustainTicks = 0;
 /** Tear down a cached track's element + Web Audio nodes and recreate them
  *  FRESH on the (now-running) context, resuming playback in place. The new
  *  MediaElementSource is created while the context is live, so unlike the
@@ -1125,7 +1129,18 @@ function maybeSelfHealWebAudioSilence(entry: Loaded, ctx: AudioContext): void {
     an.getByteFrequencyData(buf);
     for (let i = 0; i < buf.length; i++) energy += buf[i];
   } catch { webAudioSilentSince = 0; return; }
-  if (energy > 4) { webAudioSilentSince = 0; triedAudioKick = false; return; }  // real signal present
+  if (energy > 4) {
+    // Real signal present. Only release the rebuild latch once it has SUSTAINED
+    // for ≥2 verify ticks (~2s): a born-silent source the rebuild can't truly
+    // revive (some Chrome builds — only a real tab-swap fixes those) often emits
+    // a single-tick blip, which would otherwise reset the latch and loop us on
+    // rebuild forever, never reaching the audible direct fallback. That was the
+    // "in-game music silent until I switched tabs" report.
+    webAudioSilentSince = 0;
+    if (++signalSustainTicks >= 2) triedAudioKick = false;
+    return;
+  }
+  signalSustainTicks = 0;
   const now = performance.now();
   if (webAudioSilentSince === 0) { webAudioSilentSince = now; return; }
   if (now - webAudioSilentSince < 600) return;          // ~2 verify ticks of silence
