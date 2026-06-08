@@ -1669,6 +1669,14 @@ interface BoothWizard {
 
 let boothWizard: BoothWizard | null = null;
 
+/** True once a booth pilot has signed in (guest or Nostr) via the join wizard.
+ *  main.ts's boot-time session restore reads this so a slow tryRestore() of the
+ *  device's persisted personal session can't overwrite the pilot's chosen
+ *  identity — which made a walk-up's run score under whoever last signed in on
+ *  the device (e.g. a guest "DAZ" landing as the operator's TheCryptoDonkey). */
+let boothPilotSessionClaimed = false;
+export function boothPilotSessionWasClaimed(): boolean { return boothPilotSessionClaimed; }
+
 function stopBoothWizard(): void {
   if (!boothWizard) return;
   if (boothWizard.raf !== null) cancelAnimationFrame(boothWizard.raf);
@@ -1842,6 +1850,9 @@ function setupBoothPilot(state: GameState, w: BoothWizard, i: number): void {
     // mint a fresh named identity rather than inheriting the stored record.
     freshGuest: true,
     onResolved: (s) => {
+      // Lock out the boot-time restore: once a pilot explicitly signs in here,
+      // the device's persisted personal session must not clobber this identity.
+      boothPilotSessionClaimed = true;
       pilot.session = s;
       if (i === 0) {
         state.session = s;
