@@ -14,7 +14,7 @@ import { getFlavour } from './flavour.js';
 import { lockInDifficulty, getStoredDifficulty, setStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadCriticalCampaignAssets, setRenderMode, getRenderModeKind, drawAsciiHud, setShowPlayerIdentity, type CriticalAssetReport } from './render.js';
-import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderSignerRecovery, renderDuelLobby, renderDuelConnecting, renderEventLobby, renderGamepadTestPage, simulateStart } from './ui.js';
+import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindOnboarding, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderSignerRecovery, renderDuelLobby, renderDuelConnecting, renderEventLobby, renderGamepadTestPage, simulateStart, boothPilotSessionWasClaimed } from './ui.js';
 import { postHeartbeat } from './faucet.js';
 import { currentMode, getStoredMode, isStoredDefenderMode, type RunMode } from './mode.js';
 import { deathmatchActive } from './deathmatch.js';
@@ -2740,7 +2740,13 @@ async function boot(): Promise<void> {
         console.warn('[auth] callback handling failed:', err);
       }
     }
-    if (!session) session = await tryRestore();
+    // Booth (?p1/?p2) is a SHARED kiosk: never auto-restore the device's
+    // persisted PERSONAL session. The join wizard signs in each pilot
+    // explicitly, and a slow tryRestore() landing after that would clobber the
+    // pilot's identity (a guest "DAZ" would score as whoever last signed in on
+    // the device). A fresh redirect callback above and the kiosk identity below
+    // still apply; only the personal restore is skipped.
+    if (!session && !shouldRefreshBoothLobbyAfterSession) session = await tryRestore();
     // Self-hosted booth: when the faucet is configured with a kiosk identity
     // (KIOSK_NSEC) and there's no other session, boot straight into a session
     // that signs server-side via /api/kiosk/sign — so an unattended box signs
@@ -2759,7 +2765,7 @@ async function boot(): Promise<void> {
     // pilot is who they chose to be rather than a shared "Booth N" guest. (A
     // self-hosted LAN kiosk signer, if configured, was already resolved above;
     // the wizard's per-pilot sign-in overrides it for whoever is actually playing.)
-    if (session) {
+    if (session && !boothPilotSessionWasClaimed()) {
       state.session = session;
       if (shouldRefreshBoothLobbyAfterSession && state.phase === 'title') {
         renderAttract(state);
