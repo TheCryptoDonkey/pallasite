@@ -1696,18 +1696,46 @@ function stopBoothWizard(): void {
   setPadInputSuppressed(false);   // hand the pads back to the in-game loop
 }
 
+// One-time "TAP TO START" gate state. A gamepad press is NOT a browser
+// user-gesture, so a pad-driven booth kiosk can't unlock its AudioContext and
+// starts SILENT until a real tap. The gate forces one real gesture per page
+// session; once primed, later cohorts skip straight to the join wizard.
+let boothAudioPrimed = false;
+let boothGateRaf: number | null = null;
+let boothGateKeyup: ((e: KeyboardEvent) => void) | null = null;
+function stopBoothGate(): void {
+  if (boothGateRaf !== null) { cancelAnimationFrame(boothGateRaf); boothGateRaf = null; }
+  if (boothGateKeyup) { window.removeEventListener('keyup', boothGateKeyup, true); boothGateKeyup = null; }
+}
+
 /** Entry for `?p1`/`?p2`. (Re)starts the wizard on a clean cohort: each new
  *  group joins + signs in from scratch (replacing the old SIGN OUT hand-over).
  *  state.session is left as-is (a redirect sign-in may have just set it) — the
  *  per-pilot auth step always overwrites it with this cohort's choice. */
 export function renderBoothLobby(state: GameState, booth: number): void {
   stopBoothWizard();
+  stopBoothGate();
   state.coopIdentity2 = null;
   clearPadFlightModeBySlot();
   clearBoothPadSlotBinding();
   setPadFlightMode('flydirect');
   setPadAutoThrust(false);
 
+  // A booth kiosk is gamepad-driven, but a gamepad press is NOT a browser
+  // user-gesture — so audio.unlockAudio() from the pad flow is rejected and the
+  // kiosk starts silent (no music/SFX) until a real tap. Gate the FIRST entry of
+  // the page session behind a real "TAP TO START" gesture that unlocks the
+  // AudioContext + enters fullscreen; once primed, later cohorts skip it.
+  if (!boothAudioPrimed) {
+    renderBoothStartGate(state, booth);
+    return;
+  }
+  startBoothJoinWizard(state, booth);
+}
+
+/** The press-Ⓐ-to-join wizard proper, split out of renderBoothLobby so the
+ *  one-time audio-unlock gate can run ahead of it. */
+function startBoothJoinWizard(state: GameState, booth: number): void {
   const w: BoothWizard = {
     active: true, booth, mode: 'join', activePad: null,
     nav: { menuDir: null, menuA: false, menuB: false },
@@ -1722,6 +1750,71 @@ export function renderBoothLobby(state: GameState, booth: number): void {
   };
   w.raf = requestAnimationFrame(tick);
   renderBoothJoin(state, booth);
+}
+
+/** One-time audio-unlock gate. A REAL trusted gesture (tap / click / any key)
+ *  unlocks audio + fullscreen, then drops into the join wizard. A gamepad button
+ *  is a SAFETY NET: it proceeds WITHOUT audio (a pad can't unlock the context)
+ *  so a pad-only kiosk is never stuck — just silent until someone taps. The pad
+ *  net is edge-detected off the buttons already held, so the Ⓐ that navigated
+ *  here doesn't skip the gate instantly. */
+function renderBoothStartGate(state: GameState, booth: number): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+  document.body.dataset.surface = 'event';
+
+  const titleLogo = el('img', { parent: overlay });
+  titleLogo.className = 'title-logo';
+  (titleLogo as HTMLImageElement).src = '/logo.webp';
+  (titleLogo as HTMLImageElement).alt = 'PALLASITE';
+  (titleLogo as HTMLImageElement).decoding = 'async';
+
+  const kicker = el('p', { parent: overlay, text: `BTC PRAGUE · BOOTH ${booth}` });
+  kicker.style.cssText = 'font-size:1rem;color:#8cffb4;letter-spacing:0.28em;text-shadow:0 0 8px rgba(140,255,180,0.4);margin:-12px 0 0;';
+
+  const btn = el('button', { className: 'menu-btn', parent: overlay, text: '▶ TAP TO START' }) as HTMLButtonElement;
+  btn.style.cssText += 'font-size:1.7rem;padding:24px 60px;letter-spacing:0.2em;margin:26px auto;display:block;background:rgba(255,216,74,0.18);border-color:#ffd84a;color:#ffd84a;';
+
+  const hint = el('p', { parent: overlay, text: 'Tap the screen once to turn on sound — then grab a pad and press Ⓐ to play.' });
+  hint.style.cssText = 'font-size:0.86rem;color:rgba(220,210,255,0.76);letter-spacing:0.06em;text-align:center;max-width:520px;line-height:1.5;margin:0;';
+
+  let done = false;
+  let allReleased = false;
+  const proceed = (withAudio: boolean): void => {
+    if (done) return;
+    done = true;
+    boothAudioPrimed = true;
+    stopBoothGate();
+    if (withAudio) {
+      try { void audio.unlockAudio(); } catch { /* best-effort */ }
+      try { tryEnterFullscreen(); } catch { /* best-effort (e.g. headless / blocked) */ }
+    }
+    startBoothJoinWizard(state, booth);
+  };
+
+  // Real gesture → sound on.
+  onTap(btn, () => proceed(true));
+  boothGateKeyup = (e: KeyboardEvent): void => { if (e.isTrusted) proceed(true); };
+  window.addEventListener('keyup', boothGateKeyup, true);
+  setTimeout(() => tryFocusVisible(btn), 0);
+
+  // Gamepad safety net — proceed silently on a FRESH press (all buttons released
+  // first, then one goes down).
+  const padTick = (): void => {
+    if (done) return;
+    let anyDown = false;
+    const pads = (typeof navigator !== 'undefined' && navigator.getGamepads) ? navigator.getGamepads() : [];
+    for (const p of pads) {
+      if (!p || !p.connected) continue;
+      for (let i = 0; i < p.buttons.length; i++) { if (padButtonDown(p, i)) { anyDown = true; break; } }
+      if (anyDown) break;
+    }
+    if (!allReleased) { if (!anyDown) allReleased = true; }
+    else if (anyDown) { proceed(false); return; }
+    boothGateRaf = requestAnimationFrame(padTick);
+  };
+  boothGateRaf = requestAnimationFrame(padTick);
 }
 
 /** One rAF of wizard pad input. Join mode: a pad's Ⓐ joins the next free slot
