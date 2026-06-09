@@ -13,7 +13,7 @@
  * only the decorative non-collide layers.
  */
 
-import { getFlavour } from './flavour.js';
+import { getFlavour, boothKioskActive } from './flavour.js';
 
 export type ParallaxTier = 'off' | 'subtle' | 'dramatic';
 
@@ -35,6 +35,11 @@ function coerce(v: unknown): ParallaxTier {
 
 export function getParallaxTier(): ParallaxTier {
   if (cached) return cached;
+  // Booth/kiosk: pin parallax to the flavour default (off for main, dramatic
+  // for 600bn), ignoring a stale localStorage override. A kiosk must never
+  // inherit a 'dramatic' setting from a previous 600bn test — in campaign every
+  // visible rock has to be shootable, collide, and sit behind the ship.
+  if (boothKioskActive()) { cached = defaultTier(); return cached; }
   try {
     const raw = localStorage.getItem(KEY);
     cached = raw ? coerce(raw) : defaultTier();

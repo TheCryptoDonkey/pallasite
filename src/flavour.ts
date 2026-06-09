@@ -52,11 +52,25 @@ function fromHostname(): Flavour {
   return 'main';
 }
 
+/** True on a booth/kiosk surface (?p1/?p2). A kiosk pins its experience to the
+ *  URL — an explicit ?flavour= or the hostname — and IGNORES the sticky
+ *  localStorage override, so a booth that once loaded the 600bn teaser can't
+ *  stay stuck on it (dramatic parallax, non-shootable decorative rocks) on
+ *  pallasite.app forever. URL is the source of truth for a kiosk. */
+export function boothKioskActive(): boolean {
+  try {
+    const q = new URLSearchParams(window.location.search);
+    return q.has('p1') || q.has('p2');
+  } catch { return false; }
+}
+
 let cached: Flavour | null = null;
 
 export function getFlavour(): Flavour {
   if (cached !== null) return cached;
-  cached = readQuery() ?? readOverride() ?? fromHostname();
+  cached = boothKioskActive()
+    ? (readQuery() ?? fromHostname())               // booth: skip the sticky localStorage override
+    : (readQuery() ?? readOverride() ?? fromHostname());
   return cached;
 }
 
