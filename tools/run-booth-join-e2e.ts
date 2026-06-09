@@ -90,6 +90,15 @@ async function waitForHeading(page: Page, txt: string): Promise<void> {
   await page.waitForFunction((t) => document.querySelector('h2')?.textContent === t, txt, { timeout: RENDER_TIMEOUT_MS });
 }
 
+/** The booth's one-time "TAP TO START" audio-unlock gate now precedes the join
+ *  wizard (a gamepad can't unlock browser audio, so a real gesture is forced).
+ *  Click through it with a REAL trusted Playwright click — like an operator
+ *  tapping the kiosk — to reveal the join screen. */
+async function passBoothGate(page: Page): Promise<void> {
+  await waitForButton(page, 'TAP TO START');
+  await page.click('button:has-text("TAP TO START")');
+}
+
 /** On a "PLAYER n — SIGN IN" screen: opt out of the relay follow, then submit
  *  the arcade name picker (empty → "Anonymous") to create a local guest. */
 async function createGuest(page: Page): Promise<void> {
@@ -145,6 +154,7 @@ async function main(): Promise<void> {
       const intro = await ctx0.newPage();
       intro.on('pageerror', (e: Error) => process.stderr.write(`[page] ${e.message}\n`));
       await intro.goto(`${VITE_BASE}/?p1`, { waitUntil: 'load' });
+      await passBoothGate(intro);
       await waitForButton(intro, 'PLAYER 1');
       const joinScreen = await intro.evaluate(() => {
         const text = document.body.innerText;
@@ -169,6 +179,7 @@ async function main(): Promise<void> {
       const solo = await ctx1.newPage();
       solo.on('pageerror', (e: Error) => process.stderr.write(`[solo] ${e.message}\n`));
       await solo.goto(`${VITE_BASE}/?p1`, { waitUntil: 'load' });
+      await passBoothGate(solo);
       await waitForButton(solo, 'PLAYER 1');
       await clickByText(solo, 'PLAYER 1');           // join P1
       await waitForButton(solo, 'START');
@@ -185,6 +196,7 @@ async function main(): Promise<void> {
       const couch = await ctx2.newPage();
       couch.on('pageerror', (e: Error) => process.stderr.write(`[couch] ${e.message}\n`));
       await couch.goto(`${VITE_BASE}/?p1`, { waitUntil: 'load' });
+      await passBoothGate(couch);
       await waitForButton(couch, 'PLAYER 1');
       await clickByText(couch, 'PLAYER 1');          // join P1
       await clickByText(couch, 'PLAYER 2');          // join P2
