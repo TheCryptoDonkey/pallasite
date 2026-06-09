@@ -13,7 +13,7 @@
  * AUTO follows that rule; ON / OFF are explicit player overrides.
  */
 
-import { getFlavour } from './flavour.js';
+import { getFlavour, boothKioskActive } from './flavour.js';
 import { currentDifficulty } from './difficulty.js';
 
 export type BounceMode = 'auto' | 'on' | 'off';
@@ -48,6 +48,12 @@ export function setBounceMode(mode: BounceMode): void {
  *  derives from the locked-in difficulty (off on easy, on for normal / hard). */
 export function asteroidBounceEnabled(): boolean {
   if (getFlavour() === '600bn') return true;
+  // Booth/kiosk: always bounce — the dynamic arcade experience the showcase
+  // wants — ignoring a stale 'off' override or an easy-difficulty default left
+  // in the kiosk's localStorage from testing. (When the booth was stuck on the
+  // 600bn flavour, bounce was forced on above; pinning the booth to 'main' for
+  // shootable rocks must not silently drop the bounce with it.)
+  if (boothKioskActive()) return true;
   const mode = getBounceMode();
   if (mode === 'on') return true;
   if (mode === 'off') return false;
