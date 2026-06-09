@@ -1,5 +1,15 @@
 # Security response headers for pallasite.app (Caddy)
 #
+# STATUS: APPLIED 2026-06-09 to <deploy-host>:/etc/caddy/Caddyfile, scoped to
+# the `pallasite.app, 600b…, watch…, mobile.pallasite.app` block. Shipped with
+# the CSP as Content-Security-Policy-Report-Only; the five other headers
+# enforce. Backup: /etc/caddy/Caddyfile.bak.20260609-064350.
+#   ENFORCE the CSP (after walking the app with DevTools open, no violations):
+#     rename the header Content-Security-Policy-Report-Only -> Content-Security-Policy
+#     then: sudo systemctl reload caddy
+#   ROLLBACK:
+#     sudo cp /etc/caddy/Caddyfile.bak.20260609-064350 /etc/caddy/Caddyfile && sudo systemctl reload caddy
+#
 # Why: the live site sends a valid Let's Encrypt cert but ZERO security
 # headers. The .app TLD is HSTS-preloaded so browsers already force HTTPS,
 # but automated graders (securityheaders.com, Mozilla Observatory, and the
