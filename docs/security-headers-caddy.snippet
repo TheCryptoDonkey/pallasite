@@ -1,0 +1,80 @@
+# Security response headers for pallasite.app (Caddy)
+#
+# Why: the live site sends a valid Let's Encrypt cert but ZERO security
+# headers. The .app TLD is HSTS-preloaded so browsers already force HTTPS,
+# but automated graders (securityheaders.com, Mozilla Observatory, and the
+# crawlers that feed AV reputation engines like Bitdefender) check for the
+# literal headers and score "no headers" as a low-quality/unmaintained site.
+# On a young .app domain doing crypto + multi-host WebSockets, that bare
+# response reinforces a "suspicious" rating. These headers remove that signal.
+#
+# Server: 95.217.39.110:/etc/caddy/Caddyfile (NOT in the repo — apply by hand).
+#
+# ─── Where it goes ───────────────────────────────────────────────────
+# Add the `header { ... }` block at the SITE-BLOCK top level (after
+# `encode gzip`, before the `handle` blocks) so it stamps every response
+# — the SPA index, hashed assets, the lot. It coexists with the existing
+# matcher-scoped `header @hashed_real Cache-Control ...` (see 600b-caddy.snippet).
+#
+#   pallasite.app, 600b.pallasite.app, watch.pallasite.app {
+#       encode gzip
+#
+#       header {
+#           # --- transport / framing / sniffing ---
+#           Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+#           X-Content-Type-Options    "nosniff"
+#           Referrer-Policy           "strict-origin-when-cross-origin"
+#           X-Frame-Options           "SAMEORIGIN"
+#           Permissions-Policy        "geolocation=(), camera=(), microphone=()"
+#
+#           # --- CSP ---
+#           # script-src 'self': the Signet SDKs load from same-origin paths
+#           #   (/signet-*.iife.js), there are no external scripts, no inline
+#           #   <script>, no eval/WASM. Keep this tight — it's the real guard.
+#           # connect-src https: wss: : NON-NEGOTIABLE for a Nostr client —
+#           #   user-added relays (wss), NIP-05 + LNURL/zap callbacks (https)
+#           #   hit arbitrary hosts. Cannot be an allowlist.
+#           # img-src https: : Nostr profile pictures / badges are arbitrary hosts.
+#           # blob: : netcode worker (peer.ts) + music playback (music.ts).
+#           # style 'unsafe-inline': runtime UI sets inline style attributes;
+#           #   low-risk for styles, avoids bricking the layout.
+#           Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' https: wss:; worker-src 'self' blob:; manifest-src 'self'; base-uri 'self'; object-src 'none'; form-action 'self'; frame-ancestors 'self'; upgrade-insecure-requests"
+#
+#           # Drop the `Server: Caddy` fingerprint.
+#           -Server
+#       }
+#
+#       handle /api/* { reverse_proxy 127.0.0.1:8787 }
+#       handle {
+#           root * /opt/pallasite
+#           @spa { not path *.js *.css *.map *.png *.jpg *.jpeg *.svg *.webp *.woff *.woff2 *.opus *.mp3 *.json *.webmanifest *.ico *.txt }
+#           rewrite @spa /index.html
+#           file_server
+#           @hashed_real { path /assets/* /music/* /backgrounds/* ; file }
+#           header @hashed_real Cache-Control "public, max-age=31536000, immutable"
+#       }
+#   }
+#
+# ─── Roll out Report-Only FIRST ──────────────────────────────────────
+# The CSP can't be fully exercised from a curl. Ship it non-enforcing,
+# walk the app, watch DevTools console, THEN flip to enforce.
+#
+#   1. Rename the header `Content-Security-Policy-Report-Only` and reload.
+#   2. Exercise every path: Signet sign-in, play a wave WITH music, trigger
+#      a zap, LINK BOOTHS (spins up the blob: netcode worker), open a skin,
+#      generate a share card. Watch the console for "Refused to ..." lines.
+#   3. If the linked-booth worker fails to start: add `blob:` to script-src
+#      (older engines check script-src for blob workers, not worker-src).
+#   4. No violations → rename back to `Content-Security-Policy` (enforce).
+#
+# Note: frame-ancestors (CSP) supersedes X-Frame-Options in modern browsers;
+# XFO is kept only as a legacy fallback. includeSubDomains+preload commits
+# EVERY *.pallasite.app to HTTPS-only — fine today (controller/watch are wss),
+# but a one-way door; drop those two tokens to keep an http subdomain option.
+#
+# ─── Apply ───────────────────────────────────────────────────────────
+#   sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+#   sudo systemctl reload caddy
+#
+# ─── Verify ──────────────────────────────────────────────────────────
+#   curl -sSI https://pallasite.app/ | grep -iE 'strict-transport|content-security|x-content-type|referrer-policy|permissions-policy'
