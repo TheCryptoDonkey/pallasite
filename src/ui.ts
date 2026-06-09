@@ -7,7 +7,7 @@
 
 import type { DeathmatchRules, GameState } from './types.js';
 import { WAVE_LORE, gameOverArcLine } from './types.js';
-import { getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRelay, removeRelay, resetRelays } from './relays.js';
+import { getActiveRelays, getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRelay, removeRelay, resetRelays } from './relays.js';
 import { getTouchMode, setTouchMode, type TouchInputMode } from './touch.js';
 import { getPadFlightMode, setPadFlightMode, getPadAutoThrust, setPadAutoThrust, getPadFlightModeForSlot, setPadFlightModeForSlot, clearPadFlightModeBySlot, setBoothPadSlotBinding, clearBoothPadSlotBinding, driveMenuFromPad, padButtonDown, getPadBindings, setPadBinding, resetPadBindings, setPadInputSuppressed, PAD_ACTIONS, PAD_BUTTON_NAMES, type PadFlightMode, type PadAction, type MenuNavState } from './gamepads.js';
 import { getDisplayMode, setDisplayMode, type DisplayMode } from './display.js';
@@ -1136,7 +1136,18 @@ export function renderTitle(state: GameState): void {
   // chooses on IGNITE has a hot ghost. getActiveSeed isn't usable here —
   // the seed only locks on IGNITE — so we read the stored preference
   // directly to anticipate.
-  prefetchTopGhost(getStoredDailyPref() ? todayUTC() : null);
+  //
+  // Deferred off the page-load critical path: an immediate multi-relay fan-out
+  // on first paint reads as beacon-like to network-reputation scanners, and the
+  // ghost isn't needed until IGNITE (several seconds out). requestIdle keeps the
+  // load itself network-quiet; the cache is warm well before a mode is picked.
+  // Same idiom as deferProfileFetch.
+  const warmGhostCache = (): void => prefetchTopGhost(getStoredDailyPref() ? todayUTC() : null);
+  if (typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(warmGhostCache, { timeout: 2500 });
+  } else {
+    window.setTimeout(warmGhostCache, 1000);
+  }
 
   // Pull skin unlocks the player earned on other devices. Fire-and-forget;
   // returned set has already been merged into local. The settings overlay
@@ -2318,6 +2329,12 @@ function renderPoolChip(parent: HTMLElement): void {
   }, 60_000);
 }
 
+/** Title/attract leaderboard read cap — see the deferral note in
+ *  renderGlobalLeaderboard. Scores are replicated across every active relay
+ *  (publishScore fans out to all), so the first few primaries surface the same
+ *  global top without holding a socket open to all ~7. */
+const LEADERBOARD_RELAY_CAP = 3;
+
 function renderGlobalLeaderboard(parent: HTMLElement, state: GameState, board: ScoreBoardId = 'solo'): void {
   const container = el('div', { parent });
   const block = el('div', { className: 'leaderboard-block', parent: container });
@@ -2333,26 +2350,45 @@ function renderGlobalLeaderboard(parent: HTMLElement, state: GameState, board: S
   let renderToken = 0;
   let receivedAny = false;
   let cleanupTimer: number | null = null;
+  let unsubscribe: (() => void) | null = null;
+  let cancelled = false;
 
   const teardown = (): void => {
-    unsubscribe();
+    cancelled = true;
+    if (unsubscribe) { unsubscribe(); unsubscribe = null; }
     if (cleanupTimer !== null) { clearInterval(cleanupTimer); cleanupTimer = null; }
   };
 
-  const unsubscribe = subscribeGlobalHighScores(async raw => {
-    if (!container.isConnected) { teardown(); return; }
-    receivedAny = true;
-    if (raw.length === 0) {
-      status.textContent = 'No global scores yet — be the first.';
-      return;
-    }
-    const myToken = ++renderToken;
-    const top = raw.slice(0, 5);
-    const entries = await Promise.all(top.map(resolveDisplayName));
-    if (!container.isConnected || myToken !== renderToken) return;
-    container.innerHTML = '';
-    renderLeaderboardBlock(container, entries.map(globalToLocal), titleText, 5, () => renderTitle(state));
-  }, { board });
+  // Defer the relay subscription off the first-paint critical path. Subscribing
+  // synchronously opens a socket to every active relay the instant the title
+  // draws — a no-interaction, multi-host fan-out that reads as beacon-like to
+  // network-reputation scanners. The "Listening to relays…" placeholder is
+  // already on screen, so idle warm-up fills it a beat later. Reads a capped
+  // primary subset too (see LEADERBOARD_RELAY_CAP). Same idiom as the ghost
+  // prefetch + deferProfileFetch.
+  const startSubscription = (): void => {
+    if (cancelled || !container.isConnected) return;
+    const relays = getActiveRelays().slice(0, LEADERBOARD_RELAY_CAP);
+    unsubscribe = subscribeGlobalHighScores(async raw => {
+      if (!container.isConnected) { teardown(); return; }
+      receivedAny = true;
+      if (raw.length === 0) {
+        status.textContent = 'No global scores yet — be the first.';
+        return;
+      }
+      const myToken = ++renderToken;
+      const top = raw.slice(0, 5);
+      const entries = await Promise.all(top.map(resolveDisplayName));
+      if (!container.isConnected || myToken !== renderToken) return;
+      container.innerHTML = '';
+      renderLeaderboardBlock(container, entries.map(globalToLocal), titleText, 5, () => renderTitle(state));
+    }, { board, relays });
+  };
+  if (typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(startSubscription, { timeout: 2500 });
+  } else {
+    window.setTimeout(startSubscription, 1000);
+  }
 
   // Backstop probe: if the title screen unmounts during a long quiet period
   // the onUpdate-side disconnection check won't fire. Probe every 30s.

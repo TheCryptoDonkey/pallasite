@@ -1129,13 +1129,33 @@ export function getCachedGhost(seed?: string | null): GhostRun | null {
   return hit?.ghost ?? null;
 }
 
+/** Title-screen warm-up read cap. Ghosts are published to EVERY active relay
+ *  (see publishGhost), so the global-best ghost is replicated across all of
+ *  them — reading the first few primary relays finds the same winner as fanning
+ *  out to all ~8, without the title opening a socket to every relay at once
+ *  (which reads as beacon-like to network-reputation scanners). Forced /
+ *  explicit fetches still use the full set. */
+const PREFETCH_RELAY_CAP = 3;
+
 /** Fire-and-forget prefetch for the title screen. Errors swallowed. When a
- *  seed is supplied, also kicks off a global-top fetch so the attract-loop
- *  has a fallback to render even if no ghost has been published for today's
- *  seed yet. */
+ *  seed is supplied, also warms the global-top fetch so the attract-loop has a
+ *  fallback to render even if no ghost has been published for today's seed yet.
+ *
+ *  Reads a capped primary subset and SEQUENCES the seed + global fetches rather
+ *  than firing both across every relay simultaneously, so the title doesn't open
+ *  a fan-out of sockets on load. See PREFETCH_RELAY_CAP. */
 export function prefetchTopGhost(seed?: string | null): void {
-  void fetchTopGhost({ seed }).catch(() => undefined);
-  if (seed) void fetchTopGhost({ seed: null }).catch(() => undefined);
+  const relays = ghostRelaySet().slice(0, PREFETCH_RELAY_CAP);
+  void (async () => {
+    try {
+      await fetchTopGhost({ seed, relays });
+      // Only warm the global fallback if the daily seed didn't already cache a
+      // ghost, and only after the seed fetch settles — never alongside it.
+      if (seed && !getCachedGhost(null)) {
+        await fetchTopGhost({ seed: null, relays });
+      }
+    } catch { /* ignore */ }
+  })();
 }
 
 /**
