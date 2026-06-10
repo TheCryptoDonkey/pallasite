@@ -29,14 +29,16 @@ mac:
       arch: [arm64, x64]
   category: public.app-category.action-games
   icon: build/icon.png
-  artifactName: Pallasite-${version}-mac-${arch}.${ext}
+  # Version-less names so pallasite.app can link to stable
+  # releases/latest/download/<name> URLs that survive version bumps.
+  artifactName: Pallasite-mac-${arch}.${ext}
 
 win:
   target:
     - target: nsis
       arch: [x64]
   icon: build/icon.png
-  artifactName: Pallasite-${version}-win-${arch}.${ext}
+  artifactName: Pallasite-win-${arch}.${ext}
 
 nsis:
   oneClick: false
@@ -49,7 +51,7 @@ linux:
       arch: [x64]
   category: Game
   icon: build/icon.png
-  artifactName: Pallasite-${version}-linux-${arch}.${ext}
+  artifactName: Pallasite-linux-${arch}.${ext}
   synopsis: "Cosmic arcade Asteroids with Lightning payouts and Nostr leaderboards."
 
 publish:
