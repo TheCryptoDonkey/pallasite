@@ -58,7 +58,10 @@ jobs:
         working-directory: desktop
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Publishes to the public pallasite-releases repo, so the default
+          # GITHUB_TOKEN (scoped to this private repo) isn't enough — needs a PAT
+          # with contents:write on pallasite-releases, stored as RELEASES_TOKEN.
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
           PALLASITE_VARIANT: public
           # Unsigned builds (v1) — don't let electron-builder fail trying to find
           # a macOS signing identity.
