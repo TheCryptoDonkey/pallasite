@@ -1,0 +1,66 @@
+name: Desktop release
+
+# Builds the public desktop download (Windows .exe, macOS .dmg, Linux .AppImage)
+# on each platform's native runner and publishes them to a GitHub Release.
+# Run manually (Actions → Desktop release → Run workflow) or by pushing a
+# `desktop-v*` tag. electron-builder publishes to a DRAFT release `v<version>`
+# (version from desktop/package.json) — review and publish it, then point the
+# pallasite.app download page at the latest release assets.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'desktop-v*'
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install web deps
+        run: pnpm install --frozen-lockfile
+
+      # Build dist/ directly (tsc + vite) rather than `pnpm build`, whose
+      # sync-sdk step is a bash one-liner that won't run on the Windows runner.
+      # The committed public/signet-login.iife.js is what sync-sdk would use in
+      # CI anyway, and vite copies public/ into dist/.
+      - name: Build web bundle (dist/)
+        shell: bash
+        run: pnpm exec tsc --noEmit && pnpm exec vite build
+
+      - name: Install desktop deps
+        working-directory: desktop
+        run: npm install
+
+      - name: Build + publish installers
+        working-directory: desktop
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PALLASITE_VARIANT: public
+          # Unsigned builds (v1) — don't let electron-builder fail trying to find
+          # a macOS signing identity.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npm run release:public

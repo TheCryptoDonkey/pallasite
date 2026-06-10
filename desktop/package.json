@@ -1,0 +1,25 @@
+{
+  "name": "pallasite-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Electron / AppImage wrapper for Pallasite — bundles the built game + the controller-ws broker; the Lightning faucet stays remote.",
+  "author": "TheCryptoDonkey",
+  "main": "main.js",
+  "scripts": {
+    "prepare-resources": "node scripts/prepare.mjs",
+    "start": "node scripts/prepare.mjs && electron .",
+    "start:public": "cross-env PALLASITE_VARIANT=public node scripts/prepare.mjs && cross-env PALLASITE_VARIANT=public electron .",
+    "dist": "node scripts/prepare.mjs && electron-builder --linux AppImage --x64",
+    "dist:arm64": "node scripts/prepare.mjs && electron-builder --linux AppImage --arm64",
+    "prepare:public": "cross-env PALLASITE_VARIANT=public node scripts/prepare.mjs",
+    "dist:public": "npm run prepare:public && electron-builder --config electron-builder.public.yml --publish never",
+    "release:public": "npm run prepare:public && electron-builder --config electron-builder.public.yml --publish always",
+    "deploy": "bash scripts/deploy.sh"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  }
+}
