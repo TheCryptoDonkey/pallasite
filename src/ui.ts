@@ -1126,7 +1126,7 @@ const boothKiosk: number = (() => {
 
 // Desktop downloads — stable latest-release asset URLs (version-less names, see
 // desktop/electron-builder.public.yml). Live once the GitHub release is published.
-const RELEASE_DL = 'https://github.com/TheCryptoDonkey/pallasite/releases/latest/download';
+const RELEASE_DL = 'https://github.com/TheCryptoDonkey/pallasite-releases/releases/latest/download';
 const DESKTOP_BUILDS: ReadonlyArray<{ label: string; sub: string; file: string; ua: RegExp }> = [
   { label: 'Windows', sub: '.exe installer', file: 'Pallasite-win-x64.exe', ua: /Windows/i },
   { label: 'macOS · Apple Silicon', sub: '.dmg — M1/M2/M3/M4', file: 'Pallasite-mac-arm64.dmg', ua: /Mac/i },

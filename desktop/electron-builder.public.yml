@@ -57,4 +57,7 @@ linux:
 publish:
   provider: github
   owner: TheCryptoDonkey
-  repo: pallasite
+  # Public download host — the main pallasite repo is private, so its release
+  # assets aren't publicly downloadable. CI publishes here with a PAT
+  # (RELEASES_TOKEN) that has contents:write on this repo.
+  repo: pallasite-releases
