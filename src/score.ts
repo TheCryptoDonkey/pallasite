@@ -10,7 +10,7 @@
  */
 
 import type { SignetSession, NostrEvent } from 'signet-login';
-import { GAME_ID } from './auth.js';
+import { GAME_ID, sessionCanSign } from './auth.js';
 import { getActiveRelays } from './relays.js';
 
 const HIGHSCORE_KEY = 'pallasite:highscores';
@@ -419,7 +419,12 @@ export async function publishCoopCampaignScore(
   session: SignetSession,
   input: CoopCampaignScoreInput,
   relays: readonly string[] = getActiveRelays(),
-): Promise<ScorePublishResult> {
+): Promise<ScorePublishResult | null> {
+  // Legacy frontend-signed fallback (the primary coop path is game-signed
+  // server-side — see ui.ts). An auth-only session can't sign it; return null
+  // so the caller keeps the local score and prompts for a live signer instead
+  // of throwing.
+  if (!sessionCanSign(session)) return null;
   const score = Math.max(0, Math.floor(input.score));
   const wave = Math.max(0, Math.floor(input.wave));
   const duration = Math.max(0, Math.floor(input.durationMs));

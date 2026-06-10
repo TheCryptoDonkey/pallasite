@@ -76,17 +76,32 @@ function wrapSession(session: SignetSession | null): SignetSession | null {
   return { ...session, signer: serialiseSigner(session.signer) };
 }
 
-async function requireLiveSigner(session: SignetSession | null): Promise<SignetSession | null> {
-  const wrapped = wrapSession(session);
-  if (!wrapped) return null;
-  if (wrapped.signer?.capabilities?.canSignEvents === true) return wrapped;
+/**
+ * True when the session's signer can actually produce signatures (NIP-07
+ * extension, live bunker, nsec, guest, kiosk) — false for an auth-only
+ * identity-proof session, e.g. a cross-device QR sign-in that handed back no
+ * live bunker.
+ *
+ * Pallasite ACCEPTS auth-only sessions: sign-in succeeds, identity is proven,
+ * and the leaderboard is game-signed (the player is a `p` tag — see score.ts).
+ * Feature code that genuinely needs the player's own signature gates on this
+ * and degrades — skip a fire-and-forget publish, or call assertCanSign() for an
+ * explicit user action so the UI prompts for a live signer — instead of calling
+ * signEvent on a signer that can't. (Previously the auth boundary threw
+ * AuthOnlySignerError here and logged the session out, which made cross-device
+ * QR sign-in impossible whenever the signer came back auth-only.)
+ */
+export function sessionCanSign(session: SignetSession | null | undefined): boolean {
+  return session?.signer?.capabilities?.canSignEvents === true;
+}
 
-  // signet-login persists successful auth responses by default. For Pallasite,
-  // auth-only is not a usable success state: it disables scores, claims,
-  // replays, NIP-98 uploads, and zaps. Clear it immediately so refresh/restore
-  // does not keep bringing back the same dead session.
-  try { await window.Signet?.logout(wrapped); } catch { /* best-effort cleanup */ }
-  throw new AuthOnlySignerError();
+/**
+ * Throw AuthOnlySignerError unless the session can sign. For explicit,
+ * user-initiated signer actions (sats claim/withdraw, zap) where the UI already
+ * catches AuthOnlySignerError and prompts for a live signer / extension.
+ */
+export function assertCanSign(session: SignetSession | null | undefined): void {
+  if (!sessionCanSign(session)) throw new AuthOnlySignerError();
 }
 
 /**
@@ -304,7 +319,7 @@ export async function signIn(): Promise<SignetSession | null> {
     SIGN_IN_TIMEOUT_MS,
     () => new SignInTimeoutError(),
   );
-  return requireLiveSigner(session);
+  return wrapSession(session);
 }
 
 /**
@@ -329,7 +344,7 @@ export async function signInWith(method: SignInMethod): Promise<SignetSession | 
     SIGN_IN_TIMEOUT_MS,
     () => new SignInTimeoutError(),
   );
-  return requireLiveSigner(session);
+  return wrapSession(session);
 }
 
 /**
@@ -351,7 +366,7 @@ export async function handleAuthCallback(): Promise<SignetSession | null> {
     // covering the title screen — belt-and-braces sweep here keeps the
     // title interactive even if the SDK leaves something behind.
     if (result.kind !== 'no-callback') sweepSignetArtefacts();
-    return result.kind === 'session' ? requireLiveSigner(result.session) : null;
+    return result.kind === 'session' ? wrapSession(result.session) : null;
   } catch (err) {
     if (isAuthOnlySignerError(err)) {
       sweepSignetArtefacts();
@@ -402,20 +417,15 @@ export async function tryRestore(): Promise<SignetSession | null> {
   if (window.Signet || hasStoredSignetSession()) {
     try {
       if (!(await ensureSignetLoaded()) || !window.Signet) throw new Error('signet-load-failed');
-      const storedMethod = (() => {
-        try { return localStorage.getItem(SIGNET_STORAGE_KEYS.method); }
-        catch { return null; }
-      })();
       const session = await withTimeout(
         window.Signet.restoreSession(),
         RESTORE_TIMEOUT_MS,
         () => new Error('restore-timeout'),
       );
       if (session) {
-        if (session.signer?.capabilities?.canSignEvents !== true && storedMethod !== 'nip07') {
-          try { await window.Signet.logout(session); } catch { /* best-effort cleanup */ }
-          return null;
-        }
+        // Accept auth-only restores too (see sessionCanSign). The previous
+        // logout-and-drop of non-nip07 auth-only sessions regressed a returning
+        // player to guest whenever their stored Signet session couldn't sign.
         return wrapSession(session);
       }
     } catch {
