@@ -1620,7 +1620,11 @@ function renderIdentityChip(parent: HTMLElement, pubkey: string, fallbackName: s
       img.onerror = () => { img.style.display = 'none'; };
       chip.appendChild(img);
     }
-    const name = profile ? bestName(profile, pubkey) : (fallbackName || 'guest');
+    // No cached profile yet: prefer an explicit fallback name (e.g. a guest's
+    // chosen name), else a short pubkey — NOT the literal "guest", which
+    // mislabels a real signed-in identity (a My Signet natural-person carries no
+    // displayName) until its kind-0 profile lands and we repaint with bestName.
+    const name = profile ? bestName(profile, pubkey) : (fallbackName.trim() || bestName(null, pubkey));
     const t = document.createElement('div');
     t.style.cssText = 'text-align:left;';
     t.innerHTML = `<div style="font-size:0.62rem;letter-spacing:0.2em;color:${colour};">${escapeHtml(label)}</div>`
@@ -1990,7 +1994,7 @@ function renderBoothSchemePick(state: GameState, w: BoothWizard, i: number): voi
   if (pilot.session) {
     const who = el('div', { parent: overlay });
     who.style.cssText = 'display:flex;justify-content:center;margin:2px 0 12px;';
-    renderIdentityChip(who, pilot.session.pubkey, pilot.session.displayName ?? 'guest', `PLAYER ${n}`, PLAYER_COLOURS[pilot.slot]);
+    renderIdentityChip(who, pilot.session.pubkey, pilot.session.displayName ?? '', `PLAYER ${n}`, PLAYER_COLOURS[pilot.slot]);
   }
 
   el('p', { parent: overlay, text: 'Pick how your pad flies. The right stick aims + auto-fires in every mode.' })
@@ -11692,7 +11696,7 @@ function renderRunCredits(
   if (boothKiosk && state.session) {
     const idRow = el('div', { parent: overlay });
     idRow.style.cssText = 'display:flex;gap:28px;align-items:center;justify-content:center;margin:8px 0 10px;flex-wrap:wrap;';
-    renderIdentityChip(idRow, state.session.pubkey, state.session.displayName ?? 'guest', 'PLAYER 1', PLAYER_COLOURS[0]);
+    renderIdentityChip(idRow, state.session.pubkey, state.session.displayName ?? '', 'PLAYER 1', PLAYER_COLOURS[0]);
     if (state.coopIdentity2) renderIdentityChip(idRow, state.coopIdentity2.pubkey, state.coopIdentity2.displayName, 'PLAYER 2', PLAYER_COLOURS[1]);
   }
 
