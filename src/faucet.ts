@@ -16,6 +16,19 @@ import type { RunMode } from './mode.js';
 
 const API_BASE = '/api';
 
+/** Public origin the faucet sees, used ONLY for the NIP-98 `u`-tag we sign
+ *  (the actual fetch stays same-origin `/api/...`). On a normal web deploy this
+ *  is the page origin. On the booth AppImage the page is served from
+ *  `http://127.0.0.1:8123` but `/api` is reverse-proxied to the public faucet,
+ *  so a `u` tag signed for localhost fails the faucet's url check (401
+ *  `url_mismatch`) — every score/claim/withdraw silently rejected. The booth's
+ *  static server injects `window.__PALLASITE_API_ORIGIN__` = the public faucet
+ *  origin so the auth is signed for the host the faucet actually reconstructs. */
+function apiOrigin(): string {
+  const override = (globalThis as { __PALLASITE_API_ORIGIN__?: unknown }).__PALLASITE_API_ORIGIN__;
+  return typeof override === 'string' && override ? override.replace(/\/+$/, '') : location.origin;
+}
+
 export interface GameInfo {
   pubkey: string;
   npub: string | null;
@@ -365,7 +378,7 @@ export async function submitClaim(
   if (!session.signer.capabilities.canSignEvents) {
     return { ok: false, error: 'no_signer' };
   }
-  const url = `${location.origin}${API_BASE}/claim`;
+  const url = `${apiOrigin()}${API_BASE}/claim`;
   const bodyJson = JSON.stringify(input);
   const payloadHash = await sha256Hex(bodyJson);
 
@@ -450,7 +463,7 @@ export async function postHeartbeat(
   body: { score: number; wave: number; started_at: number; run_id: string; mode?: RunMode },
 ): Promise<boolean> {
   if (!session.signer.capabilities.canSignEvents) return false;
-  const url = `${location.origin}${API_BASE}/heartbeat`;
+  const url = `${apiOrigin()}${API_BASE}/heartbeat`;
   const bodyJson = JSON.stringify(body);
   const payloadHash = await sha256Hex(bodyJson);
   const authTemplate = {
@@ -525,7 +538,7 @@ export async function submitSoloScore(
   input: SoloScoreInput,
 ): Promise<SoloScoreResult> {
   if (!session.signer.capabilities.canSignEvents) return { ok: false, error: 'no_signer' };
-  const url = `${location.origin}${API_BASE}/score`;
+  const url = `${apiOrigin()}${API_BASE}/score`;
   const bodyJson = JSON.stringify(input);
   const payloadHash = await sha256Hex(bodyJson);
   const authTemplate = {
@@ -592,7 +605,7 @@ export async function submitCoopScore(
   input: CoopScoreInput,
 ): Promise<CoopScoreResult> {
   if (!session.signer.capabilities.canSignEvents) return { ok: false, error: 'no_signer' };
-  const url = `${location.origin}${API_BASE}/coop-score`;
+  const url = `${apiOrigin()}${API_BASE}/coop-score`;
   const bodyJson = JSON.stringify(input);
   const payloadHash = await sha256Hex(bodyJson);
   const authTemplate = {
@@ -642,7 +655,7 @@ export async function submitWithdraw(
   if (!session.signer.capabilities.canSignEvents) {
     return { ok: false, error: 'no_signer' };
   }
-  const url = `${location.origin}${API_BASE}/withdraw`;
+  const url = `${apiOrigin()}${API_BASE}/withdraw`;
   const bodyJson = JSON.stringify(input);
   const payloadHash = await sha256Hex(bodyJson);
 
@@ -742,7 +755,7 @@ export async function requestLnurlWithdraw(
   if (!session.signer.capabilities.canSignEvents) {
     return { ok: false, error: 'no_signer' };
   }
-  const url = `${location.origin}${API_BASE}/withdraw/lnurl`;
+  const url = `${apiOrigin()}${API_BASE}/withdraw/lnurl`;
   const bodyJson = JSON.stringify(input);
   const payloadHash = await sha256Hex(bodyJson);
 
@@ -860,7 +873,7 @@ export async function submitCheckin(
   if (!session.signer.capabilities.canSignEvents) {
     return { ok: false, error: 'no_signer' };
   }
-  const url = `${location.origin}${API_BASE}/checkin`;
+  const url = `${apiOrigin()}${API_BASE}/checkin`;
   const bodyJson = '{}';
   const payloadHash = await sha256Hex(bodyJson);
 
@@ -1067,7 +1080,7 @@ export async function uploadReplay(
     return { ok: false, error: 'no_signer' };
   }
   const sha256 = await sha256HexBytes(gzippedBytes);
-  const url = `${location.origin}${API_BASE}/replay/${sha256}`;
+  const url = `${apiOrigin()}${API_BASE}/replay/${sha256}`;
 
   // NIP-98 auth — kind 27235 with u + method tags. We don't include a
   // `payload` tag: the URL path already commits to sha256(body), the URL
@@ -1188,7 +1201,7 @@ async function adminFetch<T>(
   if (!session.signer.capabilities.canSignEvents) {
     return { ok: false, error: 'no_signer' };
   }
-  const url = `${location.origin}${API_BASE}/admin/v2${path}`;
+  const url = `${apiOrigin()}${API_BASE}/admin/v2${path}`;
   const bodyJson = body !== undefined ? JSON.stringify(body) : '';
   const payloadHash = bodyJson ? await sha256Hex(bodyJson) : '';
   const authTemplate = {
