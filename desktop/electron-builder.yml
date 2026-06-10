@@ -1,0 +1,32 @@
+appId: app.pallasite.desktop
+productName: Pallasite
+copyright: © Pallasite
+
+directories:
+  output: out
+  buildResources: build
+
+# What goes inside the asar. The game + broker are shipped unpacked via
+# extraResources (below) so the broker can run as a plain-Node child and the
+# static files stream straight off disk.
+files:
+  - main.js
+  - static-server.mjs
+  - variants.mjs
+  - package.json
+
+extraResources:
+  - from: resources/dist
+    to: dist
+  - from: resources/controller-ws
+    to: controller-ws
+  - from: resources/app-config.json
+    to: app-config.json
+
+linux:
+  target:
+    - AppImage
+  category: Game
+  icon: build/icon.png
+  artifactName: Pallasite-${version}-${arch}.AppImage
+  description: "Pallasite — cosmic arcade Asteroids. Self-contained desktop build (game + local controller broker)."
