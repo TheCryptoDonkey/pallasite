@@ -1131,7 +1131,7 @@ const DESKTOP_BUILDS: ReadonlyArray<{ label: string; sub: string; file: string; 
   { label: 'Windows', sub: '.exe installer', file: 'Pallasite-win-x64.exe', ua: /Windows/i },
   { label: 'macOS · Apple Silicon', sub: '.dmg — M1/M2/M3/M4', file: 'Pallasite-mac-arm64.dmg', ua: /Mac/i },
   { label: 'macOS · Intel', sub: '.dmg', file: 'Pallasite-mac-x64.dmg', ua: /Mac/i },
-  { label: 'Linux', sub: '.AppImage', file: 'Pallasite-linux-x64.AppImage', ua: /Linux|X11/i },
+  { label: 'Linux', sub: '.AppImage', file: 'Pallasite-linux-x86_64.AppImage', ua: /Linux|X11/i },
 ];
 
 /** "Download or play online" overlay reached from the title's GET THE APP button
