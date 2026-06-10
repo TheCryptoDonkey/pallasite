@@ -30,7 +30,9 @@ if (!existsSync(path.join(distSrc, 'index.html'))) {
   console.error('\n[prepare] ../dist/index.html missing — run `pnpm build` at the repo root first.\n');
   process.exit(1);
 }
-if (!existsSync(path.join(brokerSrc, 'node_modules', 'ws'))) {
+// The broker is only bundled for the booth variant. The public build uses the
+// production broker, so skip it entirely (and don't require its deps in CI).
+if (variant.bundleBroker && !existsSync(path.join(brokerSrc, 'node_modules', 'ws'))) {
   console.error('\n[prepare] ../controller-ws/node_modules/ws missing — run `npm ci` (or `pnpm i`) in controller-ws first.\n');
   process.exit(1);
 }
@@ -43,27 +45,29 @@ mkdirSync(build, { recursive: true });
 // Game build.
 cpSync(distSrc, path.join(resources, 'dist'), { recursive: true });
 
-// Broker: source + prod deps only (ws is the sole runtime dep, pure JS).
-const brokerDst = path.join(resources, 'controller-ws');
-mkdirSync(brokerDst, { recursive: true });
-cpSync(path.join(brokerSrc, 'server.js'), path.join(brokerDst, 'server.js'));
-cpSync(path.join(brokerSrc, 'package.json'), path.join(brokerDst, 'package.json'));
+if (variant.bundleBroker) {
+  // Broker: source + prod deps only (ws is the sole runtime dep, pure JS).
+  const brokerDst = path.join(resources, 'controller-ws');
+  mkdirSync(brokerDst, { recursive: true });
+  cpSync(path.join(brokerSrc, 'server.js'), path.join(brokerDst, 'server.js'));
+  cpSync(path.join(brokerSrc, 'package.json'), path.join(brokerDst, 'package.json'));
 
-// Copy each runtime dependency as REAL files. pnpm symlinks packages into its
-// .pnpm store; cpSync (even with dereference:true) preserves a host-absolute
-// symlink that breaks on the target machine — the broker then dies with
-// ERR_MODULE_NOT_FOUND 'ws'. realpathSync resolves the link to the actual dir,
-// which we copy verbatim. (ws is the broker's only runtime dep and has none of
-// its own, so a per-package copy is complete; revisit if that changes.)
-const srcModules = path.join(brokerSrc, 'node_modules');
-const dstModules = path.join(brokerDst, 'node_modules');
-mkdirSync(dstModules, { recursive: true });
-for (const entry of readdirSync(srcModules)) {
-  if (entry.startsWith('.')) continue; // skip .pnpm, .modules.yaml
-  const real = realpathSync(path.join(srcModules, entry));
-  cpSync(real, path.join(dstModules, entry), { recursive: true });
-  if (lstatSync(path.join(dstModules, entry)).isSymbolicLink()) {
-    throw new Error(`[prepare] ${entry} staged as a symlink — would break on the target`);
+  // Copy each runtime dependency as REAL files. pnpm symlinks packages into its
+  // .pnpm store; cpSync (even with dereference:true) preserves a host-absolute
+  // symlink that breaks on the target machine — the broker then dies with
+  // ERR_MODULE_NOT_FOUND 'ws'. realpathSync resolves the link to the actual dir,
+  // which we copy verbatim. (ws is the broker's only runtime dep and has none of
+  // its own, so a per-package copy is complete; revisit if that changes.)
+  const srcModules = path.join(brokerSrc, 'node_modules');
+  const dstModules = path.join(brokerDst, 'node_modules');
+  mkdirSync(dstModules, { recursive: true });
+  for (const entry of readdirSync(srcModules)) {
+    if (entry.startsWith('.')) continue; // skip .pnpm, .modules.yaml
+    const real = realpathSync(path.join(srcModules, entry));
+    cpSync(real, path.join(dstModules, entry), { recursive: true });
+    if (lstatSync(path.join(dstModules, entry)).isSymbolicLink()) {
+      throw new Error(`[prepare] ${entry} staged as a symlink — would break on the target`);
+    }
   }
 }
 
