@@ -10855,10 +10855,15 @@ async function maybePublishCoopCampaignScore(
       const result = await publishCoopCampaignScore(state.session, {
         score, wave: state.wave, durationMs, players: state.players.length, seed: getActiveSeed(), cheated: state.cheatedThisRun,
       });
-      status.style.color = result.publishedTo.length > 0 ? '#58ff58' : '#ff8050';
-      status.textContent = result.publishedTo.length > 0
-        ? `✓ Co-op score published to ${result.publishedTo.length} relays · no sats payout`
-        : 'Co-op score saved locally; relays rejected the publish.';
+      if (!result) {
+        status.style.color = '#ffd84a';
+        status.textContent = 'Co-op score saved locally · sign in with a live signer (extension/bunker) to publish it.';
+      } else {
+        status.style.color = result.publishedTo.length > 0 ? '#58ff58' : '#ff8050';
+        status.textContent = result.publishedTo.length > 0
+          ? `✓ Co-op score published to ${result.publishedTo.length} relays · no sats payout`
+          : 'Co-op score saved locally; relays rejected the publish.';
+      }
     } catch (err) {
       status.style.color = '#ff8050';
       status.textContent = `Co-op publish failed: ${err instanceof Error ? err.message : String(err)}`;
