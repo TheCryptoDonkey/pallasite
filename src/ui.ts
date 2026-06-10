@@ -272,9 +272,12 @@ export function clearOverlay(): void {
   root.innerHTML = '';
 }
 
-export function renderGamepadTestPage(): void {
+export function renderGamepadTestPage(onBack?: () => void): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
+  // Opened from Settings (booth operator flow): make it pad/keyboard navigable so
+  // Ⓑ / Escape backs out. Standalone (/?gamepad-test) keeps the reload-to-/ back.
+  if (onBack) setupOverlayArrowNav(overlay, onBack);
 
   el('h2', { parent: overlay, text: 'CONTROLLER TEST' });
   const status = el('p', { parent: overlay, text: 'Gamepad API empty - press A/B/X/Y or nudge a stick while this tab is focused.' });
@@ -312,8 +315,8 @@ export function renderGamepadTestPage(): void {
   buttonsGrid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(88px,1fr));gap:6px;';
 
   const row = el('div', { className: 'menu-row', parent: overlay });
-  const back = el('button', { className: 'menu-btn', parent: row, text: '< BACK TO GAME' });
-  back.addEventListener('click', () => { window.location.assign('/'); });
+  const back = el('button', { className: 'menu-btn', parent: row, text: onBack ? '< BACK' : '< BACK TO GAME' });
+  back.addEventListener('click', () => { if (onBack) onBack(); else window.location.assign('/'); });
 
   let lastGamepadEvent = 'none';
   let lastKey = 'none';
@@ -1678,6 +1681,8 @@ interface BoothWizard {
   nav: MenuNavState;
   /** Per-pad (gamepad.index) edge memory for the join screen's Ⓐ / Start. */
   joinEdge: Map<number, { a: boolean; start: boolean }>;
+  /** Per-pad edge memory for the operator settings cheat (see feedBoothCheat). */
+  cheat: Map<number, { lastDir: 'up' | 'down' | 'left' | 'right' | null; prevY: boolean; seq: string[] }>;
   pilots: BoothPilot[];
   raf: number | null;
 }
@@ -1743,7 +1748,7 @@ function startBoothJoinWizard(state: GameState, booth: number): void {
   const w: BoothWizard = {
     active: true, booth, mode: 'join', activePad: null,
     nav: { menuDir: null, menuA: false, menuB: false },
-    joinEdge: new Map(), pilots: [], raf: null,
+    joinEdge: new Map(), cheat: new Map(), pilots: [], raf: null,
   };
   boothWizard = w;
   setPadInputSuppressed(true);   // the wizard owns the pads now
@@ -1839,6 +1844,8 @@ function pollBoothWizard(state: GameState, w: BoothWizard): void {
       if (a && !edge.a) onBoothJoinPress(state, w, pad.index);
       if (start && !edge.start && w.pilots.length > 0) beginBoothSetup(state, w);
       edge.a = a; edge.start = start;
+      // Operator settings cheat: ▼ ▶ ◀ ◀ Ⓨ on any pad opens Settings.
+      if (feedBoothCheat(state, w, pad)) return;
     }
     return;
   }
@@ -1855,6 +1862,62 @@ function onBoothJoinPress(state: GameState, w: BoothWizard, padIndex: number): v
   void audio.unlockAudio();
   w.pilots.push({ padIndex, slot: w.pilots.length, session: null });
   renderBoothJoin(state, w.booth);
+}
+
+// ── Booth operator settings cheat ───────────────────────────────────────────
+// A booth kiosk has no keyboard, so Settings is otherwise unreachable once the
+// join wizard owns the pads. On the join menu, the sequence ▼ ▶ ◀ ◀ Ⓨ on any
+// pad opens Settings; the wizard's nav mode then drives the overlay (Ⓑ = back).
+const BOOTH_SETTINGS_CHEAT: ReadonlyArray<string> = ['down', 'right', 'left', 'left', 'Y'];
+
+/** Combined stick + d-pad direction, using the same 0.55 threshold as
+ *  driveMenuFromPad so the cheat feels like normal menu nav. */
+function padMenuDir(pad: Gamepad): 'up' | 'down' | 'left' | 'right' | null {
+  const dx = (pad.axes[0] ?? 0) + (padButtonDown(pad, 15) ? 1 : 0) - (padButtonDown(pad, 14) ? 1 : 0);
+  const dy = (pad.axes[1] ?? 0) + (padButtonDown(pad, 13) ? 1 : 0) - (padButtonDown(pad, 12) ? 1 : 0);
+  if (Math.abs(dx) <= 0.55 && Math.abs(dy) <= 0.55) return null;
+  return Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+}
+
+/** Feed one pad's join-screen input to the settings cheat. Records a token on
+ *  each fresh directional press (so "left, left" needs a release between) and on
+ *  each Ⓨ rising edge, keeping a rolling window. Returns true when the full
+ *  sequence just completed (and Settings was opened). */
+function feedBoothCheat(state: GameState, w: BoothWizard, pad: Gamepad): boolean {
+  let cs = w.cheat.get(pad.index);
+  if (!cs) { cs = { lastDir: null, prevY: false, seq: [] }; w.cheat.set(pad.index, cs); }
+  const push = (tok: string): boolean => {
+    cs!.seq.push(tok);
+    if (cs!.seq.length > BOOTH_SETTINGS_CHEAT.length) cs!.seq.shift();
+    return cs!.seq.length === BOOTH_SETTINGS_CHEAT.length
+      && cs!.seq.every((t, i) => t === BOOTH_SETTINGS_CHEAT[i]);
+  };
+  let matched = false;
+  const dir = padMenuDir(pad);
+  if (dir && dir !== cs.lastDir && push(dir)) matched = true;
+  cs.lastDir = dir;
+  const y = padButtonDown(pad, 3);
+  if (y && !cs.prevY && push('Y')) matched = true;
+  cs.prevY = y;
+  if (matched) { openBoothSettings(state, w, pad.index); return true; }
+  return false;
+}
+
+/** Open Settings from the booth menu, reusing the wizard's nav mode so the same
+ *  pad walks the overlay. Ⓑ (→ Escape → onBack) returns to the join menu. */
+function openBoothSettings(state: GameState, w: BoothWizard, padIndex: number): void {
+  w.cheat.clear();
+  w.mode = 'nav';
+  w.activePad = padIndex;
+  w.nav = { menuDir: null, menuA: false, menuB: false };
+  renderSettings(() => {
+    if (boothWizard !== w || !w.active) return;
+    w.mode = 'join';
+    w.activePad = null;
+    w.nav = { menuDir: null, menuA: false, menuB: false };
+    w.cheat.clear();
+    renderBoothJoin(state, w.booth);
+  });
 }
 
 function renderBoothJoin(state: GameState, booth: number): void {
@@ -9708,6 +9771,13 @@ export function renderSettings(onBack: () => void): void {
   const remapNote = el('p', { parent: overlay, text: 'Rotate / aim stay on the sticks (set by the GAMEPAD mode above).' });
   remapNote.style.cssText = 'font-size:0.72rem;color:rgba(180,140,255,0.5);letter-spacing:0.04em;margin:2px 0 0;text-align:center;';
 
+  // Live controller diagnostic — pad id, mapping (standard vs non-standard), axes,
+  // and which physical button each index is. The fix-it tool for a booth pad whose
+  // buttons land in the wrong place. Ⓑ / BACK returns here to Settings.
+  const testBtn = el('button', { className: 'menu-btn secondary', parent: overlay, text: '🎮 CONTROLLER TEST' });
+  testBtn.style.cssText += 'margin-top:8px;';
+  testBtn.addEventListener('click', () => { stopCapture(); renderGamepadTestPage(() => renderSettings(onBack)); });
+
   // Touch input mode — only meaningful on touch devices but harmless to show
   // on desktop (it just doesn't apply until a touch event reveals controls).
   const touchHeading = el('p', { parent: overlay, text: 'TOUCH INPUT' });
@@ -10555,7 +10625,7 @@ function publishSoloScoreForRun(state: GameState): void {
         return;
       }
     }
-    await submitSoloScore(signer, {
+    const scoreResult = await submitSoloScore(signer, {
       score: state.players[0].score,
       wave: state.wave,
       duration_ms: Math.max(0, Math.floor(state.runTimeMs)),
@@ -10565,7 +10635,14 @@ function publishSoloScoreForRun(state: GameState): void {
       ...(nip05 ? { nip05 } : {}),
       ...(getFlavour() === '600bn' ? { room: '600bn' as const } : {}),
       cheated: state.cheatedThisRun,
-    }).catch(() => undefined);
+    }).catch((e) => ({ ok: false as const, error: 'threw', detail: e instanceof Error ? e.message : String(e) }));
+    // Diagnostic: surfaces WHY a score did/didn't land (the result is otherwise
+    // swallowed). On the booth this reaches /tmp/pallasite.log via the
+    // main-process console bridge.
+    console.log('[solo-score] result=' + JSON.stringify(scoreResult)
+      + ' canSign=' + (signer.signer?.capabilities?.canSignEvents === true)
+      + ' pk=' + (signer.pubkey ? signer.pubkey.slice(0, 12) : '?')
+      + ' name=' + playerName);
   })();
 }
 
@@ -12505,13 +12582,16 @@ function createZapPopover(amountSats: number): HTMLElement {
   const pop = el('div', { className: 'zap-popover', parent: root });
 
   const heading = el('p', { parent: pop, text: `ZAP · ${amountSats} SATS` });
-  heading.style.cssText = 'font-size:1rem;letter-spacing:0.2em;color:var(--hud-yellow);margin:0;text-shadow:0 0 6px rgba(255,216,74,0.5);';
+  heading.style.cssText = 'font-size:1.6rem;letter-spacing:0.2em;color:var(--hud-yellow);margin:0;text-shadow:0 0 8px rgba(255,216,74,0.55);';
 
   const sub = el('p', { className: 'zap-popover-sub', parent: pop, text: 'Generating invoice…' });
-  sub.style.cssText = 'font-size:0.72rem;color:rgba(180,140,255,0.7);letter-spacing:0.1em;margin:0 0 6px;';
+  sub.style.cssText = 'font-size:1rem;color:rgba(180,140,255,0.75);letter-spacing:0.1em;margin:0 0 6px;';
 
+  // Big, viewport-scaled QR so it scans across a booth ("pay in passing"):
+  // huge on a 4K TV, still sensible on a phone. The SVG is vector so it stays
+  // crisp at any size (see renderQRInto).
   const qrSlot = el('div', { className: 'zap-popover-qr', parent: pop });
-  qrSlot.style.cssText = 'display:flex;align-items:center;justify-content:center;width:200px;height:200px;background:rgba(0,0,0,0.4);border:1px solid rgba(180,140,255,0.3);border-radius:8px;';
+  qrSlot.style.cssText = 'display:flex;align-items:center;justify-content:center;width:min(72vmin,880px);height:min(72vmin,880px);background:rgba(0,0,0,0.4);border:1px solid rgba(180,140,255,0.3);border-radius:8px;';
 
   // Spinner
   const spinner = el('div', { className: 'zap-spinner', parent: qrSlot });
@@ -13671,6 +13751,13 @@ export function renderAdminV2Panel(state: GameState): void {
  *  the local dev broker at `ws://<host>:8788/` so the lobby's invite
  *  links + peerwatch socket work end-to-end without touching production. */
 function defaultBrokerWsUrl(): string {
+  // Desktop builds are served from 127.0.0.1 by an embedded static server, which
+  // would otherwise auto-target a LOCAL broker on :8788 — correct for a booth
+  // (bundled broker / linked booths), wrong for a public download whose players
+  // have no peers there. The public build injects __PALLASITE_BROKER_URL__ (the
+  // production broker) so multiplayer reaches real opponents. Booth omits it.
+  const override = (globalThis as { __PALLASITE_BROKER_URL__?: unknown }).__PALLASITE_BROKER_URL__;
+  if (typeof override === 'string' && override) return override;
   const h = window.location.hostname;
   if (h === 'localhost' || h === '127.0.0.1' || h === '0.0.0.0') {
     return `ws://${h}:8788/`;
