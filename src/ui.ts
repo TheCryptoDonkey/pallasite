@@ -2475,7 +2475,10 @@ function renderGlobalLeaderboard(parent: HTMLElement, state: GameState, board: S
       }
       const myToken = ++renderToken;
       const top = raw.slice(0, 5);
-      const entries = await Promise.all(top.map(resolveDisplayName));
+      const localHint = state.session?.displayName
+        ? { pubkey: state.session.pubkey, displayName: state.session.displayName }
+        : null;
+      const entries = await Promise.all(top.map(e => resolveDisplayName(e, localHint)));
       if (!container.isConnected || myToken !== renderToken) return;
       container.innerHTML = '';
       renderLeaderboardBlock(container, entries.map(globalToLocal), titleText, 5, () => renderTitle(state));
@@ -2503,10 +2506,23 @@ function renderGlobalLeaderboard(parent: HTMLElement, state: GameState, board: S
   }, 8000);
 }
 
-async function resolveDisplayName(entry: GlobalHighScore): Promise<GlobalHighScore & { displayName: string }> {
+async function resolveDisplayName(
+  entry: GlobalHighScore,
+  localHint?: { pubkey: string; displayName: string } | null,
+): Promise<GlobalHighScore & { displayName: string }> {
   const cached = getCachedProfile(entry.pubkey);
   const profile = cached ?? await fetchProfile(entry.pubkey).catch(() => null);
-  return { ...entry, displayName: bestName(profile, entry.pubkey) };
+  const hasProfileName = !!(profile?.display_name?.trim() || profile?.name?.trim());
+  // Persona parity with guests: if this row is the local player on a persona
+  // that shares a handle but has no published kind-0 yet, show that handle
+  // rather than a bare pubkey. A real kind-0 still wins (so it matches what
+  // Gamestr/other clients resolve) — My Signet publishing a kind-0 per persona
+  // is the cross-client fix.
+  const localName = localHint && entry.pubkey.toLowerCase() === localHint.pubkey.toLowerCase()
+    ? localHint.displayName.trim()
+    : '';
+  const displayName = hasProfileName ? bestName(profile, entry.pubkey) : (localName || bestName(null, entry.pubkey));
+  return { ...entry, displayName };
 }
 
 function globalToLocal(entry: GlobalHighScore & { displayName: string }): ReturnType<typeof getLocalHighScores>[number] {
