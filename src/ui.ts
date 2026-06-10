@@ -1124,6 +1124,59 @@ const boothKiosk: number = (() => {
   } catch { return 0; }
 })();
 
+// Desktop downloads — stable latest-release asset URLs (version-less names, see
+// desktop/electron-builder.public.yml). Live once the GitHub release is published.
+const RELEASE_DL = 'https://github.com/TheCryptoDonkey/pallasite/releases/latest/download';
+const DESKTOP_BUILDS: ReadonlyArray<{ label: string; sub: string; file: string; ua: RegExp }> = [
+  { label: 'Windows', sub: '.exe installer', file: 'Pallasite-win-x64.exe', ua: /Windows/i },
+  { label: 'macOS · Apple Silicon', sub: '.dmg — M1/M2/M3/M4', file: 'Pallasite-mac-arm64.dmg', ua: /Mac/i },
+  { label: 'macOS · Intel', sub: '.dmg', file: 'Pallasite-mac-x64.dmg', ua: /Mac/i },
+  { label: 'Linux', sub: '.AppImage', file: 'Pallasite-linux-x64.AppImage', ua: /Linux|X11/i },
+];
+
+/** "Download or play online" overlay reached from the title's GET THE APP button
+ *  (web only). Play-online just returns to the game you're already in; the
+ *  download buttons link to the latest GitHub release assets. */
+function renderDownload(onBack: () => void): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay, onBack);
+  el('h2', { parent: overlay, text: 'PLAY PALLASITE' });
+
+  const sub = el('p', { parent: overlay, text: 'Play instantly in your browser — or install the desktop app for a fullscreen, gamepad-ready build.' });
+  sub.style.cssText = 'font-size:0.9rem;color:rgba(220,210,255,0.78);letter-spacing:0.04em;max-width:520px;text-align:center;line-height:1.5;margin:0;';
+
+  const playBtn = el('button', { className: 'menu-btn', parent: overlay, text: '▶ PLAY ONLINE' });
+  playBtn.style.cssText += 'margin-top:8px;';
+  playBtn.addEventListener('click', onBack);
+
+  const divider = el('p', { parent: overlay, text: '— OR DOWNLOAD —' });
+  divider.style.cssText = 'font-size:0.74rem;letter-spacing:0.32em;color:rgba(180,140,255,0.6);margin:12px 0 0;';
+
+  const grid = el('div', { parent: overlay });
+  grid.style.cssText = 'display:flex;flex-direction:column;gap:10px;min-width:300px;max-width:430px;width:100%;';
+  const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+  for (const d of DESKTOP_BUILDS) {
+    const a = el('a', { parent: grid }) as HTMLAnchorElement;
+    a.href = `${RELEASE_DL}/${d.file}`;
+    a.className = 'menu-btn secondary';
+    a.setAttribute('download', '');
+    a.rel = 'noopener';
+    a.style.cssText = 'text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:2px;';
+    el('span', { parent: a, text: `⬇ ${d.label}` });
+    const note = el('span', { parent: a, text: d.sub });
+    note.style.cssText = 'font-size:0.66rem;letter-spacing:0.08em;color:rgba(180,140,255,0.62);';
+    if (d.ua.test(ua)) { a.style.borderColor = 'rgba(140,255,180,0.6)'; a.style.color = '#8cffb4'; }
+  }
+
+  const note = el('p', { parent: overlay, text: 'Desktop builds are unsigned: on macOS right-click → Open the first time; on Windows click “More info → Run anyway”.' });
+  note.style.cssText = 'font-size:0.7rem;color:rgba(180,140,255,0.5);letter-spacing:0.03em;max-width:480px;text-align:center;line-height:1.5;margin:8px 0 0;';
+
+  const back = el('button', { className: 'menu-btn secondary', parent: overlay, text: '◀ BACK' });
+  back.style.cssText += 'margin-top:10px;';
+  back.addEventListener('click', onBack);
+}
+
 export function renderTitle(state: GameState): void {
   // Prague booth kiosk: collapse the whole title/menu surface to the stripped
   // booth lobby. This one gate also closes the post-game loop — anything that
@@ -1284,6 +1337,12 @@ export function renderTitle(state: GameState): void {
     void audio.unlockAudio();
     renderMusicPlayer(state, () => renderTitle(state));
   });
+  // Desktop download — web only. A downloaded app shouldn't advertise the
+  // download; desktop builds inject __PALLASITE_API_ORIGIN__, so gate on that.
+  if (!(globalThis as { __PALLASITE_API_ORIGIN__?: unknown }).__PALLASITE_API_ORIGIN__) {
+    const dlBtn = el('button', { className: 'menu-btn secondary', parent: row, text: '⬇ GET THE APP' });
+    dlBtn.addEventListener('click', () => renderDownload(() => renderTitle(state)));
+  }
   // DUEL used to live here as a separate action button; it now sits in the
   // Mode picker alongside CAMPAIGN / DRIFT / ARENA / SANCTUM so the choice
   // of "what kind of run am I about to start" is on one shelf. Selecting
