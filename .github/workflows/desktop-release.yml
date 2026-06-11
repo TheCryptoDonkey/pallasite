@@ -24,7 +24,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        # Booth runs Linux — only the AppImage is needed for now. macOS/Windows
+        # are paused; restore the full cross-platform set with the line below:
+        #   os: [macos-latest, windows-latest, ubuntu-latest]
+        os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
