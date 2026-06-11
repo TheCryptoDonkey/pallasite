@@ -13,17 +13,20 @@
  * only the decorative non-collide layers.
  */
 
-import { getFlavour, boothKioskActive } from './flavour.js';
+import { boothKioskActive } from './flavour.js';
 
 export type ParallaxTier = 'off' | 'subtle' | 'dramatic';
 
 const KEY = 'pallasite:parallax';
 
 function defaultTier(): ParallaxTier {
-  // 600bn flavour defaults to dramatic — the Sanctum benefits from a
-  // richer sense of depth. Main campaign defaults to off: every visible
-  // asteroid must be shootable and lethal, especially from wave 2 onward.
-  return getFlavour() === '600bn' ? 'dramatic' : 'off';
+  // Off everywhere. The decorative parallax bands are NON-collide — only
+  // depth-3 asteroids can kill the ship (see the (a.depth ?? 3) !== 3 gate in
+  // game.ts). 600bn used to default to 'dramatic', which filled the field with
+  // non-lethal rocks the ship flew straight through, reading as invincibility.
+  // Every visible rock must be shootable and lethal, in the campaign AND the
+  // Sanctum.
+  return 'off';
 }
 
 let cached: ParallaxTier | null = null;
@@ -35,10 +38,10 @@ function coerce(v: unknown): ParallaxTier {
 
 export function getParallaxTier(): ParallaxTier {
   if (cached) return cached;
-  // Booth/kiosk: pin parallax to the flavour default (off for main, dramatic
-  // for 600bn), ignoring a stale localStorage override. A kiosk must never
-  // inherit a 'dramatic' setting from a previous 600bn test — in campaign every
-  // visible rock has to be shootable, collide, and sit behind the ship.
+  // Booth/kiosk: pin parallax to the default (now 'off' for every flavour),
+  // ignoring a stale localStorage override. A kiosk must never inherit a
+  // 'dramatic' setting from a previous test — every visible rock has to be
+  // shootable, collide, and sit behind the ship.
   if (boothKioskActive()) { cached = defaultTier(); return cached; }
   try {
     const raw = localStorage.getItem(KEY);

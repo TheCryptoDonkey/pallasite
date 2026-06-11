@@ -393,9 +393,9 @@ function paintCouncilCoinBase(ctx: CanvasRenderingContext2D, gold: boolean): voi
   const r = w / 2 - 4;
   const grad = ctx.createRadialGradient(cx, cy, 10, cx, cy, r);
   if (gold) {
-    grad.addColorStop(0, '#fff6c0');
-    grad.addColorStop(0.5, '#ffd84a');
-    grad.addColorStop(1, '#8a5800');
+    grad.addColorStop(0, '#ffe0e0');
+    grad.addColorStop(0.5, '#d62020');
+    grad.addColorStop(1, '#3a0000');
   } else {
     grad.addColorStop(0, '#241834');
     grad.addColorStop(0.7, '#0a0418');
@@ -406,7 +406,7 @@ function paintCouncilCoinBase(ctx: CanvasRenderingContext2D, gold: boolean): voi
   ctx.arc(cx, cy, r, 0, Math.PI * 2);
   ctx.fill();
   // Outer rim.
-  ctx.strokeStyle = gold ? '#5a3a00' : '#ffd84a';
+  ctx.strokeStyle = gold ? '#4a0000' : '#ff4040';
   ctx.lineWidth = 6;
   ctx.beginPath();
   ctx.arc(cx, cy, r - 2, 0, Math.PI * 2);
@@ -449,14 +449,14 @@ function ensureCouncilFrontPortrait(member: NonNullable<Asteroid['councilMember'
   ctx.clip();
   ctx.drawImage(portrait, cx - portraitR, cy - portraitR, portraitR * 2, portraitR * 2);
   ctx.restore();
-  // Dark inner ring + gold outer ring around the portrait — frames
-  // the face against the coin gradient.
+  // Dark inner ring + red outer ring around the portrait — frames
+  // the face against the coin gradient (council = baddies, not BTC gold).
   ctx.strokeStyle = '#0a0418';
   ctx.lineWidth = 5;
   ctx.beginPath();
   ctx.arc(cx, cy, portraitR, 0, Math.PI * 2);
   ctx.stroke();
-  ctx.strokeStyle = '#ffd84a';
+  ctx.strokeStyle = '#ff4040';
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.arc(cx, cy, portraitR + 4, 0, Math.PI * 2);
@@ -479,13 +479,13 @@ function getCouncilBackTexture(member: NonNullable<Asteroid['councilMember']>): 
   const ctx = c.getContext('2d')!;
   paintCouncilCoinBase(ctx, false);
   // Role big in the centre.
-  ctx.fillStyle = '#ffd84a';
+  ctx.fillStyle = '#ff5a5a';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.font = 'bold 88px Georgia, serif';
   ctx.fillText(member.role, c.width / 2, c.height / 2 - 28);
   // Archetype below — wrap to two lines if longer than fits.
-  ctx.fillStyle = '#d8c08a';
+  ctx.fillStyle = '#e0a8a8';
   ctx.font = 'bold 22px ui-monospace, monospace';
   const arch = (member.archetype || '').toUpperCase();
   if (arch.length > 18) {
@@ -509,9 +509,9 @@ function buildCouncilMedallionMesh(a: Asteroid): { mesh: THREE.Mesh; geometry: T
   const r = a.radius;
   const h = r * 0.34;
   const sideMat = new THREE.MeshPhongMaterial({
-    color: 0xb87400,
+    color: 0x8a0d0d,
     shininess: 200,
-    specular: 0xfff0a0,
+    specular: 0xffb0b0,
   });
   const frontMat = new THREE.MeshPhongMaterial({
     color: 0xffffff,
