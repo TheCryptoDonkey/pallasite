@@ -11091,6 +11091,20 @@ function renderBoothDonate(state: GameState): void {
 /** LOGOUT from the booth game-over — clears the run, signs the pilot out, and
  *  drops back to the join lobby so the next walk-up starts clean. */
 async function boothLogout(state: GameState): Promise<void> {
+  // 600bn was entered via the "600B" name cheat — a ?flavour=600bn reload that
+  // also dropped ?p1. getFlavour() is cached, so the ONLY clean way back to the
+  // normal booth is a reload that strips ?flavour and restores the ?p1 join
+  // wizard. Without this, LOGOUT just lands on the Sanctum attract (still 600bn)
+  // and the next walk-up is stuck in it on a gamepad-only booth.
+  if (getFlavour() === '600bn') {
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('flavour');
+      url.searchParams.set('p1', '1');
+      window.location.href = url.toString();
+      return;
+    } catch { /* fall through to the normal logout */ }
+  }
   clearEntitiesForTitle(state);
   state.phase = 'title';
   // signOutAndReturnToAttract → renderAttract → renderBoothLobby (boothKiosk),
