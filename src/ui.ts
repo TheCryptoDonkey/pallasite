@@ -1786,7 +1786,10 @@ export function renderBoothLobby(state: GameState, booth: number): void {
   state.coopIdentity2 = null;
   clearPadFlightModeBySlot();
   clearBoothPadSlotBinding();
-  setPadFlightMode('flydirect');
+  // Booth default is CLASSIC (arcade rotate-and-thrust) — the most familiar
+  // scheme for walk-ups and what the on-screen legend describes. Each pilot's
+  // join-wizard picker still falls back to this, so they can switch per-slot.
+  setPadFlightMode('classic');
   setPadAutoThrust(false);
 
   // A booth kiosk is gamepad-driven, but a gamepad press is NOT a browser
@@ -1990,6 +1993,16 @@ function openBoothSettings(state: GameState, w: BoothWizard, padIndex: number): 
   });
 }
 
+/** One-line control legend for the booth's CLASSIC pad scheme. Shown on the
+ *  join lobby and the pause menu so a walk-up always knows the mapping without
+ *  hunting through settings. Mirrors DEFAULT_BINDINGS (fire Ⓐ/LT, thrust RT,
+ *  shield Ⓑ/RB, hyperspace Ⓧ/LB) and the classic d-pad rotate cluster. */
+function renderBoothControlsLegend(parent: HTMLElement): HTMLElement {
+  const legend = el('p', { parent, text: '🎮  D-pad ◀ ▶ turn  ·  RT (or D-pad ▲) thrust  ·  Ⓐ fire  ·  Ⓑ shield  ·  Ⓧ hyperspace  ·  right stick aims + auto-fires' });
+  legend.style.cssText = 'font-size:0.74rem;color:rgba(140,255,180,0.66);letter-spacing:0.05em;text-align:center;margin:14px auto 0;max-width:660px;line-height:1.6;';
+  return legend;
+}
+
 function renderBoothJoin(state: GameState, booth: number): void {
   const w = boothWizard;
   clearOverlay();
@@ -2050,9 +2063,9 @@ function renderBoothJoin(state: GameState, booth: number): void {
       .style.cssText = 'font-size:0.8rem;color:rgba(180,140,255,0.6);letter-spacing:0.14em;';
   }
 
-  // Control legend (booth default is Point & Fly; each pilot can change it next).
-  const legend = el('p', { parent: overlay, text: '🎮 Push the left stick to fly · RT fire · RB shield · LB hyperspace' });
-  legend.style.cssText = 'font-size:0.72rem;color:rgba(140,255,180,0.6);letter-spacing:0.05em;text-align:center;margin:14px 0 0;max-width:560px;line-height:1.5;';
+  // Control legend — booth default is CLASSIC arcade (each pilot can still
+  // switch scheme in the next step). Shared with the pause menu.
+  renderBoothControlsLegend(overlay);
 
   // LINK BOOTHS — a separate thing: cross-booth networked co-op. Kept small.
   const link = el('button', { parent: overlay, text: '🔗 LINK BOOTHS' });
@@ -2351,6 +2364,128 @@ export function renderAttract(state: GameState): void {
   renderLegalFooter(overlay);
 }
 
+/** On-screen QWERTY name entry. Built for booth walk-ups on a gamepad — the
+ *  d-pad walks the key grid (setupOverlayArrowNav's geometric nav re-queries
+ *  buttons live, so the keys are reachable) and Ⓐ presses a key — while a
+ *  physical keyboard types straight in. SPACE / ⌫ BKSP / ✓ DONE on the bottom
+ *  row, plus an optional BACK. Replaces the slow ▲▼ arcade cycler for guest
+ *  sign-in. Returns getCurrentName() so callers can read the in-progress value. */
+function renderQwertyName(
+  parent: HTMLElement,
+  opts: { onSubmit?: (name: string) => void; onBack?: () => void; maxLen?: number; initialValue?: string },
+): { getCurrentName: () => string } {
+  const MAX_LEN = opts.maxLen ?? 25;
+  let name = (opts.initialValue ?? '').toUpperCase().slice(0, MAX_LEN);
+  let submitted = false;
+
+  const wrap = el('div', { parent });
+  wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:10px;width:100%;max-width:640px;margin:4px auto;';
+  // Same marker renderArcadeName sets, so main.ts's Enter-restarts-game handler
+  // stays out of the way while a name is being typed.
+  wrap.dataset.arcadeInitials = 'open';
+
+  const display = el('div', { parent: wrap });
+  display.style.cssText = 'min-width:60%;min-height:1.8em;padding:8px 18px;font-family:monospace;font-size:1.6rem;letter-spacing:0.12em;color:#ffd84a;background:rgba(2,5,13,0.5);border:2px solid #ffd84a;border-radius:6px;text-align:center;text-shadow:0 0 10px rgba(255,216,74,0.45);';
+  const renderName = (): void => { display.textContent = name.length ? name : '—'; };
+  renderName();
+
+  const getCurrentName = (): string => name.trim();
+  const append = (ch: string): void => {
+    if (name.length >= MAX_LEN) return;
+    name += ch.toUpperCase();
+    renderName();
+    try { audio.initialCycle(); } catch { /* ignore */ }
+  };
+  const backspace = (): void => {
+    if (!name.length) return;
+    name = name.slice(0, -1);
+    renderName();
+    try { audio.initialBackspace(); } catch { /* ignore */ }
+  };
+  const commit = (): void => {
+    if (submitted) return;
+    submitted = true;
+    window.removeEventListener('keydown', keyHandler, true);
+    opts.onSubmit?.(getCurrentName());
+  };
+  const back = (): void => {
+    window.removeEventListener('keydown', keyHandler, true);
+    opts.onBack?.();
+  };
+
+  // pointerdown (touch, no 300ms delay) + click (mouse / focused-button Enter).
+  const bindTap = (btn: HTMLElement, fn: () => void): void => {
+    let handledPointer = false;
+    btn.addEventListener('pointerdown', (e) => { e.preventDefault(); handledPointer = true; fn(); });
+    btn.addEventListener('click', (e) => { e.preventDefault(); if (handledPointer) { handledPointer = false; return; } fn(); });
+  };
+
+  const keyBase = 'height:50px;min-width:46px;padding:0 6px;border-radius:7px;font-family:monospace;font-size:1.3rem;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;user-select:none;';
+  const grid = el('div', { parent: wrap });
+  grid.style.cssText = 'display:flex;flex-direction:column;gap:7px;align-items:center;width:100%;';
+  for (const row of ['1234567890', 'QWERTYUIOP', 'ASDFGHJKL', 'ZXCVBNM']) {
+    const r = el('div', { parent: grid });
+    r.style.cssText = 'display:flex;gap:7px;justify-content:center;';
+    for (const ch of row) {
+      const b = el('button', { parent: r, text: ch }) as HTMLButtonElement;
+      b.type = 'button';
+      b.style.cssText = keyBase + 'background:rgba(20,12,36,0.85);border:2px solid rgba(180,140,255,0.4);color:#dccfff;';
+      bindTap(b, () => append(ch));
+    }
+  }
+
+  const actions = el('div', { parent: wrap });
+  actions.style.cssText = 'display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:2px;';
+  const spaceBtn = el('button', { parent: actions, text: 'SPACE' }) as HTMLButtonElement;
+  spaceBtn.type = 'button';
+  spaceBtn.style.cssText = keyBase + 'min-width:190px;background:rgba(20,12,36,0.85);border:2px solid rgba(180,140,255,0.4);color:#dccfff;letter-spacing:0.2em;font-size:0.95rem;';
+  bindTap(spaceBtn, () => append(' '));
+  const bkspBtn = el('button', { parent: actions, text: '⌫ BKSP' }) as HTMLButtonElement;
+  bkspBtn.type = 'button';
+  bkspBtn.style.cssText = keyBase + 'min-width:100px;background:rgba(255,120,120,0.14);border:2px solid rgba(255,120,120,0.5);color:#ff8a8a;letter-spacing:0.08em;font-size:0.95rem;';
+  bindTap(bkspBtn, backspace);
+  const doneBtn = el('button', { parent: actions, text: '✓ DONE' }) as HTMLButtonElement;
+  doneBtn.type = 'button';
+  doneBtn.style.cssText = keyBase + 'min-width:120px;background:rgba(88,255,88,0.16);border:2px solid #58ff58;color:#8cffb4;letter-spacing:0.14em;font-size:1rem;';
+  bindTap(doneBtn, commit);
+  if (opts.onBack) {
+    const backBtn = el('button', { parent: actions, text: '◀ BACK' }) as HTMLButtonElement;
+    backBtn.type = 'button';
+    backBtn.style.cssText = keyBase + 'min-width:100px;background:rgba(140,140,255,0.10);border:2px solid rgba(140,140,255,0.35);color:#9b9bff;letter-spacing:0.08em;font-size:0.9rem;';
+    bindTap(backBtn, back);
+  }
+
+  const hint = el('p', { parent: wrap, text: 'D-pad + Ⓐ to type · SPACE · ⌫ · ✓ DONE' });
+  hint.style.cssText = 'font-size:0.7rem;color:rgba(180,140,255,0.55);letter-spacing:0.12em;margin:2px 0 0;';
+
+  // Physical-keyboard fast path (capture phase + stopImmediatePropagation on
+  // consumed keys, so neither the overlay nav nor main.ts's Enter-restart fires
+  // mid-edit). Mirrors renderArcadeName: when a button is focused, Enter / Space
+  // / arrows belong to overlay/pad navigation; otherwise letters type directly
+  // and Enter submits.
+  const keyHandler = (e: KeyboardEvent): void => {
+    if (submitted) return;
+    if (!document.body.contains(wrap)) { window.removeEventListener('keydown', keyHandler, true); return; }
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const active = document.activeElement as Element | null;
+    const activeIsButton = active instanceof HTMLButtonElement;
+    const isNavKey = e.code === 'ArrowUp' || e.code === 'ArrowDown' || e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'Enter' || e.code === 'Space';
+    if (isNavKey && activeIsButton) return;   // pad / arrow nav owns focused buttons
+    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
+    if (e.code === 'ArrowUp' || e.code === 'ArrowDown' || e.code === 'ArrowLeft' || e.code === 'ArrowRight') return;
+    let consumed = true;
+    if (e.code === 'Backspace') backspace();
+    else if (e.code === 'Enter') commit();
+    else if (e.code === 'Space') append(' ');
+    else if (e.key && e.key.length === 1 && /[A-Za-z0-9 ]/.test(e.key)) append(e.key);
+    else consumed = false;
+    if (consumed) { e.preventDefault(); e.stopImmediatePropagation(); }
+  };
+  window.addEventListener('keydown', keyHandler, true);
+
+  return { getCurrentName };
+}
+
 export function renderAuth(state: GameState, onDone: () => void, opts?: { onResolved?: (s: SignetSession) => void; heading?: string; sub?: string; freshGuest?: boolean }): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
@@ -2360,18 +2495,28 @@ export function renderAuth(state: GameState, onDone: () => void, opts?: { onReso
   // booth), it takes the resolved session instead of overwriting state.session.
   const resolve = (s: SignetSession): void => { if (opts?.onResolved) opts.onResolved(s); else state.session = s; };
 
-  el('h2', { parent: overlay, text: opts?.heading ?? 'WHO ARE YOU?' });
+  // Two stacked views toggled by visibility (not re-render) so the follow
+  // checkbox stays in the DOM for submitGuest to read: the chooser (Nostr /
+  // Guest) and the guest-name QWERTY keyboard. setupOverlayArrowNav filters to
+  // VISIBLE buttons, so the pad only ever navigates the showing view.
+  const chooser = el('div', { parent: overlay });
+  chooser.style.cssText = 'display:flex;flex-direction:column;align-items:center;width:100%;';
+  const nameView = el('div', { parent: overlay });
+  nameView.style.cssText = 'display:none;flex-direction:column;align-items:center;width:100%;';
 
-  const sub = el('p', { parent: overlay, text: opts?.sub ?? 'Sign in with Nostr to take your name, your zaps, and your replays everywhere — or play as a guest and we\'ll create a local identity for you.' });
+  el('h2', { parent: chooser, text: opts?.heading ?? 'WHO ARE YOU?' });
+
+  const sub = el('p', { parent: chooser, text: opts?.sub ?? 'Sign in with Nostr to take your name, your zaps, and your replays everywhere — or play as a guest and we\'ll create a local identity for you.' });
   sub.style.cssText = 'font-size:0.85rem;color:rgba(220,210,255,0.7);margin:6px auto 18px;max-width:560px;text-align:center;line-height:1.5;';
 
   // Option 1 — sign in with Nostr (existing Signet flow). The
   // SignInWithNostr button is the "advanced" path: NIP-07 extension,
   // NIP-46 bunker, or the SDK's QR-over-relay flow. We hand off to
-  // auth.signIn() which manages the modal.
-  const signInBtn = el('button', { className: 'menu-btn', parent: overlay, text: '⚡ SIGN IN WITH NOSTR' }) as HTMLButtonElement;
+  // auth.signIn() which manages the modal. Auto-highlighted (focused) below so
+  // a booth pad lands here first; cursor-down reaches PLAY AS GUEST.
+  const signInBtn = el('button', { className: 'menu-btn', parent: chooser, text: '⚡ SIGN IN WITH NOSTR' }) as HTMLButtonElement;
   signInBtn.style.cssText += 'font-size:1rem;padding:12px 32px;letter-spacing:0.18em;margin:6px auto;display:block;min-width:280px;';
-  const signInStatus = el('p', { parent: overlay });
+  const signInStatus = el('p', { parent: chooser });
   signInStatus.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.85);min-height:1em;margin:0 0 12px;letter-spacing:0.04em;text-align:center;';
   let signing = false;
   signInBtn.addEventListener('click', () => {
@@ -2406,20 +2551,34 @@ export function renderAuth(state: GameState, onDone: () => void, opts?: { onReso
   });
 
   // Visual separator between the two paths.
-  const sep = el('div', { parent: overlay, text: '— OR —' });
+  const sep = el('div', { parent: chooser, text: '— OR —' });
   sep.style.cssText = 'font-family:monospace;color:rgba(220,210,255,0.4);letter-spacing:0.3em;margin:14px 0;text-align:center;';
 
-  // Option 2 — guest. Arcade name picker + opt-out follow checkbox.
-  // The picker is the same renderArcadeName the title's session
-  // panel uses, so d-pad / touch / kb parity is automatic.
-  el('p', { parent: overlay, text: '🚀 PLAY AS GUEST' }).style.cssText = 'font-size:1rem;letter-spacing:0.18em;color:#8cffb4;margin:0 0 8px;text-align:center;';
+  // Option 2 — guest. A button (cursor-down from Nostr) that opens the QWERTY
+  // name keyboard, then mints a fresh local identity.
+  const guestBtn = el('button', { className: 'menu-btn', parent: chooser, text: '🚀 PLAY AS GUEST' }) as HTMLButtonElement;
+  guestBtn.style.cssText += 'font-size:1rem;padding:12px 32px;letter-spacing:0.18em;margin:6px auto;display:block;min-width:280px;background:rgba(88,255,88,0.12);border-color:#58ff58;color:#8cffb4;';
 
-  const guestStatus = el('p', { parent: overlay });
+  const guestStatus = el('p', { parent: chooser });
   guestStatus.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.85);min-height:1em;margin:0;letter-spacing:0.04em;text-align:center;';
 
   let creating = false;
   const submitGuest = (raw: string): void => {
     if (creating) return;
+    // Easter egg: the sacred number (600 billion) typed as a name drops into
+    // 600bn Sanctum mode. Reload with ?flavour=600bn appended (kept alongside
+    // any ?p1/?fullfx booth params), since getFlavour() is cached + branches the
+    // whole boot path — a query reload is the clean way in. Exiting the arcade
+    // tile re-launches the AppImage at its param-less boot query → back to main.
+    if (raw.replace(/[\s,]/g, '') === '600000000000') {
+      try { void audio.unlockAudio(); } catch { /* ignore */ }
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.set('flavour', '600bn');
+        window.location.href = url.toString();
+      } catch { /* ignore */ }
+      return;
+    }
     creating = true;
     guestStatus.textContent = '';
     try { void audio.unlockAudio(); } catch { /* ignore */ }
@@ -2440,25 +2599,17 @@ export function renderAuth(state: GameState, onDone: () => void, opts?: { onReso
         guestStatus.textContent = `Couldn't create local identity: ${err instanceof Error ? err.message : String(err)}`;
         guestStatus.style.color = '#ff8a3a';
         creating = false;
+        // Surface the error on the chooser, where guestStatus lives.
+        chooser.style.display = 'flex';
+        nameView.style.display = 'none';
       }
     })();
   };
 
-  const picker = renderArcadeName(overlay, {
-    maxLen: 25,
-    onSubmit: (name) => submitGuest(name),
-  });
-  // Expose the in-progress name accessor in case a future PLAY-anywhere
-  // shortcut on this screen wants to read it (matches the title-screen
-  // pattern).
-  titleNamePickerGetName = picker.getCurrentName;
-
   // Opt-out follow checkbox. Pre-checked so the default path publishes
   // a kind 3 contact list following the Pallasite game npub when the
   // guest identity is first created — disclosure is the point.
-  // The actual publish happens in the kind-0 / kind-3 wiring (task #123);
-  // this UI element reads its state at submit time.
-  const followRow = el('label', { parent: overlay });
+  const followRow = el('label', { parent: chooser });
   followRow.style.cssText = 'display:flex;align-items:center;justify-content:center;gap:8px;font-size:0.78rem;color:rgba(220,210,255,0.7);margin:6px auto 0;cursor:pointer;letter-spacing:0.04em;max-width:480px;';
   const followCheck = el('input', { parent: followRow }) as HTMLInputElement;
   followCheck.type = 'checkbox';
@@ -2468,10 +2619,37 @@ export function renderAuth(state: GameState, onDone: () => void, opts?: { onReso
   el('span', { parent: followRow, text: 'Follow Pallasite on Nostr for daily seeds + run highlights' });
 
   // Back to attract.
-  const backRow = el('div', { className: 'menu-row', parent: overlay });
+  const backRow = el('div', { className: 'menu-row', parent: chooser });
   const backBtn = el('button', { className: 'menu-btn secondary', parent: backRow, text: '◀ BACK' }) as HTMLButtonElement;
   backBtn.style.cssText += 'font-size:0.78rem;padding:6px 18px;letter-spacing:0.16em;';
   backBtn.addEventListener('click', () => renderAttract(state));
+
+  // Guest → name keyboard. Built once on first open; revealed by toggling
+  // visibility so the follow checkbox above stays readable at submit time.
+  let qwertyBuilt = false;
+  const showNameView = (): void => {
+    void audio.unlockAudio();
+    chooser.style.display = 'none';
+    nameView.style.display = 'flex';
+    if (!qwertyBuilt) {
+      qwertyBuilt = true;
+      el('h2', { parent: nameView, text: 'ENTER YOUR NAME' });
+      const q = renderQwertyName(nameView, {
+        maxLen: 25,
+        onSubmit: (name) => submitGuest(name),
+        onBack: () => { nameView.style.display = 'none'; chooser.style.display = 'flex'; setTimeout(() => tryFocusVisible(guestBtn), 0); },
+      });
+      // Expose the in-progress name accessor (matches the title-screen pattern).
+      titleNamePickerGetName = q.getCurrentName;
+    }
+    // Focus the first key so a booth pad can start walking the grid immediately.
+    setTimeout(() => { const k = nameView.querySelector('button'); if (k) tryFocusVisible(k as HTMLButtonElement); }, 0);
+  };
+  guestBtn.addEventListener('click', showNameView);
+
+  // Auto-highlight SIGN IN WITH NOSTR so it reads as the default; cursor-down
+  // lands on PLAY AS GUEST.
+  setTimeout(() => tryFocusVisible(signInBtn), 0);
 }
 
 /**
@@ -9301,8 +9479,15 @@ export function renderPause(state?: GameState): void {
     });
   }
 
-  const hint = el('div', { className: 'kbhint', parent: root });
-  hint.innerHTML = '<kbd>P</kbd> resume &nbsp;·&nbsp; <kbd>ESC</kbd> resume &nbsp;·&nbsp; <kbd>M</kbd> mute';
+  // Booth walk-ups are on pads, not a keyboard — show the pad control legend
+  // here too so a paused player can re-check the mapping. Desktop keeps the
+  // keyboard hint strip.
+  if (boothKiosk) {
+    renderBoothControlsLegend(overlay);
+  } else {
+    const hint = el('div', { className: 'kbhint', parent: root });
+    hint.innerHTML = '<kbd>P</kbd> resume &nbsp;·&nbsp; <kbd>ESC</kbd> resume &nbsp;·&nbsp; <kbd>M</kbd> mute';
+  }
 }
 
 // ── How to Play overlay ──────────────────────────────────────────────────────
@@ -10821,7 +11006,88 @@ function renderGameOverRecap(state: GameState): void {
     renderDeathmatchGameOver(state);
     return;
   }
+  // Booth kiosk: a walk-up wants three obvious choices, not the full online
+  // recap (share clip/card, leaderboard, endorse, honours). Scores are already
+  // published by renderGameOver above, so this is purely the visual recap.
+  if (boothKiosk) {
+    renderBoothGameOver(state);
+    return;
+  }
   renderRunCredits(state, { headerText: 'GAME OVER' });
+}
+
+/** Stripped booth game-over — score recap + exactly three walk-up actions:
+ *  PLAY AGAIN (re-run, preserving solo / 2-player), DONATE (zap QR), and LOGOUT
+ *  (sign out → the join lobby for the next walk-up). */
+function renderBoothGameOver(state: GameState): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+  document.body.dataset.surface = 'event';
+
+  el('h2', { parent: overlay, text: 'GAME OVER' });
+
+  const twoPlayer = state.players.length >= 2;
+  if (twoPlayer) {
+    renderVersusBanner(overlay, state);
+  } else {
+    if (state.session) {
+      const idRow = el('div', { parent: overlay });
+      idRow.style.cssText = 'display:flex;justify-content:center;margin:6px 0 4px;';
+      renderIdentityChip(idRow, state.session.pubkey, state.session.displayName ?? '', 'PLAYER 1', PLAYER_COLOURS[0]);
+    }
+    const stat = el('p', { parent: overlay, text: `${state.players[0].score.toLocaleString()} · WAVE ${state.wave}` });
+    stat.style.cssText = 'font-size:1.7rem;letter-spacing:0.06em;color:var(--hud-yellow);text-shadow:0 0 10px rgba(255,216,74,0.45);margin:8px 0 2px;';
+    if (state.players[0].sats > 0) {
+      const sats = el('p', { parent: overlay, text: `${state.players[0].sats} sats earned` });
+      sats.style.cssText = 'font:0.88rem ui-monospace,monospace;color:rgba(255,216,74,0.78);letter-spacing:0.1em;margin:0 0 4px;';
+    }
+  }
+
+  const row = el('div', { className: 'menu-row', parent: overlay });
+  const again = el('button', { className: 'menu-btn', parent: row, text: '▶ PLAY AGAIN' }) as HTMLButtonElement;
+  onTap(again, () => {
+    void audio.unlockAudio();
+    // Replay with the same crew: a 2-up run goes back through the couch start
+    // (keeps both name chips); solo uses the standard start (which clears any
+    // leftover couch routing).
+    if (twoPlayer) startCouchInPlace();
+    else onStartCb?.();
+  });
+  setTimeout(() => tryFocusVisible(again), 0);
+
+  const donate = el('button', { className: 'menu-btn secondary', parent: row, text: '⚡ DONATE' });
+  onTap(donate, () => renderBoothDonate(state));
+
+  const logout = el('button', { className: 'menu-btn secondary', parent: row, text: 'LOGOUT' });
+  onTap(logout, () => { void boothLogout(state); });
+
+  renderBoothControlsLegend(overlay);
+}
+
+/** DONATE sub-screen — a big zap QR with a way back. Kept separate so the
+ *  game-over stays to three buttons. */
+function renderBoothDonate(state: GameState): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+  document.body.dataset.surface = 'event';
+  el('h2', { parent: overlay, text: 'ZAP US ⚡' });
+  renderZapUsQR(overlay, state, { caption: 'Scan to send sats — cheers!', size: 220 });
+  const row = el('div', { className: 'menu-row', parent: overlay });
+  const back = el('button', { className: 'menu-btn', parent: row, text: 'BACK' });
+  onTap(back, () => renderBoothGameOver(state));
+  setTimeout(() => tryFocusVisible(back), 0);
+}
+
+/** LOGOUT from the booth game-over — clears the run, signs the pilot out, and
+ *  drops back to the join lobby so the next walk-up starts clean. */
+async function boothLogout(state: GameState): Promise<void> {
+  clearEntitiesForTitle(state);
+  state.phase = 'title';
+  // signOutAndReturnToAttract → renderAttract → renderBoothLobby (boothKiosk),
+  // which also clears the 2nd identity, pad bindings, and couch routing.
+  await signOutAndReturnToAttract(state);
 }
 
 function deathmatchRows(state: GameState): Array<{ slot: number; kills: number; deaths: number; streak: number; score: number; alive: boolean }> {

@@ -1,6 +1,6 @@
 {
   "name": "pallasite-desktop",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "description": "Electron / AppImage wrapper for Pallasite — bundles the built game + the controller-ws broker; the Lightning faucet stays remote.",
