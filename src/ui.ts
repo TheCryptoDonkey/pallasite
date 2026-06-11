@@ -2565,16 +2565,24 @@ export function renderAuth(state: GameState, onDone: () => void, opts?: { onReso
   let creating = false;
   const submitGuest = (raw: string): void => {
     if (creating) return;
-    // Easter egg: the sacred number (600 billion) typed as a name drops into
-    // 600bn Sanctum mode. Reload with ?flavour=600bn appended (kept alongside
-    // any ?p1/?fullfx booth params), since getFlavour() is cached + branches the
-    // whole boot path — a query reload is the clean way in. Exiting the arcade
-    // tile re-launches the AppImage at its param-less boot query → back to main.
-    if (raw.replace(/[\s,]/g, '') === '600000000000') {
+    // Easter egg: "600B" (or the full 600,000,000,000) typed as a name drops
+    // into 600bn Sanctum mode. getFlavour() is cached + branches the whole boot
+    // path, so a query reload is the clean way in.
+    const cheatNorm = raw.replace(/[\s,]/g, '').toUpperCase();
+    if (cheatNorm === '600B' || cheatNorm === '600000000000') {
       try { void audio.unlockAudio(); } catch { /* ignore */ }
       try {
         const url = new URL(window.location.href);
         url.searchParams.set('flavour', '600bn');
+        // Solo Sanctum: drop the booth join-wizard / couch topology. ?p1 gates
+        // run-start on the press-Ⓐ wizard, which the 600bn attract bypasses —
+        // keeping it made the booth loop back to the attract instead of starting.
+        // Dropping it boots the proven solo 600bn flow (pad 0 → the lone ship);
+        // ?fullfx is preserved. Exiting via the arcade re-launches the AppImage
+        // at its ?p1 boot query → back to the booth.
+        url.searchParams.delete('p1');
+        url.searchParams.delete('p2');
+        url.searchParams.delete('couch');
         window.location.href = url.toString();
       } catch { /* ignore */ }
       return;
