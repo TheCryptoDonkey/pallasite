@@ -135,6 +135,10 @@ async function createWindow() {
     root: dist,
     faucetOrigin: CONFIG.faucetOrigin,
     brokerUrl: CONFIG.brokerUrl,
+    // Booth variant = paid kiosk: turns on pay-to-play + hides all sat-payout
+    // UI in the page (window.__PALLASITE_BOOTH__). Never set on the public
+    // download, so it can't leak to home players.
+    booth: CONFIG.variant === 'booth',
     host: '127.0.0.1',
     port: HTTP_PORT,
   });

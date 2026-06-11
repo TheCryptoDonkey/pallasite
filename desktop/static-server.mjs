@@ -90,7 +90,7 @@ function cacheHeadersFor(pathname) {
   return { 'cache-control': 'no-cache' };
 }
 
-async function serveFile(res, filePath, pathname, faucetOrigin, brokerUrl) {
+async function serveFile(res, filePath, pathname, faucetOrigin, brokerUrl, booth = false) {
   const ext = path.extname(filePath).toLowerCase();
 
   // Inject runtime config into the SPA shell. The page is served from
@@ -98,11 +98,16 @@ async function serveFile(res, filePath, pathname, faucetOrigin, brokerUrl) {
   // to (else it signs NIP-98 for localhost → 401 url_mismatch, and targets a
   // non-existent local broker for multiplayer). See apiOrigin() /
   // defaultBrokerWsUrl() in the client.
-  if (path.basename(filePath) === 'index.html' && (faucetOrigin || brokerUrl)) {
+  //
+  // __PALLASITE_BOOTH__ marks the paid booth kiosk: the page turns on
+  // pay-to-play and hides every sat-payout surface. Only ever injected by the
+  // booth variant, so the public download is unaffected.
+  if (path.basename(filePath) === 'index.html' && (faucetOrigin || brokerUrl || booth)) {
     let html = await fs.readFile(filePath, 'utf8');
     const parts = [];
     if (faucetOrigin) parts.push(`window.__PALLASITE_API_ORIGIN__=${JSON.stringify(faucetOrigin)}`);
     if (brokerUrl) parts.push(`window.__PALLASITE_BROKER_URL__=${JSON.stringify(brokerUrl)}`);
+    if (booth) parts.push(`window.__PALLASITE_BOOTH__=true`);
     const tag = `<script>${parts.join(';')}</script>`;
     html = html.includes('</head>') ? html.replace('</head>', `${tag}</head>`) : tag + html;
     res.writeHead(200, {
@@ -131,7 +136,7 @@ async function serveFile(res, filePath, pathname, faucetOrigin, brokerUrl) {
  * @param {number} [opts.port]        port (default 0 = ephemeral)
  * @returns {Promise<{server: import('node:http').Server, port: number, url: string}>}
  */
-export function startStaticServer({ root, faucetOrigin, brokerUrl = null, host = '127.0.0.1', port = 0 }) {
+export function startStaticServer({ root, faucetOrigin, brokerUrl = null, booth = false, host = '127.0.0.1', port = 0 }) {
   const indexPath = path.join(root, 'index.html');
 
   const server = http.createServer(async (req, res) => {
@@ -161,9 +166,9 @@ export function startStaticServer({ root, faucetOrigin, brokerUrl = null, host =
       try {
         const stat = await fs.stat(filePath);
         if (stat.isDirectory()) {
-          await serveFile(res, path.join(filePath, 'index.html'), pathname, faucetOrigin, brokerUrl);
+          await serveFile(res, path.join(filePath, 'index.html'), pathname, faucetOrigin, brokerUrl, booth);
         } else {
-          await serveFile(res, filePath, pathname, faucetOrigin, brokerUrl);
+          await serveFile(res, filePath, pathname, faucetOrigin, brokerUrl, booth);
         }
         return;
       } catch {
@@ -175,7 +180,7 @@ export function startStaticServer({ root, faucetOrigin, brokerUrl = null, host =
           res.end('404 Not Found');
           return;
         }
-        await serveFile(res, indexPath, '/index.html', faucetOrigin, brokerUrl);
+        await serveFile(res, indexPath, '/index.html', faucetOrigin, brokerUrl, booth);
         return;
       }
     } catch (err) {
