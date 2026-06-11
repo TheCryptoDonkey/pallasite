@@ -1169,7 +1169,7 @@ function renderDownload(onBack: () => void): void {
     if (d.ua.test(ua)) { a.style.borderColor = 'rgba(140,255,180,0.6)'; a.style.color = '#8cffb4'; }
   }
 
-  const note = el('p', { parent: overlay, text: 'Desktop builds are unsigned: on macOS right-click → Open the first time; on Windows click “More info → Run anyway”.' });
+  const note = el('p', { parent: overlay, text: 'Desktop builds are unsigned. macOS: right-click → Open the first time (if it says “damaged”, run  xattr -cr /Applications/Pallasite.app  in Terminal once). Windows: “More info → Run anyway”.' });
   note.style.cssText = 'font-size:0.7rem;color:rgba(180,140,255,0.5);letter-spacing:0.03em;max-width:480px;text-align:center;line-height:1.5;margin:8px 0 0;';
 
   const back = el('button', { className: 'menu-btn secondary', parent: overlay, text: '◀ BACK' });

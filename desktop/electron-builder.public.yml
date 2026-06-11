@@ -6,6 +6,10 @@ appId: app.pallasite.game
 productName: Pallasite
 copyright: © Pallasite
 
+# Ad-hoc sign the macOS .app so Gatekeeper shows the dismissable "unidentified
+# developer" prompt instead of "damaged and can't be opened" (see the hook).
+afterPack: scripts/adhoc-sign.cjs
+
 directories:
   output: out-public
   buildResources: build
