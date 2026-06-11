@@ -99,13 +99,20 @@ async function passBoothGate(page: Page): Promise<void> {
   await page.click('button:has-text("TAP TO START")');
 }
 
-/** On a "PLAYER n — SIGN IN" screen: opt out of the relay follow, then submit
- *  the arcade name picker (empty → "Anonymous") to create a local guest. */
+/** On a "PLAYER n — SIGN IN" screen: opt out of the relay follow, open the
+ *  guest QWERTY keyboard (PLAY AS GUEST), then submit it empty (→ "Anonymous")
+ *  to create a local guest. */
 async function createGuest(page: Page): Promise<void> {
+  // Opt out of the relay-follow checkbox (lives on the chooser view).
   await page.evaluate(() => {
     const follow = document.querySelector('input[data-follow-pallasite]') as HTMLInputElement | null;
     if (follow?.checked) follow.click();
-    const done = Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'DONE');
+  });
+  // Reveal the QWERTY name keyboard, then submit empty via its DONE key.
+  await clickByText(page, 'PLAY AS GUEST');
+  await wait(60);
+  await page.evaluate(() => {
+    const done = Array.from(document.querySelectorAll('button')).find((b) => (b.textContent ?? '').includes('DONE'));
     (done as HTMLButtonElement | undefined)?.click();
   });
 }

@@ -259,7 +259,8 @@ let applyTraceCount = 0;
 /** True when ?couch=1 is present — enables two-player local co-op. Also flipped
  *  at runtime by enableCouchInPlace() for the booth dual-login start (which
  *  begins couch without a reload so both signed-in identities survive). */
-let couchMode = new URLSearchParams(window.location.search).has('couch');
+const urlCouchMode = new URLSearchParams(window.location.search).has('couch');
+let couchMode = urlCouchMode;
 
 /** Booth contexts (couch on a TV, or a ?p1/?p2 kiosk / linked booth) are
  *  walk-up — force the pickup-and-go pad scheme regardless of the saved
@@ -309,6 +310,18 @@ function enableCouchInPlace(): void {
   couchMode = true;
   localPilotSlots = [0, 1];
   secondLocalSlot = 1;
+}
+
+/** Undo enableCouchInPlace, restoring the URL-derived default. The booth
+ *  press-Ⓐ wizard starts a 2-up run in place (couchMode=true); without this,
+ *  the NEXT walk-up's solo run still reports requestedStartPlayers()===2, so it
+ *  launches a 2-player game stuck in the shared-screen retro letterbox — "1p
+ *  doesn't work full screen". Called from the solo start path. No-op on a
+ *  dedicated ?couch booth, which stays couch. */
+function disableCouchInPlace(): void {
+  couchMode = urlCouchMode;
+  localPilotSlots = couchMode ? [0, 1] : localOwnedSlots;
+  secondLocalSlot = localPilotSlots.length > 1 ? localPilotSlots[1] : -1;
 }
 const mpMode = !!(mpUrl && mpSession && mpSlotValid);
 // Spectator mode (M5). `?spectate=<session>&peer=<broker-url>` opens a
@@ -1390,6 +1403,9 @@ function scheduleMeshWarmupAfterStart(): void {
 
 bindActions({
   onStart: () => {
+    // Solo start: clear any couch routing a previous 2-up wizard run left on,
+    // so a single walk-up gets a 1-player run at full-viewport modern.
+    disableCouchInPlace();
     void startRunFromAction();
   },
   onStartCouch: () => {
@@ -2518,6 +2534,11 @@ function setupDiagHud(): void {
 
 async function boot(): Promise<void> {
   setupDiagHud();   // opt-in ?diag=1 on-screen perf/music readout
+  // Booth walk-ups should never hit a wall — default every kiosk run to EASY.
+  // Seeded once at boot (not forced per-run) so the hidden operator settings
+  // path can still bump it mid-session; the next reboot resets to easy. Covers
+  // every booth variant (?p1/?p2 join wizard + ?couch) via boothPickupAndGo.
+  if (boothPickupAndGo) setStoredDifficulty('easy');
   // Lock in stored difficulty as the default for any auto-launched run
   lockInDifficulty(getStoredDifficulty());
   // Mirror the active display mode to a body data-attr so CSS can react.
@@ -2631,11 +2652,16 @@ async function boot(): Promise<void> {
         overlay3d.style.width = vw + 'px';
         overlay3d.style.height = vh + 'px';
       }
-      // Local couch mode shares one screen, so keep the full world visible.
-      // Remote peer clients each have their own local slot/camera; forcing
-      // them into the shared-screen 16:9 strip in portrait makes the game feel
-      // flattened and can make the two views look incorrectly out of sync.
-      if (couchMode && state.players.length >= 2 && !deathmatchFollow) {
+      // Couch 2-player shares one screen. Modern's contain transform fits the
+      // whole 16:9 world into the viewport, so on a landscape display (the
+      // booth 4K TV) both ships stay visible edge-to-edge — keep modern. Only
+      // the FOLLOW camera tracks a single ship (portrait, or DEFENDER's
+      // side-scroll) and would lose the second pilot off-screen; fall through
+      // to retro's full-world letterbox just for that case. deathmatchFollow is
+      // its own per-slot camera, excluded here. Without the `follow` guard,
+      // couch on the landscape TV collapsed to the tiny centred 1280×720 retro
+      // box instead of filling the screen.
+      if (couchMode && state.players.length >= 2 && follow && !deathmatchFollow) {
         // Fall through to retro branch below.
       } else {
         applyDisplayMode('modern');
