@@ -852,6 +852,65 @@ export async function pollLnurlWithdrawStatus(k1: string): Promise<LnurlWithdraw
   return data as LnurlWithdrawStatus;
 }
 
+// ── /api/play — booth pay-to-play ──────────────────────────────────────────
+// Mirror of the LNURL-withdraw poll, but INCOMING: the booth charges a fixed
+// entry fee. POST mints a bolt11 invoice (amount fixed server-side); the client
+// renders it as a QR and polls status until phoenixd reports it settled. No
+// auth — minting only lets a player pay US, and the poll is useless without the
+// 64-hex payment hash. The fee is plain revenue (no balance credited).
+
+export type PlayInvoiceResult =
+  | {
+      ok: true;
+      payment_hash: string;
+      bolt11: string;
+      amount_sats: number;
+      expires_at: number; // unix ms
+    }
+  | { ok: false; error: string; detail?: string };
+
+/** POST /api/play/invoice — mint a fixed-amount play invoice. */
+export async function requestPlayInvoice(): Promise<PlayInvoiceResult> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/play/invoice`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+      cache: 'no-store',
+    });
+  } catch (err) {
+    return { ok: false, error: 'network_error', detail: err instanceof Error ? err.message : String(err) };
+  }
+  if (res.status === 404) return { ok: false, error: 'not_deployed' };
+  let data: unknown;
+  try { data = await res.json(); } catch { return { ok: false, error: 'bad_response', detail: `HTTP ${res.status}` }; }
+  if (typeof data !== 'object' || data === null) return { ok: false, error: 'bad_response' };
+  return data as PlayInvoiceResult;
+}
+
+export type PlayStatusResult =
+  | { ok: true; paid: boolean; amount_sats: number; received_sats: number }
+  | { ok: false; error: string; detail?: string };
+
+/** GET /api/play/:hash/status — poll phoenixd settlement for a play invoice. */
+export async function pollPlayStatus(paymentHash: string): Promise<PlayStatusResult> {
+  if (!/^[0-9a-f]{64}$/i.test(paymentHash)) {
+    return { ok: false, error: 'invalid_hash' };
+  }
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/play/${paymentHash.toLowerCase()}/status`, { cache: 'no-store' });
+  } catch (err) {
+    return { ok: false, error: 'network_error', detail: err instanceof Error ? err.message : String(err) };
+  }
+  if (res.status === 404) return { ok: false, error: 'not_deployed' };
+  let data: unknown;
+  try { data = await res.json(); } catch { return { ok: false, error: 'bad_response', detail: `HTTP ${res.status}` }; }
+  if (typeof data !== 'object' || data === null) return { ok: false, error: 'bad_response' };
+  return data as PlayStatusResult;
+}
+
 export type CheckinResult =
   | {
       ok: true;
