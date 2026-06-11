@@ -1804,6 +1804,17 @@ export function renderBoothLobby(state: GameState, booth: number): void {
 /** The press-Ⓐ-to-join wizard proper, split out of renderBoothLobby so the
  *  one-time audio-unlock gate can run ahead of it. */
 function startBoothJoinWizard(state: GameState, booth: number): void {
+  // Booth music revival. The booth replaces the title screen with this lobby and
+  // loops back here after every run — but a run ends in phase 'gameover', whose
+  // resolved track is the one-shot `hull-breached` sting (loop:false). If we
+  // re-enter the idle lobby still in that phase, music resolves to a sting that
+  // already finished → silence ("not playing again"). Snap the phase back to
+  // 'title' (the looping idle pool) and invalidate the track memo so the game
+  // loop's next musicSetTrackForState tick crossfades the idle bed back in.
+  state.phase = 'title';
+  try { void audio.unlockAudio(); } catch { /* best-effort: already unlocked */ }
+  musicForceRefresh();
+
   const w: BoothWizard = {
     active: true, booth, mode: 'join', activePad: null,
     nav: { menuDir: null, menuA: false, menuB: false },
@@ -10677,29 +10688,52 @@ function publishSoloScoreForRun(state: GameState): void {
     // nip05 only when signing as the real session — it must verify against the
     // p-tag pubkey, and the guest fallback publishes under a different key.
     const nip05 = signer ? state.profile?.nip05 : undefined;
+    let usedGuest = false;
     if (!signer) {
       try {
         signer = await loadOrCreateGuest({ name: playerName, followPallasite: false });
+        usedGuest = true;
       } catch {
         return;
       }
     }
-    const scoreResult = await submitSoloScore(signer, {
+    const buildInput = (withNip05: boolean): import('./faucet.js').SoloScoreInput => ({
       score: state.players[0].score,
       wave: state.wave,
       duration_ms: Math.max(0, Math.floor(state.runTimeMs)),
       run_id: runId,
       mode: soloMode,
       player_name: playerName,
-      ...(nip05 ? { nip05 } : {}),
+      ...(withNip05 && nip05 ? { nip05 } : {}),
       ...(getFlavour() === '600bn' ? { room: '600bn' as const } : {}),
       cheated: state.cheatedThisRun,
-    }).catch((e) => ({ ok: false as const, error: 'threw', detail: e instanceof Error ? e.message : String(e) }));
+    });
+    let scoreResult = await submitSoloScore(signer, buildInput(!usedGuest))
+      .catch((e) => ({ ok: false as const, error: 'threw', detail: e instanceof Error ? e.message : String(e) }));
+    // Resilient fallback: a real session whose signer WEDGES (dead/slow bunker,
+    // a burner Signet that advertised canSignEvents but can't actually sign, a
+    // NIP-46 timeout) fails here — and without this retry the score is lost
+    // entirely. Re-publish under a local guest key so the run still lands on the
+    // board under the player's name. Guest publish drops nip05 (it has to verify
+    // against the p-tag pubkey, which is now the guest's).
+    if (!scoreResult.ok && !usedGuest && /sign_failed|no_signer|signer|threw|timeout/i.test(scoreResult.error)) {
+      try {
+        const guest = await loadOrCreateGuest({ name: playerName, followPallasite: false });
+        const retry = await submitSoloScore(guest, buildInput(false))
+          .catch((e) => ({ ok: false as const, error: 'threw', detail: e instanceof Error ? e.message : String(e) }));
+        console.log('[solo-score] guest-fallback after ' + scoreResult.error + ' → ' + JSON.stringify(retry));
+        scoreResult = retry;
+        signer = guest;
+        usedGuest = true;
+      } catch {
+        /* keep the original failure for the diagnostic below */
+      }
+    }
     // Diagnostic: surfaces WHY a score did/didn't land (the result is otherwise
     // swallowed). On the booth this reaches /tmp/pallasite.log via the
     // main-process console bridge.
     console.log('[solo-score] result=' + JSON.stringify(scoreResult)
-      + ' canSign=' + (signer.signer?.capabilities?.canSignEvents === true)
+      + ' usedGuest=' + usedGuest
       + ' pk=' + (signer.pubkey ? signer.pubkey.slice(0, 12) : '?')
       + ' name=' + playerName);
   })();
