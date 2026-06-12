@@ -6336,6 +6336,13 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
     const meshShips = !holding && shipTier === 'mesh'
       ? state.players.map((pl) => meshVisible(pl.ship.pos.x, pl.ship.pos.y, pl.ship.radius + 80) ? pl.ship : null)
       : [];
+    // Per-slot identity tint so 2P couch / duel mesh ships read in their HUD
+    // chip colours (P1 green, P2 blue) — same gate as the 2D drawShip tint
+    // path (tintPlayers) so the look matches whichever renderer is active.
+    const tintMeshShips = state.players.length >= 2 && state.players.length <= 8 && state.phase !== 'title';
+    const meshShipTints = tintMeshShips
+      ? state.players.map((_, i) => PLAYER_COLOURS[i % PLAYER_COLOURS.length])
+      : undefined;
     // Mesh path now supports multi-ship: feed every player's ship by
     // slot. The overlay caches a mesh per slot so both ships render
     // with the full 3D look in duel / couch (was: slot 1 dropped out).
@@ -6344,6 +6351,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       ufos: meshUfos,
       powerups: meshPowerups,
       ships: meshShips,
+      shipTints: meshShipTints,
       elapsed: state.elapsed,
       dpr: renderMode.dpr,
       // Camera-adjusted transform so mesh-tier entities track the follow
