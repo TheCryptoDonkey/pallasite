@@ -216,6 +216,18 @@ function memFor(padIndex: number): PadMemory {
   return m;
 }
 
+// Drop a pad's frame-state the moment it unplugs, so a future pad that the
+// browser later re-enumerates under that same index starts clean (engaged
+// false, no stale held keys) rather than inheriting the gone pad's state. The
+// booth-binding reconnect-recovery in pollGamepads handles re-routing the live
+// slot to the pad's NEW index.
+if (typeof window !== 'undefined') {
+  window.addEventListener('gamepaddisconnected', (e) => {
+    const idx = (e as GamepadEvent).gamepad?.index;
+    if (typeof idx === 'number') memory.delete(idx);
+  });
+}
+
 function dispatchKey(code: string): void {
   window.dispatchEvent(new KeyboardEvent('keydown', { code, key: code, bubbles: true }));
   window.dispatchEvent(new KeyboardEvent('keyup', { code, key: code, bubbles: true }));
@@ -279,11 +291,37 @@ export function pollGamepads(state: GameState, routing: GamepadRouting): void {
   // the slot it joined as, so routing follows JOIN ORDER (first A → slot 0), not
   // the browser's pad-index order. Falls through to positional routing when unset.
   if (boothPadSlotBinding.length) {
-    for (const { slot, padIndex } of boothPadSlotBinding) {
-      if (slot < 0 || slot >= state.players.length) continue;
-      const pad = all[padIndex];
-      if (!pad || !pad.connected) continue;
-      applyPad(state, slot, pad, routing, memFor(pad.index));
+    // Indices currently claimed by a binding whose pad IS connected — so the
+    // reconnect-recovery below never steals a pad that's already driving its
+    // own slot.
+    const claimed = new Set<number>();
+    for (const { padIndex } of boothPadSlotBinding) {
+      const p = all[padIndex];
+      if (p && p.connected) claimed.add(padIndex);
+    }
+    for (const b of boothPadSlotBinding) {
+      if (b.slot < 0 || b.slot >= state.players.length) continue;
+      let pad = all[b.padIndex];
+      if (!pad || !pad.connected) {
+        // The pad this slot joined on vanished — nearly always a cheap booth
+        // controller that momentarily dropped USB and got re-enumerated under a
+        // NEW gamepad.index. Without recovery the slot freezes for the rest of
+        // the run (the live-booth symptom: "P1's stick stopped working partway
+        // through"). Adopt a connected pad that no live binding claims — but
+        // ONLY when there's exactly one such candidate, so an ambiguous multi-
+        // pad reshuffle never silently swaps two pilots' controllers. Rebind to
+        // its index so it sticks, and engage it now (a bound booth slot is
+        // pad-only — no keyboard player to protect, so skip the wiggle gate).
+        const candidates: Gamepad[] = [];
+        for (const p of all) if (p && p.connected && !claimed.has(p.index)) candidates.push(p);
+        if (candidates.length !== 1) continue;
+        const adopted = candidates[0];
+        b.padIndex = adopted.index;
+        claimed.add(adopted.index);
+        memFor(adopted.index).engaged = true;
+        pad = adopted;
+      }
+      applyPad(state, b.slot, pad, routing, memFor(pad.index));
     }
     return;
   }

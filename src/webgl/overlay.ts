@@ -71,6 +71,11 @@ interface OverlayHandle {
    *  expensive than holding 50KB of geometry). */
   shipMeshes: (THREE.Object3D | null)[];
   shipThrusts: (THREE.Mesh | null)[];
+  /** Per-slot identity tint the cached mesh was built with (null = the
+   *  default cyan hull). Tracked so a slot whose tint changes between runs
+   *  in the same page session — e.g. solo (untinted) → couch 2P (green/blue)
+   *  reusing this handle — rebuilds instead of keeping the stale colour. */
+  shipMeshTints: (string | null)[];
   /** Per-slot shield dome — built lazily on each slot's first
    *  shield-up frame. Faceted icosphere + edge wireframe parented
    *  under one group per slot so a single position.set() per frame
@@ -586,6 +591,7 @@ export function ensureWebGLOverlay(): Promise<OverlayHandle> {
       councilTextureCache: new Map(),
       shipMeshes: [],
       shipThrusts: [],
+      shipMeshTints: [],
       shieldMeshes: [],
       shieldSphereMats: [],
       shieldEdgeMats: [],
@@ -1685,8 +1691,23 @@ export function clearShipChunks(): void {
  *
  *  Returns the group + the thrust cone so callers can toggle the cone
  *  on/off based on the live ship.thrusting flag. */
-function buildShipMesh(): { group: THREE.Group; thrust: THREE.Mesh } {
+function buildShipMesh(tint?: string): { group: THREE.Group; thrust: THREE.Mesh } {
   const group = new THREE.Group();
+  // Per-player identity tint (2P couch / duel): re-hue each hull material
+  // onto the player's hue while KEEPING the piece's original lightness, so
+  // the depth shading (bright hull → dark pods) survives but P1 reads green
+  // and P2 reads blue — matching the HUD identity chips so players can tell
+  // which ship is theirs. Undefined tint (solo / title) leaves the stock
+  // cyan untouched. Orange engine-glow emissives and the thrust flame are
+  // left alone: they read as heat/exhaust, not identity.
+  const tintHSL = tint ? new THREE.Color(tint).getHSL({ h: 0, s: 0, l: 0 }) : null;
+  const reHue = (hex: number): number => {
+    if (!tintHSL) return hex;
+    const c = new THREE.Color(hex);
+    const hsl = c.getHSL({ h: 0, s: 0, l: 0 });
+    c.setHSL(tintHSL.h, tintHSL.s, hsl.l);
+    return c.getHex();
+  };
   // Beefed-up hull — slightly larger, deeper extrude for more
   // visible 3D form at the player ship's small on-screen size.
   const hullGeo = new THREE.ExtrudeGeometry(
@@ -1700,10 +1721,10 @@ function buildShipMesh(): { group: THREE.Group; thrust: THREE.Mesh } {
   );
   hullGeo.translate(0, 0, -2.5);
   const hullMat = new THREE.MeshPhongMaterial({
-    color: 0x9be7ff,
+    color: reHue(0x9be7ff),
     shininess: 80,
     specular: 0xffffff,
-    emissive: 0x4080a0,
+    emissive: reHue(0x4080a0),
     emissiveIntensity: 0.45,
   });
   const hullMesh = new THREE.Mesh(hullGeo, hullMat);
@@ -1714,10 +1735,10 @@ function buildShipMesh(): { group: THREE.Group; thrust: THREE.Mesh } {
   const cockpitGeo = new THREE.SphereGeometry(4.5, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2);
   cockpitGeo.rotateX(-Math.PI / 2);
   const cockpitMat = new THREE.MeshPhongMaterial({
-    color: 0xb8f0ff,
+    color: reHue(0xb8f0ff),
     shininess: 240,
     specular: 0xffffff,
-    emissive: 0x4080a0,
+    emissive: reHue(0x4080a0),
     emissiveIntensity: 0.5,
     transparent: true,
     opacity: 0.78,
@@ -1738,10 +1759,10 @@ function buildShipMesh(): { group: THREE.Group; thrust: THREE.Mesh } {
     depth: 1.4, bevelEnabled: true, bevelSize: 0.3, bevelThickness: 0.3, bevelSegments: 1,
   });
   const finMat = new THREE.MeshPhongMaterial({
-    color: 0x8ad4ff,
+    color: reHue(0x8ad4ff),
     shininess: 60,
     specular: 0xffffff,
-    emissive: 0x305070,
+    emissive: reHue(0x305070),
     emissiveIntensity: 0.4,
   });
   const finMesh = new THREE.Mesh(finGeo, finMat);
@@ -1759,10 +1780,10 @@ function buildShipMesh(): { group: THREE.Group; thrust: THREE.Mesh } {
     depth: 1.2, bevelEnabled: true, bevelSize: 0.3, bevelThickness: 0.3, bevelSegments: 1,
   });
   const wingMat = new THREE.MeshPhongMaterial({
-    color: 0x6db4dc,
+    color: reHue(0x6db4dc),
     shininess: 80,
     specular: 0xffffff,
-    emissive: 0x305070,
+    emissive: reHue(0x305070),
     emissiveIntensity: 0.35,
   });
   const wingL = new THREE.Mesh(wingGeo, wingMat);
@@ -1778,7 +1799,7 @@ function buildShipMesh(): { group: THREE.Group; thrust: THREE.Mesh } {
   const podGeo = new THREE.CylinderGeometry(2.2, 2.6, 8, 12);
   podGeo.rotateZ(Math.PI / 2);
   const podMat = new THREE.MeshPhongMaterial({
-    color: 0x4a7eb0,
+    color: reHue(0x4a7eb0),
     shininess: 100,
     specular: 0xffffff,
     emissive: 0xff8040,
@@ -1797,7 +1818,7 @@ function buildShipMesh(): { group: THREE.Group; thrust: THREE.Mesh } {
   barrelGeo.rotateZ(Math.PI / 2);
   barrelGeo.translate(19, 0, 0);
   const barrelMat = new THREE.MeshPhongMaterial({
-    color: 0x6080a0,
+    color: reHue(0x6080a0),
     shininess: 140,
     specular: 0xffffff,
     emissive: 0xff8040,
@@ -2102,6 +2123,11 @@ export function renderOverlay(opts: {
    *  mesh handles are kept stable across frames. Empty = no ships
    *  (e.g. during an intertitle hold). See WebGLOverlayCall jsdoc. */
   ships: ReadonlyArray<Ship | null | undefined>;
+  /** Per-slot identity tint (index == player slot, parallel to `ships`).
+   *  When set, the slot's ship mesh is re-hued onto that colour so 2P couch
+   *  / duel ships match their HUD chips (P1 green, P2 blue). Undefined entry
+   *  or absent array = stock cyan hull (solo). */
+  shipTints?: ReadonlyArray<string | undefined>;
   /** Sim clock (ms) — time base for the shield-dome expiry fade. */
   elapsed: number;
   dpr: number;
@@ -2431,15 +2457,30 @@ export function renderOverlay(opts: {
   for (let slot = 0; slot < opts.ships.length; slot++) {
     const ship = opts.ships[slot];
     if (ship && ship.alive) {
+      const tint = opts.shipTints?.[slot] ?? null;
       let group = handle.shipMeshes[slot] as THREE.Object3D | undefined;
       let thrust = handle.shipThrusts[slot] as THREE.Mesh | undefined;
-      if (!group) {
-        const built = buildShipMesh();
+      // (Re)build when there's no mesh yet, OR when this slot's identity tint
+      // changed since the cached mesh was built (the tint is baked into the
+      // materials, so a colour change needs a fresh group). Dispose the old
+      // group's geometry/materials first or rebuilds leak GPU memory.
+      if (!group || handle.shipMeshTints[slot] !== tint) {
+        if (group) {
+          scene.remove(group);
+          group.traverse((o) => {
+            const m = o as THREE.Mesh;
+            if (m.geometry) m.geometry.dispose();
+            const mat = m.material;
+            if (mat) (Array.isArray(mat) ? mat : [mat]).forEach((x) => x.dispose());
+          });
+        }
+        const built = buildShipMesh(tint ?? undefined);
         group = built.group;
         thrust = built.thrust;
         scene.add(group);
         handle.shipMeshes[slot] = group;
         handle.shipThrusts[slot] = thrust;
+        handle.shipMeshTints[slot] = tint;
       }
       group.visible = true;
       group.position.set(ship.pos.x, worldH - ship.pos.y, 0);

@@ -386,6 +386,11 @@ export interface WebGLOverlayCall {
    *  that disappears from this array gets its mesh hidden, and a new
    *  slot rebuilds. */
   ships: ReadonlyArray<Ship | null | undefined>;
+  /** Per-slot identity tint (index == player slot, parallel to `ships`). Set
+   *  in 2P couch / duel so each ship mesh is re-hued to its HUD chip colour
+   *  (P1 green, P2 blue) and players can tell which ship is theirs. Undefined
+   *  entry or absent array = stock cyan hull (solo / title). */
+  shipTints?: ReadonlyArray<string | undefined>;
   /** Sim clock (ms) for time-based overlay effects such as the shield
    *  dome's expiry fade. Wall-clock would mismatch the sim-clock deadlines
    *  the gameplay state now carries (B3 determinism). */
