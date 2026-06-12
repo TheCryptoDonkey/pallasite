@@ -1729,7 +1729,7 @@ const PAD_SCHEME_OPTS: ReadonlyArray<{ value: PadFlightMode; label: string; hint
   { value: 'classic',   label: 'CLASSIC',        hint: 'Arcade — d-pad turns, right trigger (or d-pad up) thrusts' },
 ];
 
-interface BoothPilot { padIndex: number; slot: number; session: SignetSession | null; }
+interface BoothPilot { padIndex: number; padId?: string; slot: number; session: SignetSession | null; }
 
 interface BoothWizard {
   active: boolean;
@@ -1914,7 +1914,7 @@ function pollBoothWizard(state: GameState, w: BoothWizard): void {
       if (!edge) { edge = { a: false, start: false }; w.joinEdge.set(pad.index, edge); }
       const a = padButtonDown(pad, 0);
       const start = padButtonDown(pad, 9);
-      if (a && !edge.a) onBoothJoinPress(state, w, pad.index);
+      if (a && !edge.a) onBoothJoinPress(state, w, pad.index, pad.id);
       if (start && !edge.start && w.pilots.length > 0) beginBoothSetup(state, w);
       edge.a = a; edge.start = start;
       // Operator settings cheat: ▼ ▶ ◀ ◀ Ⓨ on any pad opens Settings.
@@ -1929,11 +1929,13 @@ function pollBoothWizard(state: GameState, w: BoothWizard): void {
 
 /** Ⓐ on the join screen: an unjoined pad takes the next free slot; a pad that has
  *  already joined begins setup — so a lone pilot just taps Ⓐ twice to go solo. */
-function onBoothJoinPress(state: GameState, w: BoothWizard, padIndex: number): void {
+function onBoothJoinPress(state: GameState, w: BoothWizard, padIndex: number, padId?: string): void {
   if (w.pilots.some((p) => p.padIndex === padIndex)) { beginBoothSetup(state, w); return; }
   if (w.pilots.length >= 2) return;            // booth is two-up
   void audio.unlockAudio();
-  w.pilots.push({ padIndex, slot: w.pilots.length, session: null });
+  // Record the pad's identity too — routing resolves by it so a reconnect that
+  // shuffles gamepad.index can't hand this pilot's slot to a different pad.
+  w.pilots.push({ padIndex, padId, slot: w.pilots.length, session: null });
   renderBoothJoin(state, w.booth);
 }
 
@@ -2172,8 +2174,10 @@ function renderBoothSchemePick(state: GameState, w: BoothWizard, i: number): voi
 
 function startBoothRun(w: BoothWizard): void {
   const twoUp = w.pilots.length > 1;
-  // Bind each real pad (by gamepad.index) to its slot so join order = P1 / P2.
-  setBoothPadSlotBinding(w.pilots.filter((p) => p.padIndex >= 0).map((p) => ({ slot: p.slot, padIndex: p.padIndex })));
+  // Bind each real pad to its slot so join order = P1 / P2. Carry the pad's
+  // identity (gamepad.id) so routing follows the physical controller across any
+  // reconnect that reshuffles gamepad.index, not the bare index.
+  setBoothPadSlotBinding(w.pilots.filter((p) => p.padIndex >= 0).map((p) => ({ slot: p.slot, padIndex: p.padIndex, padId: p.padId })));
   stopBoothWizard();   // re-enable the in-game pad loop
   setStoredMode('campaign');
   setStoredDailyPref(false);
