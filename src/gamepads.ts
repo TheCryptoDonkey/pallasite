@@ -71,17 +71,21 @@ export function clearPadFlightModeBySlot(): void {
 }
 
 // ── Booth pad → slot binding (join order) ─────────────────────────────────────
-// The booth join wizard records which physical gamepad.index drives which game
-// slot (first pad to press A → slot 0). When set, pollGamepads routes by it so a
-// pilot's chosen scheme + ship colour follow the person, not the browser's pad
-// index. Empty everywhere else → positional couch/solo routing.
-let boothPadSlotBinding: Array<{ slot: number; padIndex: number }> = [];
+// The booth join wizard records which physical pad drives which game slot (first
+// pad to press A → slot 0) so a pilot's scheme + ship colour follow the person.
+// We capture the pad's IDENTITY (gamepad.id) alongside its index, because
+// gamepad.index is reassigned on any reconnect/USB blip — a slot bound to a bare
+// index can silently end up reading a DIFFERENT (often resting → constant-fire)
+// pad after a reshuffle. pollGamepads resolves by id, falling back to index only
+// when no id was recorded. Empty everywhere else → positional couch/solo routing.
+interface PadSlotBinding { slot: number; padIndex: number; padId?: string }
+let boothPadSlotBinding: PadSlotBinding[] = [];
 
-export function setBoothPadSlotBinding(binding: ReadonlyArray<{ slot: number; padIndex: number }>): void {
-  boothPadSlotBinding = binding.map((b) => ({ slot: b.slot, padIndex: b.padIndex }));
+export function setBoothPadSlotBinding(binding: ReadonlyArray<PadSlotBinding>): void {
+  boothPadSlotBinding = binding.map((b) => ({ slot: b.slot, padIndex: b.padIndex, padId: b.padId }));
 }
 
-export function getBoothPadSlotBinding(): ReadonlyArray<{ slot: number; padIndex: number }> {
+export function getBoothPadSlotBinding(): ReadonlyArray<PadSlotBinding> {
   return boothPadSlotBinding;
 }
 
@@ -287,42 +291,59 @@ export function pollGamepads(state: GameState, routing: GamepadRouting): void {
   const all = navigator.getGamepads();
   if (!all) return;
 
-  // Booth wizard binding: route each recorded physical pad (by gamepad.index) to
-  // the slot it joined as, so routing follows JOIN ORDER (first A → slot 0), not
-  // the browser's pad-index order. Falls through to positional routing when unset.
+  // Booth wizard binding: route each recorded physical pad to the slot it joined
+  // as, so routing follows JOIN ORDER (first A → slot 0), not the browser's pad-
+  // index order. Resolved by IDENTITY (gamepad.id), because gamepad.index is
+  // reassigned on any reconnect — a slot bound to a bare index can otherwise end
+  // up reading a DIFFERENT pad after a reshuffle (the live symptom: P1 "moved
+  // onto pad 2", read a resting pad on its old index → constant fire, couldn't
+  // steer). Falls through to positional routing when unset.
   if (boothPadSlotBinding.length) {
-    // Indices currently claimed by a binding whose pad IS connected — so the
-    // reconnect-recovery below never steals a pad that's already driving its
-    // own slot.
-    const claimed = new Set<number>();
-    for (const { padIndex } of boothPadSlotBinding) {
-      const p = all[padIndex];
-      if (p && p.connected) claimed.add(padIndex);
-    }
-    for (const b of boothPadSlotBinding) {
-      if (b.slot < 0 || b.slot >= state.players.length) continue;
-      let pad = all[b.padIndex];
-      if (!pad || !pad.connected) {
-        // The pad this slot joined on vanished — nearly always a cheap booth
-        // controller that momentarily dropped USB and got re-enumerated under a
-        // NEW gamepad.index. Without recovery the slot freezes for the rest of
-        // the run (the live-booth symptom: "P1's stick stopped working partway
-        // through"). Adopt a connected pad that no live binding claims — but
-        // ONLY when there's exactly one such candidate, so an ambiguous multi-
-        // pad reshuffle never silently swaps two pilots' controllers. Rebind to
-        // its index so it sticks, and engage it now (a bound booth slot is
-        // pad-only — no keyboard player to protect, so skip the wiggle gate).
-        const candidates: Gamepad[] = [];
-        for (const p of all) if (p && p.connected && !claimed.has(p.index)) candidates.push(p);
-        if (candidates.length !== 1) continue;
-        const adopted = candidates[0];
-        b.padIndex = adopted.index;
-        claimed.add(adopted.index);
-        memFor(adopted.index).engaged = true;
-        pad = adopted;
+    const used = new Set<number>();   // pad indices already assigned to a slot this frame
+    const resolved: Array<Gamepad | null> = boothPadSlotBinding.map(() => null);
+
+    // Pass 1 — trust the bound index only if it STILL holds the same pad (id
+    // matches, or no id was recorded so we can't tell). This is the unchanged
+    // happy path: stable indices route exactly as before.
+    boothPadSlotBinding.forEach((b, i) => {
+      const at = all[b.padIndex];
+      if (at && at.connected && !used.has(at.index) && (!b.padId || at.id === b.padId)) {
+        resolved[i] = at;
+        used.add(at.index);
       }
+    });
+    // Pass 2 — the pad moved index: find the connected pad with this binding's
+    // recorded id and follow it there. This is what rescues "P1 jumped to pad 2".
+    boothPadSlotBinding.forEach((b, i) => {
+      if (resolved[i] || !b.padId) return;
+      for (const p of all) {
+        if (p && p.connected && !used.has(p.index) && p.id === b.padId) { resolved[i] = p; used.add(p.index); break; }
+      }
+    });
+    // Pass 3 — still unresolved (pad truly gone, or no id to match on): adopt the
+    // single remaining unclaimed connected pad, but ONLY when exactly one exists,
+    // so an ambiguous multi-pad reshuffle never silently swaps two pilots.
+    boothPadSlotBinding.forEach((_b, i) => {
+      if (resolved[i]) return;
+      const candidates: Gamepad[] = [];
+      for (const p of all) if (p && p.connected && !used.has(p.index)) candidates.push(p);
+      if (candidates.length !== 1) return;
+      resolved[i] = candidates[0];
+      used.add(candidates[0].index);
+    });
+
+    boothPadSlotBinding.forEach((b, i) => {
+      const pad = resolved[i];
+      if (!pad) return;
+      if (b.slot < 0 || b.slot >= state.players.length) return;
+      // Re-pin the binding to the pad's current index + id so it sticks across
+      // frames; a bound booth slot is pad-only (no keyboard to protect), so wake
+      // it immediately rather than waiting for the engage-on-first-activity gate.
+      b.padIndex = pad.index;
+      if (!b.padId) b.padId = pad.id;
+      memFor(pad.index).engaged = true;
       applyPad(state, b.slot, pad, routing, memFor(pad.index));
-    }
+    });
     return;
   }
 
