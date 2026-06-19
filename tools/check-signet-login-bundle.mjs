@@ -16,26 +16,34 @@ function sha256(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
-const latest = execFileSync('npm', ['view', 'signet-login', 'version'], {
-  encoding: 'utf8',
-  stdio: ['ignore', 'pipe', 'pipe'],
-}).trim();
+const expectedBundle = process.env.SIGNET_LOGIN_EXPECTED_BUNDLE;
 
 const tmp = mkdtempSync(join(tmpdir(), 'signet-login-bundle-'));
 const failures = [];
 
 try {
-  const tarballName = execFileSync('npm', ['pack', `signet-login@${latest}`, '--pack-destination', tmp], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  }).trim().split('\n').pop();
+  let expectedPath = expectedBundle ? resolve(root, expectedBundle) : '';
+  let expectedLabel = expectedBundle ? 'the Signet Login candidate bundle' : '';
+  if (!expectedBundle) {
+    const latest = execFileSync('npm', ['view', 'signet-login', 'version'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
 
-  const tarballPath = join(tmp, basename(tarballName));
-  execFileSync('tar', ['-xzf', tarballPath, '-C', tmp], { stdio: ['ignore', 'ignore', 'pipe'] });
+    const tarballName = execFileSync('npm', ['pack', `signet-login@${latest}`, '--pack-destination', tmp], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim().split('\n').pop();
 
-  const expectedPath = join(tmp, 'package/dist/signet-login.iife.js');
+    const tarballPath = join(tmp, basename(tarballName));
+    execFileSync('tar', ['-xzf', tarballPath, '-C', tmp], { stdio: ['ignore', 'ignore', 'pipe'] });
+
+    expectedPath = join(tmp, 'package/dist/signet-login.iife.js');
+    expectedLabel = `the latest published release (${latest})`;
+  }
+
   if (!existsSync(expectedPath)) {
-    throw new Error(`published signet-login@${latest} did not contain dist/signet-login.iife.js`);
+    throw new Error(`${expectedLabel} did not contain dist/signet-login.iife.js`);
   }
 
   const expectedHash = sha256(expectedPath);
@@ -54,13 +62,13 @@ try {
   }
 
   if (failures.length > 0) {
-    console.error(`Vendored signet-login bundles must match the latest published release (${latest}).`);
+    console.error(`Vendored signet-login bundles must match ${expectedLabel}.`);
     for (const failure of failures) console.error(`- ${failure}`);
-    console.error(`Refresh with: npm pack signet-login@${latest}, extract dist/signet-login.iife.js, and replace the vendored bundle.`);
+    console.error('Refresh by copying dist/signet-login.iife.js from the expected Signet Login build.');
     process.exit(1);
   }
 
-  console.log(`Vendored signet-login bundles match ${latest}.`);
+  console.log(`Vendored signet-login bundles match ${expectedLabel}.`);
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }
