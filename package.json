@@ -10,6 +10,7 @@
     "build": "pnpm run sync-sdk && tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "check:signet-login": "node tools/check-signet-login-bundle.mjs public/signet-login.iife.js",
     "test": "tsx tools/run-harnesses.ts",
     "test:e2e": "tsx tools/run-e2e.ts",
     "test:lobby": "tsx tools/run-lobby-e2e.ts",
