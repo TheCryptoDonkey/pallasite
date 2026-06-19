@@ -12,6 +12,18 @@ on:
         description: Signet Login commit SHA requesting compatibility
         required: false
         type: string
+      signet_login_candidate:
+        description: Build and vendor the Signet Login candidate bundle
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      signet_login_package_version:
+        description: Signet Login candidate package version
+        required: false
+        type: string
       request_id:
         description: Compatibility request id
         required: false
@@ -27,6 +39,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Check out Signet Login candidate
+        if: ${{ inputs.signet_login_candidate == 'true' }}
+        uses: actions/checkout@v6
+        with:
+          repository: forgesworn/signet-login
+          ref: ${{ inputs.signet_login_sha || inputs.signet_login_ref || 'main' }}
+          path: signet-login-candidate
+          persist-credentials: false
+
       - uses: pnpm/action-setup@v6
 
       - uses: actions/setup-node@v6
@@ -34,10 +55,28 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: Build Signet Login candidate bundle
+        if: ${{ inputs.signet_login_candidate == 'true' }}
+        working-directory: signet-login-candidate
+        run: |
+          npm ci
+          npm run build
+          VERSION="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
+          if [ -n "${{ inputs.signet_login_package_version }}" ] && [ "$VERSION" != "${{ inputs.signet_login_package_version }}" ]; then
+            echo "Expected signet-login ${{ inputs.signet_login_package_version }}, built $VERSION"
+            exit 1
+          fi
+
+      - name: Vendor Signet Login candidate bundle
+        if: ${{ inputs.signet_login_candidate == 'true' }}
+        run: cp signet-login-candidate/dist/signet-login.iife.js public/signet-login.iife.js
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Check Signet Login bundle drift
+        env:
+          SIGNET_LOGIN_EXPECTED_BUNDLE: ${{ inputs.signet_login_candidate == 'true' && 'signet-login-candidate/dist/signet-login.iife.js' || '' }}
         run: pnpm run check:signet-login
 
       - name: Typecheck + build
