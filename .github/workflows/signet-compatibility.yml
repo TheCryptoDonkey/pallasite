@@ -1,0 +1,44 @@
+name: Signet Compatibility
+run-name: Signet compatibility ${{ inputs.signet_login_ref || github.ref_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      signet_login_ref:
+        description: Signet Login ref or release tag requesting compatibility
+        required: false
+        type: string
+      signet_login_sha:
+        description: Signet Login commit SHA requesting compatibility
+        required: false
+        type: string
+      request_id:
+        description: Compatibility request id
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check Signet Login bundle drift
+        run: pnpm run check:signet-login
+
+      - name: Typecheck + build
+        run: pnpm build
