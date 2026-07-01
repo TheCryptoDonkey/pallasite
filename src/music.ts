@@ -223,13 +223,21 @@ function setDirectVolume(entry: Loaded, volume: number): void {
     cancelAnimationFrame(entry.volumeRaf);
     entry.volumeRaf = null;
   }
-  try { entry.el.volume = Math.max(0, Math.min(1, volume)); } catch { /* ignore */ }
+  const clamped = Math.max(0, Math.min(1, volume));
+  try { entry.el.volume = clamped; } catch { /* ignore */ }
+  if (mobileRuntimeActive()) {
+    try { entry.el.muted = clamped <= 0.001; } catch { /* ignore */ }
+  }
 }
 
 function rampDirectVolume(entry: Loaded, target: number, ms: number): void {
   if (entry.volumeRaf !== null) {
     cancelAnimationFrame(entry.volumeRaf);
     entry.volumeRaf = null;
+  }
+  if (mobileRuntimeActive()) {
+    setDirectVolume(entry, target);
+    return;
   }
   const start = entry.el.volume;
   const clampedTarget = Math.max(0, Math.min(1, target));
@@ -583,7 +591,7 @@ function pauseAfterFade(id: string, entry: Loaded, ms: number): void {
       try { entry.el.pause(); } catch { /* ignore */ }
       if (entry.direct) setDirectVolume(entry, 0);
     }
-  }, ms + 60);
+  }, mobileRuntimeActive() && entry.direct ? 0 : ms + 60);
 }
 
 function silenceStrayTracks(keepIds: ReadonlySet<string>, fadeMs: number): void {
