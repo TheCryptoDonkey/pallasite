@@ -20,12 +20,13 @@ const expectedBundle = process.env.SIGNET_LOGIN_EXPECTED_BUNDLE;
 
 const tmp = mkdtempSync(join(tmpdir(), 'signet-login-bundle-'));
 const failures = [];
+let latest = '';
 
 try {
   let expectedPath = expectedBundle ? resolve(root, expectedBundle) : '';
   let expectedLabel = expectedBundle ? 'the Signet Login candidate bundle' : '';
   if (!expectedBundle) {
-    const latest = execFileSync('npm', ['view', 'signet-login', 'version'], {
+    latest = execFileSync('npm', ['view', 'signet-login', 'version'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
