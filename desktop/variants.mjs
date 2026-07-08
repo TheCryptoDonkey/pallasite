@@ -1,7 +1,7 @@
 /**
  * Build variants for the Pallasite desktop wrapper.
  *
- *   booth  — the BTC-booth kiosk: fullscreen, boots the ?p1 join wizard at max
+ *   booth  — the event kiosk: fullscreen, boots the ?p1 join wizard at max
  *            FX, runs a bundled local controller-ws broker (linked booths).
  *   public — the pallasite.app download: a normal window that boots the title
  *            screen and talks to the PRODUCTION broker + faucet, so a home

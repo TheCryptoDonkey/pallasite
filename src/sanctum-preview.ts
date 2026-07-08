@@ -5,7 +5,7 @@
  * collision, but every "asteroid" is a 600bn entity (council avatar /
  * Sacred Stone / racoo / Bullbear / ember meteor). Runs an entirely
  * private game loop so the main-game updateGame is never touched —
- * keeps the conference deployment hard-isolated.
+ * keeps the preview deployment hard-isolated.
  *
  * Controls (desktop):
  *   ←/→ or A/D  — rotate
@@ -522,12 +522,12 @@ function renderGameOverOverlay(state: SanctumState, victory: boolean, onReplay: 
   card.appendChild(number);
 
   const banner = document.createElement('div');
-  banner.textContent = 'PRAGUE PARTY · 11 JUNE 2026';
+  banner.textContent = '600BN · THE SANCTUM';
   banner.style.cssText = 'font:bold 13px ui-monospace,monospace;color:#fff5d8;letter-spacing:0.22em;margin-top:6px;';
   card.appendChild(banner);
 
   const venue = document.createElement('div');
-  venue.textContent = 'FUCHS2 · OSTROV ŠTVANICE';
+  venue.textContent = 'THE COUNCIL ALWAYS RETURNS';
   venue.style.cssText = 'font:11px ui-monospace,monospace;color:rgba(255,245,216,0.75);letter-spacing:0.16em;';
   card.appendChild(venue);
 

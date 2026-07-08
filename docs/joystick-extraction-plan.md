@@ -4,7 +4,7 @@ Goal: lift the controller-host + phone-as-controller pieces out of asteroid-sats
 
 ## Status / decisions so far
 
-- **Repo: private now, public after FUCHS2 (June 11 2026).** All adoption assets (Show HN, awesome-lists, StackBlitz demo, public README polish) defer to the public flip. `LICENSE` (MIT) goes in dormant.
+- **Historical note:** this plan was written before the June 11 2026 public-flip gate. Public-readiness work is now expected to live in the active repos, with MIT licensing and README-level adoption docs at the root.
 - **Business model: open-core.** Free OSS self-host path; managed hosted broker + PWA for those who want zero ops. Free tier gated by account; paid tiers for higher quotas.
 - **Pallasite keeps its own `/controller` route through June 11.** No migration to the hosted PWA before then.
 - **Stages 3 and 4 (mobile + host SDK extraction) are post-FUCHS2 only.** Touching `ui.ts` or `controller-host.ts` while Pallasite is live is too risky.
@@ -29,7 +29,7 @@ These three layers must be **independent npm packages**, not feature flags insid
 ## Repo layout
 
 ```
-forgesworn/joystick/                  private (until June 11 2026)
+forgesworn/joystick/
 ├── packages/
 │   ├── protocol/                     @forgesworn/joystick-protocol
 │   │   ├── src/
@@ -72,7 +72,7 @@ forgesworn/joystick/                  private (until June 11 2026)
 ├── .github/workflows/
 │   └── deploy.yml                    rsync broker to VPS (migrated from asteroid-sats)
 ├── pnpm-workspace.yaml
-├── LICENSE                           MIT, dormant while private
+├── LICENSE                           MIT
 └── README.md
 ```
 
@@ -219,7 +219,7 @@ Not blockers for Stage 1; tracked here so we don't lose them:
 
 ### Stage 1 (this session), broker move + deploy migration
 
-- Create private repo `forgesworn/joystick`.
+- Create repo `forgesworn/joystick`.
 - Initial commit: `pnpm-workspace.yaml` + `LICENSE` (MIT, dormant) + `README.md` (placeholder) + `packages/broker/` (copy of `asteroid-sats/controller-ws/`) + `.github/workflows/deploy.yml` (adapted from asteroid-sats's deploy.yml, only the controller-ws rsync + restart steps).
 - Add `HETZNER_SSH_KEY` secret to the joystick repo (same value as asteroid-sats's).
 - Workflow-dispatch a deploy from the joystick repo. Verify broker still works (curl WS endpoint, smoke-test pair on Pallasite production).
@@ -289,7 +289,7 @@ Not blockers for Stage 1; tracked here so we don't lose them:
 
 | Item | Choice | Note |
 |------|--------|------|
-| Repo | `forgesworn/joystick` | private until June 11 2026, public after |
+| Repo | `forgesworn/joystick` | public after the June 11 2026 gate |
 | npm org | `@forgesworn/joystick-*` (proposed) | requires claiming `@forgesworn` on npm |
 | Hosted PWA | `pad.forgesworn.dev` | "pad" reads as "controller" |
 | Hosted broker | `broker.forgesworn.dev` | |
@@ -298,7 +298,7 @@ Not blockers for Stage 1; tracked here so we don't lose them:
 
 ## Licence
 
-MIT, mirroring signet-login. Dormant while private. Same rationale for the post-flip era: zero friction for adoption.
+MIT, mirroring signet-login. Same rationale for the post-flip era: zero friction for adoption.
 
 ## Stage 1 sign-off needed
 

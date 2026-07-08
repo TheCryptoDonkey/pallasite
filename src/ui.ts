@@ -1114,7 +1114,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, opts?: {
 
 // ── Title screen ──────────────────────────────────────────────────────────────
 
-/** Prague kiosk identity — `?p1` = Booth 1, `?p2` = Booth 2. When set, the
+/** Kiosk identity — `?p1` = screen 1, `?p2` = screen 2. When set, the
  *  title/attract surfaces collapse to a stripped booth lobby (login → campaign
  *  → 1-screen co-op), hiding every normal menu. 0 = not a kiosk. */
 const boothKiosk: number = (() => {
@@ -1178,7 +1178,7 @@ function renderDownload(onBack: () => void): void {
 }
 
 export function renderTitle(state: GameState): void {
-  // Prague booth kiosk: collapse the whole title/menu surface to the stripped
+  // Kiosk screen: collapse the whole title/menu surface to the stripped
   // booth lobby. This one gate also closes the post-game loop — anything that
   // would show the title shows the lobby instead.
   if (boothKiosk) { renderBoothLobby(state, boothKiosk); return; }
@@ -1492,7 +1492,7 @@ interface EventLobbyConfig {
 const EVENT_LOBBY_KEY = 'pallasite:eventLobby';
 const DEFAULT_EVENT_LOBBY: EventLobbyConfig = {
   enabled: false,
-  lobbyName: 'BTC PRAGUE',
+  lobbyName: 'PALLASITE',
   booth: 1,
   boothCount: 2,
 };
@@ -1574,7 +1574,7 @@ function renderEventLobbyAction(parent: HTMLElement, label: string, hint: string
 
 export function renderEventLobby(state: GameState): void {
   const cfg = eventLobbyConfigForRoute();
-  const stationLabel = cfg.boothCount > 1 ? `BOOTH ${cfg.booth}` : 'PRIVATE LOBBY';
+  const stationLabel = cfg.boothCount > 1 ? `STATION ${cfg.booth}` : 'PRIVATE LOBBY';
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
@@ -1660,7 +1660,7 @@ export function renderEventLobby(state: GameState): void {
   code.addEventListener('keydown', (e) => { if (e.key === 'Enter') joinCode(); });
 
   if (cfg.boothCount > 1) {
-    const boothStrip = el('p', { parent: overlay, text: Array.from({ length: cfg.boothCount }, (_, i) => i + 1 === cfg.booth ? `[BOOTH ${i + 1}]` : `BOOTH ${i + 1}`).join('   ') });
+    const boothStrip = el('p', { parent: overlay, text: Array.from({ length: cfg.boothCount }, (_, i) => i + 1 === cfg.booth ? `[STATION ${i + 1}]` : `STATION ${i + 1}`).join('   ') });
     boothStrip.style.cssText = 'font:0.68rem ui-monospace,monospace;color:rgba(180,140,255,0.58);letter-spacing:0.08em;text-align:center;margin:4px 0 0;';
   }
 }
@@ -1852,7 +1852,7 @@ function renderBoothStartGate(state: GameState, booth: number): void {
   (titleLogo as HTMLImageElement).alt = 'PALLASITE';
   (titleLogo as HTMLImageElement).decoding = 'async';
 
-  const kicker = el('p', { parent: overlay, text: `BTC PRAGUE · BOOTH ${booth}` });
+  const kicker = el('p', { parent: overlay, text: `PALLASITE · STATION ${booth}` });
   kicker.style.cssText = 'font-size:1rem;color:#8cffb4;letter-spacing:0.28em;text-shadow:0 0 8px rgba(140,255,180,0.4);margin:-12px 0 0;';
 
   const btn = el('button', { className: 'menu-btn', parent: overlay, text: '▶ TAP TO START' }) as HTMLButtonElement;
@@ -2018,7 +2018,7 @@ function renderBoothJoin(state: GameState, booth: number): void {
   (titleLogo as HTMLImageElement).alt = 'PALLASITE';
   (titleLogo as HTMLImageElement).decoding = 'async';
 
-  const kicker = el('p', { parent: overlay, text: `BTC PRAGUE · BOOTH ${booth}` });
+  const kicker = el('p', { parent: overlay, text: `PALLASITE · STATION ${booth}` });
   kicker.style.cssText = 'font-size:1rem;color:#8cffb4;letter-spacing:0.28em;text-shadow:0 0 8px rgba(140,255,180,0.4);margin:-12px 0 0;';
   const intro = el('p', { parent: overlay, text: 'Grab a pad and press Ⓐ to drop in. Two pilots welcome — one screen, one campaign.' });
   intro.style.cssText = 'font-size:0.88rem;color:rgba(220,210,255,0.76);letter-spacing:0.08em;text-align:center;max-width:520px;line-height:1.45;margin:0;';
@@ -2078,7 +2078,7 @@ function renderBoothJoin(state: GameState, booth: number): void {
   renderZapUsQR(overlay, state, { caption: 'ZAP US ⚡' });
 
   // Operator escape — long-press the logo to drop the kiosk flag → full menu.
-  bindLogoLongPress(titleLogo, () => { stopBoothWizard(); window.location.assign('/'); });
+  bindLogoLongPress(titleLogo, () => { stopBoothWizard(); window.location.assign('/?menu=1'); });
 }
 
 /** A pilot pressed begin → run each joined pilot through sign-in, then a control
@@ -5506,8 +5506,8 @@ export function renderControllerHostPairing(state: GameState, onClose: () => voi
  * and offers SIGN OUT.
  *
  * Method ordering is deliberate: bunker / nsec / extension first, then
- * Signet, then guest. Privacy-conscious nostr users at BTC Prague
- * don't want a Signet redirect as the headline option, they want to
+ * Signet, then guest. Privacy-conscious nostr users often do not want
+ * a Signet redirect as the headline option; they want to
  * paste their bunker URI from nsec.app or paste an nsec directly.
  */
 function renderControllerIdentityCard(parent: HTMLElement, state: GameState): void {
@@ -5599,8 +5599,8 @@ function renderControllerIdentityCardInner(
     return;
   }
 
-  // Anonymous: explain what signing in buys, list methods, BTC-Prague
-  // friendly order (bunker → nsec → extension → Signet → guest).
+  // Anonymous: explain what signing in buys, list methods in a
+  // self-custody-first order (bunker → nsec → extension → Signet → guest).
   const blurb = el('p', { parent: card });
   blurb.style.cssText = 'margin:0;font-size:0.78rem;color:rgba(220,210,255,0.65);line-height:1.5;text-align:center;';
   blurb.textContent = 'Sign in on the pad so your phone holds your keys. Optional — you can pair as a plain joystick and let the host sign.';
@@ -5886,9 +5886,9 @@ function renderControllerHomePage(state: GameState): void {
   // ── Identity card ──────────────────────────────────────────────────
   // Phone-as-signer step 1: surface a sign-in entry point on the
   // controller home page so the pad can carry the user's identity
-  // independent of any specific game. Method-first ordering — BTC
-  // Prague-style nostr users see bunker / nsec / extension first;
-  // Signet sits as one option among others, not the headline.
+  // independent of any specific game. Method-first ordering keeps
+  // bunker / nsec / extension first; Signet sits as one option among
+  // others, not the headline.
   renderControllerIdentityCard(overlay, state);
 
   // ── Code entry — single big license-plate input ────────────────────
@@ -9798,9 +9798,8 @@ export function renderSettings(onBack: () => void): void {
   albumNote.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.7);letter-spacing:0.06em;margin:0;text-align:center;';
 
   // ── EVENT LOBBY ────────────────────────────────────────────────────────
-  // Operator-only kiosk/private-lobby mode. BTC Prague defaults to two booth
-  // stations, but the name and station count can be changed for future events
-  // or a one-station friend lobby.
+  // Operator-only kiosk/private-lobby mode. Defaults to two stations, but the
+  // name and station count can be changed for events or a one-station lobby.
   const eventHeading = el('p', { parent: overlay, text: 'LOBBY MODE' });
   eventHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
   const eventPanel = el('div', { parent: overlay });
@@ -9879,7 +9878,7 @@ export function renderSettings(onBack: () => void): void {
       paintEventSegment(btn, cfg.enabled && cfg.booth === booth);
     }
     eventHint.textContent = cfg.enabled
-      ? `Boots into ${cfg.lobbyName} ${cfg.boothCount > 1 ? `booth ${cfg.booth}` : 'private lobby'}. Use NORMAL MENU on the kiosk to bypass.`
+      ? `Boots into ${cfg.lobbyName} ${cfg.boothCount > 1 ? `station ${cfg.booth}` : 'private lobby'}. Use NORMAL MENU on the kiosk to bypass.`
       : 'Off for normal players. Turn on for booth screens, other events, or a private lobby.';
   }
   eventOnBtn.addEventListener('click', () => {
@@ -11416,7 +11415,7 @@ async function maybePublishScore(
   // the link discoverable without a friction-y checkbox in the path.
 
   // ── Destination picker — replaces the single CLAIM button ──────────
-  // BTC Prague flow: a walk-up guest scores well and wants the sats now.
+  // Event-kiosk flow: a walk-up guest scores well and wants the sats now.
   // Three options, every time (no muscle-memory default):
   //   • Send to Lightning Address  — paste a lud16, server pays it
   //   • Scan with Wallet           — LNURL-w QR, wallet pulls the sats
@@ -11447,7 +11446,7 @@ async function maybePublishScore(
   // D-pad / controller-only surfaces can't type, so the lud16 path
   // only makes sense when we have a pre-fill (returning player) or
   // a real keyboard is plausible. Hide it otherwise — the QR path
-  // is the venue-native option anyway, so a fresh BTC Prague guest
+  // is the venue-native option anyway, so a fresh kiosk guest
   // is funnelled there instead of staring at an unusable input.
   const preFilledLud16 = state.profile?.lud16 ?? getStoredLnAddress() ?? '';
   const coarsePointer = matchMedia('(pointer: coarse)').matches;
@@ -11885,7 +11884,7 @@ function renderSanctumAttract(state: GameState): void {
     // Standard Pallasite wave-1 entry — same ship/HUD/IGNITE banner
     // as the campaign. The 600bn theme is layered into wave 1 via
     // beginWave (council-member asteroids) + trackForState (the-cult
-    // music) + a flavour check on the game-over recap (FUCHS2 card).
+    // music) + a flavour check on the game-over recap (600bn card).
     onStartCb?.();
   });
 
@@ -11904,10 +11903,10 @@ function renderSanctumAttract(state: GameState): void {
     renderMusicPlayer(state, () => renderSanctumAttract(state));
   });
 
-  // Footer — party promo links straight to 600.wtf.
+  // Footer — 600bn promo links straight to the canonical site.
   const footer = el('div', { parent: overlay });
   footer.style.cssText = 'margin-top:28px;display:flex;flex-direction:column;align-items:center;gap:4px;';
-  const partyLink = el('a', { parent: footer, text: 'PRAGUE PARTY · 11 JUNE · FUCHS2 ↗' }) as HTMLAnchorElement;
+  const partyLink = el('a', { parent: footer, text: '600BN · OPEN THE SIGNAL ↗' }) as HTMLAnchorElement;
   partyLink.href = 'https://600000000000.com';
   partyLink.target = '_blank';
   partyLink.rel = 'noopener noreferrer';
@@ -11919,11 +11918,10 @@ function renderSanctumAttract(state: GameState): void {
   void state;
 }
 
-/** FUCHS2 · 11 JUNE party card — appears above the claim picker on
- *  every Sanctum game-over. Sacred-number wordmark + party details +
- *  QR code to 600.wtf so phone players can tap-or-scan their way to
- *  the canonical site without typing a URL. */
-function renderFuchs2Card(overlay: HTMLElement): void {
+/** 600bn card — appears on every Sanctum game-over. Sacred-number wordmark +
+ *  QR code to the canonical site so phone players can tap or scan without
+ *  typing a URL. */
+function renderSixHundredBnCard(overlay: HTMLElement): void {
   const card = el('div', { parent: overlay });
   card.style.cssText = [
     'display:flex', 'flex-direction:column', 'align-items:center',
@@ -11940,11 +11938,10 @@ function renderFuchs2Card(overlay: HTMLElement): void {
   number.style.cssText = 'font:bold 18px ui-monospace,monospace;color:#ffd84a;letter-spacing:0.16em;line-height:1.1;text-align:center;text-shadow:0 0 10px rgba(255,138,58,0.5);';
   number.innerHTML = '600<br>000<br>000<br>000';
 
-  // Party banner.
-  const banner = el('div', { parent: card, text: 'PRAGUE PARTY · 11 JUNE 2026' });
+  const banner = el('div', { parent: card, text: '600BN · THE SANCTUM' });
   banner.style.cssText = 'font:bold 13px ui-monospace,monospace;color:#fff5d8;letter-spacing:0.22em;margin-top:6px;';
 
-  const venue = el('div', { parent: card, text: 'FUCHS2 · OSTROV ŠTVANICE' });
+  const venue = el('div', { parent: card, text: 'THE COUNCIL ALWAYS RETURNS' });
   venue.style.cssText = 'font:11px ui-monospace,monospace;color:rgba(255,245,216,0.75);letter-spacing:0.16em;';
 
   // QR code anchor — clickable so desktop users can just tap.
@@ -11962,16 +11959,15 @@ function renderFuchs2Card(overlay: HTMLElement): void {
     color: { dark: '#0a0418', light: '#fff5d8' },
   }).catch(() => undefined);
 
-  const url = el('div', { parent: link, text: 'TAP FOR PARTY' });
+  const url = el('div', { parent: link, text: 'OPEN 600BN' });
   url.style.cssText = 'font:bold 12px ui-monospace,monospace;color:#ffd84a;letter-spacing:0.2em;margin-top:4px;';
 }
 
 /** Stripped 600bn game-over — drops the kofi tip / honours / streak /
  *  replay-status / endorse buttons and shows only the bits that matter
- *  for the conference funnel: score + sats, FUCHS2 party card with QR,
- *  the claim picker (lud16 / LNURL-w / balance) via maybePublishScore,
- *  PLAY AGAIN, and a footer link to 600.wtf. Idle auto-skip to title
- *  is suppressed — the party card should sit until the player taps. */
+ *  for the Sanctum funnel: score, 600bn card with QR, PLAY AGAIN, and a
+ *  footer link. Idle auto-skip to title is suppressed so the card stays
+ *  visible until the player taps. */
 function renderSanctumGameOver(
   state: GameState,
   opts: { headerText: string; subText?: string; isCompletion?: boolean },
@@ -11992,17 +11988,15 @@ function renderSanctumGameOver(
   }
 
   // Score only — no sats, no nostr-claim flow on the 600bn end screen.
-  // Tournament prizes are awarded manually at the party night, not
-  // via the per-run sat-credit pipeline. (Score is the leaderboard
-  // signal; sats stay on the main pallasite.app campaign.)
+  // Sanctum uses score only, not the per-run sat-credit pipeline.
+  // Score is the leaderboard signal; sats stay on the main pallasite.app campaign.
   const stats = el('div', { parent: overlay });
   stats.style.cssText = 'display:flex;gap:32px;font:bold 22px ui-monospace,monospace;letter-spacing:0.18em;margin:8px 0 6px;';
   stats.innerHTML = `<span style="color:#ffd84a;text-shadow:0 0 12px rgba(255,138,58,0.55);">${state.players[0].score.toLocaleString()} PTS</span>`;
 
-  // FUCHS2 party card — the whole point of the conference funnel.
-  renderFuchs2Card(overlay);
+  renderSixHundredBnCard(overlay);
 
-  // Run-stats panel — sits beneath the party card so the player has
+  // Run-stats panel — sits beneath the 600bn card so the player has
   // a beat of "here's what you did" before the action row. Time
   // formatted mm:ss; council shown as X/11 so the cycle is legible.
   const sr = getSanctumStats();
@@ -12051,8 +12045,8 @@ function renderSanctumGameOver(
     renderAttract(state);
   });
 
-  // Footer — party link as a discreet line beneath the row.
-  const partyLink = el('a', { parent: overlay, text: 'PRAGUE PARTY · 11 JUNE · 600B ↗' }) as HTMLAnchorElement;
+  // Footer — 600bn link as a discreet line beneath the row.
+  const partyLink = el('a', { parent: overlay, text: '600BN · OPEN THE SIGNAL ↗' }) as HTMLAnchorElement;
   partyLink.href = 'https://600000000000.com';
   partyLink.target = '_blank';
   partyLink.rel = 'noopener noreferrer';
@@ -12141,9 +12135,9 @@ function renderRunCredits(
   state: GameState,
   opts: { headerText: string; subText?: string; isCompletion?: boolean; idleSeconds?: number; endingChoice?: 'return' | 'forged' },
 ): void {
-  // 600bn flavour gets a focused conference-funnel game-over instead
+  // 600bn flavour gets a focused Sanctum game-over instead
   // of the standard run credits — no kofi tip, no honours, no replay
-  // badge, no endorse buttons. Just stats + FUCHS2 + claim + replay.
+  // badge, no endorse buttons. Just stats + 600bn card + replay.
   if (getFlavour() === '600bn') {
     renderSanctumGameOver(state, opts);
     return;
@@ -12217,10 +12211,10 @@ function renderRunCredits(
     }
   }
 
-  // 600bn flavour runs surface the FUCHS2 party card above the claim
+  // 600bn flavour runs surface the 600bn card above the recap
   // picker so every Sanctum game-over funnels traffic back to 600.wtf.
   if (getFlavour() === '600bn') {
-    renderFuchs2Card(overlay);
+    renderSixHundredBnCard(overlay);
   }
 
   // Honours surface on completion runs only.
@@ -13307,8 +13301,8 @@ function openGuestKeyExport(pubkeyHex: string, privkeyHex: string): void {
 /**
  * Centered "zap us" QR — a STATIC LNURL-pay for the operator's lightning
  * address. One always-valid QR: any wallet scans it and the payer chooses the
- * amount, so spectators/players send US sats with no payout from us (the
- * Prague money model). Shown on the title screen and the solo game-over recap.
+ * amount, so spectators/players can support the project without a payout from
+ * us. Shown on the title screen and the solo game-over recap.
  * Tapping the QR opens the full zap modal (amount presets + optional NIP-57
  * zap receipt) for those who'd rather pick an amount in-app.
  */

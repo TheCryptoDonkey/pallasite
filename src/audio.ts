@@ -614,9 +614,9 @@ export function explosion(scale: number = 1): void {
   // Layer 5: deep sub kicker — only fires on big breaks (scale >= 1.0).
   // Sits below the thump in frequency (50Hz, gentle drift) and decays
   // slower (0.55s) so it reads as chest impact rather than percussive
-  // snap. Felt on subs / party rigs; phone speakers still get the
+  // snap. Felt on subwoofers; phone speakers still get the
   // existing thump unchanged. Pairs with screen shake for big-shatter
-  // weight at the conference rig.
+  // weight on large displays.
   if (scale >= 1.0) {
     const deepSub = c.createOscillator();
     deepSub.type = 'sine';

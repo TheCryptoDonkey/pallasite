@@ -48,10 +48,9 @@ jobs:
       - name: Check Signet Login bundle drift
         run: pnpm run check:signet-login
 
-      # Build dist/ directly (tsc + vite) rather than `pnpm build`, whose
-      # sync-sdk step is a bash one-liner that won't run on the Windows runner.
-      # The committed public/signet-login.iife.js is what sync-sdk would use in
-      # CI anyway, and vite copies public/ into dist/.
+      # Build dist/ directly (tsc + vite) so the desktop matrix can keep the
+      # web build independent of local sibling checkouts. Vite copies the
+      # committed public/signet-login.iife.js into dist/.
       - name: Build web bundle (dist/)
         shell: bash
         run: pnpm exec tsc --noEmit && pnpm exec vite build
@@ -64,8 +63,7 @@ jobs:
         working-directory: desktop
         shell: bash
         env:
-          # Publishes to the public pallasite-releases repo, so the default
-          # GITHUB_TOKEN (scoped to this private repo) isn't enough — needs a PAT
+          # Publishes to the public pallasite-releases repo, so this uses a PAT
           # with contents:write on pallasite-releases, stored as RELEASES_TOKEN.
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
           PALLASITE_VARIANT: public

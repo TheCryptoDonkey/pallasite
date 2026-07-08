@@ -1,5 +1,5 @@
 /**
- * Headless end-to-end test of the Prague booth "press Ⓐ to join" wizard
+ * Headless end-to-end test of the station kiosk "press Ⓐ to join" wizard
  * (`?p1` / `?p2`).
  *
  * Drives the DOM-fallback path (cards/buttons are clickable as well as
@@ -168,7 +168,7 @@ async function main(): Promise<void> {
         const buttons = Array.from(document.querySelectorAll('button')).map((b) => (b.textContent ?? '').replace(/\s+/g, ' ').trim());
         const s = (window as unknown as { __pallasiteState?: { session?: unknown } }).__pallasiteState;
         return {
-          booth: text.includes('BTC PRAGUE') && text.includes('BOOTH 1'),
+          booth: text.includes('PALLASITE') && text.includes('STATION 1'),
           p1: buttons.some((t) => t.includes('PLAYER 1') && t.includes('PRESS')),
           p2: buttons.some((t) => t.includes('PLAYER 2') && t.includes('PRESS')),
           link: buttons.some((t) => t.includes('LINK BOOTHS')),

@@ -618,7 +618,7 @@ export function getReadyOverlay(): OverlayHandle | null {
  *
  *    - obverse: the "600/000/000/000" sacred-number wordmark
  *    - reverse: a clock face permanently fixed at 4:20pm, the
- *      time-lock motif (and a wink to the conference crowd)
+ *      time-lock motif
  *
  *  As the coin tumbles in 3D both faces flash past — players catch
  *  one or the other depending on the moment of the rotation. */
@@ -669,8 +669,7 @@ function getSixHundredBnFaceTexture(): THREE.CanvasTexture {
 
 /** Clock face fixed at 4:20pm. Minute hand on the "4" (120° from top),
  *  hour hand at 130° (4 + 20/60 hours = 4.333 × 30°/hour). Reads as
- *  "time-locked" iconography; the 4:20 reading is a deliberate
- *  conference-crowd wink. */
+ *  "time-locked" iconography. */
 function getSixHundredBnClockTexture(): THREE.CanvasTexture {
   if (sixHundredBnClockTexture) return sixHundredBnClockTexture;
   const c = document.createElement('canvas');

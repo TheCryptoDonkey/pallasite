@@ -1496,7 +1496,7 @@ const SANCTUM_COUNCIL_INTERVAL_MS = 9_000;
 
 /** End-of-run readout fields populated through the run. Reset in
  *  beginWave so each fresh ignite starts clean. Public so the UI
- *  module can render the stats below the FUCHS2 card. */
+ *  module can render the stats below the 600bn recap card. */
 export interface SanctumRunStats {
   startedAt: number;      // performance.now() when the wave began
   councilDefeated: number;

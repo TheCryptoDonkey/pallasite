@@ -14,7 +14,7 @@
  *
  * Defaults vary by flavour: main game opens with everything VECTOR (matches
  * what returning players see), 600bn opens with everything MESH (the
- * conference teaser is the showcase for the WebGL pipeline).
+ * Sanctum teaser is the showcase for the WebGL pipeline).
  */
 
 import type { Asteroid, PowerUp, Ship, Ufo } from './types.js';

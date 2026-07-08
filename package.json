@@ -2,8 +2,8 @@
   "name": "@thecryptodonkey/pallasite",
   "version": "0.1.0",
   "description": "Pallasite — Shoot rocks. Stack sats. Cosmic arcade Asteroids with Lightning payouts and Nostr leaderboards. Sign in with Nostr.",
+  "homepage": "https://pallasite.app/?p1",
   "type": "module",
-  "private": true,
   "packageManager": "pnpm@9.0.0",
   "scripts": {
     "dev": "pnpm run sync-sdk && vite",
@@ -33,7 +33,7 @@
     "check:prod:playability": "tsx tools/check-prod-playability.ts",
     "check:prod:multiplayer": "tsx tools/check-prod-multiplayer.ts",
     "record:solar": "tsx tools/record-solar-qa.ts",
-    "sync-sdk": "if [ -f ../signet-login/dist/signet-login.iife.js ]; then cp ../signet-login/dist/signet-login.iife.js public/signet-login.iife.js; else echo 'sync-sdk: signet-login sibling not present, using committed copy'; fi",
+    "sync-sdk": "node tools/sync-signet-login-bundle.mjs",
     "gen-backgrounds": "tsx tools/generate-backgrounds.ts",
     "optimise-backgrounds": "tsx tools/optimise-backgrounds.ts",
     "gen-logo": "tsx tools/generate-logo.ts",

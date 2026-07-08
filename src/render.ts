@@ -4881,7 +4881,7 @@ function drawWaveBanner(ctx: CanvasRenderingContext2D, s: GameState): void {
   // One-line lore — pallasite history for campaign, 600B canon for
   // the Sanctum wave.
   const lore = isBnWave
-    ? 'Madeira to Prague · The signal carries the stone'
+    ? 'Madeira to the belt · The signal carries the stone'
     : waveSubtitle(s.wave);
   if (lore) {
     ctx.letterSpacing = '0.06em' as unknown as string;

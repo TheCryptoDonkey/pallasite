@@ -48,6 +48,19 @@ import { WebSocketPeer, SpectatorPeer, type HumanSlotConfig, type Peer, type Pee
 import type { DeathmatchRules, GameState } from './types.js';
 import { DOWN_DOUBLE_TAP_WINDOW_MS, WORLD_W, WORLD_H } from './types.js';
 
+function redirectApexRootToDefaultScreen(): void {
+  try {
+    const { hostname, pathname, search, hash } = window.location;
+    const apex = hostname === 'pallasite.app' || hostname === 'www.pallasite.app';
+    const root = pathname === '/' || pathname === '';
+    if (apex && root && !search && !hash) {
+      window.location.replace('/?p1');
+    }
+  } catch { /* ignore */ }
+}
+
+redirectApexRootToDefaultScreen();
+
 const PAUSE_DUCK = 0.3;
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -3069,8 +3082,8 @@ async function boot(): Promise<void> {
   // the kind 30762 'active' presence heartbeat are opt-in: almost nobody
   // watches a live run, so keeping it off by default spares every run the
   // per-frame serialisation tax AND stops the steady stream of 'active'
-  // publishes hitting the relay. The Prague booths included — a couple of
-  // kiosks don't need a spectator feed.
+  // publishes hitting the relay. Event kiosks included — a couple of screens
+  // don't need a spectator feed.
   //   ?stream=1 — opt this run IN (capture / debug / a dedicated spectator feed)
   //   ?stream=0 — explicit OFF (redundant with the default, kept for clarity)
   // Trade-off: with streaming off there's no end-of-run kind 30764 ghost

@@ -46,8 +46,8 @@ export function getDisplayMode(): DisplayMode {
     return 'modern';
   }
   // 600bn Sanctum always uses modern (full-viewport, no retro letterbox)
-  // regardless of device or saved pref — the conference deploy is
-  // designed around the modern aspect, photoreal textures, etc.
+  // regardless of device or saved pref — the Sanctum surface is designed
+  // around the modern aspect, photoreal textures, etc.
   // Uses getFlavour() so all three 600bn subdomains (600b. / 600bn. /
   // 600.) are covered; the previous local hostname check only matched
   // 600b. and left 600bn.pallasite.app stuck in retro.

@@ -326,7 +326,7 @@ export async function signIn(): Promise<SignetSession | null> {
  * Open the SDK login flow but skip its picker by forcing a specific
  * method. Used by the controller PWA to surface method-first buttons
  * (bunker / nsec / extension / Signet) without leading with Signet
- * branding — a BTC Prague crowd of privacy-conscious nostr users sees
+ * branding — privacy-conscious nostr users see
  * "paste bunker URI" as the headline, not "Sign in with Signet".
  */
 export async function signInWith(method: SignInMethod): Promise<SignetSession | null> {

@@ -2,7 +2,7 @@
   "name": "Pallasite",
   "short_name": "Pallasite",
   "description": "Cosmic arcade Asteroids with Lightning sat payouts and Nostr leaderboards. Sign in with Nostr.",
-  "start_url": "/",
+  "start_url": "/?p1",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",

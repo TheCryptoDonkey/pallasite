@@ -2,8 +2,7 @@
  * Deploy flavour — which themed Pallasite this is.
  *
  *   - main:  full Pallasite at pallasite.app (and any other host)
- *   - 600bn: single-level Sanctum teaser at 600b.pallasite.app, cross-promo
- *            with the 600bn collective's Prague party on June 11
+ *   - 600bn: single-level Sanctum teaser at 600b.pallasite.app
  *
  * Detection is runtime, not build-time: one dist/ bundle ships everywhere,
  * nginx routes the two hostnames at the same files, and getFlavour() picks

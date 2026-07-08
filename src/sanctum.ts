@@ -12,7 +12,7 @@
  *   01:30 - 02:30  RITUAL       racooDNI cameo (canonical 04:20 GMT GM moment)
  *   02:30 - 03:30  INFERNO      Sacred Stone wakes, meteors thicken
  *   03:30 - 04:00  FINALE       Bullbear charges from the dark
- *   04:00          COMPLETE     run ends, FUCHS2 card on game-over
+ *   04:00          COMPLETE     run ends, 600bn card on game-over
  *
  * Lazy-imported when getFlavour() === '600bn' so main-game users ship
  * none of this. Pure simulation + render helpers; the game loop drives
@@ -62,8 +62,8 @@ export type SanctumPhase = keyof typeof PHASE_BOUNDS;
 /** 1 sat per council member kill (matches the 6/21/60 numerology
  *  scaled down × 6). */
 export const DROP_MEMBER = 1;
-/** Ember meteors don't pay sats — pure score reward so the conference
- *  float doesn't get drained by filler entities. */
+/** Ember meteors don't pay sats — pure score reward so the faucet float
+ *  doesn't get drained by filler entities. */
 export const DROP_METEOR = 0;
 /** racooDNI cameo: small 6-sat burst, single hit (Racoo has 1 HP). */
 export const DROP_RACOO = 6;

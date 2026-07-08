@@ -281,20 +281,20 @@ async function main(): Promise<void> {
       try { opp2.close(); } catch { /* ignore */ }
       try { specWs.close(); } catch { /* ignore */ }
 
-      // ── Event lobby route for booth kiosks ─────────────────────────
+      // ── Event lobby route for station kiosks ───────────────────────
       const eventPage = await ctx.newPage();
       await eventPage.goto(`${VITE_BASE}/event`, { waitUntil: 'load' });
       await eventPage.waitForFunction(
-        () => document.body.innerText.includes('BTC PRAGUE') && document.body.innerText.includes('BOOTH 1'),
+        () => document.body.innerText.includes('PALLASITE') && document.body.innerText.includes('STATION 1'),
         undefined,
         { timeout: LOBBY_RENDER_TIMEOUT_MS },
       );
       const eventLobby = await eventPage.evaluate(() => {
         const text = document.body.innerText;
         return {
-          heading: text.includes('BTC PRAGUE') && text.includes('BOOTH 1'),
-          booth2: text.includes('BOOTH 2'),
-          booth3: text.includes('BOOTH 3'),
+          heading: text.includes('PALLASITE') && text.includes('STATION 1'),
+          booth2: text.includes('STATION 2'),
+          booth3: text.includes('STATION 3'),
           solo: text.includes('PLAY SOLO'),
           coop: text.includes('2 PLAYERS'),   // local couch co-op button ('2 PLAYERS · 1 SCREEN')
           dm: text.includes('HOST DEATHMATCH'),
@@ -302,12 +302,12 @@ async function main(): Promise<void> {
         };
       });
       reportCheck(checks, 'event lobby kiosk route', eventLobby.heading && eventLobby.booth2 && !eventLobby.booth3 && eventLobby.solo && eventLobby.coop && eventLobby.dm && eventLobby.code, JSON.stringify(eventLobby));
-      await eventPage.fill('input[placeholder="SESSION CODE"]', 'prg12345');
+      await eventPage.fill('input[placeholder="SESSION CODE"]', 'pal12345');
       await eventPage.locator('button').filter({ hasText: 'JOIN CODE' }).click();
       await eventPage.waitForURL((url) => {
         return url.pathname === '/'
           && url.searchParams.get('mode') === 'coop-campaign'
-          && url.searchParams.get('session') === 'prg12345'
+          && url.searchParams.get('session') === 'pal12345'
           && url.searchParams.get('slot') === '1'
           && url.searchParams.has('peer');
       }, { timeout: LOBBY_RENDER_TIMEOUT_MS });

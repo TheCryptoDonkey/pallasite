@@ -1,6 +1,6 @@
 # Security response headers for pallasite.app (Caddy)
 #
-# STATUS: APPLIED 2026-06-09 to <deploy-host>:/etc/caddy/Caddyfile, scoped to
+# STATUS: APPLIED 2026-06-09 to the production Caddyfile, scoped to
 # the `pallasite.app, 600b…, watch…, mobile.pallasite.app` block. Shipped with
 # the CSP as Content-Security-Policy-Report-Only; the five other headers
 # enforce. Backup: /etc/caddy/Caddyfile.bak.20260609-064350.
@@ -18,7 +18,7 @@
 # On a young .app domain doing crypto + multi-host WebSockets, that bare
 # response reinforces a "suspicious" rating. These headers remove that signal.
 #
-# Server: <deploy-host>:/etc/caddy/Caddyfile (NOT in the repo — apply by hand).
+# Server: production Caddyfile (NOT in the repo — apply by hand).
 #
 # ─── Where it goes ───────────────────────────────────────────────────
 # Add the `header { ... }` block at the SITE-BLOCK top level (after

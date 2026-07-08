@@ -9,7 +9,7 @@ The phone-controller WebSocket broker now exists as **two diverging copies** —
 
 ## What the broker is
 
-Tiny Node WebSocket service that pairs phone controllers with the big-screen game host (bypasses the higher-latency Nostr pub/sub path from the v1 phone-as-controller MVP). Serves **controller.pallasite.app**, deployed to Hetzner `<deploy-host>:<controller-ws-deploy-root>/`.
+Tiny Node WebSocket service that pairs phone controllers with the big-screen game host (bypasses the higher-latency Nostr pub/sub path from the v1 phone-as-controller MVP). Serves **controller.pallasite.app**, deployed to the production Hetzner host.
 
 ## The two copies (as of 2 Jul 2026)
 

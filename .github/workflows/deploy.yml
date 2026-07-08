@@ -22,6 +22,9 @@ concurrency:
   group: deploy-pallasite
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -42,21 +45,33 @@ jobs:
       - name: Check Signet Login bundle drift
         run: pnpm run check:signet-login
 
+      - name: Run harnesses
+        run: pnpm test
+
       - name: Typecheck + build
         run: pnpm build
 
       - name: Deploy to Hetzner
         env:
           HETZNER_SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}
+          HETZNER_HOST: ${{ secrets.HETZNER_HOST }}
+          HETZNER_USER: ${{ secrets.HETZNER_USER }}
+          HETZNER_PATH: ${{ secrets.HETZNER_PATH }}
         run: |
+          for name in HETZNER_SSH_KEY HETZNER_HOST HETZNER_USER HETZNER_PATH; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is not configured"
+              exit 1
+            fi
+          done
           mkdir -p ~/.ssh
           echo "$HETZNER_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H <deploy-host> >> ~/.ssh/known_hosts
+          ssh-keyscan -H "$HETZNER_HOST" >> ~/.ssh/known_hosts
           # Static SPA — the existing pallasite/watch/mobile vhosts.
           rsync -avz --delete \
             -e "ssh -i ~/.ssh/deploy_key" \
-            dist/ deploy@<deploy-host>:<pallasite-static-root>/
+            dist/ "$HETZNER_USER@$HETZNER_HOST:$HETZNER_PATH"
           # Controller WebSocket relay used to deploy from here too; it
           # now lives upstream (forgesworn/joystick) and has its own
           # workflow. controller-ws/ in this repo is a one-week rollback

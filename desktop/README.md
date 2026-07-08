@@ -50,7 +50,7 @@ Two variants share this wrapper (chosen with `PALLASITE_VARIANT`, baked into
 | Boot | `?p1&fullfx=1` join wizard | title screen |
 | Broker | bundled local `:8788` (linked booths) | production `controller.pallasite.app` |
 | Audio | autoplay (pad kiosk) | normal (gesture) |
-| Use | the BTC booth | pallasite.app download |
+| Use | event kiosk | pallasite.app download |
 
 The page is served from `127.0.0.1`, so the public build injects the real
 faucet + broker hosts into the shell (`__PALLASITE_API_ORIGIN__`,
@@ -87,7 +87,7 @@ cd desktop && npm start            # builds resources, opens the kiosk window
 | `PALLASITE_CONTROLLER_HOST` | `127.0.0.1` | Broker bind address. Set `0.0.0.0` to expose it on the LAN. |
 | `PALLASITE_CONTROLLER_PORT` | `8788` | Broker port. |
 | `PALLASITE_KIOSK` | _(kiosk on)_ | Set `0` for a normal resizable window. |
-| `PALLASITE_BOOT_QUERY` | `p1&fullfx=1` | Query string appended to the game URL — boots the Prague booth join wizard at max FX. See 4K notes below. |
+| `PALLASITE_BOOT_QUERY` | `p1&fullfx=1` | Query string appended to the game URL — boots the kiosk join wizard at max FX. See 4K notes below. |
 
 In kiosk mode: **F11** toggles fullscreen, **Ctrl/Cmd+Shift+Q** quits.
 
@@ -98,7 +98,7 @@ Tuned for a large TV out of the box:
 - **Native 4K render.** A 4K TV reports `devicePixelRatio` 1, and the game caps
   DPR at 2×, so it renders the full 3840×2160 backing store with no upscaling.
 - **Booth mode + max visual tier.** The default `PALLASITE_BOOT_QUERY=p1&fullfx=1`
-  boots the Prague booth join wizard (`p1`), pins the highest FX tier, and
+  boots the kiosk join wizard (`p1`), pins the highest FX tier, and
   disables the adaptive frame-time governor that would otherwise shed effects.
   If the booth GPU can't hold 60fps at 4K, drop `fullfx`:
   `PALLASITE_BOOT_QUERY=p1` (the governor then protects framerate). Swap `p1`

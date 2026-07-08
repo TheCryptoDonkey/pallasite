@@ -14,6 +14,7 @@ dist/
 Thumbs.db
 
 # IDE
+.claude/
 .idea/
 .vscode/
 *.swp
