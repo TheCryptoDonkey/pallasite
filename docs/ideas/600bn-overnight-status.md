@@ -1,11 +1,11 @@
-# 600bn Sanctum — overnight build report
+# 600bn Sanctum — build report
 
 Date: 2026-05-14 (overnight session)
 
 ## What shipped tonight
 
-The 600bn Sanctum cross-promo for the FUCHS2 Prague party (11 June 2026)
-is now a complete end-to-end experience on `600b.pallasite.app`:
+The 600bn Sanctum flavour is a complete end-to-end experience on
+`600b.pallasite.app`:
 
 1. **Sanctum entity module** (`src/sanctum.ts`) — 5-phase timed arc over
    240 seconds (invocation → ascendant → ritual → inferno → finale →
@@ -25,7 +25,7 @@ is now a complete end-to-end experience on `600b.pallasite.app`:
    into `state.sats`. Ship-body collision with any sanctum entity ends
    the run.
 
-3. **FUCHS2 party card** on the game-over screen, with a clickable
+3. **600bn call-to-action card** on the game-over screen, with a clickable
    tappable QR code to `600.wtf`. Renders for every Sanctum run via the
    `state.sanctum` check in `renderRunCredits`.
 
@@ -81,7 +81,7 @@ Visit https://600b.pallasite.app — you should see:
    and forth. 8 HP, 21-sat drop on defeat.
 
 7. **At 240s** (or on Bullbear-defeat / ship-death) the game ends. The
-   FUCHS2 party card surfaces above the existing claim picker (lud16 /
+   600bn card surfaces above the existing claim picker (lud16 /
    LNURL-w / balance).
 
 ## Known gaps / follow-ups
@@ -119,7 +119,7 @@ Visit https://600b.pallasite.app — you should see:
 Pop to https://600b.pallasite.app/admin and toggle these live:
 
 - `daily_cap_600bn` — default 10,000 sats. Bump to e.g. 50,000 if the
-  teaser gets busier than expected, or drop to 2,000 to throttle.
+  flavour gets busier than expected, or drop to 2,000 to throttle.
 - Standard caps (per-claim, daily, hourly) apply on top of the room
   sub-cap — Sanctum claims need to satisfy BOTH.
 
@@ -133,7 +133,7 @@ This session's pushed commits on `main`:
 
 - `7616758` — deepen Sanctum module (racoo, Bullbear, meteors, phases)
 - `d787f69` — wire Sanctum into game loop
-- `69fca20` — FUCHS2 game-over card + room=600bn on claim
+- `69fca20` — 600bn game-over card + room=600bn on claim
 - `6608971` — bespoke 600bn attract screen
 - (+ SW bump + admin daily_cap_600bn row in next commit)
 

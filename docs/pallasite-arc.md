@@ -139,7 +139,7 @@ Pieces, in dependency order:
 1. **Player self-publishes NIP-85.** On W25 clear, the player's client publishes a kind 30382 assertion signed by the player's own master: `{ pallasite_mark: "return" | "forged", at_wave: 25, run_id: <replay-event-id> }`. No faucet signature. The assertion is a claim and an index entry, nothing more.
 2. **Proof is re-simulation.** Any consumer (the game reading another player's Mark, a jury-eligibility check, an outside auditor) verifies by fetching the `run_id` replay and re-running it headless. See §10 for the prerequisite: the current kind 30764 replay is a world-state frame stream, which is forgeable. Zero-trust verification needs an input-log replay (seed + per-frame inputs) so the run can be reproduced rather than merely played back.
 3. **Badge mirror.** Optionally the client also self-issues a NIP-58 kind 8 award against a game-published kind 30009 definition for clients that render badges. Cosmetic only. Since it is self-issued it carries no trust weight; it is a display convenience, not evidence.
-4. **Jury eligibility = Mark + N badges.** `src/jury.ts` already requires ≥3 NIP-58 badges on the master pubkey for jury eligibility. **Decision:** the Pallasite Mark counts as *one* qualifying credential toward the threshold, not a mandatory gate. Reason: FUCHS2 is weeks out (11 June 2026) with a near-zero population of W25 clearers; a mandatory Mark would empty the jury. Revisit a forgesworn-only jury once a population exists.
+4. **Jury eligibility = Mark + N badges.** `src/jury.ts` already requires ≥3 NIP-58 badges on the master pubkey for jury eligibility. **Decision:** the Pallasite Mark counts as *one* qualifying credential toward the threshold, not a mandatory gate. Reason: the current W25 clearer population is still small; a mandatory Mark would empty the jury. Revisit a forgesworn-only jury once a population exists.
 5. **Veil ballots.** kind 31766 LSAG-signed contributions to flagged-player review cases. Anonymous within the eligible ring. Already wired in jury.ts. Blocked on **task #60 (phase 2c deploy)**. Shipping phase 2c is what brings this live.
 
 Narrative payoff: the arc says "step through the gate and become one of the makers". The mechanic that backs that promise is: forgesworn players judge the next generation, and the proof they earned it is something anyone can re-run for themselves. The Mark is not flavour, it is access, and it answers to no authority.
@@ -153,7 +153,7 @@ The 600bn flavour is a side chapter, not a parallel game. Canonically:
 - The Sacred Stone is one of the unlisted specimens — the kind the bonus level surfaces.
 - The Sanctum encounter is a *single fall in their history*, replayed for the visiting party.
 
-Nothing in the main-app code changes. The 600bn title screen, lore, Sanctum encounter, and FUCHS2 framing remain as they are. This document just makes the canon coherent so future copy does not contradict itself.
+Nothing in the main-app code changes. The 600bn title screen, lore, Sanctum encounter, and evergreen 600bn framing remain as they are. This document just makes the canon coherent so future copy does not contradict itself.
 
 ## 9. Implementation hooks
 

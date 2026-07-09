@@ -5,7 +5,7 @@
 
 ## TL;DR
 
-The phone-controller WebSocket broker now exists as **two diverging copies** — one still live in pallasite, one in `forgesworn/joystick` — because the May extraction plan was executed only through its early, pre-FUCHS2 stages and never finished. FUCHS2 (the 11 Jun 2026 joystick public-flip gate) has now passed, so the deferred consolidation is due. We need to decide which repo owns the broker and reconcile the two copies. **No code action taken yet.**
+The phone-controller WebSocket broker now exists as **two diverging copies** — one still live in pallasite, one in `forgesworn/joystick` — because the May extraction plan was executed only through its early, pre-event stages and never finished. The June 2026 joystick public-flip gate has now passed, so the deferred consolidation is due. We need to decide which repo owns the broker and reconcile the two copies. **No code action taken yet.**
 
 ## What the broker is
 
@@ -26,9 +26,9 @@ Same origin, now **diverged** — both edited independently in early June. Palla
 
 The [joystick extraction plan](../joystick-extraction-plan.md) deliberately staged this:
 
-- *"Pallasite keeps its own `/controller` route through June 11."* — so pallasite's live copy was **meant** to stay and keep being edited up to FUCHS2.
+- *"Pallasite keeps its own `/controller` route through the live-event gate."* — so pallasite's live copy was **meant** to stay and keep being edited up to that gate.
 - *"Stage 1 broker move uses option A (deploy job migrates to joystick repo)."*
-- *"Stages 3 and 4 (mobile + host SDK extraction) are post-FUCHS2 only."*
+- *"Stages 3 and 4 (mobile + host SDK extraction) are post-event only."*
 
 Two pallasite branches proposed Stage 1 on 14 May:
 - `feat/broker-extraction-stage1` (PR #1) — remove the `controller-ws` rsync from pallasite's deploy, add a README pointer to `forgesworn/joystick`.
@@ -36,15 +36,15 @@ Two pallasite branches proposed Stage 1 on 14 May:
 
 **Both PRs were closed without merging.** PR #2's payload (the `WelcomeFrame` interface + `p?` player-slot fields) landed in pallasite `main`'s `src/controller-types.ts` by another route, so that half is fine. PR #1's cleanup never landed — pallasite kept owning and deploying `controller-ws/`. Both branches were deleted 2 Jul 2026 during a branch cleanup (they held nothing unique/unmerged of value; this doc replaces them as the record).
 
-Net: the extraction stopped after the "keep pallasite's copy alive" phase and the post-FUCHS2 stages were never picked up, leaving the duplication.
+Net: the extraction stopped after the "keep pallasite's copy alive" phase and the post-event stages were never picked up, leaving the duplication.
 
 ## The open decision (for another day)
 
-Now that FUCHS2 has passed, resolve the duplication:
+Now that the event gate has passed, resolve the duplication:
 
 1. **Which repo owns the broker?** joystick (`packages/broker/`) is the intended long-term home per the extraction plan's open-core model; pallasite's `controller-ws/` was the interim live copy.
 2. **Reconcile the diverged copies** — diff pallasite's 7 Jun `controller-ws/server.js` against joystick's 5 Jun `packages/broker/server.js`; fold any pallasite-only fixes into joystick (or vice versa) so nothing is lost.
-3. **Cut over the deploy** — point `controller.pallasite.app` at joystick's deploy, remove the `controller-ws/` rsync from pallasite's `deploy.yml`, and (once verified) delete `pallasite/controller-ws/`. This is the original PR #1 intent, now doable post-FUCHS2.
+3. **Cut over the deploy** — point `controller.pallasite.app` at joystick's deploy, remove the `controller-ws/` rsync from pallasite's `deploy.yml`, and (once verified) delete `pallasite/controller-ws/`. This is the original PR #1 intent, now doable after the event gate.
 4. **Confirm the protocol types are the single source** — pallasite's `src/controller-types.ts` and joystick's `packages/protocol` should not drift; decide which is canonical.
 
 ### Risks / watch-outs

@@ -6,8 +6,8 @@ Goal: lift the controller-host + phone-as-controller pieces out of asteroid-sats
 
 - **Historical note:** this plan was written before the June 11 2026 public-flip gate. Public-readiness work is now expected to live in the active repos, with MIT licensing and README-level adoption docs at the root.
 - **Business model: open-core.** Free OSS self-host path; managed hosted broker + PWA for those who want zero ops. Free tier gated by account; paid tiers for higher quotas.
-- **Pallasite keeps its own `/controller` route through June 11.** No migration to the hosted PWA before then.
-- **Stages 3 and 4 (mobile + host SDK extraction) are post-FUCHS2 only.** Touching `ui.ts` or `controller-host.ts` while Pallasite is live is too risky.
+- **Pallasite kept its own `/controller` route through the June 2026 live-event gate.** No migration to the hosted PWA before then.
+- **Stages 3 and 4 (mobile + host SDK extraction) are post-event only.** Touching `ui.ts` or `controller-host.ts` while Pallasite is live is too risky.
 - **Stage 1 broker move uses option A (deploy job migrates to joystick repo).** See migration plan.
 - **No bespoke CDN.** Use jsDelivr / unpkg pointing at npm packages.
 
@@ -93,10 +93,10 @@ Load-bearing invariant: no package depends on Nostr unless its name contains "no
 | `controller-ws/` | `packages/broker/` | 1 |
 | `.github/workflows/deploy.yml` (controller-ws lines) | new `.github/workflows/deploy.yml` in joystick repo | 1 |
 | `src/controller-types.ts` | `packages/protocol` | 2 |
-| `src/controller-mobile.ts` | `packages/mobile` | 3 (post-FUCHS2) |
-| `src/ui.ts:5485-5980` (phone joystick rendering) | `packages/mobile` | 3 (post-FUCHS2) |
-| `src/controller-host.ts` | `packages/host` (after game-deps refactor) | 4 (post-FUCHS2) |
-| `src/touch.ts` (host-side stick) | `packages/host` | 4 (post-FUCHS2) |
+| `src/controller-mobile.ts` | `packages/mobile` | 3 (post-event) |
+| `src/ui.ts:5485-5980` (phone joystick rendering) | `packages/mobile` | 3 (post-event) |
+| `src/controller-host.ts` | `packages/host` (after game-deps refactor) | 4 (post-event) |
+| `src/touch.ts` (host-side stick) | `packages/host` | 4 (post-event) |
 | `docs/joystick-protocol.md` | `docs/protocol.md` | 2 |
 
 ## What stays in asteroid-sats
@@ -241,14 +241,14 @@ Not blockers for Stage 1; tracked here so we don't lose them:
 
 **Risk: medium.** Touches type imports across asteroid-sats. Type-only, caught at typecheck.
 
-### Stage 3 (post-FUCHS2 only), mobile SDK
+### Stage 3 (post-event only), mobile SDK
 
 - Lift `controller-mobile.ts` + phone-side joystick from `ui.ts:5485-5980` into `packages/mobile`.
 - Asteroid-sats's `/controller` route consumes the package.
 
 **Risk: medium-high.** `ui.ts` is large; joystick code is entangled with name-entry, layout switching, audio unlock. **Do not start before June 12 2026.**
 
-### Stage 4 (post-FUCHS2 only), host SDK
+### Stage 4 (post-event only), host SDK
 
 - Refactor `controller-host.ts` to be game-agnostic; accept input callbacks instead of importing `tryHyperspace` / `tryActivateShield` directly.
 - Lift the refactored generic version into `packages/host`.
@@ -256,7 +256,7 @@ Not blockers for Stage 1; tracked here so we don't lose them:
 
 **Risk: high.** Behavioural refactor. Easy to regress input latency or state-machine timing. Sequence after Stages 2 and 3.
 
-### Stage 5a (post-FUCHS2), public flip + self-host
+### Stage 5a (post-event), public flip + self-host
 
 - Repo goes public.
 - Polish README, examples, self-host docs.
