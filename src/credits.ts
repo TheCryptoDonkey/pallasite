@@ -12,7 +12,7 @@ export const DEV = {
   npub: 'npub1mgvlrnf5hm9yf0n5mf9nqmvarhvxkc6remu5ec3vf8r0txqkuk7su0e7q2',
   profileUrl: 'https://njump.me/npub1mgvlrnf5hm9yf0n5mf9nqmvarhvxkc6remu5ec3vf8r0txqkuk7su0e7q2',
   /** LUD-16 lightning address (also published in kind 0). Used for NIP-57 zap requests. */
-  lightningAddress: '7292beaf42208125@coinos.io',
+  lightningAddress: 'profusemeat89@walletofsatoshi.com',
   /** X / Twitter handle, surfaced only on the guest-mode dev card so people
    *  who don't use Nostr still get a way to follow + recognise the dev. */
   twitter: 'TheCryptoDonkey',

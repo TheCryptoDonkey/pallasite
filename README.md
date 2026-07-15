@@ -42,7 +42,7 @@ Manual fallback deploy is `.github/workflows/release-static.yml`, which runs the
 
 Pallasite accepts Lightning donations:
 
-- Lightning address: `7292beaf42208125@coinos.io`
+- Lightning address: `profusemeat89@walletofsatoshi.com`
 - Nostr: `npub1mgvlrnf5hm9yf0nqmvarhvxkc6remu5ec3vf8r0txqkuk7su0e7q2`
 
 In-game donation QR codes use the same Lightning address.
