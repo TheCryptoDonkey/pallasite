@@ -32,7 +32,7 @@ import {
   type ActiveStreamSession,
 } from './stream-session.js';
 import { getActiveSkinId } from './skins.js';
-import { handleAuthCallback, tryRestore, sweepSignetArtefacts, createKioskSession, isAuthOnlySignerError } from './auth.js';
+import { consumeArcadeSession, handleAuthCallback, tryRestore, sweepSignetArtefacts, createKioskSession, isAuthOnlySignerError } from './auth.js';
 import * as audio from './audio.js';
 import { getMusicDebugSnapshot, musicForceRefresh, musicSetTrackForState, preloadAllTracks, musicSetPaused, musicSetMuted, musicResetElements, musicWarmUpAll, currentTrackId, musicSuppressStatePlay, musicPoolActive } from './music.js';
 import { stemsTickForState } from './music-stems.js';
@@ -2771,7 +2771,8 @@ async function boot(): Promise<void> {
       }
     })();
     try {
-      session = await handleAuthCallback();
+      session = await consumeArcadeSession();
+      if (!session) session = await handleAuthCallback();
     } catch (err) {
       if (isAuthOnlySignerError(err)) {
         shouldOfferSignerRecovery = true;

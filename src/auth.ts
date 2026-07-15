@@ -18,6 +18,7 @@ import { serialiseSigner } from './sign-queue.js';
 import { getGuestRecord, loadOrCreateGuest } from './guest.js';
 import { FaucetSigner, fetchKioskInfo } from './faucet-signer.js';
 import { BUILD_ID } from './version.js';
+import { consumeArcadeHandoff } from './arcade-handoff.js';
 
 let lastSignerInfoLogKey = '';
 
@@ -155,6 +156,10 @@ declare global {
 
 export const APP_NAME = 'Pallasite';
 export const GAME_ID = 'pallasite';
+
+export async function consumeArcadeSession(): Promise<SignetSession | null> {
+  return wrapSession(await consumeArcadeHandoff(GAME_ID));
+}
 
 /** Cap interactive sign-in at 3 min. The QR / cross-device flow (scan → approve →
  *  a hardware signer such as an ESP32 doing two physical signings) routinely runs
