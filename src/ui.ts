@@ -11076,19 +11076,69 @@ function renderBoothGameOver(state: GameState): void {
   renderBoothControlsLegend(overlay);
 }
 
-/** DONATE sub-screen — a big zap QR with a way back. Kept separate so the
- *  game-over stays to three buttons. */
-function renderBoothDonate(state: GameState): void {
+type BoothDonateMethod = 'zap' | 'onchain' | 'silent';
+
+/** DONATE sub-screen — zap / on-chain / silent payment, each a big scannable
+ *  QR with a way back. Kept separate so the game-over stays to three buttons. */
+function renderBoothDonate(state: GameState, method: BoothDonateMethod = 'zap'): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
   document.body.dataset.surface = 'event';
-  el('h2', { parent: overlay, text: 'ZAP US ⚡' });
-  renderZapUsQR(overlay, state, { caption: 'Scan to send sats — cheers!', size: 220 });
+  const headings: Record<BoothDonateMethod, string> = {
+    zap: 'ZAP US ⚡',
+    onchain: 'SEND BITCOIN ₿',
+    silent: 'SILENT PAYMENT',
+  };
+  el('h2', { parent: overlay, text: headings[method] });
+
+  // Method chips — a full re-render per pick keeps the gamepad arrow nav and
+  // focus seeding on the same path as every other booth screen.
+  const chipRow = el('div', { className: 'menu-row', parent: overlay });
+  const chips: Array<{ key: BoothDonateMethod; label: string }> = [
+    { key: 'zap', label: '⚡ ZAP' },
+    { key: 'onchain', label: '₿ ON-CHAIN' },
+    { key: 'silent', label: 'SILENT' },
+  ];
+  for (const chip of chips) {
+    const b = el('button', { className: chip.key === method ? 'menu-btn' : 'menu-btn secondary', parent: chipRow, text: chip.label });
+    if (chip.key !== method) onTap(b, () => renderBoothDonate(state, chip.key));
+  }
+
+  if (method === 'zap') {
+    renderZapUsQR(overlay, state, { caption: 'Scan to send sats — cheers!', size: 220 });
+  } else {
+    renderOnchainDonateQR(overlay, method, { size: 220 });
+  }
+
   const row = el('div', { className: 'menu-row', parent: overlay });
   const back = el('button', { className: 'menu-btn', parent: row, text: 'BACK' });
   onTap(back, () => renderBoothGameOver(state));
   setTimeout(() => tryFocusVisible(back), 0);
+}
+
+/** On-chain / silent-payment QR block. Same shape as renderZapUsQR but
+ *  static — no amount picker, the donor's wallet handles the rest. */
+function renderOnchainDonateQR(parent: HTMLElement, method: 'onchain' | 'silent', opts?: { size?: number }): HTMLElement {
+  const size = opts?.size ?? 168;
+  const onchain = method === 'onchain';
+  const value = onchain ? DEV.onchainAddress : DEV.silentPayment;
+  const wrap = el('div', { parent });
+  wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:6px;margin:16px auto 8px;max-width:340px;';
+  const cap = el('p', { parent: wrap, text: onchain ? 'Scan with any Bitcoin wallet' : 'Private on-chain · silent payments' });
+  cap.style.cssText = 'margin:0;font-size:0.76rem;letter-spacing:0.16em;color:rgba(255,216,74,0.9);text-align:center;';
+  const box = el('div', { parent: wrap });
+  box.style.cssText = `width:${size}px;height:${size}px;background:#fff;padding:8px;border-radius:10px;box-sizing:content-box;`;
+  box.setAttribute('aria-label', onchain ? 'Bitcoin address QR code' : 'Silent payment QR code');
+  try { void renderQRInto(box, onchain ? `bitcoin:${value}` : value); } catch { /* ignore */ }
+  const addr = el('p', { parent: wrap, text: onchain ? value : `${value.slice(0, 18)}...${value.slice(-12)}` });
+  addr.style.cssText = 'margin:0;font-size:0.72rem;color:rgba(220,210,255,0.7);user-select:all;word-break:break-all;text-align:center;';
+  const hint = el('p', {
+    parent: wrap,
+    text: onchain ? 'On-chain fees apply · best for larger amounts' : 'Needs a silent-payments wallet — Cake, BlueWallet',
+  });
+  hint.style.cssText = 'margin:0;font-size:0.64rem;color:rgba(200,200,200,0.5);letter-spacing:0.04em;text-align:center;';
+  return wrap;
 }
 
 /** LOGOUT from the booth game-over — clears the run, signs the pilot out, and

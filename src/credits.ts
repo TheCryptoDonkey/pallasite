@@ -13,6 +13,12 @@ export const DEV = {
   profileUrl: 'https://njump.me/npub1mgvlrnf5hm9yf0n5mf9nqmvarhvxkc6remu5ec3vf8r0txqkuk7su0e7q2',
   /** LUD-16 lightning address (also published in kind 0). Used for NIP-57 zap requests. */
   lightningAddress: 'profusemeat89@walletofsatoshi.com',
+  /** Static on-chain donation address — reused across the forgesworn games,
+   *  so the donation trail is public by design. */
+  onchainAddress: 'bc1qc75tj6gs06r0hjwy8z6tdkg92tm39wnzwj4lah',
+  /** BIP-352 silent payment code — private on-chain donations for wallets
+   *  that can send to them (Cake, BlueWallet, Sparrow). */
+  silentPayment: 'sp1qq0s22v57t06499r29yfnwsf408uqzneufpzvy4ennd8dedfwdm08qqes6lwp8uzapmf2x2dhpsfcrhh6j70grs5dfyx7235ae6yl0jr3tcqfym4g',
   /** X / Twitter handle, surfaced only on the guest-mode dev card so people
    *  who don't use Nostr still get a way to follow + recognise the dev. */
   twitter: 'TheCryptoDonkey',

@@ -40,12 +40,14 @@ Manual fallback deploy is `.github/workflows/release-static.yml`, which runs the
 
 ## Donations
 
-Pallasite accepts Lightning donations:
+Pallasite accepts Lightning and on-chain Bitcoin donations:
 
 - Lightning address: `profusemeat89@walletofsatoshi.com`
+- Bitcoin (on-chain): `bc1qc75tj6gs06r0hjwy8z6tdkg92tm39wnzwj4lah`
+- Silent payment (private on-chain, needs a wallet like Cake or BlueWallet): `sp1qq0s22v57t06499r29yfnwsf408uqzneufpzvy4ennd8dedfwdm08qqes6lwp8uzapmf2x2dhpsfcrhh6j70grs5dfyx7235ae6yl0jr3tcqfym4g`
 - Nostr: `npub1mgvlrnf5hm9yf0nqmvarhvxkc6remu5ec3vf8r0txqkuk7su0e7q2`
 
-In-game donation QR codes use the same Lightning address.
+In-game donation QR codes use the same addresses — the booth DONATE screen offers zap, on-chain and silent-payment tabs.
 
 ## License
 
