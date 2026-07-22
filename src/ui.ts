@@ -681,10 +681,22 @@ function renderV4v(onStart: () => void): void {
 
   const row = el('div', { className: 'menu-row', parent: overlay });
   const paid = el('button', { className: 'menu-btn', parent: row, text: 'I PAID' });
-  onTap(paid, () => { markV4vPaid(); renderV4vThanks(onStart); });
+  onTap(paid, () => { markV4vPaid(); playV4vThanksVoice(); renderV4vThanks(onStart); });
   const later = el('button', { className: 'menu-btn secondary', parent: row, text: 'NEXT TIME' });
   onTap(later, () => { markV4vDeclined(); onStart(); });
   setTimeout(() => tryFocusVisible(paid), 0);
+}
+
+/** The donkey says thank you in person — same recorded lines as the ledger. */
+const V4V_THANKS_VOICES = ['/sfx/thanks-fren.m4a', '/sfx/thanks-legend.m4a'];
+
+function playV4vThanksVoice(): void {
+  if (audio.isMuted()) return;
+  try {
+    const clip = new Audio(V4V_THANKS_VOICES[Math.floor(Math.random() * V4V_THANKS_VOICES.length)]!);
+    clip.volume = 0.9;
+    void clip.play().catch(() => undefined);
+  } catch { /* a lost clip costs a sound, never the flow */ }
 }
 
 /** Thank-you panel after I PAID — blessing armed, one button to launch. */
@@ -696,6 +708,11 @@ function renderV4vThanks(onStart: () => void): void {
   const kicker = el('p', { parent: overlay, text: 'FROM THECRYPTODONKEY' });
   kicker.style.cssText = 'font-size:0.78rem;letter-spacing:0.32em;color:rgba(180,140,255,0.95);margin:0;';
   el('h2', { parent: overlay, text: 'THANK YOU · SATS APPRECIATED' });
+
+  const meme = el('img', { parent: overlay }) as HTMLImageElement;
+  meme.src = '/memes/donkey-thankz.webp';
+  meme.alt = 'THANKZ';
+  meme.style.cssText = 'width:min(60vw,240px);height:auto;border-radius:12px;display:block;';
 
   const bless = el('p', { parent: overlay, text: '🙏 BLESSING ARMED — LAUNCH SHIELD · ×2 SATS AT IGNITION · 24H' });
   bless.style.cssText = 'font-size:0.82rem;letter-spacing:0.14em;color:#ffd84a;text-shadow:0 0 8px rgba(255,216,74,0.5);text-align:center;margin:0;';
