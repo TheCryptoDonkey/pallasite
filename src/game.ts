@@ -308,6 +308,11 @@ function makePlayerState(): PlayerState {
 const DEFENDER_RUN_MS = 90_000;
 export const DEFENDER_WIN_THRESHOLD = 6;
 
+/** Satboost window granted by the V4V patron's blessing. Longer than the
+ *  12 s drop power-up because the wave-1 intertitle holds ~6 s before the
+ *  pilot can actually earn anything. */
+const BLESSING_SATBOOST_MS = 30_000;
+
 export interface StartGameOptions {
   players?: number;
   defender?: boolean;
@@ -315,6 +320,9 @@ export interface StartGameOptions {
   aiSlots?: readonly number[];
   runMode?: RunMode;
   deathmatchRules?: Partial<DeathmatchRules>;
+  /** V4V patron blessing (see v4v.ts) — launch shield + satboost window.
+   *  main.ts only sets this for normal solo starts (never duel/kiosk). */
+  blessed?: boolean;
 }
 
 export function startGame(s: GameState, forcedSeed?: number, opts?: StartGameOptions): void {
@@ -438,6 +446,16 @@ export function startGame(s: GameState, forcedSeed?: number, opts?: StartGameOpt
   // reading from) and the state mirror.
   nextEntityId = 0;
   s.nextEntityId = 0;
+  // Patron's blessing (V4V): a tip inside the last 24 h buys a boosted
+  // ignition on normal solo runs — shield up at launch plus a satboost
+  // window. Announced the same way every other buff is: a toast.
+  if (opts?.blessed && playerCount === 1 && !deathmatch) {
+    const p = s.players[0];
+    p.ship.shieldUp = true;
+    p.ship.shieldExpiresAt = s.elapsed + SHIELD_DURATION_MS;
+    p.satboostExpiresAt = s.elapsed + BLESSING_SATBOOST_MS;
+    toastNow(s, "🙏 PATRON'S BLESSING — LAUNCH SHIELD · ×2 SATS");
+  }
   beginWave(s, 1);
   // Capture the post-beginWave module values back onto state so the next
   // updateGame loads from the right baseline. (beginWave bumped both via

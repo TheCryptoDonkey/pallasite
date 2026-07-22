@@ -58,6 +58,7 @@ import {
   type VoteSubmitResult,
 } from './jury.js';
 import { renderLegalFooter, openTermsModal } from './legal.js';
+import { shouldAskV4v, markV4vPaid, markV4vDeclined, v4vNudge, V4V_LIGHTNING_ADDRESS, V4V_GEYSER_URL, V4V_KOFI_URL, V4V_REWARD_LINE } from './v4v.js';
 import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow, getSanctumStats } from './game.js';
 import * as audio from './audio.js';
 import { listTracks, currentTrackId, musicPreviewPlay, musicForceRefresh, musicStop, musicNotifyClaimSuccess, musicWarmUpAll, musicResetElements, getMusicDebugSnapshot, listAlbums, getActiveAlbumId, setActiveAlbum, musicSetFreeplay } from './music.js';
@@ -615,6 +616,94 @@ export function gateBehindOnboarding(onReady: () => void): void {
   } else {
     renderOnboarding(onReady);
   }
+}
+
+// ── Value for value ──────────────────────────────────────────────────────────
+
+/**
+ * Pre-run gate for normal solo starts from the title menu: onboarding
+ * first (first-timers only), then the V4V tip ask — before EVERY run.
+ * Kiosk/booth walk-ups (event lobby, ?p1/?p2 wizard) and the duel/lobby
+ * routes stay on plain gateBehindOnboarding — a tip screen has no place
+ * in a walk-up flow, and those paths never earn the blessing either.
+ * Retry/restart buttons call onStartCb directly and bypass this.
+ */
+export function gateBehindPreRun(onReady: () => void): void {
+  gateBehindOnboarding(() => {
+    if (shouldAskV4v()) renderV4v(onReady);
+    else onReady();
+  });
+}
+
+/** The ask: Lightning-first (QR + address), Geyser/Ko-Fi fallbacks, the
+ *  reward line printed on the overlay, I PAID (arms the blessing) and
+ *  NEXT TIME (counts the decline, starts the run anyway). */
+function renderV4v(onStart: () => void): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+
+  const kicker = el('p', { parent: overlay, text: 'VALUE FOR VALUE' });
+  kicker.style.cssText = 'font-size:0.78rem;letter-spacing:0.32em;color:rgba(180,140,255,0.95);margin:0;';
+  el('h2', { parent: overlay, text: 'FUEL THE SHIP' });
+
+  const nudge = el('p', { parent: overlay, text: v4vNudge() });
+  nudge.style.cssText = 'font-size:0.92rem;color:rgba(220,210,255,0.85);letter-spacing:0.06em;max-width:480px;text-align:center;line-height:1.5;margin:0;';
+
+  // Lightning QR — same white-box treatment as the booth donate screens.
+  const box = el('div', { parent: overlay });
+  box.style.cssText = 'width:168px;height:168px;background:#fff;padding:8px;border-radius:10px;box-sizing:content-box;';
+  box.setAttribute('aria-label', 'Lightning address QR code');
+  try { void renderQRInto(box, `lightning:${V4V_LIGHTNING_ADDRESS}`); } catch { /* ignore */ }
+
+  const bless = el('p', { parent: overlay, text: V4V_REWARD_LINE });
+  bless.style.cssText = 'font-size:0.82rem;letter-spacing:0.14em;color:#ffd84a;text-shadow:0 0 8px rgba(255,216,74,0.5);text-align:center;margin:0;';
+
+  // Address button — copies AND offers the wallet deep link in one gesture.
+  const addr = el('button', { parent: overlay, text: V4V_LIGHTNING_ADDRESS });
+  addr.style.cssText = 'background:rgba(15,8,32,0.7);border:1px solid rgba(255,216,74,0.45);border-radius:6px;color:#ffd84a;font:0.85rem/1.4 ui-monospace,monospace;letter-spacing:0.06em;padding:8px 14px;cursor:pointer;';
+  onTap(addr, () => {
+    void navigator.clipboard?.writeText(V4V_LIGHTNING_ADDRESS).then(() => {
+      addr.textContent = 'COPIED!';
+      setTimeout(() => { addr.textContent = V4V_LIGHTNING_ADDRESS; }, 1400);
+    }).catch(() => undefined);
+    window.location.href = `lightning:${V4V_LIGHTNING_ADDRESS}`;
+  });
+
+  const links = el('div', { className: 'menu-row', parent: overlay });
+  for (const [label, url] of [['GEYSER', V4V_GEYSER_URL], ['☕ KO-FI', V4V_KOFI_URL]] as const) {
+    const a = el('a', { className: 'menu-btn secondary', parent: links, text: label }) as HTMLAnchorElement;
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.style.textDecoration = 'none';
+  }
+
+  const row = el('div', { className: 'menu-row', parent: overlay });
+  const paid = el('button', { className: 'menu-btn', parent: row, text: 'I PAID' });
+  onTap(paid, () => { markV4vPaid(); renderV4vThanks(onStart); });
+  const later = el('button', { className: 'menu-btn secondary', parent: row, text: 'NEXT TIME' });
+  onTap(later, () => { markV4vDeclined(); onStart(); });
+  setTimeout(() => tryFocusVisible(paid), 0);
+}
+
+/** Thank-you panel after I PAID — blessing armed, one button to launch. */
+function renderV4vThanks(onStart: () => void): void {
+  clearOverlay();
+  const overlay = el('div', { className: 'overlay', parent: root });
+  setupOverlayArrowNav(overlay);
+
+  const kicker = el('p', { parent: overlay, text: 'FROM THECRYPTODONKEY' });
+  kicker.style.cssText = 'font-size:0.78rem;letter-spacing:0.32em;color:rgba(180,140,255,0.95);margin:0;';
+  el('h2', { parent: overlay, text: 'THANK YOU · SATS APPRECIATED' });
+
+  const bless = el('p', { parent: overlay, text: '🙏 BLESSING ARMED — LAUNCH SHIELD · ×2 SATS AT IGNITION · 24H' });
+  bless.style.cssText = 'font-size:0.82rem;letter-spacing:0.14em;color:#ffd84a;text-shadow:0 0 8px rgba(255,216,74,0.5);text-align:center;margin:0;';
+
+  const row = el('div', { className: 'menu-row', parent: overlay });
+  const start = el('button', { className: 'menu-btn', parent: row, text: 'IGNITE ▶' });
+  onTap(start, onStart);
+  setTimeout(() => tryFocusVisible(start), 0);
 }
 
 /**
@@ -1306,7 +1395,7 @@ export function renderTitle(state: GameState): void {
         }
       }
       lockInDifficulty(getStoredDifficulty());
-      gateBehindOnboarding(() => onStartCb?.());
+      gateBehindPreRun(() => onStartCb?.());
     })();
   });
   const howBtn = el('button', { className: 'menu-btn secondary', parent: row, text: 'HOW TO PLAY' });
