@@ -82,13 +82,9 @@ export function getDisplayMode(): DisplayMode {
     const v = localStorage.getItem(KEY);
     if (v === 'modern' || v === 'retro') return v;
   } catch { /* ignore */ }
-  // Mobile-first default: 'modern' fills the viewport edge-to-edge, which
-  // reads better on a phone than the centred letterbox 'retro' produces.
-  // Desktops keep the arcade-cabinet feel by default.
-  if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) {
-    return 'modern';
-  }
-  return 'retro';
+  // Fresh installs use the full viewport on desktop as well as touch devices.
+  // The saved retro preference above still restores the cabinet presentation.
+  return 'modern';
 }
 
 /** Save the user's explicit preference AND apply it. Persists to

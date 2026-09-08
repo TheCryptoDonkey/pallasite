@@ -20,10 +20,16 @@ The Vite dev server runs on port `5180` and proxies `/api/*` to a local faucet o
 ```bash
 pnpm run check:signet-login
 pnpm test
+pnpm test:quality
+pnpm test:presentation
+pnpm test:menus
+pnpm test:coop-campaign --forge
 pnpm build
 ```
 
 `pnpm build` typechecks and emits the static app into `dist/`. It uses the committed Signet Login bundle by default; set `SIGNET_LOGIN_SYNC_LOCAL=1 pnpm build` only when intentionally testing a sibling Signet Login build.
+
+Graphics default to the modern presentation with automatic performance scaling. Settings → PERFORMANCE offers fixed budgets; LOW uses shaded 2D for older devices. See [the graphics and playability review](docs/graphics-and-playability-review.md) for changes and device-testing limits.
 
 ## Deploy
 

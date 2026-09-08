@@ -1,0 +1,75 @@
+<!doctype html><meta charset="utf-8"><title>forge harness</title>
+<pre id="out"></pre><canvas id="game" width="1280" height="720"></canvas>
+<script type="module">
+import { makeInitialState, startGame, beginWave, updateGame, fireBullet } from '/src/game.ts';
+import { setStoredDifficulty } from '/src/difficulty.ts';
+import { snapshotSim, restoreSim } from '/src/rollback.ts';
+import { serializeForCanary } from '/src/peer-canary.ts';
+import { forgeCharge, drawBossReactor, bossReadout } from '/src/combat-fx.ts';
+import { setQualityPreference } from '/src/visual-style.ts';
+const out = document.querySelector('#out');
+const passed = [];
+function check(ok, message) { if (!ok) throw new Error(message); passed.push(message); }
+function fresh(difficulty) {
+  setStoredDifficulty(difficulty);
+  const s = makeInitialState(); startGame(s, 0x72525); beginWave(s,25);
+  s.phase='playing'; s.players[0].ship.invulnerableUntil=1e9;
+  return s;
+}
+try {
+  for (const difficulty of ['easy','normal','hard']) {
+    const s=fresh(difficulty);
+    const core=s.asteroids.find(a=>a.stationPart==='core');
+    for(let i=0;i<60;i++) updateGame(s);
+    check(s.forgePulseAt===0, `${difficulty}: intact core stays dormant`);
+    core.hp--;
+    updateGame(s);
+    const deadline=s.forgePulseAt;
+    check(deadline-s.elapsed>=900, `${difficulty}: first hit allows a full warning`);
+    s.elapsed=deadline-300;
+    core.hp=core.hpMax*0.6;
+    updateGame(s);
+    check(s.forgePulseAt===deadline, `${difficulty}: HP band change preserves committed attack`);
+    check(forgeCharge(s,core)>0.6, `${difficulty}: warning tracks the simulation deadline`);
+    const snap=snapshotSim(s);
+    const future=[];
+    for(let i=0;i<80;i++) { updateGame(s); future.push(serializeForCanary(s)+'|'+s.forgePulseAt); }
+    check(s.enemyBullets.some(b=>b.alive&&!b.homing), `${difficulty}: warned pulse releases projectiles`);
+    restoreSim(s,snap);
+    check(s.forgePulseAt===deadline, `${difficulty}: rollback restores pending attack`);
+    for(let i=0;i<80;i++) {
+      updateGame(s);
+      if(serializeForCanary(s)+'|'+s.forgePulseAt!==future[i]) throw new Error(`${difficulty}: rollback diverged at step ${i}`);
+    }
+    passed.push(`${difficulty}: pending pulse resimulates identically for 80 steps`);
+    const core2=s.asteroids.find(a=>a.alive&&a.stationPart==='core');
+    const before=serializeForCanary(s)+'|'+s.forgePulseAt;
+    const ctx=document.querySelector('canvas').getContext('2d');
+    for(const quality of ['high','low']) {
+      setQualityPreference(quality);
+      drawBossReactor(ctx,s,quality==='high',false);
+      drawBossReactor(ctx,s,quality==='high',true);
+    }
+    check(before===serializeForCanary(s)+'|'+s.forgePulseAt, `${difficulty}: rendering and quality never change combat`);
+    core2.hp=core2.hpMax*0.3;
+    for(let i=0;i<30;i++) updateGame(s);
+    check(s.forgeMeltdown&&s.mines.length>0, `${difficulty}: meltdown introduces containment wells`);
+    core2.hp=core2.hpMax*0.15;
+    for(let i=0;i<40;i++) updateGame(s);
+    check(s.forgeEscaped&&s.forgePulseAt===0&&s.mines.length===0, `${difficulty}: chase cancels pulse and frees containment`);
+    check(bossReadout(s)?.phase==='CHASE', `${difficulty}: chase objective matches combat`);
+    core2.hp=1;
+    s.hitStopSteps=0;
+    fireBullet(s,s.players[0]);
+    const bullet=s.bullets[s.bullets.length-1];
+    bullet.pos={...core2.pos}; bullet.vel={x:0,y:0};
+    updateGame(s);
+    check(s.bossDefeated, `${difficulty}: a real bullet kills the escaping core`);
+    check(s.enemyBullets.length===0&&s.ufos.length===0, `${difficulty}: finale clears remaining threats`);
+    check(s.particles.length>100&&s.flash>0, `${difficulty}: finale produces the victory burst`);
+  }
+  out.textContent=passed.map(p=>'PASS '+p).join('\n'); document.title='FORGE-PASS';
+} catch(error) {
+  out.textContent=passed.join('\n')+'\nFAIL '+error.stack; document.title='FORGE-FAIL';
+}
+</script>

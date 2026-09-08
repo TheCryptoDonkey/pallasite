@@ -50,7 +50,8 @@ body[data-display="modern"] {
   background-color: transparent;
 }
 body[data-display="modern"] #game,
-body[data-display="modern"] #game3d {
+body[data-display="modern"] #game3d,
+body[data-display="modern"] #gamehud {
   top: 0;
   left: 0;
   transform: none;
@@ -89,7 +90,7 @@ body[data-display="modern"] #game3d {
    Transparent background so the 2D layer (HUD, background, coins,
    non-mesh entities) shows through. Display starts hidden; the WebGL
    overlay module sets display:block once any entity needs mesh rendering. */
-#game3d {
+#game3d, #gamehud {
   display: none;
   position: absolute;
   top: 50%;
@@ -102,6 +103,7 @@ body[data-display="modern"] #game3d {
   filter: brightness(var(--pallasite-brightness));
 }
 #game3d.is-active { display: block; }
+#gamehud { display: block; }
 
 /* Fast CRT mode. The full CRT canvas pass flattens WebGL into the 2D canvas
    and runs blur over the whole frame, which is too expensive for deathmatch
@@ -157,7 +159,7 @@ body[data-crt-fast="1"]::after {
   justify-content: flex-start;  /* anchor top so long content doesn't push the title off-screen */
   flex-direction: column;
   gap: 28px;
-  padding: 32px 24px 80px;
+  padding: max(16px, env(safe-area-inset-top)) max(16px, calc(env(safe-area-inset-right) + 12px)) max(32px, calc(env(safe-area-inset-bottom) + 16px)) max(16px, calc(env(safe-area-inset-left) + 12px));
   background: rgba(0, 0, 0, 0.65);
   backdrop-filter: blur(2px);
   text-align: center;
@@ -172,6 +174,8 @@ body[data-crt-fast="1"]::after {
 }
 
 .overlay > * {
+  flex-shrink: 0;
+  min-width: 0;
   max-width: 540px;
   width: 100%;
 }
@@ -191,7 +195,7 @@ body[data-crt-fast="1"]::after {
   display: block;
   margin: 0 auto -8px;            /* slight negative bottom margin trims the gap before tagline */
   width: clamp(300px, 70vw, 720px);
-  max-width: 95vw;                /* override .overlay > * cap */
+  max-width: 100%;
   height: auto;
   -webkit-user-drag: none;
   user-select: none;
@@ -989,4 +993,73 @@ body.touch-active[data-phase="warp"]      #touch-controls {
   );
   background-size: 100% 3px;
   mix-blend-mode: multiply;
+}
+
+/* Keep both thumb clusters separate on 320px phones and short landscapes. */
+@media (max-width: 380px), (max-height: 480px) and (pointer: coarse) {
+  .touch-cluster.left, .touch-cluster.right {
+    grid-template-columns: 60px 60px;
+    grid-template-rows: 48px 60px;
+  }
+  .touch-btn { width: 60px; height: 60px; }
+  .touch-btn.fire { width: 124px; height: 60px; }
+  .touch-btn.thrust { width: 124px; height: 48px; }
+  .touch-btn.hyper, .touch-btn.shield { width: 60px; height: 48px; }
+  .joystick-pad { width: 136px; height: 136px; }
+  .joystick-knob { width: 52px; height: 52px; }
+}
+.touch-btn { touch-action: none; }
+
+/* Menus share the same safe, scrollable viewport as the game. */
+.attract-utilities {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 760px;
+}
+.attract-utilities > * { min-height: 44px; }
+.attract-screen, .mission-screen, .auth-screen, .settings-screen { gap: 18px; }
+.attract-screen .title-logo { width: min(560px, 100%); margin-bottom: 0; }
+.mission-screen .title-logo { width: min(320px, 100%); margin-bottom: 0; }
+.run-setup { display: flex; flex-direction: column; gap: 18px; }
+.run-setup .launch-row { order: 1; }
+.run-setup button { min-height: 44px; }
+.auth-screen .menu-btn { min-width: min(280px, 100%) !important; max-width: 100%; }
+.auth-screen [data-arcade-initials] { min-width: 0; }
+.auth-screen [data-arcade-initials] > div:first-child { max-width: 100%; overflow-wrap: anywhere; }
+@media (max-height: 500px) and (min-width: 540px) {
+  .attract-screen, .mission-screen { gap: 10px; }
+  .attract-screen .title-logo { width: 260px; }
+  .mission-screen .title-logo { display: none; }
+  .attract-screen > p, .mission-screen > p { font-size: 0.9rem !important; margin-top: 0 !important; }
+  .attract-screen > .title-logo + p + p,
+  .mission-screen > .title-logo + p + p { display: none; }
+  .mission-screen .run-setup { max-width: 760px; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 8px 20px; }
+  .run-setup > :nth-child(2) { grid-column: 1; grid-row: 1 / 4; }
+  .run-setup > :nth-child(3) { grid-column: 2; grid-row: 1; }
+  .run-setup > :nth-child(4) { grid-column: 2; grid-row: 2; }
+  .run-setup .launch-row { grid-column: 2; grid-row: 3; }
+}
+
+@media (max-width: 600px) {
+  .name-keyboard > div { width: 100%; gap: 3px !important; }
+  .name-keyboard button { flex: 1; min-width: 0 !important; padding: 0 !important; font-size: 1rem !important; }
+}
+
+.settings-screen button { min-height: 44px; }
+.mission-screen > .title-logo + p,
+.mission-screen > .title-logo + p + p { display: none; }
+.mission-screen .title-logo { width: 200px; }
+@media (max-width: 600px) {
+  .visual-style-row { flex-wrap: wrap; }
+  .visual-style-row > span { width: 100%; }
+  .visual-style-row > button { min-width: 0; padding-inline: 6px !important; }
+}
+
+@media (pointer: coarse) {
+  .keyboard-hint { display: none; }
+}
+@media (max-height: 500px) and (min-width: 540px) {
+  .run-setup > div { gap: 4px !important; margin-top: 0 !important; }
 }

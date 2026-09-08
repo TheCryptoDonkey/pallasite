@@ -26,6 +26,7 @@ interface Harness {
 }
 
 const HARNESSES: Harness[] = [
+  { name: 'forge', path: '/forge-harness.html', initialTitle: 'forge harness' },
   { name: 'determinism', path: '/determinism-harness.html', initialTitle: 'determinism harness' },
   { name: 'lockstep',    path: '/lockstep-harness.html',    initialTitle: 'lockstep harness' },
   { name: 'peer',        path: '/peer-harness.html',        initialTitle: 'peer harness' },

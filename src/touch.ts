@@ -44,6 +44,7 @@ export function getTouchMode(): TouchInputMode {
 export function setTouchMode(m: TouchInputMode): void {
   try { localStorage.setItem(MODE_KEY, m); } catch { /* ignore */ }
   const root = document.getElementById(ROOT_ID);
+  window.dispatchEvent(new Event('pallasite:release-touch'));
   if (root) root.dataset.mode = m;
 }
 
@@ -60,6 +61,8 @@ interface ButtonSpec {
  *  state isn't lost to the delayed-input apply step. Solo and couch
  *  pass `null` for `mirror` — the writes then only go to PlayerState as
  *  they did pre-multiplayer. */
+type TouchKeyWriter = (slot: number, code: string, owner: object, pressed: boolean) => void;
+
 export interface TouchInputMirror {
   setHeading(slot: number, heading: number | null): void;
   setThrust(slot: number, thrust: boolean): void;
@@ -87,6 +90,18 @@ export function setupTouchControls(
   const root = document.getElementById(ROOT_ID);
   if (!root) return;
   root.dataset.mode = getTouchMode();
+  // A joystick tap and a held FIRE button can own Space simultaneously.
+  // Releasing one source must not cancel the other thumb's held shot.
+  const keyOwners = new Map<string, Set<object>>();
+  const writeKey: TouchKeyWriter = (slot, code, owner, pressed) => {
+    const id = `${slot}:${code}`;
+    const owners = keyOwners.get(id) ?? new Set<object>();
+    if (pressed) owners.add(owner); else owners.delete(owner);
+    if (owners.size) keyOwners.set(id, owners); else keyOwners.delete(id);
+    const player = state.players[slot];
+    if (player) player.keys[code] = owners.size > 0;
+    mirror?.setKey(slot, code, owners.size > 0);
+  };
 
   const reveal = (): void => {
     document.body.classList.add('touch-active');
@@ -111,7 +126,7 @@ export function setupTouchControls(
     { parent: buttonsRight, spec: { cls: 'shield', label: '⛨',   keys: [], oneShot: activateShield } },
   ];
   for (const { parent, spec } of [...leftButtons, ...rightButtons]) {
-    attachButton(parent, spec, state, getLocalSlot, mirror);
+    attachButton(parent, spec, state, getLocalSlot, writeKey);
   }
 
   // ── Joystick mode — left pad + right action cluster ──
@@ -121,7 +136,7 @@ export function setupTouchControls(
   knob.className = 'joystick-knob';
   pad.appendChild(knob);
   root.appendChild(pad);
-  attachJoystick(pad, knob, state, getLocalSlot, mirror);
+  attachJoystick(pad, knob, state, getLocalSlot, mirror, writeKey);
 
   // Right cluster in joystick mode reuses fire/hyper/shield only
   const joyRight = createCluster('right joystick-mode joy-right');
@@ -132,7 +147,7 @@ export function setupTouchControls(
     { parent: joyRight, spec: { cls: 'shield', label: '⛨',   keys: [], oneShot: activateShield } },
   ];
   for (const { parent, spec } of joyRightButtons) {
-    attachButton(parent, spec, state, getLocalSlot, mirror);
+    attachButton(parent, spec, state, getLocalSlot, writeKey);
   }
 }
 
@@ -142,36 +157,46 @@ function createCluster(modifier: string): HTMLElement {
   return div;
 }
 
-function attachButton(parent: HTMLElement, spec: ButtonSpec, state: GameState, getLocalSlot: () => number, mirror: TouchInputMirror | null): void {
+function attachButton(parent: HTMLElement, spec: ButtonSpec, state: GameState, getLocalSlot: () => number, writeKey: TouchKeyWriter): void {
   const btn = document.createElement('button');
   btn.className = `touch-btn ${spec.cls}`;
   btn.textContent = spec.label;
   btn.type = 'button';
   parent.appendChild(btn);
 
-  const press = (): void => {
+  let activeId: number | null = null;
+  let pressedSlot = 0;
+  const release = (): void => {
+    if (activeId === null) return;
+    activeId = null;
+    btn.classList.remove('held');
+    for (const k of spec.keys) {
+      writeKey(pressedSlot, k, btn, false);
+    }
+  };
+  btn.setAttribute('aria-label', ({ rotL: 'Rotate left', rotR: 'Rotate right', thrust: 'Thrust', fire: 'Fire', hyper: 'Hyperspace', shield: 'Shield' } as Record<string, string>)[spec.cls] ?? spec.label);
+  btn.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    release();
+    activeId = e.pointerId;
+    pressedSlot = getLocalSlot();
+    const player = state.players[pressedSlot];
+    if (!player) { release(); return; }
     btn.classList.add('held');
     void audio.unlockAudio();
-    const slot = getLocalSlot();
     for (const k of spec.keys) {
-      state.players[slot].keys[k] = true;
-      mirror?.setKey(slot, k, true);
+      writeKey(pressedSlot, k, btn, true);
     }
     if (spec.oneShot) spec.oneShot(state, state.elapsed);
-  };
-  const release = (): void => {
-    btn.classList.remove('held');
-    const slot = getLocalSlot();
-    for (const k of spec.keys) {
-      state.players[slot].keys[k] = false;
-      mirror?.setKey(slot, k, false);
-    }
-  };
-
-  btn.addEventListener('pointerdown',  e => { e.preventDefault(); press(); });
-  btn.addEventListener('pointerup',     e => { e.preventDefault(); release(); });
-  btn.addEventListener('pointercancel', e => { e.preventDefault(); release(); });
-  btn.addEventListener('pointerleave',  () => release());
+  });
+  const end = (e: PointerEvent): void => { if (e.pointerId === activeId) release(); };
+  window.addEventListener('pointerup', end);
+  window.addEventListener('pointercancel', end);
+  window.addEventListener('blur', release);
+  window.addEventListener('resize', release);
+  window.addEventListener('pallasite:release-touch', release);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) release(); });
   btn.addEventListener('contextmenu',   e => e.preventDefault());
 }
 
@@ -194,7 +219,7 @@ function attachButton(parent: HTMLElement, spec: ButtonSpec, state: GameState, g
  * — Safari's `setPointerCapture` doesn't reliably hold a touch pointer, so the
  * leave fired and the stick died mid-flight ("joystick is broken" on iPhone).
  */
-function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, getLocalSlot: () => number, mirror: TouchInputMirror | null): void {
+function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, getLocalSlot: () => number, mirror: TouchInputMirror | null, writeKey: TouchKeyWriter): void {
   const MAX_RADIUS       = 70;    // px — knob travel; bumped from 60 for finger comfort
   const HEADING_DEADZONE = 0.18;  // ignore micro-drift before steering kicks in
   const THRUST_THRESHOLD = 0.45;  // half-push or more = engage thrust
@@ -205,14 +230,18 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, g
   // never cached. Solo/couch always returns 0; duel returns mpSlot.
 
   let activeId: number | null = null;
+  let gestureSlot = 0;
+  let tapFrame: number | null = null;
+  let tapSlot = 0;
   let padCx = 0, padCy = 0;     // pad's CSS centre = the stick's fixed origin, cached at pointerdown so pointermove doesn't trigger a layout read each frame
   let pressedAt = 0;
   let maxDriftPx = 0;
   let didEngage = false;  // true once we cross the heading deadzone — disables tap-fire
 
   function clearMotion(): void {
-    const slot = getLocalSlot();
+    const slot = gestureSlot;
     const p = state.players[slot];
+    if (!p) return;
     p.targetHeading = null;
     p.thrustOverride = false;
     mirror?.setHeading(slot, null);
@@ -231,7 +260,7 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, g
     // Knob translate is relative to its CSS home (the pad centre).
     knob.style.transform = `translate(${clipDx.toFixed(1)}px, ${clipDy.toFixed(1)}px)`;
     const magnitude = clipped / MAX_RADIUS;  // 0..1
-    const slot = getLocalSlot();
+    const slot = gestureSlot;
     const p = state.players[slot];
     if (magnitude > HEADING_DEADZONE) {
       didEngage = true;
@@ -271,20 +300,17 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, g
     clearMotion();
     // Tap-to-fire: short press without engaging the heading deadzone fires once.
     const heldMs = performance.now() - pressedAt;
-    if (!didEngage && heldMs < TAP_TIME_MS && maxDriftPx < TAP_MOVE_PX) {
+    if (e.type === 'pointerup' && !didEngage && heldMs < TAP_TIME_MS && maxDriftPx < TAP_MOVE_PX) {
       // Pulse Space for one frame so the existing fire-on-keydown path triggers.
       // Game reads keys[Space] in its update loop; clearing in a microtask lets
       // exactly one frame see it as held (which is enough for the fire cooldown
       // path to issue one bullet). Mirror writes go alongside so peer mode's
       // sample sees the Space too.
-      const slot = getLocalSlot();
-      state.players[slot].keys.Space = true;
-      mirror?.setKey(slot, 'Space', true);
-      requestAnimationFrame(() => {
-        const s2 = getLocalSlot();
-        state.players[s2].keys.Space = false;
-        mirror?.setKey(s2, 'Space', false);
-      });
+      const slot = gestureSlot;
+      if (state.players[slot].keys.Space) return;
+      tapSlot = slot;
+      writeKey(slot, 'Space', knob, true);
+      tapFrame = requestAnimationFrame(clearTap);
     }
   }
 
@@ -296,6 +322,9 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, g
     // flying with no way to retake control ("stuck, flies off, can't change
     // it"). endGesture's pointerId check stops a stale finger's late up from
     // clobbering this new gesture.
+    if (e.button !== 0) return;
+    cancelGesture();
+    gestureSlot = getLocalSlot();
     activeId = e.pointerId;
     const rect = pad.getBoundingClientRect();
     padCx = rect.left + rect.width / 2;
@@ -319,11 +348,18 @@ function attachJoystick(pad: HTMLElement, knob: HTMLElement, state: GameState, g
   });
   pad.addEventListener('contextmenu', e => e.preventDefault());
 
-  // PWA backgrounded mid-press: synthesise a release so the knob isn't stuck
-  // and the ship doesn't keep thrusting in the void while the user takes a call.
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden' && activeId !== null) {
-      endGesture({ pointerId: activeId } as PointerEvent);
-    }
-  });
+  function clearTap(): void {
+    if (tapFrame === null) return;
+    cancelAnimationFrame(tapFrame);
+    tapFrame = null;
+    writeKey(tapSlot, 'Space', knob, false);
+  }
+  function cancelGesture(): void {
+    clearTap();
+    if (activeId !== null) endGesture({ pointerId: activeId, type: 'pointercancel' } as PointerEvent);
+  }
+  window.addEventListener('blur', cancelGesture);
+  window.addEventListener('resize', cancelGesture);
+  window.addEventListener('pallasite:release-touch', cancelGesture);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) cancelGesture(); });
 }

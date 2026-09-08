@@ -8,9 +8,9 @@
  *
  *   requestFullscreen          — only works inside a user gesture chain
  *                                AND on browsers that implement the API.
- *                                iOS Safari rejects: standalone PWA install
- *                                is the only way to get true fullscreen
- *                                on iOS.
+ *                                iOS uses its normal browser viewport or
+ *                                installed PWA: native fullscreen can expose
+ *                                a larger layout than the visible touch area.
  *
  * UI consumers should:
  *   - hide install/fullscreen surfaces when isStandalone() (the user
@@ -106,13 +106,17 @@ export async function triggerInstall(): Promise<boolean> {
 /** Call from a click handler. Fire-and-forget — we don't await because
  *  awaiting can break the gesture chain on some browsers, and the
  *  promise's resolution isn't actionable for us anyway. Silently no-ops
- *  when the API is missing (iOS Safari). */
+ *  when the API is missing. iOS keeps the browser's usable viewport. */
 export function tryEnterFullscreen(): void {
   if (typeof document === 'undefined') return;
   // On desktop macOS, browser fullscreen can hand the session to macOS Game
   // Mode/Game Overlay. That overlay may bind controller buttons such as Home /
   // Guide and feel like the OS has "grabbed" the pad, so don't auto-enter it.
-  if (isDesktopMac()) return;
+  // On the physical iPhone, native fullscreen reported 812px of layout but
+  // clipped the visible controls at about 678px. API presence is not enough:
+  // keep Safari browser play inside its measured viewport. Installed PWAs
+  // already have their own fullscreen surface and need no transition.
+  if (isDesktopMac() || isIosSafari() || isStandalone()) return;
   const docEl = document.documentElement as HTMLElement & {
     webkitRequestFullscreen?: () => Promise<void>;
   };

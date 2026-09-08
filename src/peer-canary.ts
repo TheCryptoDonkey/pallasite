@@ -52,6 +52,7 @@ export function serializeForCanary(s: GameState, appliedInputs?: ReadonlyArray<n
   return JSON.stringify({
     f: s.frame, ph: s.phase, w: s.wave, el: s.elapsed, hs: s.hitStopSteps,
     rng: s.rng,
+    ...(s.wave === 25 ? { forge: [s.forgeBreached, s.forgeMeltdown, s.forgeEscaped, s.forgePulseAt] } : {}),
     dm: s.deathmatchRules
       ? [
           s.deathmatchRules.mode,

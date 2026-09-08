@@ -4,10 +4,13 @@
  * Starts Vite + the local broker, opens two real browser clients into one
  * co-op campaign session, drives a little input on both slots, and checks the
  * run advances as a two-player campaign with no AI-controlled network slots.
+ * --forge starts both clients in the same damaged-core fixture and compares
+ * simulation history across HIGH desktop and LOW portrait presentation.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import assert from 'node:assert/strict';
 import { setTimeout as wait } from 'node:timers/promises';
 import { chromium, type Browser, type Page } from 'playwright';
 
@@ -16,6 +19,7 @@ const BROKER_PORT = 8796;
 const VITE_BASE = `http://localhost:${VITE_PORT}`;
 const BROKER_URL = `ws://localhost:${BROKER_PORT}`;
 const PLAYERS = 2;
+const FORGE = process.argv.includes('--forge');
 const PORTRAIT_VIEWPORT = { width: 390, height: 844 } as const;
 
 function startVite(): ChildProcess {
@@ -134,22 +138,39 @@ async function main(): Promise<void> {
     const session = randomBytes(4).toString('hex');
     browser = await chromium.launch();
     const pages: Page[] = [];
+    const errors: string[] = [];
     const gotos: Array<Promise<unknown>> = [];
     for (let slot = 0; slot < PLAYERS; slot++) {
       const ctx = await browser.newContext({
         serviceWorkers: 'block',
-        viewport: PORTRAIT_VIEWPORT,
+        viewport: FORGE && slot === 0 ? { width: 1440, height: 900 } : PORTRAIT_VIEWPORT,
         deviceScaleFactor: 2,
       });
+      if (FORGE) {
+        await ctx.addInitScript((quality) => localStorage.setItem('pallasite:quality', quality), slot === 0 ? 'high' : 'low');
+        // Identical deterministic opening fixture on both clients. Intercept the
+        // development module so production never needs a network boss-skip hook.
+        await ctx.route('**/src/game.ts', async route => {
+          const response = await route.fetch();
+          const body = await response.text();
+          const opening = /beginWave\(s, 1\);/g;
+          assert.equal([...body.matchAll(opening)].length, 1, 'unique campaign opening fixture');
+          await route.fulfill({ response, body: body.replace(opening, `beginWave(s, 25);
+            s.cheatedThisRun = true;
+            for (const p of s.players) p.ship.invulnerableUntil = 1e9;
+            const fixtureCore = s.asteroids.find(a => a.stationPart === 'core');
+            fixtureCore.hp = fixtureCore.hpMax * 0.6;`) });
+        });
+      }
       const page = await ctx.newPage();
-      page.on('pageerror', (e) => process.stderr.write(`[P${slot + 1}] ${e.message}\n`));
+      page.on('pageerror', (e) => { errors.push(e.message); process.stderr.write(`[P${slot + 1}] ${e.message}\n`); });
       page.on('console', (msg) => {
         const text = msg.text();
         if (text.includes('[duel]') || text.includes('[peer]') || text.includes('session-error')) {
           process.stderr.write(`[P${slot + 1} ${msg.type()}] ${text}\n`);
         }
       });
-      const url = `${VITE_BASE}/?peer=${encodeURIComponent(BROKER_URL)}&session=${session}&slot=${slot}&players=${PLAYERS}&mode=coop-campaign&wiretrace=1&peerBatch=1`;
+      const url = `${VITE_BASE}/?peer=${encodeURIComponent(BROKER_URL)}&session=${session}&slot=${slot}&players=${PLAYERS}&mode=coop-campaign&wiretrace=1&peerBatch=1${FORGE ? '&desync-hunt=1' : ''}`;
       pages.push(page);
       gotos.push(page.goto(url, { waitUntil: 'load' }));
     }
@@ -189,6 +210,31 @@ async function main(): Promise<void> {
     ]);
     await wait(800);
 
+    if (FORGE) {
+      await Promise.all(pages.map(page => page.waitForFunction(() => (window as any).__pallasiteState.frame >= 900, null, { timeout: 90_000 })));
+      const histories = await Promise.all(pages.map(page => page.evaluate(() => Array.from((window as any).__pallasiteCanaryHistory as Map<number, string>))));
+      const other = new Map(histories[1]);
+      const through = Math.min(...histories.map(rows => Math.max(...rows.map(([frame]) => frame)))) - 90;
+      let matched = 0;
+      let sawPulse = false;
+      const pulseDeadlines = new Set<number>();
+      for (const [frame, state] of histories[0]) {
+        if (frame > through || !other.has(frame)) continue;
+        assert.equal(state, other.get(frame), `Forge peers agree at confirmed frame ${frame}`);
+        const snapshot = JSON.parse(state);
+        assert.equal(snapshot.w, 25);
+        sawPulse ||= snapshot.forge[3] > 0 && snapshot.ebul.length > 0;
+        if (snapshot.forge[3] > 0) pulseDeadlines.add(snapshot.forge[3]);
+        matched++;
+      }
+      assert.ok(matched >= 600, `at least 600 shared simulation frames (${matched})`);
+      assert.ok(sawPulse, 'connected clients exercised the active core and projectiles');
+      assert.ok(pulseDeadlines.size >= 3, 'core completed and rescheduled multiple warned pulses');
+      const qualities = await Promise.all(pages.map(page => page.evaluate(async () => (await import('/src/visual-style.ts')).getQualityLevel())));
+      assert.deepEqual(qualities, ['high', 'low']);
+      process.stdout.write(`Forge HIGH desktop / LOW portrait: ${matched} matching simulation frames, active pulse PASS\n`);
+    }
+
     const probes = await Promise.all(pages.map(probe));
     for (let i = 0; i < probes.length; i++) {
       const p = probes[i];
@@ -220,6 +266,7 @@ async function main(): Promise<void> {
       if (Math.abs(cssAspect - backingAspect) > 0.02) throw new Error(`P${i + 1} canvas stretched: css=${cssAspect.toFixed(3)} backing=${backingAspect.toFixed(3)}`);
       if (Math.abs(d.cssW - d.innerW) > 2 || Math.abs(d.cssH - d.innerH) > 2) throw new Error(`P${i + 1} portrait canvas not filling viewport: css=${d.cssW}x${d.cssH} viewport=${d.innerW}x${d.innerH}`);
     }
+    assert.deepEqual(errors, [], 'no browser exceptions');
     process.stdout.write('Co-op campaign lockstep PASS\n');
   } finally {
     if (browser) await browser.close().catch(() => undefined);

@@ -28,6 +28,7 @@ import {
   getBitColour,
   setBitColour,
   BRIGHTNESS,
+  getQualityPreference, setQualityPreference,
   getBrightness,
   setBrightness,
   mobileRuntimeActive,
@@ -1289,7 +1290,7 @@ export function renderTitle(state: GameState): void {
   // would show the title shows the lobby instead.
   if (boothKiosk) { renderBoothLobby(state, boothKiosk); return; }
   clearOverlay();
-  const overlay = el('div', { className: 'overlay', parent: root });
+  const overlay = el('div', { className: 'overlay mission-screen', parent: root });
   setupOverlayArrowNav(overlay);
 
   // Warm both leader-ghost cache slots: today's seed (for the daily-mode
@@ -1334,6 +1335,8 @@ export function renderTitle(state: GameState): void {
   tagline.style.cssText = 'font-size:1.2rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin-top:-12px;';
   el('p', { parent: overlay, text: 'Cosmic arcade · Lightning sats · Nostr leaderboards' });
 
+  const setup = el('div', { className: 'run-setup', parent: overlay });
+  const launchRow = el('div', { className: 'menu-row launch-row', parent: setup });
   renderPoolChip(overlay);
 
   const sessionPanel = el('div', { className: 'session-panel', parent: overlay });
@@ -1341,13 +1344,13 @@ export function renderTitle(state: GameState): void {
 
   // Mode picker — campaign / drift / bossrush / arena. Sits above difficulty
   // because it changes the SHAPE of the run; difficulty just tunes within.
-  renderModeRow(overlay, state);
+  renderModeRow(setup, state);
 
   // Difficulty selector
-  renderDifficultyRow(overlay);
+  renderDifficultyRow(setup);
 
   // Daily / Free toggle
-  renderDailyRow(overlay);
+  renderDailyRow(setup);
 
   // Streak chip — only renders when the player has completed at least
   // one daily run. The number is the retention hook; once the player has
@@ -1377,13 +1380,14 @@ export function renderTitle(state: GameState): void {
   // that. Refreshes on every renderTitle (called whenever Mode changes).
   const storedMode = getStoredMode();
   const startLabel = storedMode === 'coop-campaign'
-    ? 'CO-OP LOBBY · PRESS ENTER'
+    ? 'CO-OP LOBBY'
     : storedMode === 'deathmatch'
-      ? 'DEATHMATCH LOBBY · PRESS ENTER'
+      ? 'DEATHMATCH LOBBY'
     : storedMode === 'duel'
-      ? 'ENTER LOBBY · PRESS ENTER'
-      : 'IGNITE · PRESS ENTER';
-  const startBtn = el('button', { className: 'menu-btn', parent: row, text: startLabel });
+      ? 'ENTER LOBBY'
+      : 'IGNITE';
+  const startBtn = el('button', { className: 'menu-btn', parent: launchRow, text: startLabel });
+  el('span', { className: 'keyboard-hint', parent: startBtn, text: ' · PRESS ENTER' });
   startBtn.addEventListener('click', () => {
     void (async () => {
       void audio.unlockAudio();
@@ -1515,17 +1519,7 @@ export function renderTitle(state: GameState): void {
  *  `rerender` is the parent's render fn — called after a dismiss so
  *  the strip re-paints without the hint chip. */
 function mountAttractUtilityChips(overlay: HTMLElement, rerender: () => void): void {
-  const strip = el('div', { parent: overlay });
-  strip.style.cssText = [
-    // Respect the iPhone notch / dynamic island safe area. Without this
-    // the SETTINGS chip can be obscured by the notch in portrait on
-    // newer iPhones — and that's the only way to access settings from
-    // the 600bn title.
-    'position:absolute', 'top:max(14px, env(safe-area-inset-top))', 'right:14px',
-    'display:flex', 'gap:8px', 'flex-wrap:wrap',
-    'justify-content:flex-end', 'max-width:60%',
-    'z-index:5',
-  ].join(';');
+  const strip = el('div', { className: 'attract-utilities', parent: overlay });
 
   const chipStyle = [
     'font:bold 11px ui-monospace,monospace',
@@ -2333,13 +2327,12 @@ export function renderAttract(state: GameState): void {
     return;
   }
   clearOverlay();
-  const overlay = el('div', { className: 'overlay', parent: root });
+  const overlay = el('div', { className: 'overlay attract-screen', parent: root });
   setupOverlayArrowNav(overlay);
 
   // Top utility chip strip — SETTINGS always, INSTALL when prompt
   // available (Android Chrome), iOS Safari Share-menu hint when not
-  // already standalone. Positioned absolute so it doesn't disturb the
-  // logo/PLAY centring; only renders on attract because that's where
+  // already standalone. Kept in the layout above the logo; only renders on attract because that's where
   // first-time visitors land.
   mountAttractUtilityChips(overlay, () => renderAttract(state));
 
@@ -2448,6 +2441,7 @@ export function renderAttract(state: GameState): void {
   const playRow = el('div', { className: 'menu-row', parent: overlay });
   const playBtn = el('button', { className: 'menu-btn', parent: playRow, text: 'PLAY ▶' }) as HTMLButtonElement;
   playBtn.style.cssText += 'font-size:1.4rem;padding:14px 48px;letter-spacing:0.28em;background:rgba(255,216,74,0.18);border-color:#ffd84a;color:#ffd84a;text-shadow:0 0 12px rgba(255,216,74,0.6);';
+  overlay.insertBefore(playRow, attractPanel);
   playBtn.addEventListener('click', () => {
     void audio.unlockAudio();
     // Fullscreen MUST be requested in the same user-gesture tick. Sync
@@ -2531,7 +2525,7 @@ function renderQwertyName(
   };
 
   const keyBase = 'height:50px;min-width:46px;padding:0 6px;border-radius:7px;font-family:monospace;font-size:1.3rem;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;user-select:none;';
-  const grid = el('div', { parent: wrap });
+  const grid = el('div', { className: 'name-keyboard', parent: wrap });
   grid.style.cssText = 'display:flex;flex-direction:column;gap:7px;align-items:center;width:100%;';
   for (const row of ['1234567890', 'QWERTYUIOP', 'ASDFGHJKL', 'ZXCVBNM']) {
     const r = el('div', { parent: grid });
@@ -2598,7 +2592,7 @@ function renderQwertyName(
 
 export function renderAuth(state: GameState, onDone: () => void, opts?: { onResolved?: (s: SignetSession) => void; heading?: string; sub?: string; freshGuest?: boolean }): void {
   clearOverlay();
-  const overlay = el('div', { className: 'overlay', parent: root });
+  const overlay = el('div', { className: 'overlay auth-screen', parent: root });
   setupOverlayArrowNav(overlay);
 
   // When onResolved is supplied (capturing a SECOND player's identity at a
@@ -3013,7 +3007,7 @@ function renderModeRow(parent: HTMLElement, state: GameState): void {
   row.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;justify-content:center;';
 
   const hint = el('p', { parent: wrapper });
-  hint.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.7);letter-spacing:0.06em;margin:0;height:1em;text-align:center;';
+  hint.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.7);letter-spacing:0.06em;margin:0;min-height:1em;text-align:center;';
 
   const buttons = new Map<RunMode, HTMLButtonElement>();
   const refresh = (): void => {
@@ -3077,7 +3071,7 @@ function renderDifficultyRow(parent: HTMLElement): void {
   label.style.cssText = 'font-size:0.8rem;color:rgba(180,140,255,0.85);letter-spacing:0.3em;margin:0;';
 
   const row = el('div', { parent: wrapper });
-  row.style.cssText = 'display:flex;gap:8px;';
+  row.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;justify-content:center;';
 
   const opts: Array<{ value: Difficulty; label: string; hint: string }> = [
     { value: 'easy',   label: 'EASY',   hint: '5 lives · slow rocks · sloppy aim' },
@@ -3086,7 +3080,7 @@ function renderDifficultyRow(parent: HTMLElement): void {
   ];
 
   const hint = el('p', { parent: wrapper });
-  hint.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.7);letter-spacing:0.06em;margin:0;height:1em;';
+  hint.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.7);letter-spacing:0.06em;margin:0;min-height:1em;';
 
   const buttons = new Map<Difficulty, HTMLButtonElement>();
   const refresh = (): void => {
@@ -3131,7 +3125,7 @@ function renderDailyRow(parent: HTMLElement): void {
   label.style.cssText = 'font-size:0.8rem;color:rgba(180,140,255,0.85);letter-spacing:0.3em;margin:0;';
 
   const row = el('div', { parent: wrapper });
-  row.style.cssText = 'display:flex;gap:8px;';
+  row.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;justify-content:center;';
 
   const opts: Array<{ value: boolean; label: string; hint: string }> = [
     { value: false, label: 'FREE',  hint: 'Random seeds. No daily lock.' },
@@ -3139,7 +3133,7 @@ function renderDailyRow(parent: HTMLElement): void {
   ];
 
   const hint = el('p', { parent: wrapper });
-  hint.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.7);letter-spacing:0.06em;margin:0;height:1em;';
+  hint.style.cssText = 'font-size:0.78rem;color:rgba(180,140,255,0.7);letter-spacing:0.06em;margin:0;min-height:1em;';
 
   const buttons = new Map<boolean, HTMLButtonElement>();
   const refresh = (): void => {
@@ -9811,23 +9805,23 @@ function renderSkinsPanel(parent: HTMLElement): void {
 
 export function renderSettings(onBack: () => void): void {
   clearOverlay();
-  const overlay = el('div', { className: 'overlay', parent: root });
+  const overlay = el('div', { className: 'overlay settings-screen', parent: root });
   setupOverlayArrowNav(overlay, onBack);
   el('h2', { parent: overlay, text: 'SETTINGS' });
   const sub = el('p', { parent: overlay, text: 'AUDIO' });
   sub.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:0 0 -8px;';
 
   const panel = el('div', { parent: overlay });
-  panel.style.cssText = 'display:flex;flex-direction:column;gap:18px;align-items:stretch;min-width:340px;margin-top:6px;';
+  panel.style.cssText = 'display:flex;flex-direction:column;gap:18px;align-items:stretch;min-width:0;width:100%;max-width:480px;margin-top:6px;';
 
   function row(label: string, get: () => number, set: (v: number) => void): { input: HTMLInputElement; readout: HTMLElement } {
     const wrap = el('div', { parent: panel });
-    wrap.style.cssText = 'display:grid;grid-template-columns:108px 1fr 56px;gap:14px;align-items:center;';
+    wrap.style.cssText = 'display:grid;grid-template-columns:76px minmax(0,1fr) 36px;gap:10px;align-items:center;';
     const lab = el('label', { parent: wrap, text: label });
     lab.style.cssText = 'font-size:0.95rem;color:rgba(180,140,255,0.95);letter-spacing:0.22em;';
     const input = el('input', { parent: wrap, attrs: { type: 'range', min: '0', max: '100', step: '1' } }) as HTMLInputElement;
     input.value = String(Math.round(get() * 100));
-    input.style.cssText = 'accent-color:#ffd84a;width:100%;';
+    input.style.cssText = 'accent-color:#ffd84a;width:100%;min-width:0;min-height:44px;';
     const readout = el('div', { parent: wrap, text: input.value });
     readout.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:1.1rem;color:#ffd84a;text-align:right;letter-spacing:0.08em;";
     input.addEventListener('input', () => {
@@ -9909,9 +9903,9 @@ export function renderSettings(onBack: () => void): void {
   const eventHeading = el('p', { parent: overlay, text: 'LOBBY MODE' });
   eventHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
   const eventPanel = el('div', { parent: overlay });
-  eventPanel.style.cssText = 'display:flex;flex-direction:column;gap:10px;align-items:stretch;min-width:340px;max-width:480px;';
+  eventPanel.style.cssText = 'display:flex;flex-direction:column;gap:10px;align-items:stretch;min-width:0;width:100%;max-width:480px;';
   const eventStateRow = el('div', { parent: eventPanel });
-  eventStateRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;';
+  eventStateRow.style.cssText = 'display:grid;grid-template-columns:minmax(90px,140px) minmax(0,1fr);gap:14px;align-items:center;';
   el('label', { parent: eventStateRow, text: 'LOBBY' })
     .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
   const eventStateBtns = el('div', { parent: eventStateRow });
@@ -9920,7 +9914,7 @@ export function renderSettings(onBack: () => void): void {
   const eventOffBtn = el('button', { className: 'menu-btn secondary', parent: eventStateBtns, text: 'OFF' }) as HTMLButtonElement;
 
   const eventNameRow = el('div', { parent: eventPanel });
-  eventNameRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;';
+  eventNameRow.style.cssText = 'display:grid;grid-template-columns:minmax(90px,140px) minmax(0,1fr);gap:14px;align-items:center;';
   el('label', { parent: eventNameRow, text: 'NAME' })
     .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
   const eventNameInput = el('input', { parent: eventNameRow }) as HTMLInputElement;
@@ -9930,7 +9924,7 @@ export function renderSettings(onBack: () => void): void {
   eventNameInput.style.cssText = 'min-width:0;padding:8px 10px;font:0.82rem/1.4 ui-monospace,monospace;letter-spacing:0.1em;text-transform:uppercase;background:rgba(15,8,32,0.65);color:#ffd84a;border:1px solid rgba(255,216,74,0.35);border-radius:6px;outline:none;';
 
   const eventCountRow = el('div', { parent: eventPanel });
-  eventCountRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;';
+  eventCountRow.style.cssText = 'display:grid;grid-template-columns:minmax(90px,140px) minmax(0,1fr);gap:14px;align-items:center;';
   el('label', { parent: eventCountRow, text: 'STATIONS' })
     .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
   const eventCountBtns = el('div', { parent: eventCountRow });
@@ -9938,7 +9932,7 @@ export function renderSettings(onBack: () => void): void {
   const countBtns = new Map<number, HTMLButtonElement>();
 
   const eventBoothRow = el('div', { parent: eventPanel });
-  eventBoothRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;';
+  eventBoothRow.style.cssText = 'display:grid;grid-template-columns:minmax(90px,140px) minmax(0,1fr);gap:14px;align-items:center;';
   el('label', { parent: eventBoothRow, text: 'THIS SCREEN' })
     .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
   const eventBoothBtns = el('div', { parent: eventBoothRow });
@@ -10027,7 +10021,7 @@ export function renderSettings(onBack: () => void): void {
     { value: 'classic',   label: 'CLASSIC',        hint: 'Arcade rotate — d-pad turns (stick too), right trigger or d-pad up thrusts' },
   ];
   const padHint = el('p', { parent: overlay });
-  padHint.style.cssText = 'font-size:0.75rem;color:rgba(180,140,255,0.65);letter-spacing:0.04em;margin:0;height:1em;text-align:center;';
+  padHint.style.cssText = 'font-size:0.75rem;color:rgba(180,140,255,0.65);letter-spacing:0.04em;margin:0;min-height:1em;text-align:center;';
 
   const padBtns = new Map<PadFlightMode, HTMLButtonElement>();
   function paintPad(): void {
@@ -10084,7 +10078,7 @@ export function renderSettings(onBack: () => void): void {
   const remapHeading = el('p', { parent: overlay, text: 'REMAP BUTTONS' });
   remapHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:8px 0 -4px;';
   const remapPanel = el('div', { parent: overlay });
-  remapPanel.style.cssText = 'display:flex;flex-direction:column;gap:6px;min-width:340px;max-width:480px;width:100%;';
+  remapPanel.style.cssText = 'display:flex;flex-direction:column;gap:6px;min-width:0;width:100%;max-width:480px;';
   const ACTION_LABELS: Record<PadAction, string> = { fire: 'FIRE', thrust: 'THRUST', shield: 'SHIELD', hyperspace: 'HYPERSPACE', pause: 'PAUSE' };
   let capturing: PadAction | null = null;
   let captureBaseline: boolean[] = [];
@@ -10162,7 +10156,7 @@ export function renderSettings(onBack: () => void): void {
     { value: 'joystick', label: 'JOYSTICK', hint: 'Point + go — stick angle = heading, push to thrust, tap to fire' },
   ];
   const inputHint = el('p', { parent: overlay });
-  inputHint.style.cssText = 'font-size:0.75rem;color:rgba(180,140,255,0.65);letter-spacing:0.04em;margin:0;height:1em;text-align:center;';
+  inputHint.style.cssText = 'font-size:0.75rem;color:rgba(180,140,255,0.65);letter-spacing:0.04em;margin:0;min-height:1em;text-align:center;';
 
   const inputBtns = new Map<TouchInputMode, HTMLButtonElement>();
   function paintInput(): void {
@@ -10199,7 +10193,7 @@ export function renderSettings(onBack: () => void): void {
     { value: 'modern', label: 'MODERN', hint: 'Smooth scaling — fills viewport, supersampled, sharper backgrounds' },
   ];
   const displayHint = el('p', { parent: overlay });
-  displayHint.style.cssText = 'font-size:0.75rem;color:rgba(180,140,255,0.65);letter-spacing:0.04em;margin:0;height:1em;text-align:center;';
+  displayHint.style.cssText = 'font-size:0.75rem;color:rgba(180,140,255,0.65);letter-spacing:0.04em;margin:0;min-height:1em;text-align:center;';
   const displayBtns = new Map<DisplayMode, HTMLButtonElement>();
   function paintDisplay(): void {
     const cur = getDisplayMode();
@@ -10240,9 +10234,9 @@ export function renderSettings(onBack: () => void): void {
   styleHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
 
   const stylePanel = el('div', { parent: overlay });
-  stylePanel.style.cssText = 'display:flex;flex-direction:column;gap:8px;align-items:stretch;min-width:340px;';
+  stylePanel.style.cssText = 'display:flex;flex-direction:column;gap:8px;align-items:stretch;min-width:0;width:100%;max-width:480px;';
 
-  const styleHint = el('p', { parent: overlay, text: 'Drop a tier if your device chugs' });
+  const styleHint = el('p', { parent: overlay, text: 'AUTO adapts as you play. LOW uses shaded 2D for older devices.' });
   styleHint.style.cssText = 'font-size:0.7rem;color:rgba(180,140,255,0.55);letter-spacing:0.06em;margin:0;text-align:center;';
 
   const styleBtnCss = (on: boolean, locked: boolean): string => [
@@ -10267,7 +10261,7 @@ export function renderSettings(onBack: () => void): void {
 
   // Quick-preset row — single click sets all four categories to the
   // same tier. Highlighted only when every category currently matches.
-  const presetRow = el('div', { parent: stylePanel });
+  const presetRow = el('div', { className: 'visual-style-row', parent: stylePanel });
   presetRow.style.cssText = 'display:flex;gap:6px;align-items:center;';
   const presetLabel = el('span', { parent: presetRow, text: 'ALL' });
   presetLabel.style.cssText = 'font-size:0.75rem;letter-spacing:0.18em;color:rgba(180,140,255,0.65);min-width:80px;';
@@ -10290,7 +10284,7 @@ export function renderSettings(onBack: () => void): void {
     particle: 'Particles',
   };
   for (const cat of VISUAL_CATEGORIES) {
-    const row = el('div', { parent: stylePanel });
+    const row = el('div', { className: 'visual-style-row', parent: stylePanel });
     row.style.cssText = 'display:flex;gap:6px;align-items:center;';
     const lbl = el('span', { parent: row, text: catLabels[cat] });
     lbl.style.cssText = 'font-size:0.75rem;letter-spacing:0.12em;color:rgba(220,210,255,0.85);min-width:80px;';
@@ -10325,13 +10319,28 @@ export function renderSettings(onBack: () => void): void {
   }
   paintStyle();
 
+  const qualityRow = el('div', { parent: overlay });
+  qualityRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%;max-width:480px;';
+  const qualityLabel = el('label', { parent: qualityRow, text: 'PERFORMANCE' });
+  qualityLabel.setAttribute('for', 'graphics-quality');
+  qualityLabel.style.cssText = 'font-size:0.8rem;letter-spacing:0.14em;';
+  const qualitySelect = el('select', { parent: qualityRow }) as HTMLSelectElement;
+  qualitySelect.id = 'graphics-quality';
+  qualitySelect.style.cssText = 'min-height:44px;background:#101722;color:#e0ece8;border:1px solid #668d88;padding:8px;font:inherit;max-width:100%;';
+  for (const [value, label] of [['auto', 'AUTO · adapts as you play'], ['high', 'HIGH · full effects'], ['balanced', 'BALANCED'], ['low', 'LOW · shaded 2D']]) {
+    const option = el('option', { parent: qualitySelect, text: label }) as HTMLOptionElement;
+    option.value = value;
+  }
+  qualitySelect.value = getQualityPreference();
+  qualitySelect.addEventListener('change', () => setQualityPreference(qualitySelect.value as ReturnType<typeof getQualityPreference>));
+
   // ── PRESENTATION ───────────────────────────────────────────────────────
   // Post-process look (CRT etc.), a separate axis from the fidelity tiers
   // above. Applies to the game canvas via the main loop's postfx pass.
   const themeHeading = el('p', { parent: overlay, text: 'PRESENTATION' });
   themeHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
   const themeRow = el('div', { parent: overlay });
-  themeRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-width:340px;';
+  themeRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-width:0;width:100%;max-width:480px;';
   const themeLabel = el('span', { parent: themeRow, text: 'LOOK' });
   themeLabel.style.cssText = 'font-size:0.75rem;letter-spacing:0.18em;color:rgba(180,140,255,0.65);min-width:80px;';
   const themeBtns = new Map<ThemeId, HTMLButtonElement>();
@@ -10346,7 +10355,7 @@ export function renderSettings(onBack: () => void): void {
   // Compositor brightness multiplier. This is separate from the post-FX
   // theme so STANDARD can be tuned without paying a canvas post-process pass.
   const brightnessRow = el('div', { parent: overlay });
-  brightnessRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr 48px;gap:14px;align-items:center;min-width:340px;';
+  brightnessRow.style.cssText = 'display:grid;grid-template-columns:minmax(90px,140px) minmax(0,1fr) 48px;gap:14px;align-items:center;min-width:0;width:100%;max-width:480px;';
   el('label', { parent: brightnessRow, text: 'BRIGHTNESS' })
     .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
   const brightnessSlider = el('input', { parent: brightnessRow });
@@ -10368,7 +10377,7 @@ export function renderSettings(onBack: () => void): void {
   // frame budget for detail. Only shown while ASCII is the active look,
   // since it does nothing for the other themes.
   const asciiRow = el('div', { parent: overlay });
-  asciiRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr 44px;gap:14px;align-items:center;min-width:340px;';
+  asciiRow.style.cssText = 'display:grid;grid-template-columns:minmax(90px,140px) minmax(0,1fr) 44px;gap:14px;align-items:center;min-width:0;width:100%;max-width:480px;';
   el('label', { parent: asciiRow, text: 'RESOLUTION' })
     .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
   const asciiSlider = el('input', { parent: asciiRow });
@@ -10389,7 +10398,7 @@ export function renderSettings(onBack: () => void): void {
   // Bit-depth controls — a depth slider (1 / 2 / 4 / 8 / 16 / 32-bit) and
   // a greyscale/colour toggle. Shown only while BIT DEPTH is the look.
   const bitRow = el('div', { parent: overlay });
-  bitRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr 60px;gap:14px;align-items:center;min-width:340px;';
+  bitRow.style.cssText = 'display:grid;grid-template-columns:minmax(90px,140px) minmax(0,1fr) 60px;gap:14px;align-items:center;min-width:0;width:100%;max-width:480px;';
   el('label', { parent: bitRow, text: 'DEPTH' })
     .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
   const bitSlider = el('input', { parent: bitRow });
@@ -10408,7 +10417,7 @@ export function renderSettings(onBack: () => void): void {
   });
 
   const bitColourRow = el('div', { parent: overlay });
-  bitColourRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;min-width:340px;';
+  bitColourRow.style.cssText = 'display:grid;grid-template-columns:minmax(90px,140px) minmax(0,1fr);gap:14px;align-items:center;min-width:0;width:100%;max-width:480px;';
   el('label', { parent: bitColourRow, text: 'PALETTE' })
     .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
   const bitColourWrap = el('div', { parent: bitColourRow });
@@ -10452,7 +10461,7 @@ export function renderSettings(onBack: () => void): void {
   const parallaxHeading = el('p', { parent: overlay, text: 'PARALLAX DEPTH' });
   parallaxHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
   const parallaxRow = el('div', { parent: overlay });
-  parallaxRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;min-width:340px;';
+  parallaxRow.style.cssText = 'display:grid;grid-template-columns:minmax(90px,140px) minmax(0,1fr);gap:14px;align-items:center;min-width:0;width:100%;max-width:480px;';
   el('label', { parent: parallaxRow, text: 'DEPTH BANDS' })
     .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
   const parallaxBtnWrap = el('div', { parent: parallaxRow });
@@ -10491,7 +10500,7 @@ export function renderSettings(onBack: () => void): void {
     const bounceHeading = el('p', { parent: overlay, text: 'ASTEROID BOUNCE' });
     bounceHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
     const bounceRow = el('div', { parent: overlay });
-    bounceRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;min-width:340px;';
+    bounceRow.style.cssText = 'display:grid;grid-template-columns:minmax(90px,140px) minmax(0,1fr);gap:14px;align-items:center;min-width:0;width:100%;max-width:480px;';
     el('label', { parent: bounceRow, text: 'ROCKS COLLIDE' })
       .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
     const bounceBtnWrap = el('div', { parent: bounceRow });
@@ -10538,7 +10547,7 @@ export function renderSettings(onBack: () => void): void {
     // Generic two-column row helper, keyed labels share visual style.
     const makeRow = (label: string): HTMLElement => {
       const row = el('div', { parent: overlay });
-      row.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;min-width:340px;';
+      row.style.cssText = 'display:grid;grid-template-columns:minmax(90px,140px) minmax(0,1fr);gap:14px;align-items:center;min-width:0;width:100%;max-width:480px;';
       el('label', { parent: row, text: label }).style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
       const btnWrap = el('div', { parent: row });
       btnWrap.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;';
@@ -10618,7 +10627,7 @@ export function renderSettings(onBack: () => void): void {
     const knockHeading = el('p', { parent: overlay, text: 'SHOT KNOCKBACK' });
     knockHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
     const knockRow = el('div', { parent: overlay });
-    knockRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;min-width:340px;';
+    knockRow.style.cssText = 'display:grid;grid-template-columns:minmax(90px,140px) minmax(0,1fr);gap:14px;align-items:center;min-width:0;width:100%;max-width:480px;';
     el('label', { parent: knockRow, text: 'SHOTS NUDGE' })
       .style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
     const knockBtnWrap = el('div', { parent: knockRow });
@@ -10664,11 +10673,11 @@ export function renderSettings(onBack: () => void): void {
   a11yHeading.style.cssText = 'font-size:0.78rem;letter-spacing:0.4em;color:rgba(180,140,255,0.85);margin:6px 0 -10px;';
 
   const a11yPanel = el('div', { parent: overlay });
-  a11yPanel.style.cssText = 'display:flex;flex-direction:column;gap:14px;align-items:stretch;min-width:340px;';
+  a11yPanel.style.cssText = 'display:flex;flex-direction:column;gap:14px;align-items:stretch;min-width:0;width:100%;max-width:480px;';
 
   // Reduced-motion tri-state
   const motionRow = el('div', { parent: a11yPanel });
-  motionRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;';
+  motionRow.style.cssText = 'display:grid;grid-template-columns:minmax(90px,140px) minmax(0,1fr);gap:14px;align-items:center;';
   const motionLab = el('label', { parent: motionRow, text: 'REDUCED MOTION' });
   motionLab.style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
   const motionBtnWrap = el('div', { parent: motionRow });
@@ -10702,7 +10711,7 @@ export function renderSettings(onBack: () => void): void {
 
   // High-contrast palette toggle
   const paletteRow = el('div', { parent: a11yPanel });
-  paletteRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;';
+  paletteRow.style.cssText = 'display:grid;grid-template-columns:minmax(90px,140px) minmax(0,1fr);gap:14px;align-items:center;';
   const paletteLab = el('label', { parent: paletteRow, text: 'PALETTE' });
   paletteLab.style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
   const paletteBtnWrap = el('div', { parent: paletteRow });
@@ -10736,7 +10745,7 @@ export function renderSettings(onBack: () => void): void {
   // Haptics toggle — only render on platforms where vibrate is available
   if (hapticsSupported()) {
     const hapticsRow = el('div', { parent: a11yPanel });
-    hapticsRow.style.cssText = 'display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;';
+    hapticsRow.style.cssText = 'display:grid;grid-template-columns:minmax(90px,140px) minmax(0,1fr);gap:14px;align-items:center;';
     const hapticsLab = el('label', { parent: hapticsRow, text: 'HAPTICS' });
     hapticsLab.style.cssText = 'font-size:0.85rem;color:rgba(180,140,255,0.95);letter-spacing:0.18em;';
     const hapticsBtnWrap = el('div', { parent: hapticsRow });

@@ -46,6 +46,7 @@ yarn-error.log*
 !regression-harness.html
 !rollback-harness.html
 !wavestart-harness.html
+!forge-harness.html
 
 # Duel recorder output (tools/record-duel.ts writes the spectator's video
 # here as a .webm chunk + transcodes to duel-demo.mp4). Local artefacts;

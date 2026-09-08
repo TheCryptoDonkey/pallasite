@@ -739,6 +739,8 @@ export interface GameState {
    *  breaks containment (the chase phase): the rig + wells blow and the bare core
    *  flees. Same determinism rationale; reset when the Forge wave begins. */
   forgeEscaped: boolean;
+  /** Next core pulse on the simulation clock; zero until first damage. */
+  forgePulseAt: number;
 
   /** 600bn Defender bonus wave (`?defender=1`). When true, council
    *  asteroids drift through the wide arena as defendees and the
@@ -1004,7 +1006,7 @@ export const FORGE_CORE_R = 38 * FORGE_SCALE;         // core radius (≈23)
 export const FORGE_SEG_R = 26 * FORGE_SCALE;          // shell-pod radius (≈16) — near-solid ring at 12 pods
 export const FORGE_SPIN = STATION_ROT_SPEED * 1.6;    // rad/ms — ~12s/rev; the firing gap sweeps
 export const FORGE_CENTRE_Y = 300;                    // rig centre Y (portrait shows full world height)
-export const FORGE_SPAWN = { x: WORLD_W / 2 - 130, y: WORLD_H - 80 };  // bottom-corner player spawn
+export const FORGE_SPAWN = { x: WORLD_W / 2 - 130, y: WORLD_H - 240 }; // diagonal approach, above portrait thumb controls
 export const FORGE_CAM_BIAS = 0.3;                    // portrait follow-cam pull toward the core (render.ts)
 export const FORGE_ROCK_MS = 4500;                    // ms between forged lethal rocks
 export const FORGE_ROCK_SPREAD = 300;                 // forged rocks drop from a ±150 top band
@@ -1022,6 +1024,7 @@ export const FORGE_ROCK_CAP: Record<'easy' | 'normal' | 'hard', number> = { easy
 
 /** Pulse density (bullets/ring) + cadence (ms) by core-HP band — ramps as the
  *  core is worn down. Multiplied by the difficulty muls above. */
+export const FORGE_PULSE_WARNING_MS = 900;
 export const FORGE_PULSE_DENSITY = { fresh: 10, mid: 13, low: 18 };
 export const FORGE_PULSE_CADENCE_MS = { fresh: 3800, mid: 3200, low: 2600 };
 

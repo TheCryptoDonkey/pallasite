@@ -1,7 +1,7 @@
 {
   "name": "@thecryptodonkey/pallasite",
   "version": "0.1.0",
-  "description": "Pallasite — Shoot rocks. Stack sats. Cosmic arcade Asteroids with Lightning payouts and Nostr leaderboards. Sign in with Nostr.",
+  "description": "Pallasite \u2014 Shoot rocks. Stack sats. Cosmic arcade Asteroids with Lightning payouts and Nostr leaderboards. Sign in with Nostr.",
   "homepage": "https://pallasite.app/?p1",
   "type": "module",
   "packageManager": "pnpm@9.0.0",
@@ -37,7 +37,10 @@
     "gen-backgrounds": "tsx tools/generate-backgrounds.ts",
     "optimise-backgrounds": "tsx tools/optimise-backgrounds.ts",
     "gen-logo": "tsx tools/generate-logo.ts",
-    "render:merch-logo": "tsx tools/render-merch-logo.ts"
+    "render:merch-logo": "tsx tools/render-merch-logo.ts",
+    "test:quality": "tsx tools/check-quality.ts",
+    "test:presentation": "tsx tools/check-presentation.ts",
+    "test:menus": "node tools/check-menus.mjs"
   },
   "dependencies": {
     "@noble/curves": "^2.2.0",

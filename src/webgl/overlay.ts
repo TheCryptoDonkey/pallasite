@@ -118,6 +118,7 @@ interface MeshEntry<M extends THREE.Material> {
    *  members losing mass per hit) read visually without rebuilding
    *  the GPU geometry. */
   builtRadius: number;
+  asteroidKind?: string;
 }
 
 /** Per-type fallback base colour. Brighter than the visible-against-
@@ -542,6 +543,9 @@ function buildCouncilMedallionMesh(a: Asteroid): { mesh: THREE.Mesh; geometry: T
 }
 
 /** Trigger async load of three.js + scene construction. Idempotent. */
+let contextLost = false;
+let overlayHasContent = false;
+
 export function ensureWebGLOverlay(): Promise<OverlayHandle> {
   if (handle) return Promise.resolve(handle);
   if (loading) return loading;
@@ -557,6 +561,16 @@ export function ensureWebGLOverlay(): Promise<OverlayHandle> {
       // canvas (see main.ts applyThemeFrame). Mobile forces theme='none', so
       // avoid the preserved-buffer/readback cost on iOS/Android GPUs.
       preserveDrawingBuffer: !mobile,
+    });
+    canvas.addEventListener('webglcontextlost', (event) => {
+      event.preventDefault();
+      contextLost = true;
+      canvas.classList.remove('is-active');
+    });
+    canvas.addEventListener('webglcontextrestored', () => {
+      contextLost = false;
+      if (handle) handle.lastSizeKey = 0;
+      canvas.classList.add('is-active');
     });
     renderer.setClearColor(0x000000, 0);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -608,7 +622,7 @@ export function ensureWebGLOverlay(): Promise<OverlayHandle> {
 }
 
 export function getReadyOverlay(): OverlayHandle | null {
-  return handle;
+  return contextLost ? null : handle;
 }
 
 /** ── 600bn coin UFO ──────────────────────────────────────────────────
@@ -1985,30 +1999,30 @@ function buildStationArm(): { group: THREE.Group; geometry: THREE.BufferGeometry
  *  emissive lens at the muzzle (+X / outward), plus a soft glow corona. */
 function buildStationEmitter(radius: number): { group: THREE.Group; geometry: THREE.BufferGeometry; material: THREE.MeshPhongMaterial } {
   const group = new THREE.Group();
-  const metal = new THREE.MeshPhongMaterial(STATION_METAL);
+  const metal = new THREE.MeshPhongMaterial({ color: 0x344752, shininess: 70, specular: 0x90b9c4 });
   const dark = new THREE.MeshPhongMaterial(STATION_DARK);
   // Barrel cowl (mouth → +X) + a back plate.
-  const cowl = newMesh(new THREE.CylinderGeometry(radius * 1.05, radius * 1.5, radius * 2.2, 10, 1, true), metal);
+  const cowl = newMesh(new THREE.CylinderGeometry(radius * 0.65, radius * 0.92, radius * 1.8, 8, 1, true), metal);
   cowl.rotation.z = Math.PI / 2;
   group.add(cowl);
-  const back = newMesh(new THREE.CylinderGeometry(radius * 1.5, radius * 1.5, radius * 0.3, 10), dark);
+  const back = newMesh(new THREE.CylinderGeometry(radius * 0.92, radius * 0.92, radius * 0.3, 8), dark);
   back.rotation.z = Math.PI / 2; back.position.x = -radius * 1.0;
   group.add(back);
   // Barrel rings (torus bands around the cowl).
-  const bandGeo = new THREE.TorusGeometry(radius * 1.2, radius * 0.13, 8, 16);
+  const bandGeo = new THREE.TorusGeometry(radius * 0.84, radius * 0.1, 6, 12);
   for (const x of [-radius * 0.4, radius * 0.4]) { const b = newMesh(bandGeo, dark); b.rotation.y = Math.PI / 2; b.position.x = x; group.add(b); }
   // Fins.
-  const finGeo = new THREE.BoxGeometry(radius * 1.4, radius * 0.2, radius * 1.0);
+  const finGeo = new THREE.BoxGeometry(radius * 1.6, radius * 0.12, radius * 0.9);
   for (let i = 0; i < 3; i++) { const f = newMesh(finGeo, metal); f.rotation.x = (Math.PI / 3) * i; group.add(f); }
   // Hot emissive lens at the muzzle.
-  const lensGeo = new THREE.IcosahedronGeometry(radius * 1.0, 1);
+  const lensGeo = new THREE.IcosahedronGeometry(radius * 0.55, 1);
   const emitterMat = new THREE.MeshPhongMaterial({ color: 0x2a1500, emissive: STATION_HOT, emissiveIntensity: 1.1, shininess: 110, specular: 0xffd9a0 });
   const lens = newMesh(lensGeo, emitterMat);
-  lens.position.x = radius * 1.05;
+  lens.position.x = radius * 0.9;
   group.add(lens);
   const coronaMat = new THREE.MeshBasicMaterial({ color: STATION_HOT, transparent: true, opacity: 0.32, blending: THREE.AdditiveBlending, depthWrite: false });
-  const corona = newMesh(new THREE.SphereGeometry(radius * 0.9, 12, 8), coronaMat);
-  corona.position.x = radius * 1.05;
+  const corona = newMesh(new THREE.SphereGeometry(radius * 0.62, 8, 6), coronaMat);
+  corona.position.x = radius * 0.9;
   group.add(corona);
   group.userData.emitterMat = emitterMat;
   group.userData.emitterCorona = coronaMat;
@@ -2139,8 +2153,24 @@ export function renderOverlay(opts: {
    *  per entry so mesh entities wrap. Absent / [0] off the follow camera. */
   wrapXs?: number[];
 }): void {
-  if (!handle) return;
+  if (!handle || contextLost) return;
   const { renderer, scene, camera, canvas } = handle;
+  frameCounter += 1;
+  const hasEntities = opts.asteroids.length > 0 || opts.ufos.length > 0 || opts.powerups.length > 0
+    || opts.ships.some(ship => ship?.alive) || handle.shipChunks.length > 0;
+  if (!hasEntities) {
+    // The low-quality 2D fallback must also stop submitting empty GPU frames.
+    // Keep disposal ticking so lowering quality releases old scene resources.
+    sweepStale(scene, handle.asteroidMeshes, frameCounter);
+    sweepStale(scene, handle.ufoMeshes, frameCounter);
+    sweepStale(scene, handle.powerupMeshes, frameCounter);
+    if (overlayHasContent) { renderer.setScissorTest(false); renderer.clear(); }
+    overlayHasContent = false;
+    canvas.classList.remove('is-active');
+    return;
+  }
+  overlayHasContent = true;
+  canvas.classList.add('is-active');
   // Renderer size sync — setSize re-clears the canvas, so only call it
   // when the backing store actually changed.
   const sizeKey = canvas.width * 100000 + canvas.height;
@@ -2167,12 +2197,20 @@ export function renderOverlay(opts: {
   const vpX = opts.tx * opts.dpr;
   const vpYTopDown = opts.ty * opts.dpr;
   const vpY = canvas.height - vpYTopDown - vpH;
-  frameCounter += 1;
 
   // ── Asteroids ────────────────────────────────────────────────────
   for (const a of opts.asteroids) {
     if (!a.alive || a.id == null) continue;
     let entry = handle.asteroidMeshes.get(a.id);
+    const asteroidKind = a.stationPart ?? (a.councilMember ? 'council' : a.type);
+    if (entry && entry.asteroidKind !== asteroidKind) {
+      // Restart/jump can reuse an id before the stale-cache grace expires.
+      // A previous rock must never become the next run's reactor core.
+      scene.remove(entry.mesh);
+      disposeMeshEntry(entry);
+      handle.asteroidMeshes.delete(a.id);
+      entry = undefined;
+    }
     if (!entry) {
       if (a.stationPart) {
         const built = buildStationPart(a);
@@ -2206,6 +2244,7 @@ export function renderOverlay(opts: {
         scene.add(mesh);
         entry = { mesh, geometry, material, lastSeenFrame: frameCounter, builtRadius: a.radius };
       }
+      entry.asteroidKind = asteroidKind;
       handle.asteroidMeshes.set(a.id, entry);
     }
     entry.lastSeenFrame = frameCounter;
@@ -2616,6 +2655,15 @@ export function renderOverlay(opts: {
 
 /** Drop entries the renderer hasn't seen for ≥30 frames (entity died
  *  / left the field). Disposes GPU resources to keep memory flat. */
+function disposeMeshEntry<M extends THREE.Material>(entry: MeshEntry<M>): void {
+  entry.mesh.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (m.geometry) m.geometry.dispose();
+    const mat = m.material;
+    if (mat) (Array.isArray(mat) ? mat : [mat]).forEach((x) => x.dispose());
+  });
+}
+
 function sweepStale<M extends THREE.Material>(
   scene: THREE.Scene,
   map: Map<number, MeshEntry<M>>,
@@ -2628,12 +2676,7 @@ function sweepStale<M extends THREE.Material>(
       // GROUPS (station parts, council medallions) own many more — traverse and
       // dispose every one, or they leak (which on iOS compounds into the
       // "slows to a stop" GPU-memory creep across W17 retries).
-      entry.mesh.traverse((o) => {
-        const m = o as THREE.Mesh;
-        if (m.geometry) m.geometry.dispose();
-        const mat = m.material;
-        if (mat) (Array.isArray(mat) ? mat : [mat]).forEach((x) => x.dispose());
-      });
+      disposeMeshEntry(entry);
       map.delete(id);
     } else {
       entry.mesh.visible = entry.lastSeenFrame === frame;

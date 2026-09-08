@@ -6,11 +6,12 @@
  * generated art.
  */
 
+import { drawLitParticles, drawBossReactor, drawBossStatus, bossReadout } from './combat-fx.js';
 import type {
   GameState, Ship, Asteroid, AsteroidType, Bullet, Coin, Particle, Ufo, Mine, PowerUp, ReplaySnapshot, Debris, Shockwave, HyperspaceEffect,
 } from './types.js';
 import {
-  WORLD_W, WORLD_H, WARP_MS, WAVE_CLEAR_GRACE_MS, waveName, waveSubtitle, waveTagline, waveSetPieceBanner, POWERUP_CONFIG, FORGE_CAM_BIAS,
+  WORLD_W, WORLD_H, WARP_MS, WAVE_CLEAR_GRACE_MS, waveName, waveSubtitle, waveTagline, waveSetPieceBanner, POWERUP_CONFIG, FORGE_RING_R,
   REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS, COMBO_MAX,
   intertitleForWave, INTERTITLE_MS,
 } from './types.js';
@@ -20,7 +21,7 @@ import { getAsteroidStyle, shouldReduceMotion } from './a11y.js';
 import { getActiveSkin } from './skins.js';
 import { getMemberImage } from './sanctum-avatars.js';
 import { getFlavour } from './flavour.js';
-import { getVisualStyle, getTheme, isWebGLOverlayReady, callWebGLOverlay, reducedFxActive, mobileRuntimeActive } from './visual-style.js';
+import { getVisualStyle, getTheme, isWebGLOverlayReady, callWebGLOverlay, reducedFxActive, mobileRuntimeActive, getParticleBudget } from './visual-style.js';
 import { DEPTH_CONFIGS } from './parallax.js';
 import { getRadarVisible, getRadarLandscape, getRadarTilt } from './radar.js';
 import { buildSeamlessStarfield, drawParallaxStarfield } from './starfield.js';
@@ -2737,25 +2738,25 @@ function drawStationPart(ctx: CanvasRenderingContext2D, a: Asteroid, now: number
     const r = a.radius;
     const hpFrac = a.hpMax > 0 ? Math.max(0, Math.min(1, a.hp / a.hpMax)) : 1;
     const lit = 0.25 + 0.75 * hpFrac;  // dims toward dead
-    const cowl = ctx.createLinearGradient(0, -r * 1.5, 0, r * 1.5);
-    cowl.addColorStop(0, '#838c9a'); cowl.addColorStop(1, '#4a5160');
+    const cowl = ctx.createLinearGradient(0, -r * 0.92, 0, r * 0.92);
+    cowl.addColorStop(0, '#6b9aa5'); cowl.addColorStop(1, '#20323d');
     ctx.fillStyle = cowl;
     ctx.strokeStyle = '#2c323d';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.moveTo(-r * 1.2, -r * 1.5); ctx.lineTo(r * 0.6, -r);
-    ctx.lineTo(r * 0.6, r); ctx.lineTo(-r * 1.2, r * 1.5);
+    ctx.moveTo(-r * 1.2, -r * 0.92); ctx.lineTo(r * 0.6, -r * 0.65);
+    ctx.lineTo(r * 0.6, r * 0.65); ctx.lineTo(-r * 1.2, r * 0.92);
     ctx.closePath(); ctx.fill(); ctx.stroke();
     const pulse = (0.7 + 0.3 * Math.sin(now * 0.006 + (a.stationSlot ?? 0) * 3)) * lit;
-    const g = ctx.createRadialGradient(r * 0.9, 0, 0, r * 0.9, 0, r * 1.7);
+    const g = ctx.createRadialGradient(r * 0.9, 0, 0, r * 0.9, 0, r * 1.05);
     g.addColorStop(0, `rgba(255, 200, 120, ${pulse})`);
     g.addColorStop(1, 'rgba(255, 140, 60, 0)');
     ctx.fillStyle = g;
-    ctx.beginPath(); ctx.arc(r * 0.9, 0, r * 1.7, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(r * 0.9, 0, r * 1.05, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = `rgba(255, 217, 160, ${lit})`;
     ctx.shadowColor = '#ffb24a';
     ctx.shadowBlur = 8 * lit;
-    ctx.beginPath(); ctx.arc(r * 0.9, 0, r * 0.7, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(r * 0.9, 0, r * 0.55, 0, Math.PI * 2); ctx.fill();
     if (flash > 0.01) {
       // Bright white pop over the whole pod so a hit reads unmistakably.
       ctx.shadowColor = '#ffffff';
@@ -3768,7 +3769,7 @@ function drawMine(ctx: CanvasRenderingContext2D, m: Mine, now: number): void {
 
 function drawBullet(ctx: CanvasRenderingContext2D, b: Bullet, friendly: boolean): void {
   if (!b.alive) return;
-  const speed = Math.hypot(b.vel.x, b.vel.y);
+  const speed = Math.max(0.001, Math.hypot(b.vel.x, b.vel.y));
   const len = Math.max(6, speed * 0.012);
   const ux = b.vel.x / speed;
   const uy = b.vel.y / speed;
@@ -4279,53 +4280,16 @@ function drawParticles(ctx: CanvasRenderingContext2D, particles: ReadonlyArray<P
   ctx.save();
   ctx.shadowBlur = 0;
   if (particleShaded) {
-    // SHADED tier — additive blend so overlapping bursts brighten
-    // rather than just covering each other; ~1.4× sprite radius so
-    // bursts feel chunkier. Soft falloff via two-stop radial gradient
-    // per unique colour (cached across consecutive same-colour
-    // particles, which is the common case for an explosion ring).
-    ctx.globalCompositeOperation = 'lighter';
-    let lastColour: string | null = null;
-    let lastAlpha = -1;
-    let lastSize = -1;
-    let cachedGrad: CanvasGradient | null = null;
-    let cachedGradSize = 0;
-    for (const p of particles) {
-      const alpha = p.ttl / p.maxTtl;
-      if (alpha < 0.05) continue;
-      const r = p.size * (0.7 + 0.6 * alpha);
-      if (p.colour !== lastColour || Math.abs(r - cachedGradSize) > 0.5) {
-        // Rebuild the gradient — only happens on colour OR size shift.
-        // The size-shift threshold (0.5 px) avoids rebuilding for every
-        // sub-pixel falloff step during a fade.
-        const g = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
-        g.addColorStop(0, p.colour);
-        g.addColorStop(0.55, p.colour.startsWith('rgba')
-          ? p.colour.replace(/[\d.]+\)$/, '0.35)')
-          : p.colour + '5a');
-        g.addColorStop(1, 'rgba(0,0,0,0)');
-        cachedGrad = g;
-        cachedGradSize = r;
-        lastColour = p.colour;
-        ctx.fillStyle = g;
-      }
-      if (alpha !== lastAlpha) { ctx.globalAlpha = alpha; lastAlpha = alpha; }
-      if (r !== lastSize) lastSize = r;
-      ctx.save();
-      ctx.translate(p.pos.x, p.pos.y);
-      ctx.fillStyle = cachedGrad ?? p.colour;
-      ctx.beginPath();
-      ctx.arc(0, 0, r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
     ctx.restore();
+    drawLitParticles(ctx, particles, getParticleBudget(), !mobileLite && !shouldReduceMotion());
     return;
   }
   // VECTOR tier — flat alpha-blended disc per particle, batched.
   let lastColour: string | null = null;
   let lastAlpha = -1;
-  for (const p of particles) {
+  const stride = Math.max(1, Math.ceil(particles.length / getParticleBudget()));
+  for (let i = 0; i < particles.length; i += stride) {
+    const p = particles[i];
     const alpha = p.ttl / p.maxTtl;
     if (alpha < 0.05) continue;
     if (p.colour !== lastColour) { ctx.fillStyle = p.colour; lastColour = p.colour; }
@@ -5746,6 +5710,13 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
   // Below the HUD top block — the SCORE / SATS stack reaches roughly topY+110.
   let y0 = 16 + insets.top + 120;
   let h = 76;
+  if (bossReadout(s)) {
+    // A small map above the thumb controls, never across the boss itself.
+    w = Math.min(220, w);
+    x0 = (renderMode.vw - w) / 2;
+    y0 = renderMode.vh - insets.bottom - (document.body.classList.contains('touch-active') ? 190 : 44);
+    h = 24;
+  }
   if (radarDeathmatch) {
     const maxW = renderMode.vw - 48 - insets.left - insets.right;
     const maxH = renderMode.vh - 128 - insets.top - insets.bottom;
@@ -5901,7 +5872,7 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
   // drawImage), 'subtle' uses a 96% top-edge, 'cabinet' the original 92%.
   // 76 drawImage calls per frame is negligible on any GPU that can run
   // the rest of the game.
-  const tilt = getRadarTilt();
+  const tilt = mobileLite ? 'off' : getRadarTilt();
   if (tilt === 'off') {
     ctx.drawImage(off, x0, y0);
   } else {
@@ -5925,7 +5896,7 @@ function drawRadar(ctx: CanvasRenderingContext2D, s: GameState): void {
  *  screen-pixel space over the world but under the HUD readouts, at state.flash
  *  alpha. See s.flash (set in stationCoreFinale, decays in updateGame). */
 function drawScreenFlash(ctx: CanvasRenderingContext2D, state: GameState): void {
-  if (state.flash <= 0.002) return;
+  if (state.flash <= 0.002 || shouldReduceMotion()) return;
   ctx.save();
   const w = renderMode.kind === 'modern' ? renderMode.vw : WORLD_W;
   const h = renderMode.kind === 'modern' ? renderMode.vh : WORLD_H;
@@ -5941,12 +5912,69 @@ function drawScreenFlash(ctx: CanvasRenderingContext2D, state: GameState): void 
 function drawHudLayer(ctx: CanvasRenderingContext2D, state: GameState): void {
   if (state.phase === 'title') return;
   drawScreenFlash(ctx, state);
-  drawHud(ctx, state);
+  const boss = bossReadout(state);
+  if (!boss) drawHud(ctx, state);
+  ctx.save();
+  if (renderMode.kind === 'modern') ctx.setTransform(renderMode.dpr, 0, 0, renderMode.dpr, 0, 0);
+  const bossHudW = renderMode.kind === 'modern' ? renderMode.vw : WORLD_W;
+  if (boss) {
+    const compact = renderMode.kind === 'modern' && renderMode.vw > renderMode.vh && renderMode.vh < 500;
+    // Boss information occupies one top band. The ordinary stacked score,
+    // wave and ghost rails otherwise put the boss panel into the arena.
+    const left = 16 + renderMode.insets.left;
+    const right = bossHudW - 16 - renderMode.insets.right;
+    const y = renderMode.insets.top + 8;
+    const p = state.players[renderMode.localSlot ?? 0] ?? state.players[0];
+    ctx.shadowBlur = 0;
+    ctx.textBaseline = 'top';
+    ctx.font = 'bold 12px ui-monospace, monospace';
+    ctx.fillStyle = '#a8ecce';
+    ctx.textAlign = 'left';
+    ctx.fillText(`SCORE ${pad(p.score, 6)}`, left, y);
+    ctx.textAlign = 'right';
+    ctx.fillText(`LIVES ${p.lives}`, right, y);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#89b6ff';
+    if (!compact) ctx.fillText(`W${state.wave}`, bossHudW / 2, y);
+    const chips: string[] = [];
+    if (state.session && !state.cheatedThisRun) chips.push(`₿ ${Math.floor(p.displaySats)}`);
+    if (p.combo >= 2) chips.push(`×${p.combo} CHAIN`);
+    if (state.elapsed < p.rapidExpiresAt) chips.push('RAPID');
+    if (state.elapsed < p.tridentExpiresAt) chips.push('TRIDENT');
+    if (state.elapsed < p.magnetExpiresAt) chips.push('MAGNET');
+    if (state.elapsed < p.satboostExpiresAt) chips.push('×2 SATS');
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.fillStyle = '#ffd480';
+    ctx.fillText(compact ? [`W${state.wave}`, ...chips].join(' · ') : chips.join(' · '),
+      bossHudW / 2, y + (compact ? 0 : 18), compact ? Math.max(120, right - left - 260) : right - left);
+    drawBossStatus(ctx, state, bossHudW, renderMode.insets.top + (compact ? 24 : 42), compact);
+  }
+  ctx.restore();
   drawRadar(ctx, state);
   drawWaveBanner(ctx, state);
   drawBonusBanner(ctx, state);
   drawWaveClearCountdown(ctx, state);
   drawIntertitle(ctx, state);
+}
+
+/** Keep readouts above the independent WebGL surface. Other render targets
+ * (watch tiles, replay exports, test canvases) retain their own inline HUD. */
+function hudContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D | null {
+  const layer = canvas.id === 'game' ? document.getElementById('gamehud') as HTMLCanvasElement | null : null;
+  if (!layer) return null;
+  if (layer.width !== canvas.width) layer.width = canvas.width;
+  if (layer.height !== canvas.height) layer.height = canvas.height;
+  if (layer.style.width !== canvas.style.width) layer.style.width = canvas.style.width;
+  if (layer.style.height !== canvas.style.height) layer.style.height = canvas.style.height;
+  return layer.getContext('2d');
+}
+
+function drawCanvasHud(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D, state: GameState): void {
+  const hud = hudContext(canvas);
+  if (!hud) { drawHudLayer(ctx, state); return; }
+  installShadowBlurGate(hud);
+  hud.setTransform(ctx.getTransform());
+  drawHudLayer(hud, state);
 }
 
 /** Crisp HUD pass for the ASCII theme. render() skips the HUD layer while
@@ -5959,13 +5987,15 @@ export function drawAsciiHud(canvas: HTMLCanvasElement, state: GameState): void 
   if (state.phase === 'warp' || state.phase === 'deathreplay') return;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
-  drawHudLayer(ctx, state);
+  drawCanvasHud(canvas, ctx, state);
 }
 
 // ── Main render ───────────────────────────────────────────────────────────────
 
 export function render(canvas: HTMLCanvasElement, state: GameState, now: number): void {
   const ctx = canvas.getContext('2d')!;
+  const hud = hudContext(canvas);
+  if (hud) { hud.setTransform(1, 0, 0, 1, 0, 0); hud.clearRect(0, 0, canvas.width, canvas.height); }
   installShadowBlurGate(ctx);   // one-time: clamp shadowBlur to 0 while mobileLite (iOS killer)
   // Follow camera centres on the LOCAL slot — defaults to players[0] for
   // every solo / couch / spectate / portrait-solo path; only the slot-1
@@ -5986,7 +6016,8 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // phase branches, so the transform, the seam-wrap offsets, the clip and the
   // star field all share one camera. Render-only: the sim never sees any of
   // this, so B3 determinism is untouched.
-  const followActive = !!renderMode.follow && isFollowPhase(state.phase);
+  const framedBoss = renderMode.kind === 'modern' ? bossReadout(state) : null;
+  const followActive = (!!renderMode.follow || !!framedBoss) && isFollowPhase(state.phase);
   // Arena cage: shown from wavestart onward (title keeps the bg cycle).
   const arenaRun = arenaActive() && state.phase !== 'title';
   const deathmatchRun = deathmatchActive() && state.phase !== 'title';
@@ -6001,29 +6032,48 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   let camStripY = WORLD_H;
   const followXs: number[] = [0];
   if (followActive) {
-    scale = renderMode.vh / WORLD_H;        // full world height fills the viewport
+    const touch = document.body.classList.contains('touch-active');
+    const portrait = renderMode.vh > renderMode.vw;
+    const compactBoss = !!framedBoss && !portrait && renderMode.vh < 500;
+    const topReserve = framedBoss ? renderMode.insets.top + (compactBoss ? 84 : 120) : 0;
+    const bottomReserve = framedBoss ? renderMode.insets.bottom + (touch && portrait ? 202 : 24) : 0;
+    const sideReserve = framedBoss && touch && !portrait ? 166 : 0;
+    const areaW = Math.max(120, renderMode.vw - renderMode.insets.left - renderMode.insets.right - sideReserve * 2);
+    const areaH = Math.max(120, renderMode.vh - topReserve - bottomReserve);
+    scale = framedBoss ? areaH / (compactBoss ? 360 : Math.min(renderMode.vw, renderMode.vh) < 600 ? 480 : WORLD_H) : renderMode.vh / WORLD_H;
     camStrip = renderMode.vw / scale;       // visible world width
     camStripY = renderMode.vh / scale;
-    // Boss framing bias: when a station/forge core is on the field, pull the
-    // follow target most of the way toward it, so a corner-spawned ship and the
-    // big central boss frame together on portrait. Without this the follow-cam
-    // centres on the ship and clips the boss off a phone's edge. Render-only —
-    // the sim never reads camX, so co-op lockstep is unaffected. Wrap-aware.
-    const bossCore = state.asteroids.find(a => a.alive && a.stationPart === 'core');
-    const sx = bossCore
-      ? wrapInto(p0.ship.pos.x + wrapDelta(p0.ship.pos.x, bossCore.pos.x) * FORGE_CAM_BIAS)
-      : p0.ship.pos.x;
+    // Boss framing is presentation-only; it never changes the fixed world.
+    const bossCore = framedBoss?.core;
+    // Frame the union of ship + visible shell whenever it fits. Clamp the
+    // shift so a distant/chasing core can never push the pilot off-screen.
+    let sx = p0.ship.pos.x;
+    if (bossCore) {
+      const delta = wrapDelta(sx, bossCore.pos.x);
+      const bossR = state.forgeEscaped ? bossCore.radius + 16 : Math.max(FORGE_RING_R + 30,
+        ...state.asteroids.filter(a => a.alive && a.stationPart).map(a => Math.hypot(wrapDelta(bossCore.pos.x, a.pos.x), a.pos.y - bossCore.pos.y) + a.radius));
+      scale = Math.min(scale, areaW / (Math.max(24, delta + bossR) - Math.min(-24, delta - bossR) + 64));
+      const loY = Math.min(p0.ship.pos.y - 24, bossCore.pos.y - bossR);
+      const hiY = Math.max(p0.ship.pos.y + 24, bossCore.pos.y + bossR);
+      scale = Math.min(scale, areaH / (hiY - loY + (compactBoss ? 48 : 64)));
+      camY = Math.max(areaH / scale / 2, Math.min(WORLD_H - areaH / scale / 2, (loY + hiY) / 2));
+      camStrip = renderMode.vw / scale;
+      camStripY = renderMode.vh / scale;
+      const midpoint = (Math.min(-24, delta - bossR) + Math.max(24, delta + bossR)) / 2;
+      const limit = Math.max(0, camStrip / 2 - 48);
+      sx = wrapInto(sx + Math.max(-limit, Math.min(limit, midpoint)));
+    }
     const sy = p0.ship.pos.y;
     if (!camInit) {
       // Fresh run, post-death respawn, or a rotation into portrait: snap on.
       camX = deathmatchRun ? clampCamera(sx, camStrip, rw) : wrapInto(sx);
-      camY = deathmatchRun ? clampCamera(sy, camStripY, rh) : WORLD_H / 2;
+      if (!bossCore) camY = deathmatchRun ? clampCamera(sy, camStripY, rh) : WORLD_H / 2;
       camInit = true;
     } else if (p0.ship.alive) {
       // Dead-zone follow: the camera holds until the ship leaves a central
       // band, then eases toward the band edge. Held entirely while the ship is
       // dead so a death is not yanked off-centre.
-      const dz = camStrip * 0.16;
+      const dz = bossCore ? 0 : camStrip * 0.16;
       const d = deathmatchRun ? (sx - camX) : wrapDelta(camX, sx);
       let target = camX;
       if (d > dz) target = camX + (d - dz);
@@ -6043,12 +6093,17 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       }
     }
     camPrevNow = now;
+    // Wide boss views already contain the complete world. Centre it and
+    // avoid drawing a second full WebGL scene just for the letterbox margin.
+    const wholeBossWorld = !!bossCore && camStrip >= WORLD_W;
+    if (wholeBossWorld) camX = WORLD_W / 2;
     tx = renderMode.vw / 2 - camX * scale;
-    ty = deathmatchRun ? (renderMode.vh / 2 - camY * scale) : 0;
+    ty = bossCore ? topReserve + areaH / 2 - camY * scale
+      : deathmatchRun ? (renderMode.vh / 2 - camY * scale) : 0;
     // Seam-wrap copies: pull in a world-neighbour copy only when the visible
     // strip actually overruns a seam, so calm frames stay single-pass.
     // Arena has no wrap, so no seam copies: the camera simply scrolls.
-    if (!noWrapRun) {
+    if (!noWrapRun && !wholeBossWorld) {
       if (camX - camStrip / 2 < 0) followXs.push(-WORLD_W);
       if (camX + camStrip / 2 > WORLD_W) followXs.push(WORLD_W);
     }
@@ -6187,6 +6242,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   const introHidesField = state.phase === 'wavestart'
     && (intertitleHoldMs(state) === 0 || isIntertitleHolding(state));
 
+  const sortedAsteroids = state.asteroids.slice().sort((p, q) => (p.depth ?? 3) - (q.depth ?? 3));
   if (!introHidesField) for (const dx of ghostXs) {
     for (const dy of ghostYs) {
       const isGhost = dx !== 0 || dy !== 0;
@@ -6197,7 +6253,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       // the resulting ship occlusion confusing and unpredictable
       // ("ship goes behind some asteroids"). Ship now stays on top of
       // every band; depth still reads via size/speed/opacity cues.
-      const sortedAsteroids = state.asteroids.slice().sort((p, q) => (p.depth ?? 3) - (q.depth ?? 3));
+      drawBossReactor(ctx, state, !mobileLite, shouldReduceMotion());
       for (const a of sortedAsteroids) {
         if (!visibleInDeathmatchView(a.pos.x, a.pos.y, a.radius)) continue;
         const dCfg = DEPTH_CONFIGS[a.depth ?? 3];
@@ -6294,7 +6350,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // through the character resample into an unreadable smear. main.ts
   // re-runs drawAsciiHud crisp once the postfx has finished.
   if (!hudHidden && getTheme() !== 'ascii') {
-    drawHudLayer(ctx, state);
+    drawCanvasHud(canvas, ctx, state);
   }
 
   // WebGL mesh overlay — runs only if any category is currently on

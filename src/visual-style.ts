@@ -12,11 +12,12 @@
  * settings panel offers a quick-preset shortcut (ALL CLASSIC / ALL SHADED /
  * ALL 3D) for the common case.
  *
- * Defaults vary by flavour: main game opens with everything VECTOR (matches
- * what returning players see), 600bn opens with everything MESH (the
- * Sanctum teaser is the showcase for the WebGL pipeline).
+ * Fresh installs use mesh with standard presentation. Quality is a separate
+ * automatic budget for pixels, effects and a low-tier 2D fallback. Saved art
+ * choices return when the frame budget recovers.
  */
 
+import { QUALITY_BUDGETS, QualityGovernor, type QualityLevel, type QualityPreference } from './quality.js';
 import type { Asteroid, PowerUp, Ship, Ufo } from './types.js';
 import { ASCII_COLS, BIT_DEPTH, coerceThemeId, type ThemeId } from './postfx/index.js';
 
@@ -61,8 +62,17 @@ function defaults(): State {
 
 let cached: State | null = null;
 
+let cachedSearch: string | null = null;
+let cachedParams = new URLSearchParams();
+
 function urlFlag(name: string): string | null {
-  try { return new URLSearchParams(window.location.search).get(name); }
+  try {
+    if (cachedSearch !== window.location.search) {
+      cachedSearch = window.location.search;
+      cachedParams = new URLSearchParams(cachedSearch);
+    }
+    return cachedParams.get(name);
+  }
   catch { return null; }
 }
 
@@ -111,94 +121,60 @@ export function mobilePerformanceGuardActive(): boolean {
   return !fxOverrideForcesFull() && mobileRuntimeActive();
 }
 
+const QUALITY_KEY = 'pallasite:quality';
+const governor = new QualityGovernor(mobileRuntimeActive() ? 'balanced' : 'high');
+let qualityPreference: QualityPreference = (() => {
+  try {
+    const saved = localStorage.getItem(QUALITY_KEY);
+    if (saved === 'low' || saved === 'balanced' || saved === 'high') return saved;
+  } catch { /* storage is optional */ }
+  return 'auto';
+})();
+
+export function getQualityPreference(): QualityPreference { return qualityPreference; }
+export function getQualityLevel(): QualityLevel {
+  if (fxOverrideForcesFull()) return 'high';
+  return qualityPreference === 'auto' ? governor.level : qualityPreference;
+}
+
+function notifyQuality(): void {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('pallasite:quality'));
+  if (getQualityLevel() !== 'low') void warmWebGLIfPreviouslyEnabled();
+}
+
+export function setQualityPreference(value: QualityPreference): void {
+  qualityPreference = value;
+  governor.resetSamples();
+  try { localStorage.setItem(QUALITY_KEY, value); } catch { /* storage is optional */ }
+  notifyQuality();
+}
+
 export function getRenderDprCap(): number {
-  // DPR is fixed at fit/resize time, so key it on the STATIC device guard, not
-  // the runtime governor — flipping the backing-store resolution mid-run would
-  // force a canvas resize and a visible reflow. Phones get the bounded DPR.
-  return mobilePerformanceGuardActive() ? 1.5 : 2;
+  const budget = QUALITY_BUDGETS[getQualityLevel()];
+  // Bound total pixels as well as DPR: retina desktop and tablet canvases
+  // otherwise multiply the cost of both the 2D and WebGL surfaces.
+  const area = typeof window === 'undefined' ? 1280 * 720
+    : Math.max(1280 * 720, window.innerWidth * window.innerHeight);
+  return Math.min(budget.dpr, Math.sqrt(budget.pixels / area));
 }
 
-// ── Adaptive performance governor ────────────────────────────────────────────
-//
-// Capability-based, not device-based. UA/viewport sniffing (mobileRuntimeActive)
-// is a guess — it punishes a fast tablet and misses a struggling old laptop on
-// integrated graphics. The governor instead watches real frame time and flips a
-// runtime "shed the expensive cheap-FX" flag on ANY device that can't hold rate.
-//
-// Scope is deliberately cheap-FX-only: it sheds shadowBlur glow and full-frame
-// post-FX (the per-frame costs that scale with on-screen entity count), and
-// NEVER touches the player's chosen mesh/vector art tiers. Runtime-only, never
-// persisted. Hysteresis (different drop/raise thresholds) plus a change cooldown
-// keep it from oscillating; the rolling window itself supplies the "sustained"
-// requirement so a single GC stutter can't trip it.
-const PERF_WINDOW = 90;             // frames sampled (~1.5s at 60Hz)
-const PERF_DROP_MS = 22;            // a frame slower than this (~<45fps) is "slow"
-const PERF_RAISE_MS = 13;           // a frame faster than this (~>75fps) is "fast"
-const PERF_DROP_FRACTION = 0.2;     // ≥20% of the window slow → shed FX
-const PERF_RAISE_FRACTION = 0.9;    // ≥90% of the window fast → restore FX
-const PERF_CHANGE_COOLDOWN_MS = 3000; // min wall-time between state flips
-const PERF_OUTLIER_MS = 500;        // ignore tab-restore / first-frame spikes
+export function getParticleBudget(): number { return QUALITY_BUDGETS[getQualityLevel()].particles; }
 
-const perfFrames: number[] = [];    // ring of recent rAF deltas (ms)
-let perfHead = 0;
-let perfFilled = 0;
-let perfSlowCount = 0;              // frames in window with dt > PERF_DROP_MS
-let perfFastCount = 0;             // frames in window with dt < PERF_RAISE_MS
-let perfMsSinceChange = PERF_CHANGE_COOLDOWN_MS; // allow an early first decision
-let governorShedFx = false;        // the runtime decision the renderer reads
-
-/** Feed one rAF frame delta to the governor. Called once per frame from the
- *  main loop. O(1) — maintains the slow/fast counts incrementally so there's no
- *  per-frame sort. */
 export function recordFrameTime(ms: number): void {
-  if (!(ms > 0) || ms > PERF_OUTLIER_MS) return; // drop spikes (backgrounded tab etc.)
-  perfMsSinceChange += ms;
-  // Evict the value leaving the window, fold in the new one.
-  if (perfFilled === PERF_WINDOW) {
-    const old = perfFrames[perfHead];
-    if (old > PERF_DROP_MS) perfSlowCount--;
-    if (old < PERF_RAISE_MS) perfFastCount--;
-  } else {
-    perfFilled++;
-  }
-  perfFrames[perfHead] = ms;
-  if (ms > PERF_DROP_MS) perfSlowCount++;
-  if (ms < PERF_RAISE_MS) perfFastCount++;
-  perfHead = (perfHead + 1) % PERF_WINDOW;
-
-  // Decide only on a full window and outside the cooldown.
-  if (perfFilled < PERF_WINDOW || perfMsSinceChange < PERF_CHANGE_COOLDOWN_MS) return;
-  const slowFrac = perfSlowCount / PERF_WINDOW;
-  const fastFrac = perfFastCount / PERF_WINDOW;
-  if (!governorShedFx && slowFrac >= PERF_DROP_FRACTION) {
-    governorShedFx = true;
-    perfMsSinceChange = 0;
-    console.log(`[perf] sustained slow frames (${Math.round(slowFrac * 100)}% > ${PERF_DROP_MS}ms) — shedding expensive FX`);
-  } else if (governorShedFx && fastFrac >= PERF_RAISE_FRACTION) {
-    governorShedFx = false;
-    perfMsSinceChange = 0;
-    console.log(`[perf] frame budget recovered (${Math.round(fastFrac * 100)}% < ${PERF_RAISE_MS}ms) — restoring FX`);
-  }
+  if (qualityPreference !== 'auto' || fxOverrideForcesFull()) return;
+  if (governor.sample(ms)) notifyQuality();
 }
 
-/** The unified "render in reduced-FX mode" decision used by the per-frame
- *  presentation paths (shadowBlur glow, post-FX theme). True when EITHER the
- *  static phone guard is active OR the runtime governor has shed FX on a
- *  device measuring as overloaded. The force-full URL flags veto both. */
-export function reducedFxActive(): boolean {
-  if (fxOverrideForcesFull()) return false;
-  return mobileRuntimeActive() || governorShedFx;
-}
+export function resetFrameTimes(): void { governor.resetSamples(); }
 
-function effectiveTier(cat: VisualCategory, tier: VisualTier): VisualTier {
-  void cat;
-  // No auto-downgrade: the player's chosen tier stands on every device. Mesh is
-  // WebGL (GPU) and is actually CHEAPER than the shaded 2D path on iOS Safari —
-  // that path's per-frame radial gradients, shadowBlur and large fills are the
-  // real cost — so forcing phones to 'shaded' (the old behaviour here) made them
-  // SLOWER, not faster. Tier stays a player choice via the settings panel; the
-  // adaptive governor only sheds cheap FX (see reducedFxActive), never art tiers.
-  return tier;
+/** Optional glow and full-frame filters yield before gameplay clarity. */
+export function reducedFxActive(): boolean { return getQualityLevel() !== 'high'; }
+
+function effectiveTier(_cat: VisualCategory, tier: VisualTier): VisualTier {
+  // At the lowest budget, stop paying mesh draw-call/driver costs as well
+  // as fill-rate. This rescues software WebGL and old GPUs; the stored mesh
+  // choice returns automatically when the governor recovers a higher tier.
+  return tier === 'mesh' && getQualityLevel() === 'low' ? 'shaded' : tier;
 }
 
 /** Coerce an unknown value into a known VisualTier; unknown → 'vector'. */
@@ -413,7 +389,8 @@ let overlayShipExplosionFn: ((pos: { x: number; y: number }, vel: { x: number; y
 let overlayClearShipChunksFn: (() => void) | null = null;
 let overlayPrewarmMeshesFn: (() => void) | null = null;
 let overlayReady = false;
-export function isWebGLOverlayReady(): boolean { return overlayReady; }
+let overlayUsableFn: (() => boolean) | null = null;
+export function isWebGLOverlayReady(): boolean { return overlayReady && (overlayUsableFn?.() ?? false); }
 export function callWebGLOverlay(opts: WebGLOverlayCall): void {
   overlayRenderFn?.(opts);
 }
@@ -450,6 +427,7 @@ async function warmWebGL(): Promise<void> {
     try {
       const mod = await import('./webgl/overlay.js');
       await mod.ensureWebGLOverlay();
+      overlayUsableFn = () => mod.getReadyOverlay() !== null;
       overlayRenderFn = mod.renderOverlay;
       overlayShipExplosionFn = mod.spawnShipMeshExplosion;
       overlayClearShipChunksFn = mod.clearShipChunks;

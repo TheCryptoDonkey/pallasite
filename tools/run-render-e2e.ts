@@ -310,6 +310,8 @@ async function main(): Promise<void> {
       // We could equally probe slot 1 or a spectator; slot 0 is cheapest.
       const ctxA = await browser.newContext({ viewport: { width: 1280, height: 720 } });
       const ctxB = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+      await ctxA.addInitScript(() => localStorage.setItem('pallasite:quality', 'high'));
+      await ctxB.addInitScript(() => localStorage.setItem('pallasite:quality', 'high'));
       const pageA = await ctxA.newPage();
       const pageB = await ctxB.newPage();
       pageA.on('pageerror', (e: Error) => process.stderr.write(`[A pageerror] ${e.message}\n`));
@@ -380,6 +382,7 @@ async function main(): Promise<void> {
           probe,
         };
       });
+      reportCheck(checks, '3D renderer exercised', webglReady && diag.probe?.shipTier === 'mesh', `ready=${webglReady} tier=${diag.probe?.shipTier}`);
       process.stdout.write(`diag: ${JSON.stringify(diag)}\n`);
       // Capture a debug screenshot so a failing run leaves an artefact.
       await pageA.screenshot({ path: '/tmp/render-e2e-canvas.png', fullPage: false });
@@ -407,32 +410,47 @@ async function main(): Promise<void> {
       const p0 = state.players[0];
       const p1 = state.players[1];
       if (p0 && p1) {
-        // Count "ship pixels" — pixels in a tight 11×11 window centred on
-        // the exact spawn coord where MIN(R,G,B) > threshold. Ship hulls
-        // are bright in all three channels; the bluish planet (which sits
-        // ~30-50 px to the right of slot 1's spawn) has low R; dark space
-        // has low everything. Take the max count across multiple samples
-        // so spawn-invuln flicker can't suppress the count.
-        const sampleShipPixels = async (worldX: number, worldY: number): Promise<{ count: number; sampled: number; maxMinChannel: number }> => {
-          // Initialise from the first capture so `sampled` reflects the
-          // real window size even when later samples don't improve on
-          // count = 0 (the "ship missing" case).
-          let best = { count: -1, sampled: 0, maxMinChannel: 0 };
-          for (let i = 0; i < SAMPLE_FRAMES; i++) {
-            const cap = await captureWindow(pageA, worldX, worldY, SAMPLE_RADIUS_WORLD);
-            const sampled = cap.bytes.length / 4;
-            let count = 0;
-            let maxMn = 0;
-            for (let j = 0; j < cap.bytes.length; j += 4) {
-              const r = cap.bytes[j], g = cap.bytes[j + 1], b = cap.bytes[j + 2];
-              const mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
-              if (mn > maxMn) maxMn = mn;
-              if (mn > PIXEL_MIN_CHANNEL_THRESHOLD) count++;
+        // Isolate each ship's visible contribution against its own background.
+        const sampleShipPixels = async (worldX: number, worldY: number): Promise<{ count: number; sampled: number; peakRgbDelta: number }> => {
+          return pageA.evaluate(async ([wx, wy]) => {
+            const modulePath = '/src/render.ts';
+            const { render } = await import(modulePath);
+            // Compare the same scene with and without ships. Player hulls are
+            // intentionally green/blue now; a white-pixel threshold rejects
+            // visible ships and can mistake a bright background for a hull.
+            const s = (window as any).__pallasiteState;
+            const game = document.getElementById('game') as HTMLCanvasElement;
+            const overlay = document.getElementById('game3d') as HTMLCanvasElement;
+            const composite = document.createElement('canvas');
+            composite.width = game.width; composite.height = game.height;
+            const ctx = composite.getContext('2d')!;
+            const saved = s.players.map((p: any) => ({ alive:p.ship.alive, invulnerableUntil:p.ship.invulnerableUntil }));
+            const now = performance.now();
+            const dpr = game.width / 1280;
+            const radius = Math.ceil(5 * dpr);
+            const x = Math.round(wx * dpr) - radius, y = Math.round(wy * dpr) - radius;
+            const frames: Uint8ClampedArray[] = [];
+            try {
+              for (const visible of [false, true]) {
+                s.players.forEach((p: any, i: number) => { p.ship.alive = visible && saved[i].alive; p.ship.invulnerableUntil = 0; });
+                render(game, s, now);
+                ctx.clearRect(0, 0, game.width, game.height);
+                ctx.drawImage(game, 0, 0);
+                ctx.drawImage(overlay, 0, 0);
+                frames.push(ctx.getImageData(x, y, radius * 2, radius * 2).data);
+              }
+            } finally {
+              s.players.forEach((p: any, i: number) => Object.assign(p.ship, saved[i]));
+              render(game, s, now);
             }
-            if (best.count < 0 || count > best.count) best = { count, sampled, maxMinChannel: maxMn };
-            await wait(SAMPLE_INTERVAL_MS);
-          }
-          return best;
+            let count = 0, peak = 0;
+            for (let i = 0; i < frames[0].length; i += 4) {
+              const delta = Math.abs(frames[1][i] - frames[0][i]) + Math.abs(frames[1][i+1] - frames[0][i+1]) + Math.abs(frames[1][i+2] - frames[0][i+2]);
+              if (delta >= 45) count++;
+              peak = Math.max(peak, delta);
+            }
+            return { count, sampled:frames[0].length / 4, peakRgbDelta:peak };
+          }, [worldX, worldY]);
         };
         const samp0 = await sampleShipPixels(p0.x, p0.y);
         const samp1 = await sampleShipPixels(p1.x, p1.y);
@@ -447,13 +465,13 @@ async function main(): Promise<void> {
           checks,
           'P0 drawn on canvas',
           samp0.count >= SHIP_PIXEL_MIN_COUNT,
-          `count=${samp0.count}/${samp0.sampled} (need >=${SHIP_PIXEL_MIN_COUNT})  maxMin=${samp0.maxMinChannel}`,
+          `count=${samp0.count}/${samp0.sampled} (need >=${SHIP_PIXEL_MIN_COUNT})  peakRgbDelta=${samp0.peakRgbDelta}`,
         );
         reportCheck(
           checks,
           'P1 drawn on canvas',
           samp1.count >= SHIP_PIXEL_MIN_COUNT,
-          `count=${samp1.count}/${samp1.sampled} (need >=${SHIP_PIXEL_MIN_COUNT})  maxMin=${samp1.maxMinChannel}`,
+          `count=${samp1.count}/${samp1.sampled} (need >=${SHIP_PIXEL_MIN_COUNT})  peakRgbDelta=${samp1.peakRgbDelta}`,
         );
         reportCheck(
           checks,

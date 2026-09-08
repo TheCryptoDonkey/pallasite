@@ -39,7 +39,7 @@ import { getMusicDebugSnapshot, musicForceRefresh, musicSetTrackForState, preloa
 import { stemsTickForState } from './music-stems.js';
 import { setupTouchControls } from './touch.js';
 import { getDisplayMode, applyDisplayMode } from './display.js';
-import { warmWebGLIfPreviouslyEnabled, ensureWebGLForCurrentStyle, prewarmWebGLMeshesForCurrentStyle, getTheme, getAsciiCols, getBitDepth, getBitColour, getVisualStyle, isWebGLOverlayReady, getRenderDprCap, getBrightness, mobileRuntimeActive, reducedFxActive, recordFrameTime } from './visual-style.js';
+import { warmWebGLIfPreviouslyEnabled, ensureWebGLForCurrentStyle, prewarmWebGLMeshesForCurrentStyle, getTheme, getAsciiCols, getBitDepth, getBitColour, getVisualStyle, isWebGLOverlayReady, getRenderDprCap, getBrightness, mobileRuntimeActive, reducedFxActive, recordFrameTime, resetFrameTimes } from './visual-style.js';
 import { applyPostFx } from './postfx/index.js';
 import { checkForUpdate, querySwVersion } from './version.js';
 import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges, ensureLocalEdges, EMPTY_INPUT, isPeerActive, setPeerActive } from './netcode.js';
@@ -2015,7 +2015,8 @@ function loop(now: number): void {
   // Feed the adaptive performance governor (capability-based reduced-FX). It
   // filters outliers and only acts on a sustained signal, so recording every
   // live frame here is safe and cheap (O(1) per call).
-  recordFrameTime(rawFrameDeltaMs);
+  if (state.phase === 'playing' && !document.hidden) recordFrameTime(rawFrameDeltaMs);
+  else resetFrameTimes();
   if (shouldRecordPeerPerf()) recordPeerPerfSample(peerPerfRaf, rawFrameDeltaMs);
   const frameDeltaS = Math.min(maxCatchupSteps() * FIXED_STEP_S, rawFrameDeltaMs / 1000);
   stepAccumulator += frameDeltaS;
@@ -2639,6 +2640,8 @@ async function boot(): Promise<void> {
     document.body.removeChild(el);
     return insets;
   }
+
+  window.addEventListener('pallasite:quality', () => fit());
 
   function fit(): void {
     const mode = getDisplayMode();

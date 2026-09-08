@@ -42,7 +42,7 @@ import {
   STATION_MISSILE_MS, STATION_MISSILE_CAP, STATION_MISSILE_SPEED, STATION_MISSILE_TURN, STATION_MISSILE_TTL_MS, STATION_MISSILE_RADIUS,
   FORGE_SPAWN, FORGE_CENTRE_Y, FORGE_SEGMENTS, FORGE_RING_R, FORGE_CORE_R, FORGE_SEG_R, FORGE_SPIN, FORGE_ROCK_MS, FORGE_ROCK_SPREAD,
   FORGE_CORE_HP, FORGE_VENT_HP, FORGE_MISSILE_CAP, FORGE_MISSILE_SPEED_MUL, FORGE_MISSILE_TTL_MUL, FORGE_MISSILE_TURN_MUL,
-  FORGE_PULSE_DENSITY, FORGE_PULSE_CADENCE_MS, FORGE_PULSE_DENSITY_MUL, FORGE_PULSE_CADENCE_MUL, FORGE_ROCK_CAP,
+  FORGE_PULSE_DENSITY, FORGE_PULSE_CADENCE_MS, FORGE_PULSE_WARNING_MS, FORGE_PULSE_DENSITY_MUL, FORGE_PULSE_CADENCE_MUL, FORGE_ROCK_CAP,
   FORGE_MELTDOWN_FRAC, FORGE_MELTDOWN_WELLS, FORGE_MELTDOWN_R_START, FORGE_MELTDOWN_R_MIN, FORGE_MELTDOWN_SPIN,
   FORGE_MELTDOWN_WELL_RANGE, FORGE_MELTDOWN_WELL_STRENGTH, FORGE_ESCAPE_FRAC, FORGE_ESCAPE_SPEED, FORGE_ESCAPE_ZIG_MS, FORGE_ESCAPE_HP,
   VEIN_JACKPOT_SATS, VEIN_JACKPOT_SCORE, VEIN_SPAWN_CHANCE,
@@ -147,6 +147,7 @@ export function makeInitialState(): GameState {
     forgeBreached: false,
     forgeMeltdown: false,
     forgeEscaped: false,
+    forgePulseAt: 0,
     defenderMode: false,
     defenderTimerMs: 0,
     defenderCouncilLost: 0,
@@ -1121,7 +1122,7 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
 // places lethal rocks throughout. Built on EAGLE STATION's rig tech (stationPart
 // core/arm/emitter), so the pods + core render for free on the 2D + mesh tiers.
 // Tuning lives in FORGE_* (types.ts). Portrait framing is handled by the
-// follow-cam bias in render.ts (FORGE_CAM_BIAS). All spawn randomness routes
+// ship-and-boss framing in render.ts. All spawn randomness routes
 // through gameRng so co-op lockstep stays bit-identical; the only Math.random in
 // the spawn path is cosmetic (rotation/hue/shape, excluded from the canary).
 // See docs/plans/2026-06-03-wave25-forge-boss.md.
@@ -1158,13 +1159,14 @@ function forgeCorePulse(s: GameState, core: Asteroid, n: number): void {
 
 const THE_FORGE: WaveSetPiece = {
   // A real corner of the play area, not dead-below. On portrait the boss-wave
-  // camera bias (render.ts, FORGE_CAM_BIAS) frames the ship + the central Forge
+  // camera framing (render.ts) frames the ship + the central Forge
   // together, so the corner reads on a phone too — not just landscape.
   playerSpawn: FORGE_SPAWN,
   setup(s) {
     s.forgeBreached = false;
     s.forgeMeltdown = false;
     s.forgeEscaped = false;
+    s.forgePulseAt = 0;
     const d = currentDifficulty();
     const cx = WORLD_W / 2, cy = FORGE_CENTRE_Y;
     // Core — a vein at centre. Sealed only in the emergent sense: the shell
@@ -1255,7 +1257,7 @@ const THE_FORGE: WaveSetPiece = {
     }
 
     // THE FORGE PULSES — the core wakes on its first hit, then every few seconds
-    // it charges (telegraph glow) and releases a dense 360° ring of bullets.
+    // it charges for 900ms and releases a dense 360° ring of bullets.
     // Rotation is randomised each beat (no fixed-gap camp); density + cadence
     // ramp as the core is worn down. See forgeCorePulse.
     if (core && core.hp < core.hpMax && !s.forgeEscaped) {
@@ -1263,17 +1265,20 @@ const THE_FORGE: WaveSetPiece = {
       const band = frac < 0.34 ? 'low' : frac < 0.67 ? 'mid' : 'fresh';
       const pulseMs = FORGE_PULSE_CADENCE_MS[band] * FORGE_PULSE_CADENCE_MUL[d];
       const pulseN = Math.max(5, Math.round(FORGE_PULSE_DENSITY[band] * FORGE_PULSE_DENSITY_MUL[d]));
-      // Telegraph: core glows + sheds sparks in the ~440ms before release.
-      const toRelease = pulseMs - (s.elapsed % pulseMs);
-      if (toRelease < 440) {
-        const k = 1 - toRelease / 440;
+      // Commit a deadline. Crossing an HP band must not jump the clock and
+      // release an attack whose warning the pilot never had time to see.
+      if (s.forgePulseAt === 0) s.forgePulseAt = s.elapsed + pulseMs;
+      const toRelease = s.forgePulseAt - s.elapsed;
+      if (toRelease < FORGE_PULSE_WARNING_MS) {
+        const k = Math.min(1, 1 - toRelease / FORGE_PULSE_WARNING_MS);
         core.hitFlash = Math.max(core.hitFlash, 0.35 + 0.65 * k);
         if (Math.floor(s.elapsed / 80) > Math.floor(prev / 80)) {
           spawnParticles(s, core.pos.x, core.pos.y, 3, '#9be15d', 140 + 240 * k, 240);
         }
       }
-      if (Math.floor(s.elapsed / pulseMs) > Math.floor(prev / pulseMs)) {
+      if (s.elapsed >= s.forgePulseAt) {
         forgeCorePulse(s, core, pulseN);
+        s.forgePulseAt = s.elapsed + pulseMs;
       }
     }
 
@@ -1319,6 +1324,7 @@ const THE_FORGE: WaveSetPiece = {
       // set here each frame; the asteroid update integrates the position.
       if (!s.forgeEscaped && frac < FORGE_ESCAPE_FRAC) {
         s.forgeEscaped = true;
+        s.forgePulseAt = 0;
         core.hp = Math.min(core.hp, FORGE_ESCAPE_HP[d]);  // the chase is a SHORT run-down, not a long grind on a moving target
         for (const a of s.asteroids) {                 // the rig tears apart — pods blow
           if (a.alive && a.stationPart != null && a !== core) {
