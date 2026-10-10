@@ -50,6 +50,15 @@ parallel checks and 188 frames on the isolated candidate. The unchanged
 agreement and active forge pulses passed in these runs. This is evidence of an
 unresolved timing gate, not a demonstrated cause or fix; the limit is retained.
 
+The original `pnpm test:coop-campaign --forge` now passes on unchanged
+functional source `14e969f`: 812 matching simulation frames, active core pulses,
+peak stalls of 50 and 36 against the existing 90-frame limit, and no broker
+frame drops. Three preceding diagnostic runs also passed; their instrumentation
+was removed before this original-command run. See [current forge evidence](evidence/coop-forge-current-original.json).
+The earlier failing runs remain evidence of timing variation. This passing run
+qualifies the current check, without establishing a repair, worst-case
+performance or physical co-op acceptance.
+
 Personal score submissions no longer fall back to a different guest key when
 signing fails. The run captures its account at start; the finished score,
 wave, duration, run id and public display metadata are saved before signing.
