@@ -32,3 +32,16 @@ This regression proves the client lifecycle and booth selection behaviour. It
 does not prove a published My Signet Bunker run, a physical controller/phone,
 real Lightning settlement or one player through all four games. Those remain
 separate acceptance checks in Gamestr Arcade's reliability evidence.
+
+## Remaining verification
+
+The co-op forge timing gate failed with a maximum P2 stall of 96 frames during
+parallel checks and 188 frames on the isolated candidate. The unchanged
+`bfab5e2` source also failed the same 90-frame limit at 102 frames. Simulation
+agreement and active forge pulses passed in these runs. This is evidence of an
+unresolved timing gate, not a demonstrated cause or fix; the limit is retained.
+
+Source review also found a separate public-score fallback that can substitute
+a guest after a personal signer fails. Same-account failure/retry behaviour
+needs its own correction and verification before broad signer continuity can
+be claimed. The normal successful-signing path is a separate live-run gate.
