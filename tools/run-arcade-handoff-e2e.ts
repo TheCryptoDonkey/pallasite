@@ -47,7 +47,20 @@ async function isolated(): Promise<BrowserContext> {
   const context = await browser.newContext({ viewport: { width: 1180, height: 820 } });
   await context.routeWebSocket(/wss:\/\//, socket => socket.close());
   await context.route('**/music/**', route => route.abort());
-  await context.addInitScript(() => { (window as any).__fixtureDocument = crypto.randomUUID(); });
+  await context.addInitScript(() => {
+    (window as any).__fixtureDocument = crypto.randomUUID();
+    (window as any).__fixturePortCloses = 0;
+    const bridgePorts = new WeakSet<MessagePort>();
+    const start = MessagePort.prototype.start, close = MessagePort.prototype.close;
+    MessagePort.prototype.start = function () {
+      this.addEventListener('message', e => { if (e.data?.protocol === 'gamestr-auth-v1' && e.data.type === 'connected') bridgePorts.add(this); });
+      return start.call(this);
+    };
+    MessagePort.prototype.close = function () {
+      if (bridgePorts.has(this)) (window as any).__fixturePortCloses++;
+      return close.call(this);
+    };
+  });
   await context.route(`${arcadeOrigin}/**`, route => route.fulfill({ contentType: 'text/html', body: `<button id="play">Play</button><script>
     let child;
     document.querySelector('#play').onclick=()=>child=window.open(${JSON.stringify(launchUrl)},'_blank');
@@ -104,6 +117,7 @@ try {
   await game.getByRole('button', { name: /PLAYER 1\s*PRESS Ⓐ/ }).click();
   await game.getByRole('button', { name: '▶ START · SOLO', exact: true }).click();
   await game.getByRole('heading', { name: 'PLAYER 1 — SIGN IN', exact: true }).waitFor();
+  assert((await game.evaluate(() => (window as any).__fixturePortCloses)) > 0);
   console.log('PASS next booth visitor cannot inherit the launch account');
   await context.close();
 

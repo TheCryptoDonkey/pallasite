@@ -2208,6 +2208,11 @@ function setupBoothPilot(state: GameState, w: BoothWizard, i: number): void {
     renderBoothSchemePick(state, w, i);
     return;
   }
+  if (i === 0 && boothPilotSessionClaimed && isArcadeHandoffSession(state.session)) {
+    void state.session!.signer.close();
+    state.session = null;
+    state.profile = null;
+  }
   // Sign in — Nostr or guest. P1 → state.session; P2 → state.coopIdentity2 (the
   // existing couch-in-place second-identity field).
   renderAuth(state, () => renderBoothSchemePick(state, w, i), {
