@@ -6,7 +6,7 @@
  */
 
 import type { DeathmatchRules, GameState } from './types.js';
-import { isArcadeHandoffSession } from './arcade-handoff.js';
+import { ARCADE_ORIGIN, isArcadeHandoffSession, isArcadeSignerSession } from './arcade-handoff.js';
 import { SoloScoreOutbox } from './solo-score-outbox.js';
 import { WAVE_LORE, gameOverArcLine } from './types.js';
 import { getActiveRelays, getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRelay, removeRelay, resetRelays } from './relays.js';
@@ -790,7 +790,10 @@ function setupOverlayArrowNav(overlay: HTMLElement, onBack?: () => void): void {
     const active = document.activeElement as HTMLElement | null;
     if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') && e.isTrusted) return;
 
-    const buttons = Array.from(overlay.querySelectorAll<HTMLButtonElement>('button:not([disabled])'))
+    const buttons = [
+      ...overlay.querySelectorAll<HTMLButtonElement>('button:not([disabled])'),
+      ...document.querySelectorAll<HTMLButtonElement>('#pal-score-recovery button:not([disabled])'),
+    ]
       .filter((b) => b.offsetParent !== null);
     if (buttons.length === 0) return;
 
@@ -11030,6 +11033,12 @@ export function refreshScoreRecovery(state: GameState): void {
     // run snapshot. It never borrows the new account or creates a guest.
     void outbox.retry(pending[0], state.session, submitSoloScore).finally(() => refreshScoreRecovery(state));
   });
+  if (isArcadeSignerSession(session)) {
+    el('span', { parent: banner, text: 'Reconnect in the arcade, then launch Pallasite to retry this saved score.' });
+    const reconnect = el('button', { parent: banner, className: 'menu-btn secondary', text: 'RECONNECT IN ARCADE' });
+    reconnect.addEventListener('click', () => window.location.assign(`${ARCADE_ORIGIN}/game/pallasite`));
+    reconnect.style.cssText = 'display:inline-flex;align-items:center;min-height:44px;max-width:100%;box-sizing:border-box;font:inherit;letter-spacing:normal;white-space:normal;touch-action:manipulation;text-decoration:none;';
+  }
   if (hadFocus) retry.focus({ preventScroll: true });
 }
 

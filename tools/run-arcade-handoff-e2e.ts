@@ -44,8 +44,8 @@ const event = { id: bytesToHex(digest), pubkey, sig: bytesToHex(schnorr.sign(dig
 const payload = { v: 1, game: 'pallasite', target: gameOrigin, channel: 'private-arcade-fixture-channel', canSign: true, profile: { name: 'Arcade fixture' }, event };
 const launchUrl = (path: string) => `${gameOrigin}${path}#gamestr-auth=${Buffer.from(JSON.stringify(payload)).toString('base64url')}`;
 const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH });
-async function isolated(path = '/?p1=1'): Promise<BrowserContext> {
-  const context = await browser.newContext({ viewport: { width: 1180, height: 820 } });
+async function isolated(path = '/?p1=1', viewport = { width: 1180, height: 820 }): Promise<BrowserContext> {
+  const context = await browser.newContext({ viewport });
   await context.route('**/*', route => new URL(route.request().url()).origin === gameOrigin && route.request().method() === 'GET' ? route.continue() : route.abort());
   await context.routeWebSocket(/wss:\/\//, socket => socket.close());
   await context.route('**/music/**', route => route.abort());
@@ -169,7 +169,7 @@ try {
 
   // Seed public fixture receipts, not game state or real/public scores. Every
   // signature and HTTP response stays inside this isolated local regression.
-  const recovery = await isolated('/');
+  const recovery = await isolated('/', { width: 320, height: 568 });
   let signAttempts = 0, posts = 0;
   const scoreInput = { score: 125, wave: 2, duration_ms: 9000, run_id: '123456789', mode: 'campaign', player_name: 'Fixture pilot' };
   const other = 'b'.repeat(64);
@@ -196,13 +196,22 @@ try {
     await route.fulfill({ json: { ok: true, id: 'private-fixture-event', published: { ok: 1, total: 1 } } });
   });
   const failedScore = await launch(recovery);
-  await failedScore.getByRole('button', { name: 'RETRY SCORE', exact: true }).click();
+  await failedScore.getByRole('button', { name: 'RETRY SCORE', exact: true }).focus();
+  await failedScore.keyboard.press('Enter');
   await failedScore.waitForFunction(() => document.getElementById('pal-score-recovery')?.textContent?.includes('WAITING TO PUBLISH'));
   assert.equal(signAttempts, 1);
   assert.equal(posts, 0);
   assert.equal(await failedScore.evaluate(key => JSON.parse(localStorage.getItem(key)!).length, SOLO_SCORE_OUTBOX_KEY), 2);
-  await failedScore.close();
-  const retriedScore = await launch(recovery);
+  assert(await failedScore.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  const reconnectBox = await failedScore.getByRole('button', { name: 'RECONNECT IN ARCADE', exact: true }).boundingBox();
+  assert(reconnectBox && reconnectBox.height >= 44);
+  await failedScore.getByRole('button', { name: 'RECONNECT IN ARCADE', exact: true }).focus();
+  await failedScore.keyboard.press('Enter');
+  await failedScore.waitForURL(`${arcadeOrigin}/game/pallasite`);
+  const relaunched = recovery.waitForEvent('page');
+  await failedScore.locator('#play').click();
+  const retriedScore = await relaunched;
+  await retriedScore.waitForFunction(key => (globalThis as any).__signetSignerInfo?.pubkey === key, pubkey);
   await retriedScore.getByRole('button', { name: 'RETRY SCORE', exact: true }).click();
   await retriedScore.locator('#pal-score-recovery').waitFor({ state: 'detached' });
   assert.equal(signAttempts, 2);
@@ -210,7 +219,7 @@ try {
   const remaining = await retriedScore.evaluate(key => JSON.parse(localStorage.getItem(key)!), SOLO_SCORE_OUTBOX_KEY);
   assert.equal(remaining.length, 1);
   assert.equal(remaining[0].pubkey, other);
-  console.log('PASS declined score survives relaunch and retries under the same account without guest fallback');
+  console.log('PASS declined score survives arcade reconnection and retries under the same account without guest fallback');
   await recovery.close();
 } finally {
   await browser.close();

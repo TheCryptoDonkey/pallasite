@@ -42,7 +42,7 @@ another pilot's request arriving during an in-flight signature. The new
 the second account's event signed by the first. It verifies canonical Schnorr
 signatures for overlapping accounts, rejection followed by another account's
 request, and queue re-entry. CI and deployment gates run it. This fixes request
-ownership; the personal-score guest fallback described below is still open.
+ownership; personal-score recovery is described below.
 
 The co-op forge timing gate failed with a maximum P2 stall of 96 frames during
 parallel checks and 188 frames on the isolated candidate. The unchanged
@@ -58,15 +58,21 @@ publication, and only retries with the matching session and signer pubkey.
 Confirmed publication clears that receipt; other accounts' pending runs remain.
 If storage is unavailable, the banner explains that the page must stay open.
 RETRY SCORE uses the original snapshot, while RECONNECT TO RETRY opens signer
-recovery. Pending scores appear again when the same account returns.
+recovery. Arcade-origin sessions also offer RECONNECT IN ARCADE, even after
+the original signing port closes. This returns to the Pallasite launch page so
+the player can reconnect the same arcade account and launch again. It does not
+extend the signer's serving window automatically. Pending scores appear again
+when the same account returns. Both recovery actions participate in menu
+keyboard navigation.
 
 Seven recovery/client regressions cover wrong accounts/signers, auth-only identity,
 failure/reload, snapshot retention, unconfirmed/malformed publication,
 overlapping retries, storage denial, malformed persisted entries and a provider returning another
 account’s signature before HTTP submission. The seventh
 production-browser arcade case seeds private fixture receipts, declines the
-first signature, relaunches, verifies a canonical same-account NIP-98 signature
+first signature, returns to the arcade using Enter, relaunches, verifies a canonical same-account NIP-98 signature
 and matching payload on retry, and preserves another account's receipt. Local
-HTTP responses are fixtures and external writes remain blocked; this does not
+The case uses a 320px viewport, checks for horizontal overflow and verifies a
+44px reconnect touch target. HTTP responses are fixtures and external writes remain blocked; this does not
 prove real gameplay publication. That live-run gate, the shared four-game
 account matrix and physical acceptance remain open.
