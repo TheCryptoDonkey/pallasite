@@ -71,8 +71,19 @@ overlapping retries, storage denial, malformed persisted entries and a provider 
 account’s signature before HTTP submission. The seventh
 production-browser arcade case seeds private fixture receipts, declines the
 first signature, returns to the arcade using Enter, relaunches, verifies a canonical same-account NIP-98 signature
-and matching payload on retry, and preserves another account's receipt. Local
+and matching payload on retry, and preserves another account's receipt.
 The case uses a 320px viewport, checks for horizontal overflow and verifies a
 44px reconnect touch target. HTTP responses are fixtures and external writes remain blocked; this does not
-prove real gameplay publication. That live-run gate, the shared four-game
-account matrix and physical acceptance remain open.
+prove real gameplay publication.
+
+Live browser acceptance now passes on deployed Pallasite `14e969f` and arcade
+`4aa7661`. A normal 190-second pause preceded an earned 16,490-point run whose
+first score signature timed out. The public receipt retained its original
+account and score. RECONNECT IN ARCADE, explicit same-account My Signet approval
+and RETRY SCORE in a new game tab published that receipt: canonical matching
+player NIP-98 signing, HTTP 200 and publication to all seven relays pass.
+Independent relay verification and fresh displays in both arcade editions
+match the score and player. No game state, score, clock or event was injected.
+See [recovery evidence](https://github.com/TheCryptoDonkey/gamestr-arcade/blob/1577de7/docs/evidence/gamestr-pallasite-pause-recovery-live-run.json).
+The shared four-game account matrix and physical acceptance remain open; this
+run does not establish the exact cause of signer expiry.
