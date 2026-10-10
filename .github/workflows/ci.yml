@@ -53,3 +53,6 @@ jobs:
 
       - name: Typecheck + build
         run: pnpm build
+
+      - name: Arcade identity and worker lifecycle
+        run: pnpm test:arcade

@@ -34,6 +34,7 @@ import {
 } from './stream-session.js';
 import { getActiveSkinId } from './skins.js';
 import { consumeArcadeSession, handleAuthCallback, tryRestore, sweepSignetArtefacts, createKioskSession, isAuthOnlySignerError } from './auth.js';
+import { isArcadeHandoffSession } from './arcade-handoff.js';
 import * as audio from './audio.js';
 import { getMusicDebugSnapshot, musicForceRefresh, musicSetTrackForState, preloadAllTracks, musicSetPaused, musicSetMuted, musicResetElements, musicWarmUpAll, currentTrackId, musicSuppressStatePlay, musicPoolActive } from './music.js';
 import { stemsTickForState } from './music-stems.js';
@@ -3838,12 +3839,15 @@ function setupAudioDebugOverlay(): void {
 
 function setupServiceWorker(): void {
   if (!('serviceWorker' in navigator)) return;
+  const previouslyControlled = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.register('/sw.js').then(reg => {
     if (!reg) return;
 
-    // Reload exactly once when a new worker takes control.
+    // First installation needs no reload. A live arcade bridge cannot survive
+    // an automatic reload after its one-use launch fragment has been consumed.
     let reloaded = false;
     navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!previouslyControlled || isArcadeHandoffSession(state.session)) return;
       if (reloaded) return;
       reloaded = true;
       window.location.reload();
@@ -3853,6 +3857,13 @@ function setupServiceWorker(): void {
       const waiting = reg.waiting;
       if (!waiting) return;
       if (!navigator.serviceWorker.controller) return;
+      if (isArcadeHandoffSession(state.session)) {
+        showUpdateBanner(() => {
+          waiting.postMessage({ type: 'SKIP_WAITING' });
+          window.location.assign('https://arcade.600.wtf/game/pallasite');
+        }, { message: 'UPDATE READY · RELAUNCH FROM THE ARCADE', action: 'RETURN TO ARCADE', pending: 'RETURNING...' });
+        return;
+      }
       // Auto-update on safe surfaces (watch page, controller PWA, jury,
       // title screen, gameover) — the user shouldn't have to chase a
       // banner. Mid-run shows the banner so we don't yank a play in
