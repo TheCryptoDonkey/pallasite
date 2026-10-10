@@ -110,6 +110,10 @@ class ArcadeSigner implements SignetSigner {
     port.start();
   }
 
+  get isLive(): boolean {
+    return this.connected && !this.closed && this.capabilities.canSignEvents;
+  }
+
   waitUntilConnected(): Promise<void> {
     if (this.connected) return Promise.resolve();
     return new Promise<void>((resolve, reject) => {
@@ -192,7 +196,7 @@ class ArcadeSigner implements SignetSigner {
 
 /** Only the live, per-launch bridge may be reused for a booth pilot. */
 export function isArcadeHandoffSession(session: SignetSession | null | undefined): boolean {
-  return session?.signer instanceof ArcadeSigner && session.signer.capabilities.canSignEvents;
+  return session?.signer instanceof ArcadeSigner && session.signer.isLive;
 }
 
 export async function consumeArcadeHandoff(gameId: string): Promise<SignetSession | null> {

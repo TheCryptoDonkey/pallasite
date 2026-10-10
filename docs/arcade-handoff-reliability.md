@@ -13,7 +13,8 @@ clients retain their normal safe-surface update flow and mid-run prompt.
 
 Player one can use the supplied live arcade session once, on the first booth
 setup for that launch. Player two still chooses a separate identity. Returning
-to the join screen for a subsequent visitor asks them to sign in; ordinary
+to the join screen for a subsequent visitor closes the old arcade signing port
+and asks them to sign in; ordinary
 persisted personal accounts and booth guests are not automatically reused.
 
 The vendored SDK now matches the published Signet Login 0.17.3 bundle. Its
