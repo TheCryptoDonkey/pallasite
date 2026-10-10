@@ -4,9 +4,10 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
 import { schnorr } from '@noble/curves/secp256k1.js';
-import { bytesToHex } from '@noble/curves/utils.js';
+import { bytesToHex, hexToBytes } from '@noble/curves/utils.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { chromium, type BrowserContext } from 'playwright';
+import { SOLO_SCORE_OUTBOX_KEY } from '../src/solo-score-outbox.js';
 
 const root = resolve('dist');
 let workerGate = Promise.resolve();
@@ -68,6 +69,16 @@ async function isolated(path = '/?p1=1'): Promise<BrowserContext> {
     addEventListener('message',e=>{
       if(e.origin!==${JSON.stringify(gameOrigin)}||e.source!==child||e.data?.protocol!=='gamestr-auth-v1'||e.data.channel!==${JSON.stringify(payload.channel)})return;
       const port=e.ports[0];port.start();port.postMessage({protocol:'gamestr-auth-v1',type:'connected'});
+      port.onmessage=async m=>{
+        if(m.data?.protocol!=='gamestr-auth-v1'||m.data.type!=='sign')return;
+        try{
+          if(typeof window.__fixtureSign!=='function')throw Error('fixture-signing-unavailable');
+          const event=await window.__fixtureSign(m.data.event);
+          port.postMessage({protocol:'gamestr-auth-v1',type:'result',id:m.data.id,ok:true,event});
+        }catch{
+          port.postMessage({protocol:'gamestr-auth-v1',type:'result',id:m.data.id,ok:false,error:'fixture-signing-unavailable'});
+        }
+      };
     });</script>` }));
   return context;
 }
@@ -155,6 +166,52 @@ try {
   assert.equal(await menu.evaluate(() => (window as any).__fixtureDocument), menuDocument);
   console.log('PASS normal root launch keeps the arcade account through mission selection');
   await normal.close();
+
+  // Seed public fixture receipts, not game state or real/public scores. Every
+  // signature and HTTP response stays inside this isolated local regression.
+  const recovery = await isolated('/');
+  let signAttempts = 0, posts = 0;
+  const scoreInput = { score: 125, wave: 2, duration_ms: 9000, run_id: '123456789', mode: 'campaign', player_name: 'Fixture pilot' };
+  const other = 'b'.repeat(64);
+  await recovery.exposeFunction('__fixtureSign', async (template: any) => {
+    if (template.kind !== 27235 || !template.tags.some((t: string[]) => t[0] === 'u' && t[1] === `${gameOrigin}/api/score`)) throw new Error('Outside fixture score scope');
+    if (++signAttempts === 1) throw new Error('Fixture user declined signing');
+    const hash = sha256(new TextEncoder().encode(JSON.stringify([0, pubkey, template.created_at, template.kind, template.tags, template.content])));
+    return { ...template, pubkey, id: bytesToHex(hash), sig: bytesToHex(schnorr.sign(hash, privateKey)) };
+  });
+  await recovery.addInitScript(({ origin, key, receipts }) => {
+    if (location.origin === origin && !localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify(receipts));
+  }, { origin: gameOrigin, key: SOLO_SCORE_OUTBOX_KEY, receipts: [{ pubkey, input: scoreInput }, { pubkey: other, input: { ...scoreInput, run_id: '987654321' } }] });
+  await recovery.route(`${gameOrigin}/api/score`, async route => {
+    assert.equal(route.request().method(), 'POST');
+    const body = route.request().postData()!;
+    assert.deepEqual(JSON.parse(body), scoreInput);
+    const auth = JSON.parse(Buffer.from(route.request().headers().authorization.slice(6), 'base64').toString());
+    assert.equal(auth.pubkey, pubkey);
+    const hash = sha256(new TextEncoder().encode(JSON.stringify([0, pubkey, auth.created_at, auth.kind, auth.tags, auth.content])));
+    assert.equal(auth.id, bytesToHex(hash));
+    assert(schnorr.verify(hexToBytes(auth.sig), hash, hexToBytes(pubkey)));
+    assert(auth.tags.some((t: string[]) => t[0] === 'payload' && t[1] === bytesToHex(sha256(new TextEncoder().encode(body)))));
+    posts++;
+    await route.fulfill({ json: { ok: true, id: 'private-fixture-event', published: { ok: 1, total: 1 } } });
+  });
+  const failedScore = await launch(recovery);
+  await failedScore.getByRole('button', { name: 'RETRY SCORE', exact: true }).click();
+  await failedScore.waitForFunction(() => document.getElementById('pal-score-recovery')?.textContent?.includes('WAITING TO PUBLISH'));
+  assert.equal(signAttempts, 1);
+  assert.equal(posts, 0);
+  assert.equal(await failedScore.evaluate(key => JSON.parse(localStorage.getItem(key)!).length, SOLO_SCORE_OUTBOX_KEY), 2);
+  await failedScore.close();
+  const retriedScore = await launch(recovery);
+  await retriedScore.getByRole('button', { name: 'RETRY SCORE', exact: true }).click();
+  await retriedScore.locator('#pal-score-recovery').waitFor({ state: 'detached' });
+  assert.equal(signAttempts, 2);
+  assert.equal(posts, 1);
+  const remaining = await retriedScore.evaluate(key => JSON.parse(localStorage.getItem(key)!), SOLO_SCORE_OUTBOX_KEY);
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0].pubkey, other);
+  console.log('PASS declined score survives relaunch and retries under the same account without guest fallback');
+  await recovery.close();
 } finally {
   await browser.close();
   await new Promise<void>(done => server.close(() => done()));
