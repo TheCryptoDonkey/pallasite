@@ -85,5 +85,10 @@ player NIP-98 signing, HTTP 200 and publication to all seven relays pass.
 Independent relay verification and fresh displays in both arcade editions
 match the score and player. No game state, score, clock or event was injected.
 See [recovery evidence](https://github.com/TheCryptoDonkey/gamestr-arcade/blob/1577de7/docs/evidence/gamestr-pallasite-pause-recovery-live-run.json).
-The shared four-game account matrix and physical acceptance remain open; this
-run does not establish the exact cause of signer expiry.
+A subsequent shared-account matrix also passes: Pallasite earned 19,295 under
+the same fresh My Signet account as Ledger, Hang On Fren and Neon Sentinel.
+Explicit approval preceded each game; canonical player-bound signatures,
+independent reviewed-authority events and eight score-page displays across
+both arcade editions pass. See [matrix evidence](https://github.com/TheCryptoDonkey/gamestr-arcade/blob/2af5cfa/docs/evidence/gamestr-shared-account-matrix.json).
+Physical acceptance remains open. These browser results do not establish the
+exact cause of signer expiry or public 600 DNS cutover.
