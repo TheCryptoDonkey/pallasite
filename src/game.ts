@@ -423,6 +423,7 @@ export function startGame(s: GameState, forcedSeed?: number, opts?: StartGameOpt
   s.nextMineSpawn = 0;
   s.runTimeMs = 0;
   s.runStartedAt = Date.now();
+  s.runScorePubkey = s.session?.pubkey ?? null;
   // Clear the "achievements unlocked this run" tracker so the NIP-58
   // award handshake only ships badges genuinely earned in the new run.
   resetRunAchievements();

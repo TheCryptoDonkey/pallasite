@@ -50,7 +50,23 @@ parallel checks and 188 frames on the isolated candidate. The unchanged
 agreement and active forge pulses passed in these runs. This is evidence of an
 unresolved timing gate, not a demonstrated cause or fix; the limit is retained.
 
-Source review also found a separate public-score fallback that can substitute
-a guest after a personal signer fails. Same-account failure/retry behaviour
-needs its own correction and verification before broad signer continuity can
-be claimed. The normal successful-signing path is a separate live-run gate.
+Personal score submissions no longer fall back to a different guest key when
+signing fails. The run captures its account at start; the finished score,
+wave, duration, run id and public display metadata are saved before signing.
+The outbox stores public receipts only, retains failures and unconfirmed relay
+publication, and only retries with the matching session and signer pubkey.
+Confirmed publication clears that receipt; other accounts' pending runs remain.
+If storage is unavailable, the banner explains that the page must stay open.
+RETRY SCORE uses the original snapshot, while RECONNECT TO RETRY opens signer
+recovery. Pending scores appear again when the same account returns.
+
+Seven recovery/client regressions cover wrong accounts/signers, auth-only identity,
+failure/reload, snapshot retention, unconfirmed/malformed publication,
+overlapping retries, storage denial, malformed persisted entries and a provider returning another
+account’s signature before HTTP submission. The seventh
+production-browser arcade case seeds private fixture receipts, declines the
+first signature, relaunches, verifies a canonical same-account NIP-98 signature
+and matching payload on retry, and preserves another account's receipt. Local
+HTTP responses are fixtures and external writes remain blocked; this does not
+prove real gameplay publication. That live-run gate, the shared four-game
+account matrix and physical acceptance remain open.

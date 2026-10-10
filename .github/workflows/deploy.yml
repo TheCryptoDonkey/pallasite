@@ -48,6 +48,9 @@ jobs:
       - name: Check Signet Login bundle drift
         run: pnpm run check:signet-login
 
+      - name: Same-account score recovery
+        run: pnpm test:score-recovery
+
       - name: Signing queue account isolation
         run: pnpm test:sign-queue
 
