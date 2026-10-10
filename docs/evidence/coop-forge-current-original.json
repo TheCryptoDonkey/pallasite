@@ -1,0 +1,33 @@
+{
+  "command": "pnpm test:coop-campaign --forge",
+  "testedRevision": "76160c14ea4e93e76642f07ebf5152c2d645b05d",
+  "functionalSourceRevision": "14e969f0bdd100b3c49340c906d9552d1ebfc3da",
+  "trackedChangesSinceFunctionalRevision": [
+    "docs/arcade-handoff-reliability.md"
+  ],
+  "result": "pass",
+  "maxStallLimitFrames": 90,
+  "sameSimulationFrames": 812,
+  "activePulse": true,
+  "players": [
+    {
+      "player": 1,
+      "frame": 9,
+      "maxStallFrames": 50
+    },
+    {
+      "player": 2,
+      "frame": 9,
+      "maxStallFrames": 36
+    }
+  ],
+  "broker": {
+    "forwarded": 3380,
+    "dropped": 0,
+    "p95Ms": 0.152,
+    "p99Ms": 0.388
+  },
+  "browser": "Chromium 1223, headless macOS",
+  "physicalAcceptance": false,
+  "scope": "The original uninstrumented forge command passes on unchanged functional source. Earlier 96, 188 and baseline 102-frame failures remain historical timing-variation evidence. This run does not establish a product repair, worst-case performance or physical co-op acceptance."
+}

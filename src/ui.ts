@@ -6,6 +6,8 @@
  */
 
 import type { DeathmatchRules, GameState } from './types.js';
+import { ARCADE_ORIGIN, isArcadeHandoffSession, isArcadeSignerSession } from './arcade-handoff.js';
+import { SoloScoreOutbox } from './solo-score-outbox.js';
 import { WAVE_LORE, gameOverArcLine } from './types.js';
 import { getActiveRelays, getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRelay, removeRelay, resetRelays } from './relays.js';
 import { getTouchMode, setTouchMode, type TouchInputMode } from './touch.js';
@@ -787,7 +789,10 @@ function setupOverlayArrowNav(overlay: HTMLElement, onBack?: () => void): void {
     const active = document.activeElement as HTMLElement | null;
     if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') && e.isTrusted) return;
 
-    const buttons = Array.from(overlay.querySelectorAll<HTMLButtonElement>('button:not([disabled])'))
+    const buttons = [
+      ...overlay.querySelectorAll<HTMLButtonElement>('button:not([disabled])'),
+      ...document.querySelectorAll<HTMLButtonElement>('#pal-score-recovery button:not([disabled])'),
+    ]
       .filter((b) => b.offsetParent !== null);
     if (buttons.length === 0) return;
 
@@ -1153,7 +1158,7 @@ function renderArcadeName(
  * waiting. Tap RELOAD → posts SKIP_WAITING to the worker → controllerchange
  * triggers a clean reload into the new build.
  */
-export function showUpdateBanner(onReload: () => void): void {
+export function showUpdateBanner(onReload: () => void, labels?: { message: string; action: string; pending: string }): void {
   if (document.getElementById('pal-update-banner')) return;
   const banner = document.createElement('div');
   banner.id = 'pal-update-banner';
@@ -1182,6 +1187,10 @@ export function showUpdateBanner(onReload: () => void): void {
   ].join(';');
   banner.innerHTML = `<span>NEW VERSION READY</span><button type="button" style="font-family:inherit;font-size:0.95rem;letter-spacing:0.18em;padding:10px 16px;min-height:44px;background:rgba(255,216,74,0.15);border:1px solid #ffd84a;color:#ffd84a;border-radius:6px;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:rgba(255,216,74,0.32);">RELOAD</button>`;
   const reloadBtn = banner.querySelector('button') as HTMLButtonElement;
+  if (labels) {
+    banner.querySelector('span')!.textContent = labels.message;
+    reloadBtn.textContent = labels.action;
+  }
   // Bind both click and pointerup — some mobile browsers swallow click on
   // elements layered above touch-action:none ancestors. Pointerup fires
   // reliably; click stays as the primary path. Guard against double-fire
@@ -1190,7 +1199,7 @@ export function showUpdateBanner(onReload: () => void): void {
   const trigger = (): void => {
     if (fired) return;
     fired = true;
-    banner.querySelector('span')!.textContent = 'UPDATING...';
+    banner.querySelector('span')!.textContent = labels?.pending ?? 'UPDATING...';
     reloadBtn.disabled = true;
     onReload();
   };
@@ -1285,6 +1294,7 @@ function renderDownload(onBack: () => void): void {
 }
 
 export function renderTitle(state: GameState): void {
+  refreshScoreRecovery(state);
   // Kiosk screen: collapse the whole title/menu surface to the stripped
   // booth lobby. This one gate also closes the post-game loop — anything that
   // would show the title shows the lobby instead.
@@ -2195,6 +2205,19 @@ function setupBoothPilot(state: GameState, w: BoothWizard, i: number): void {
   const pilot = w.pilots[i];
   armBoothNav(w, pilot);
   const n = i + 1;
+  // A fresh arcade launch already selected this pilot. Persisted personal
+  // sessions and previous booth guests still take the explicit sign-in path.
+  if (i === 0 && !boothPilotSessionClaimed && isArcadeHandoffSession(state.session)) {
+    pilot.session = state.session;
+    boothPilotSessionClaimed = true;
+    renderBoothSchemePick(state, w, i);
+    return;
+  }
+  if (i === 0 && boothPilotSessionClaimed && isArcadeHandoffSession(state.session)) {
+    void state.session!.signer.close();
+    state.session = null;
+    state.profile = null;
+  }
   // Sign in — Nostr or guest. P1 → state.session; P2 → state.coopIdentity2 (the
   // existing couch-in-place second-identity field).
   renderAuth(state, () => renderBoothSchemePick(state, w, i), {
@@ -2314,6 +2337,7 @@ function startLinkedBooth(booth: number): void {
 }
 
 export function renderAttract(state: GameState): void {
+  refreshScoreRecovery(state);
   if (boothKiosk) { renderBoothLobby(state, boothKiosk); return; }
   // 600bn flavour gets its own bespoke attract screen — sacred number
   // wordmark, single PLAY to drop straight into the Sanctum, no auth
@@ -2591,13 +2615,17 @@ function renderQwertyName(
 }
 
 export function renderAuth(state: GameState, onDone: () => void, opts?: { onResolved?: (s: SignetSession) => void; heading?: string; sub?: string; freshGuest?: boolean }): void {
+  refreshScoreRecovery(state);
   clearOverlay();
   const overlay = el('div', { className: 'overlay auth-screen', parent: root });
   setupOverlayArrowNav(overlay);
 
   // When onResolved is supplied (capturing a SECOND player's identity at a
   // booth), it takes the resolved session instead of overwriting state.session.
-  const resolve = (s: SignetSession): void => { if (opts?.onResolved) opts.onResolved(s); else state.session = s; };
+  const resolve = (s: SignetSession): void => {
+    if (opts?.onResolved) opts.onResolved(s);
+    else { state.session = s; refreshScoreRecovery(state); }
+  };
 
   // Two stacked views toggled by visibility (not re-render) so the follow
   // checkbox stays in the DOM for submitGuest to read: the chooser (Nostr /
@@ -9552,6 +9580,7 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
 // ── Pause overlay ─────────────────────────────────────────────────────────────
 
 export function renderPause(state?: GameState): void {
+  if (state) refreshScoreRecovery(state);
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
   setupOverlayArrowNav(overlay);
@@ -10968,86 +10997,89 @@ function shortRelay(url: string): string {
  *  own game-signed path (submitCoopScore); deathmatch/duel are PvP; sanctum/
  *  defender are special surfaces. Matches the faucet's /api/score mode enum. */
 const GAMESTR_SOLO_MODES = new Set<RunMode>(['campaign', 'drift', 'bossrush', 'arena']);
-/** Run id of the last solo score published, so renderGameOver re-entries
- *  (REPLAY KILL, claim-picker re-render) don't double-publish a run. */
-let lastSoloScorePublishedRun = '';
+/** Re-entering the recap must not enqueue the same run twice. */
+let lastSoloScoreQueuedRun = '';
+let soloScoreOutbox: SoloScoreOutbox | null = null;
+const scoreOutbox = (): SoloScoreOutbox => soloScoreOutbox ??= new SoloScoreOutbox();
 
-/**
- * Publish a GAME-SIGNED (verified-on-Gamestr) solo score for the current run,
- * once. Decoupled from the sat-claim flow, so a score reaches the leaderboard
- * on every game-over / completion regardless of whether the player claims.
- *
- * Signing identity: prefer the player's session; if it CAN'T sign (auth-only,
- * e.g. the Signet redirect) OR there's no session, fall back to a persistent
- * local GUEST key so the score still lands instead of being silently dropped.
- * The faucet game-signs the kind 30762 either way (the session only proves
- * identity / sets the p-tag), so it's always a verified score on Gamestr.
- *
- * Solo arcade modes only — co-op has its own game-signed path
- * (submitCoopScore); deathmatch/duel are PvP.
- */
+/** Only the currently selected account can see and retry its pending runs. */
+export function refreshScoreRecovery(state: GameState): void {
+  const previous = document.getElementById('pal-score-recovery');
+  const hadFocus = !!previous?.contains(document.activeElement);
+  previous?.remove();
+  const session = state.session;
+  if (!session) return;
+  if (!['title', 'gameover', 'completed', 'paused'].includes(state.phase)) return;
+  const outbox = scoreOutbox();
+  const pending = outbox.pending(session.pubkey);
+  if (!pending.length) {
+    if (hadFocus) root.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus({ preventScroll: true });
+    return;
+  }
+  const banner = el('div', { parent: document.body, attrs: { id: 'pal-score-recovery', role: 'status', 'aria-live': 'polite' } });
+  banner.style.cssText = 'position:fixed;bottom:max(12px,env(safe-area-inset-bottom,0px));left:12px;right:12px;z-index:9998;max-width:560px;margin:auto;padding:12px;background:#100820;color:#ffd84a;border:1px solid #ffd84a;border-radius:8px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;pointer-events:auto;touch-action:manipulation;font-family:ui-monospace,monospace;';
+  const status = el('span', { parent: banner, text: `${pending.length} SCORE${pending.length === 1 ? '' : 'S'} WAITING TO PUBLISH${outbox.durable ? '' : ' · KEEP THIS PAGE OPEN TO RETRY'}` });
+  const retry = el('button', { parent: banner, className: 'menu-btn secondary', text: session.signer.capabilities.canSignEvents ? 'RETRY SCORE' : 'RECONNECT TO RETRY' });
+  retry.style.cssText = 'min-height:44px;touch-action:manipulation;';
+  retry.addEventListener('click', () => {
+    if (!state.session?.signer.capabilities.canSignEvents) {
+      renderSignerRecovery(state);
+      return;
+    }
+    retry.disabled = true;
+    status.textContent = 'PUBLISHING YOUR SCORE…';
+    // retry() rechecks both the session and signer pubkeys and uses the saved
+    // run snapshot. It never borrows the new account or creates a guest.
+    void outbox.retry(pending[0], state.session, submitSoloScore).finally(() => refreshScoreRecovery(state));
+  });
+  if (isArcadeSignerSession(session)) {
+    el('span', { parent: banner, text: 'Reconnect in the arcade, then launch Pallasite to retry this saved score.' });
+    const reconnect = el('button', { parent: banner, className: 'menu-btn secondary', text: 'RECONNECT IN ARCADE' });
+    reconnect.addEventListener('click', () => window.location.assign(`${ARCADE_ORIGIN}/game/pallasite`));
+    reconnect.style.cssText = 'display:inline-flex;align-items:center;min-height:44px;max-width:100%;box-sizing:border-box;font:inherit;letter-spacing:normal;white-space:normal;touch-action:manipulation;text-decoration:none;';
+  }
+  if (hadFocus) retry.focus({ preventScroll: true });
+}
+
+/** Preserve the earned run and account before asynchronous signing or navigation. */
 function publishSoloScoreForRun(state: GameState): void {
   const soloMode = currentMode();
   if (!GAMESTR_SOLO_MODES.has(soloMode)) return;
   if (state.players[0].score <= 0 || state.runStartedAt <= 0) return;
   const runId = String(state.runStartedAt);
-  if (runId === lastSoloScorePublishedRun) return;
-  lastSoloScorePublishedRun = runId;
-  const playerName = scoreboardNameFor(state);
+  if (runId === lastSoloScoreQueuedRun) return;
+  lastSoloScoreQueuedRun = runId;
+  const owner = state.runScorePubkey === undefined ? state.session?.pubkey : state.runScorePubkey;
+  const sameAccount = !!owner && state.session?.pubkey === owner;
+  const input: import('./faucet.js').SoloScoreInput = {
+    score: state.players[0].score,
+    wave: state.wave,
+    duration_ms: Math.max(0, Math.floor(state.runTimeMs)),
+    run_id: runId,
+    mode: soloMode,
+    player_name: sameAccount ? scoreboardNameFor(state) : owner?.slice(0, 8) ?? 'Anonymous',
+    ...(owner && state.profile?.pubkey === owner && state.profile.nip05 ? { nip05: state.profile.nip05 } : {}),
+    ...(getFlavour() === '600bn' ? { room: '600bn' as const } : {}),
+    cheated: state.cheatedThisRun,
+  };
+  // Capture the selected signer now; never read a different account after await.
+  const selected = state.runScorePubkey === null ? null : state.session;
   void (async () => {
-    let signer = state.session?.signer.capabilities.canSignEvents ? state.session : null;
-    // nip05 only when signing as the real session — it must verify against the
-    // p-tag pubkey, and the guest fallback publishes under a different key.
-    const nip05 = signer ? state.profile?.nip05 : undefined;
-    let usedGuest = false;
-    if (!signer) {
-      try {
-        signer = await loadOrCreateGuest({ name: playerName, followPallasite: false });
-        usedGuest = true;
-      } catch {
-        return;
-      }
+    let session = selected;
+    // A genuinely anonymous run can obtain a guest key. A selected account
+    // with an unavailable signer must keep its own identity instead.
+    if (!owner && !session) {
+      session = await loadOrCreateGuest({ name: input.player_name ?? 'Anonymous', followPallasite: false });
+      if (!state.session) state.session = session;
     }
-    const buildInput = (withNip05: boolean): import('./faucet.js').SoloScoreInput => ({
-      score: state.players[0].score,
-      wave: state.wave,
-      duration_ms: Math.max(0, Math.floor(state.runTimeMs)),
-      run_id: runId,
-      mode: soloMode,
-      player_name: playerName,
-      ...(withNip05 && nip05 ? { nip05 } : {}),
-      ...(getFlavour() === '600bn' ? { room: '600bn' as const } : {}),
-      cheated: state.cheatedThisRun,
-    });
-    let scoreResult = await submitSoloScore(signer, buildInput(!usedGuest))
-      .catch((e) => ({ ok: false as const, error: 'threw', detail: e instanceof Error ? e.message : String(e) }));
-    // Resilient fallback: a real session whose signer WEDGES (dead/slow bunker,
-    // a burner Signet that advertised canSignEvents but can't actually sign, a
-    // NIP-46 timeout) fails here — and without this retry the score is lost
-    // entirely. Re-publish under a local guest key so the run still lands on the
-    // board under the player's name. Guest publish drops nip05 (it has to verify
-    // against the p-tag pubkey, which is now the guest's).
-    if (!scoreResult.ok && !usedGuest && /sign_failed|no_signer|signer|threw|timeout/i.test(scoreResult.error)) {
-      try {
-        const guest = await loadOrCreateGuest({ name: playerName, followPallasite: false });
-        const retry = await submitSoloScore(guest, buildInput(false))
-          .catch((e) => ({ ok: false as const, error: 'threw', detail: e instanceof Error ? e.message : String(e) }));
-        console.log('[solo-score] guest-fallback after ' + scoreResult.error + ' → ' + JSON.stringify(retry));
-        scoreResult = retry;
-        signer = guest;
-        usedGuest = true;
-      } catch {
-        /* keep the original failure for the diagnostic below */
-      }
-    }
-    // Diagnostic: surfaces WHY a score did/didn't land (the result is otherwise
-    // swallowed). On the booth this reaches /tmp/pallasite.log via the
-    // main-process console bridge.
-    console.log('[solo-score] result=' + JSON.stringify(scoreResult)
-      + ' usedGuest=' + usedGuest
-      + ' pk=' + (signer.pubkey ? signer.pubkey.slice(0, 12) : '?')
-      + ' name=' + playerName);
-  })();
+    const pubkey = owner ?? session?.pubkey;
+    if (!pubkey) return;
+    const outbox = scoreOutbox();
+    const receipt = outbox.enqueue(pubkey, input);
+    const result = await outbox.retry(receipt, session, submitSoloScore);
+    console.log('[solo-score] result=' + JSON.stringify(result) + ' pk=' + pubkey.slice(0, 12));
+    refreshScoreRecovery(state);
+  })().catch(() => { refreshScoreRecovery(state); });
 }
 
 export function renderGameOver(state: GameState): void {
@@ -11060,8 +11092,8 @@ export function renderGameOver(state: GameState): void {
   }
 
   // Publish a verified Gamestr score for this run (death path). Decoupled
-  // from the sat-claim flow; falls back to a guest identity when the session
-  // can't sign, so auth-only / not-signed-in runs still score.
+  // from the sat-claim flow. Failed signing retains the selected account and
+  // earned run for an explicit retry; it never republishes as another account.
   publishSoloScoreForRun(state);
 
   // High-score handling — auto-save under the player's session display

@@ -3,7 +3,7 @@ import { bytesToHex, hexToBytes } from '@noble/curves/utils.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import type { EventTemplate, NostrEvent, SignetAuthEvent, SignetSession, SignetSigner } from 'signet-login';
 
-const ARCADE_ORIGIN = 'https://arcade.600.wtf';
+export const ARCADE_ORIGIN = 'https://arcade.600.wtf';
 const ARCADE_APP = '600 Billion Arcade';
 const FRAGMENT_KEY = 'gamestr-auth';
 const PROTOCOL = 'gamestr-auth-v1';
@@ -110,6 +110,10 @@ class ArcadeSigner implements SignetSigner {
     port.start();
   }
 
+  get isLive(): boolean {
+    return this.connected && !this.closed && this.capabilities.canSignEvents;
+  }
+
   waitUntilConnected(): Promise<void> {
     if (this.connected) return Promise.resolve();
     return new Promise<void>((resolve, reject) => {
@@ -188,6 +192,16 @@ class ArcadeSigner implements SignetSigner {
     }
     request.resolve(message.event);
   }
+}
+
+/** Only the live, per-launch bridge may be reused for a booth pilot. */
+export function isArcadeHandoffSession(session: SignetSession | null | undefined): boolean {
+  return session?.signer instanceof ArcadeSigner && session.signer.isLive;
+}
+
+/** Retain the originating login route even after its signing port closes. */
+export function isArcadeSignerSession(session: SignetSession | null | undefined): boolean {
+  return session?.signer instanceof ArcadeSigner;
 }
 
 export async function consumeArcadeHandoff(gameId: string): Promise<SignetSession | null> {

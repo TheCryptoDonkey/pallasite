@@ -48,11 +48,20 @@ jobs:
       - name: Check Signet Login bundle drift
         run: pnpm run check:signet-login
 
+      - name: Same-account score recovery
+        run: pnpm test:score-recovery
+
+      - name: Signing queue account isolation
+        run: pnpm test:sign-queue
+
       - name: Run harnesses
         run: pnpm test
 
       - name: Typecheck + build
         run: pnpm build
+
+      - name: Arcade identity and worker lifecycle
+        run: pnpm test:arcade
 
       - name: Deploy to Hetzner
         env:
