@@ -41,10 +41,11 @@ const tags = [['origin', arcadeOrigin], ['app', '600 Billion Arcade']];
 const digest = sha256(new TextEncoder().encode(JSON.stringify([0, pubkey, createdAt, 21236, tags, ''])));
 const event = { id: bytesToHex(digest), pubkey, sig: bytesToHex(schnorr.sign(digest, privateKey)), kind: 21236, created_at: createdAt, tags, content: '' };
 const payload = { v: 1, game: 'pallasite', target: gameOrigin, channel: 'private-arcade-fixture-channel', canSign: true, profile: { name: 'Arcade fixture' }, event };
-const launchUrl = `${gameOrigin}/?p1=1#gamestr-auth=${Buffer.from(JSON.stringify(payload)).toString('base64url')}`;
+const launchUrl = (path: string) => `${gameOrigin}${path}#gamestr-auth=${Buffer.from(JSON.stringify(payload)).toString('base64url')}`;
 const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH });
-async function isolated(): Promise<BrowserContext> {
+async function isolated(path = '/?p1=1'): Promise<BrowserContext> {
   const context = await browser.newContext({ viewport: { width: 1180, height: 820 } });
+  await context.route('**/*', route => new URL(route.request().url()).origin === gameOrigin && route.request().method() === 'GET' ? route.continue() : route.abort());
   await context.routeWebSocket(/wss:\/\//, socket => socket.close());
   await context.route('**/music/**', route => route.abort());
   await context.addInitScript(() => {
@@ -63,7 +64,7 @@ async function isolated(): Promise<BrowserContext> {
   });
   await context.route(`${arcadeOrigin}/**`, route => route.fulfill({ contentType: 'text/html', body: `<button id="play">Play</button><script>
     let child;
-    document.querySelector('#play').onclick=()=>child=window.open(${JSON.stringify(launchUrl)},'_blank');
+    document.querySelector('#play').onclick=()=>child=window.open(${JSON.stringify(launchUrl(path))},'_blank');
     addEventListener('message',e=>{
       if(e.origin!==${JSON.stringify(gameOrigin)}||e.source!==child||e.data?.protocol!=='gamestr-auth-v1'||e.data.channel!==${JSON.stringify(payload.channel)})return;
       const port=e.ports[0];port.start();port.postMessage({protocol:'gamestr-auth-v1',type:'connected'});
@@ -142,6 +143,18 @@ try {
   await guest.getByRole('heading', { name: 'PLAYER 1 — SIGN IN', exact: true }).waitFor();
   console.log('PASS ordinary booth visitor still chooses their own identity');
   await walkup.close();
+
+  const normal = await isolated('/');
+  const menu = await launch(normal);
+  const menuDocument = await menu.evaluate(() => (window as any).__fixtureDocument);
+  await menu.waitForFunction(() => !!navigator.serviceWorker.controller);
+  await menu.getByRole('button', { name: 'PLAY ▶', exact: true }).click();
+  await menu.getByRole('button', { name: /^IGNITE/ }).waitFor();
+  assert.equal(await menu.getByRole('button', { name: /SIGN IN WITH NOSTR/ }).count(), 0);
+  assert.equal(await menu.evaluate(() => (globalThis as any).__signetSignerInfo.pubkey), pubkey);
+  assert.equal(await menu.evaluate(() => (window as any).__fixtureDocument), menuDocument);
+  console.log('PASS normal root launch keeps the arcade account through mission selection');
+  await normal.close();
 } finally {
   await browser.close();
   await new Promise<void>(done => server.close(() => done()));
