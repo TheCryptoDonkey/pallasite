@@ -26,6 +26,7 @@ pnpm test:menus
 pnpm test:coop-campaign --forge
 pnpm build
 pnpm test:arcade
+pnpm test:sign-queue
 ```
 
 `pnpm build` typechecks and emits the static app into `dist/`. It uses the committed Signet Login bundle by default; set `SIGNET_LOGIN_SYNC_LOCAL=1 pnpm build` only when intentionally testing a sibling Signet Login build.

@@ -41,7 +41,8 @@
     "render:merch-logo": "tsx tools/render-merch-logo.ts",
     "test:quality": "tsx tools/check-quality.ts",
     "test:presentation": "tsx tools/check-presentation.ts",
-    "test:menus": "node tools/check-menus.mjs"
+    "test:menus": "node tools/check-menus.mjs",
+    "test:sign-queue": "tsx tools/check-sign-queue.ts"
   },
   "dependencies": {
     "@noble/curves": "^2.2.0",
