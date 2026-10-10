@@ -35,6 +35,9 @@ jobs:
       - name: Check Signet Login bundle drift
         run: pnpm run check:signet-login
 
+      - name: Signing queue account isolation
+        run: pnpm test:sign-queue
+
       - name: Run harnesses
         run: pnpm test
 

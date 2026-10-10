@@ -35,6 +35,15 @@ separate acceptance checks in Gamestr Arcade's reliability evidence.
 
 ## Remaining verification
 
+The shared signing queue now stores each request's bound signer. Previously,
+the signer that started the runner was reused for all queued requests, including
+another pilot's request arriving during an in-flight signature. The new
+`pnpm test:sign-queue` regression fails on the previous implementation with
+the second account's event signed by the first. It verifies canonical Schnorr
+signatures for overlapping accounts, rejection followed by another account's
+request, and queue re-entry. CI and deployment gates run it. This fixes request
+ownership; the personal-score guest fallback described below is still open.
+
 The co-op forge timing gate failed with a maximum P2 stall of 96 frames during
 parallel checks and 188 frames on the isolated candidate. The unchanged
 `bfab5e2` source also failed the same 90-frame limit at 102 frames. Simulation
