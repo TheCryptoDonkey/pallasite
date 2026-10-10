@@ -13,18 +13,15 @@
  * Bump SW_VERSION below to invalidate all caches on the next visit.
  */
 
-const SW_VERSION = 'v229';
+const SW_VERSION = 'v230';
 const CACHE_HTML = `pallasite-html-${SW_VERSION}`;
 const CACHE_ASSET = `pallasite-asset-${SW_VERSION}`;
 
 self.addEventListener('install', () => {
-  // Auto-skip waiting on this version bump. The previous policy was to wait
-  // for an in-app reload prompt, but the prompt itself was unclickable on
-  // iOS — leaving users stranded on a stale bundle with no way to advance.
-  // Auto-activate is safe here because the page is reload-driven anyway:
-  // the controllerchange handler in main.ts triggers a clean refresh once
-  // the new worker takes over, which is what the prompt would have done.
-  self.skipWaiting();
+  // First installation can take control without refreshing the page. Updates
+  // wait for the page's safe activation policy: an arcade signing port cannot
+  // survive a reload, and a run must not be interrupted by a new worker.
+  if (!self.registration.active) self.skipWaiting();
 });
 
 self.addEventListener('message', event => {

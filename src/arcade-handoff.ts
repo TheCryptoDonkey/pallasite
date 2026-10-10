@@ -190,6 +190,11 @@ class ArcadeSigner implements SignetSigner {
   }
 }
 
+/** Only the live, per-launch bridge may be reused for a booth pilot. */
+export function isArcadeHandoffSession(session: SignetSession | null | undefined): boolean {
+  return session?.signer instanceof ArcadeSigner && session.signer.capabilities.canSignEvents;
+}
+
 export async function consumeArcadeHandoff(gameId: string): Promise<SignetSession | null> {
   const fragment = new URLSearchParams(location.hash.slice(1));
   const token = fragment.get(FRAGMENT_KEY);

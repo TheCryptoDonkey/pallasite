@@ -6,6 +6,7 @@
  */
 
 import type { DeathmatchRules, GameState } from './types.js';
+import { isArcadeHandoffSession } from './arcade-handoff.js';
 import { WAVE_LORE, gameOverArcLine } from './types.js';
 import { getActiveRelays, getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRelay, removeRelay, resetRelays } from './relays.js';
 import { getTouchMode, setTouchMode, type TouchInputMode } from './touch.js';
@@ -1153,7 +1154,7 @@ function renderArcadeName(
  * waiting. Tap RELOAD → posts SKIP_WAITING to the worker → controllerchange
  * triggers a clean reload into the new build.
  */
-export function showUpdateBanner(onReload: () => void): void {
+export function showUpdateBanner(onReload: () => void, labels?: { message: string; action: string; pending: string }): void {
   if (document.getElementById('pal-update-banner')) return;
   const banner = document.createElement('div');
   banner.id = 'pal-update-banner';
@@ -1182,6 +1183,10 @@ export function showUpdateBanner(onReload: () => void): void {
   ].join(';');
   banner.innerHTML = `<span>NEW VERSION READY</span><button type="button" style="font-family:inherit;font-size:0.95rem;letter-spacing:0.18em;padding:10px 16px;min-height:44px;background:rgba(255,216,74,0.15);border:1px solid #ffd84a;color:#ffd84a;border-radius:6px;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:rgba(255,216,74,0.32);">RELOAD</button>`;
   const reloadBtn = banner.querySelector('button') as HTMLButtonElement;
+  if (labels) {
+    banner.querySelector('span')!.textContent = labels.message;
+    reloadBtn.textContent = labels.action;
+  }
   // Bind both click and pointerup — some mobile browsers swallow click on
   // elements layered above touch-action:none ancestors. Pointerup fires
   // reliably; click stays as the primary path. Guard against double-fire
@@ -1190,7 +1195,7 @@ export function showUpdateBanner(onReload: () => void): void {
   const trigger = (): void => {
     if (fired) return;
     fired = true;
-    banner.querySelector('span')!.textContent = 'UPDATING...';
+    banner.querySelector('span')!.textContent = labels?.pending ?? 'UPDATING...';
     reloadBtn.disabled = true;
     onReload();
   };
@@ -2195,6 +2200,14 @@ function setupBoothPilot(state: GameState, w: BoothWizard, i: number): void {
   const pilot = w.pilots[i];
   armBoothNav(w, pilot);
   const n = i + 1;
+  // A fresh arcade launch already selected this pilot. Persisted personal
+  // sessions and previous booth guests still take the explicit sign-in path.
+  if (i === 0 && !boothPilotSessionClaimed && isArcadeHandoffSession(state.session)) {
+    pilot.session = state.session;
+    boothPilotSessionClaimed = true;
+    renderBoothSchemePick(state, w, i);
+    return;
+  }
   // Sign in — Nostr or guest. P1 → state.session; P2 → state.coopIdentity2 (the
   // existing couch-in-place second-identity field).
   renderAuth(state, () => renderBoothSchemePick(state, w, i), {

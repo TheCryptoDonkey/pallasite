@@ -25,9 +25,16 @@ pnpm test:presentation
 pnpm test:menus
 pnpm test:coop-campaign --forge
 pnpm build
+pnpm test:arcade
 ```
 
 `pnpm build` typechecks and emits the static app into `dist/`. It uses the committed Signet Login bundle by default; set `SIGNET_LOGIN_SYNC_LOCAL=1 pnpm build` only when intentionally testing a sibling Signet Login build.
+
+`pnpm test:arcade` uses that production build to check a signed arcade launch
+through real first-install and update service-worker lifecycles. The booth uses
+the supplied account for player one; other pilots and ordinary walk-up visitors
+still choose their own identities. Worker updates offer an explicit arcade
+relaunch while that temporary signing connection is active.
 
 Graphics default to the modern presentation with automatic performance scaling. Settings → PERFORMANCE offers fixed budgets; LOW uses shaded 2D for older devices. See [the graphics and playability review](docs/graphics-and-playability-review.md) for changes and device-testing limits.
 
