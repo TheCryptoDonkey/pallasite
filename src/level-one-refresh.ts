@@ -137,9 +137,10 @@ export function drawLevelOneRock(ctx: CanvasRenderingContext2D, a: Asteroid): bo
   if(a.isVein){ctx.save();ctx.translate(a.pos.x,a.pos.y);ctx.strokeStyle='#ffd782';ctx.globalAlpha=.65;ctx.lineWidth=1.4;ctx.beginPath();ctx.arc(0,0,a.radius*1.2,0,Math.PI*2*Math.max(0,a.hp/a.hpMax));ctx.stroke();ctx.restore();}
   if (liveFrame && live?.hasRock(a)) return true;
   if(a.councilMember) {
-    const frame=shouldReduceMotion()?0:Math.floor((relicTime*.00045+(a.id??0)) / (Math.PI*2)*16);
+    const reduced=shouldReduceMotion();
+    const frame=reduced?0:Math.round(a.rot / (Math.PI*2)*16);
     const plate=relicPlate(a.councilMember,frame),width=a.radius*2.16;
-    ctx.save();ctx.translate(a.pos.x,a.pos.y);ctx.drawImage(plate,-width/2,-width/2,width,width);
+    ctx.save();ctx.translate(a.pos.x,a.pos.y);ctx.rotate(reduced?0:a.rot);ctx.drawImage(plate,-width/2,-width/2,width,width);
     if(a.hitFlash>0){ctx.globalCompositeOperation='lighter';ctx.globalAlpha=Math.min(1,a.hitFlash*.3);ctx.drawImage(plate,-width/2,-width/2,width,width);}
     ctx.restore();return true;
   }

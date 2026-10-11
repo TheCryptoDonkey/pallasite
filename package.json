@@ -7,7 +7,7 @@
   "packageManager": "pnpm@9.0.0",
   "scripts": {
     "dev": "pnpm run sync-sdk && vite",
-    "build": "pnpm run sync-sdk && tsc --noEmit && vite build",
+    "build": "pnpm run sync-sdk && node tools/check-sanctum-roster.mjs && tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "check:signet-login": "node tools/check-signet-login-bundle.mjs public/signet-login.iife.js",

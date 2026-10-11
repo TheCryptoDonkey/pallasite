@@ -281,7 +281,9 @@ export async function createLevelOneRenderer() {
         // Pods sit above the radial beams, so their lenses and armour remain
         // visible where the rig joins instead of disappearing into the beam.
         model.position.set(x,720-y,a.stationPart==='emitter'?18:0);
-        if(a.councilMember){model.scale.setScalar(a.radius);model.rotation.set(reducedMotion?.12:Math.sin(animationTime*.0003)*.12,reducedMotion?0:Math.sin(animationTime*.00045+rockId)*.65,0);}
+        // Use the existing asteroid spin: full tumble, frozen by pause/replay,
+        // with no extra presentation clock or simulation randomness.
+        if(a.councilMember){model.scale.setScalar(a.radius);model.rotation.set(reducedMotion?.12:Math.sin(a.rot)*.22,reducedMotion?0:a.rot,reducedMotion?0:-a.rot);}
         else if(a.stationPart){model.scale.setScalar(a.stationPart==='arm'?42:a.radius);
           model.rotation.set(a.stationPart==='core'?(reducedMotion?.2:.2+Math.sin(animationTime*.0006)*.12):0,0,a.stationPart==='core'?(reducedMotion?0:animationTime*.00012):-a.rot);
         }else {model.scale.set(a.radius/1.06*profile.stretch[0],a.radius/1.06*profile.stretch[1],a.radius/1.06*profile.stretch[2]);
