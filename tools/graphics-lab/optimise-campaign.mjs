@@ -20,3 +20,4 @@ for(const name of ['ufo-elite','ufo-tank','ufo-sniper','ufo-boss','station-core'
 await copyFile(new URL('pallasite-cinematic.glb',art),new URL('pallasite-cinematic.glb',out));
 await writeFile(new URL('campaign-manifest.json',art),JSON.stringify(manifest,null,2));
 console.log(JSON.stringify({files:manifest.length,compressedBytes:manifest.reduce((sum,f)=>sum+f.bytes,0)},null,2));
+await import('./optimise-alien-fleet.mjs');

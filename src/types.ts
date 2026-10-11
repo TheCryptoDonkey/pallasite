@@ -434,6 +434,9 @@ export const POWERUP_DROP_CHANCE = 0.30;
 /** TTL for an uncollected power-up on the field. */
 export const POWERUP_TTL_MS = 14_000;
 export const POWERUP_RADIUS = 14;
+/** Nearby spheres steer into the ship without requiring a precise fly-through. */
+export const POWERUP_PULL_RANGE = 150;
+export const POWERUP_PULL_SPEED = 320;
 /** Multiplier on FIRE_COOLDOWN_MS while rapid is active (lower = faster). */
 export const RAPID_COOLDOWN_MUL = 0.34;
 /** Multiplier on coin sat value while satboost is active. Trimmed from 2×

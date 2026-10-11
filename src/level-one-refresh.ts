@@ -1,4 +1,5 @@
 import type { Asteroid, Coin, GameState, PowerUpType, Ufo } from './types.js';
+import { UFO_HP } from './types.js';
 import { UFO_PLATE_WIDTH, PICKUP_KINDS, COLLECTABLE_KINDS, stationArt, PICKUP_ART_REVISION } from './level-one-art.js';
 import { shouldReduceMotion } from './a11y.js';
 import { getQualityLevel, getVisualStyle, mobileRuntimeActive } from './visual-style.js';
@@ -6,6 +7,7 @@ import { drawRockDust } from './rock-dust.js';
 import { livePlayerBursts } from './level-one-death.js';
 import { ULTRA_UFOS } from './ultra-materials.js';
 import { sanctumThemed, relicPlate } from './sanctum-art.js';
+import { ALIEN_ART_REVISION, alienFallback } from './alien-art.js';
 
 const root = '/graphics/level-one/';
 let enabled = true;
@@ -20,6 +22,7 @@ let backgroundWave=0;
 let relicTime=0,relicLastElapsed:number|undefined;
 function image(name: string): HTMLImageElement | null {
   if(name.startsWith('pickup-'))name+=`?art=${PICKUP_ART_REVISION}`;
+  if(name.startsWith('ufo-'))name+=`?art=${ALIEN_ART_REVISION}`;
   let img = images.get(name);
   if (!img) { img = new Image(); img.src = root + name; images.set(name, img); }
   return img.complete && img.naturalWidth > 0 ? img : null;
@@ -34,12 +37,8 @@ export function levelOneShipSprite(): HTMLImageElement | null {
 }
 export function refreshedShip(): boolean { return ultraCategory('ship') && (liveFrame || !!levelOneShipSprite()); }
 export function levelOneShipLive(ship:GameState['players'][number]['ship']):boolean{return liveFrame&&!!live?.hasShip(ship);}
-export function refreshedUfo(u?:Ufo): boolean {
-  if(!ultraCategory('ship'))return false;
-  if(sanctumThemed())return true;
-  if(!u)return true;
-  const variant=u.type==='cruiser'?'ufo':ULTRA_UFOS[u.type].asset;
-  return levelOneUfoLive(u)||!!image(`${variant}-${getQualityLevel()==='low'?128:256}.webp`);
+export function refreshedUfo(_u?:Ufo): boolean {
+  return ultraCategory('ship');
 }
 export function levelOneUfoLive(u:Ufo):boolean{return liveFrame&&!!live?.hasUfo(u);}
 export function levelOnePickupSprite(type:PowerUpType='rapid'):HTMLImageElement|null {return active?image(`pickup-${type}-${getQualityLevel()==='low'?128:256}.webp`)??image(`pickup-${type}-128.webp`):null;}
@@ -53,8 +52,16 @@ const deathPlate=(tile:number)=>`death-atlas-${tile}.webp?art=thermal-3`;
 export function levelOneDeathAtlas():HTMLImageElement|null{return active?image(deathPlate(getQualityLevel()==='low'?128:256))??image(deathPlate(128)):null;}
 export function drawLevelOneUfo(ctx:CanvasRenderingContext2D,u:Ufo):boolean {
   if(!refreshedUfo(u))return false;
-  if(!u.alive||levelOneUfoLive(u))return true;
-  if(sanctumThemed()) {
+  if(!u.alive)return true;
+  const themed=sanctumThemed();
+  if(!themed&&u.hp<UFO_HP[u.type]&&(u.type==='tank'||u.type==='boss')) {
+    ctx.save();ctx.translate(u.pos.x,u.pos.y);ctx.lineWidth=1.5;ctx.strokeStyle='#d5e2e9';ctx.globalAlpha=.18;
+    ctx.beginPath();ctx.arc(0,0,u.radius*1.32,0,Math.PI*2);ctx.stroke();
+    ctx.strokeStyle=`#${ULTRA_UFOS[u.type].accent.toString(16).padStart(6,'0')}`;ctx.globalAlpha=.8;
+    ctx.beginPath();ctx.arc(0,0,u.radius*1.32,-Math.PI/2,-Math.PI/2+Math.PI*2*Math.max(0,u.hp/UFO_HP[u.type]));ctx.stroke();ctx.restore();
+  }
+  if(levelOneUfoLive(u))return true;
+  if(themed) {
     const frame=shouldReduceMotion()?0:Math.floor(relicTime*.00035/Math.PI*8);
     ctx.save();ctx.translate(u.pos.x,u.pos.y);const width=u.radius*3.45;
     ctx.drawImage(relicPlate(null,frame),-width/2,-width/2,width,width);
@@ -62,10 +69,14 @@ export function drawLevelOneUfo(ctx:CanvasRenderingContext2D,u:Ufo):boolean {
     ctx.restore();return true;
   }
   const variant=u.type==='cruiser'?'ufo':ULTRA_UFOS[u.type].asset;
-  const sprite=image(`${variant}-${getQualityLevel()==='low'?128:256}.webp`)??image(`${variant}-128.webp`);
-  if(!sprite)return false;
+  const sprite=image(`${variant}-${getQualityLevel()==='low'?128:256}.webp`)??image(`${variant}-128.webp`)??alienFallback(u.type);
   const width=u.radius*UFO_PLATE_WIDTH;
-  ctx.save();ctx.translate(u.pos.x,u.pos.y);ctx.drawImage(sprite,-width/2,-width/2,width,width);
+  ctx.save();ctx.translate(u.pos.x,u.pos.y);
+  if(!shouldReduceMotion())ctx.rotate(Math.max(-.12,Math.min(.12,u.vel.y*.003)));
+  ctx.drawImage(sprite,-width/2,-width/2,width,width);
+  const charge=Math.max(0,Math.min(1,1-u.shootTimer/360));
+  if(charge>0){ctx.globalAlpha=charge*.3;ctx.strokeStyle=`#${ULTRA_UFOS[u.type].accent.toString(16).padStart(6,'0')}`;ctx.lineWidth=1.3;
+    ctx.beginPath();ctx.ellipse(0,0,u.radius*.36,u.radius*.30,0,0,Math.PI*2);ctx.stroke();ctx.globalAlpha=1;}
   if(u.hitFlash>0){ctx.globalCompositeOperation='lighter';ctx.globalAlpha=u.hitFlash*.3;ctx.drawImage(sprite,-width/2,-width/2,width,width);}
   ctx.restore();return true;
 }

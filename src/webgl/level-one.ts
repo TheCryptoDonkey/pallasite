@@ -9,6 +9,7 @@ import { ULTRA_ROCKS, ULTRA_UFOS, ULTRA_PILOT_COLOURS } from '../ultra-materials
 import { MINERAL_SHARDS, DEFAULT_SHARD_TYPE, SHARD_VERTICES, SHARD_FACES, shardAccentFace } from '../mineral-shards.js';
 import { sanctumThemed } from '../sanctum-art.js';
 import { createSanctumRelic, updateSanctumRelic, disposeSanctumRelic } from './sanctum-relic.js';
+import { ALIEN_ART_REVISION } from '../alien-art.js';
 
 /** Critically damped presentation, with a bounded angular speed. */
 function easeAngle(model:THREE.Group,key:string,target:number,dt:number):number {
@@ -53,7 +54,7 @@ export async function createLevelOneRenderer() {
   let source: THREE.Group, shipSource: THREE.Group, ufoSource: THREE.Group;
   const loader = new GLTFLoader();
   const names=['stony-cinematic','ship-cinematic','ufo-cinematic',...PICKUP_KINDS.map(k=>`pickup-${k}`),...DEBRIS_KINDS.map(k=>`debris-${k}`),...COLLECTABLE_KINDS.map(k=>`collectable-${k}`)];
-  const loaded = await Promise.allSettled(names.map(name => loader.loadAsync(`/graphics/level-one/${name}.glb${name.startsWith('pickup-')?`?art=${PICKUP_ART_REVISION}`:''}`)));
+  const loaded = await Promise.allSettled(names.map(name => loader.loadAsync(`/graphics/level-one/${name}.glb${name.startsWith('pickup-')?`?art=${PICKUP_ART_REVISION}`:name.startsWith('ufo-')?`?art=${ALIEN_ART_REVISION}`:''}`)));
   if (loaded.some(r=>r.status==='rejected')) {
     for (const r of loaded) if (r.status==='fulfilled') disposeModel(r.value.scene);
     reflection.dispose(); renderer.dispose(); throw new Error('Level one model unavailable');
@@ -138,7 +139,7 @@ export async function createLevelOneRenderer() {
   function extra(name:string):THREE.Group|undefined {
     if(!extraSources.has(name)&&!extraPending.has(name)) {
       extraPending.add(name);
-      void loader.loadAsync(`/graphics/level-one/${name}.glb`).then(g=>{
+      void loader.loadAsync(`/graphics/level-one/${name}.glb${name.startsWith('ufo-')?`?art=${ALIEN_ART_REVISION}`:''}`).then(g=>{
         if(disposed){disposeModel(g.scene);return;}
         g.scene.rotation.x=Math.PI/2;
         g.scene.traverse(o=>{if(o instanceof THREE.Mesh){o.castShadow=o.receiveShadow=true;(o.material as THREE.MeshStandardMaterial).envMapIntensity=.8;}});
@@ -208,6 +209,13 @@ export async function createLevelOneRenderer() {
   const underglowTextures=[driveGlow('#7952ee'),driveGlow('#326fff'),driveGlow('#f69b43'),driveGlow('#ffd38a')];
   const underglowMaterials=underglowTextures.map((map,i)=>new THREE.MeshBasicMaterial({map,transparent:true,opacity:i?.65:.55,
     blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide,forceSinglePass:true}));
+  const alienDrives=new Map<string,THREE.MeshBasicMaterial[]>();
+  for(const [type,profile] of Object.entries(ULTRA_UFOS)) {
+    const texture=driveGlow(`#${profile.accent.toString(16).padStart(6,'0')}`);underglowTextures.push(texture);
+    const materials=[.42,.5].map(opacity=>new THREE.MeshBasicMaterial({map:texture,transparent:true,opacity,
+      blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide,forceSinglePass:true}));
+    underglowMaterials.push(...materials);alienDrives.set(type,materials);
+  }
   const driveCentre=new THREE.Vector3();
   // Small extra shards reuse one real Blender wing primitive in one batch.
   let shardGeometry:THREE.BufferGeometry|undefined;
@@ -315,7 +323,7 @@ export async function createLevelOneRenderer() {
           mat.userData.baseEmission=mat.emissive.clone();mat.userData.baseStrength=mat.emissiveIntensity;o.material=mat;
         }});model.userData.rotor=model.getObjectByName('Upper_Rotor')??model.getObjectByName('Upper Rotor');
         const thrust=new THREE.Group();
-        for(const material of underglowMaterials.slice(themed?2:0,themed?4:2))thrust.add(new THREE.Mesh(underglowGeometry,material));
+        for(const material of themed?underglowMaterials.slice(2,4):alienDrives.get(u.type)!)thrust.add(new THREE.Mesh(underglowGeometry,material));
         model.userData.thrust=thrust;scene.add(thrust);
         ufos.set(id,model);scene.add(model);
       }
@@ -350,10 +358,11 @@ export async function createLevelOneRenderer() {
       thrust.children[1].position.set(0,0,-.36);thrust.children[1].scale.setScalar(.95*pulse);
       // The relic's drive sits directly behind its clock reverse. Keep that
       // local light quiet enough to preserve the engraving when it faces us.
-      if(dx===0){driveCentre.set(0,0,-.38).applyMatrix4(model.matrixWorld);ufoLight.position.copy(driveCentre);ufoLight.intensity=(180+170*power)*(themed?.12:1);}
+      if(dx===0){driveCentre.set(0,0,-.38).applyMatrix4(model.matrixWorld);ufoLight.position.copy(driveCentre);ufoLight.color.setHex(themed?0xffbd65:ufoClass.accent);ufoLight.intensity=(180+170*power)*(themed?.12:1);}
       model.traverse(o=>{if(o instanceof THREE.Mesh){const mat=o.material as THREE.MeshStandardMaterial;
         mat.emissive.copy(mat.userData.baseEmission).lerp(hitColor,u.hitFlash*.65);
-        mat.emissiveIntensity=mat.userData.baseStrength+(u.hitFlash*.6)+(u.type==='boss'?(u.bossPhase-1)*.22:0);
+        const charge=!themed&&mat.name==='violet reactor'?Math.max(0,1-u.shootTimer/360)*.35:0;
+        mat.emissiveIntensity=mat.userData.baseStrength+(u.hitFlash*.6)+(u.type==='boss'?(u.bossPhase-1)*.22:0)+charge;
       }});
     }}
     for(const [id,model] of ufos)if(!seenUfos.has(id)){scene.remove(model,model.userData.thrust);model.traverse(o=>{if(o instanceof THREE.Mesh)(o.material as THREE.Material).dispose();});ufos.delete(id);}
@@ -535,6 +544,7 @@ export async function createLevelOneRenderer() {
       visibleRocks:shownRocks.size,rockCopies:objects.size,rockCapacity,rockTypes:[...new Set([...shownRocks].map(a=>a.stationPart??a.type))],
       councilRelics:[...new Set([...shownRocks].flatMap(a=>a.councilMember?[a.councilMember.name]:[]))],signalRelics:sanctumThemed()?shownUfos.size:0,
       visibleMines:shownMines.size,loadedCampaignModels:[...extraSources.keys()],
+      ufoTypes:[...new Set([...shownUfos].map(u=>u.type))],alienArtRevision:ALIEN_ART_REVISION,
       ufos:[...ufos.values()].map(o=>({scale:o.scale.x,pitch:o.rotation.x,bank:o.rotation.y,rotorAngle:(o.userData.rotor as THREE.Object3D|undefined)?.rotation.y,
         undersideGlow:(o.userData.thrust as THREE.Group).children.map(c=>({z:c.position.z,width:c.scale.x})),
         shadowCasters:(()=>{let n=0;o.traverse(c=>{if(c instanceof THREE.Mesh&&c.castShadow)n++;});return n;})()})),

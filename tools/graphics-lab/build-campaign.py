@@ -25,43 +25,8 @@ for name,source,col,metal,rough,emission,stretch in re.findall(pattern,profiles)
         bpy.context.scene.render.filepath=str(FRAMES/(name+'-'+str(frame).zfill(2)+'.png'));bpy.ops.render.render(write_still=True)
     print('MINERAL BAKED',name,flush=True)
 
-# Retain the fully authored hull/rotor; add substantial class-specific armour,
-# sensor banks and weapons. Each class has a different silhouette.
-for kind in ['elite','tank','sniper','boss']:
-    bpy.ops.wm.open_mainfile(filepath=str(OUT/'ufo.blend'))
-    for o in list(bpy.context.scene.objects):
-        if o.type in ['CAMERA','LIGHT']:bpy.data.objects.remove(o,do_unlink=True)
-    metal=material('class titanium',0x617583);dark=material('class ceramic',0x111f2c,.4,.45)
-    accent=material('class weapon lens',{'elite':0xff587b,'tank':0xff884c,'sniper':0x63e9e8,'boss':0xffd56b}[kind],.4,.22,1.5)
-    for o in list(bpy.context.scene.objects):
-        if o.type=='MESH':o.scale.z*=1.25 if kind in ['tank','boss'] else .85 if kind=='sniper' else 1
-    if kind=='sniper':
-        for side in [-1,1]:
-            box((side*.57,-.22,.22),(.18,1.22,.16),metal)
-            box((side*.57,-.74,.22),(.10,.10,.11),accent)
-    else:
-        count=4 if kind=='elite' else 8
-        for i in range(count):
-            a=i*math.tau/count;r=.86
-            o=box((r*math.cos(a),r*math.sin(a),.18),(.38,.16,.20 if kind=='elite' else .32),metal);o.rotation_euler.z=a
-            sphere((.99*math.cos(a),.99*math.sin(a),.20),(.08,.08,.07),accent)
-    if kind=='boss':
-        torus(.56,.36,.04,metal);torus(.54,.39,.02,accent)
-        sphere((0,0,.52),(.18,.18,.13),accent)
-    # Merge new fittings by material; keep Upper Rotor independently animated.
-    added=[o for o in bpy.context.scene.objects if o.type=='MESH' and o.name not in ['Alien Hull','Upper Rotor']]
-    if added:
-        bpy.ops.object.select_all(action='DESELECT')
-        for o in added:
-            bpy.context.view_layer.objects.active=o;o.select_set(True)
-            for mod in list(o.modifiers):bpy.ops.object.modifier_apply(modifier=mod.name)
-        bpy.context.view_layer.objects.active=added[0];bpy.ops.object.join();bpy.context.object.name='Class Hardware'
-    meshes=export('ufo-'+kind)
-    # The approved plate uses an oblique view; live GLBs keep the true body axes.
-    setup(2.8)
-    for o in meshes:o.rotation_euler.x+=.35
-    plate('ufo-'+kind)
-    print('ALIEN EXPORTED',kind,flush=True)
+from alien_fleet_authoring import build_fleet
+build_fleet()
 
 for part in ['core','arm','emitter','mine','missile']:
     clear();metal=material('brushed titanium',0x617b8e,.83,.3);dark=material('ceramic recesses',0x0e1b28,.4,.43)

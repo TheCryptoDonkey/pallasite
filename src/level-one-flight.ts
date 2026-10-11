@@ -11,6 +11,7 @@ import { levelOneProjectileSprite } from './level-one-refresh.js';
 import { drawUltraAperture } from './ultra-warp.js';
 import { drawRoundedPowerCell } from './powerup-art.js';
 import { sanctumThemed, relicPlate } from './sanctum-art.js';
+import { ULTRA_UFOS } from './ultra-materials.js';
 
 const TAU=Math.PI*2;
 const glows=new Map<string,HTMLCanvasElement>();
@@ -222,8 +223,9 @@ export function drawLevelOneUfoThrust(ctx:CanvasRenderingContext2D,u:Ufo):void {
   ctx.globalCompositeOperation='lighter';
   const width=r*(2.7+power*.2),height=r*1.75;
   const themed=sanctumThemed();
-  ctx.globalAlpha=.34+power*.13;ctx.drawImage(glow(themed?'#f69b43':'#7952ee'),-width/2,-height/2,width,height);
-  ctx.globalAlpha=.3+power*.12;ctx.drawImage(glow(themed?'#ffd38a':'#326fff'),-r*.7,-r*.42,r*1.4,r*.84);
+  const accent=`#${ULTRA_UFOS[u.type].accent.toString(16).padStart(6,'0')}`;
+  ctx.globalAlpha=.28+power*.13;ctx.drawImage(glow(themed?'#f69b43':accent),-width/2,-height/2,width,height);
+  ctx.globalAlpha=.23+power*.12;ctx.drawImage(glow(themed?'#ffd38a':accent),-r*.7,-r*.42,r*1.4,r*.84);
   ctx.restore();
 }
 

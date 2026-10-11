@@ -88,6 +88,73 @@ function dist(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+function sphereFixture(players = 1, runMode = 'campaign') {
+  const s = makeInitialState();
+  startGame(s, 0x600b, { players, runMode, aiOpponents: false });
+  s.phase = 'playing'; s.elapsed = 5000; s.hitStopSteps = 0;
+  s.nextUfoSpawn = 1e9; s.cheatedThisRun = true;
+  for (const p of s.players) {
+    p.ship.pos = { x: 640, y: 360 }; p.ship.vel = { x: 0, y: 0 };
+    p.ship.invulnerableUntil = 1e9;
+  }
+  const sphere = { type: 'rapid', pos: { x: 760, y: 360 }, vel: { x: 0, y: 0 },
+    radius: 14, alive: true, collected: false, ttl: 14000 };
+  s.powerups = [sphere];
+  return { s, sphere };
+}
+
+test('all six power-up spheres pull in and apply exactly once without thrust', () => {
+  for (const type of ['rapid','satboost','nova','trident','magnet','extralife']) {
+    const { s, sphere } = sphereFixture(); sphere.type = type;
+    for (let i = 0; i < 90; i++) updateGame(s);
+    assert(sphere.collected, type + ' collected from 120px away');
+    assertEq(s.players[0].runStats.powerupsCollected, 1, type + ' credited once');
+    assertEq(s.powerups.length, 0, type + ' removed');
+  }
+});
+
+test('distant spheres keep their drift and dead ships attract nothing', () => {
+  const { s, sphere } = sphereFixture(); sphere.pos.x = 850;
+  updateGame(s); assertEq(sphere.vel.x, 0, 'outside natural pull');
+  sphere.pos.x = 760; s.players[0].ship.alive = false;
+  updateGame(s); assertEq(sphere.vel.x, 0, 'dead ship has no pull');
+});
+
+test('sphere pull follows the shortest wrap path on both axes', () => {
+  for (const axis of ['x', 'y']) {
+    const { s, sphere } = sphereFixture();
+    s.players[0].ship.pos[axis] = 20;
+    sphere.pos = { ...s.players[0].ship.pos };
+    sphere.pos[axis] = (axis === 'x' ? 1280 : 720) - 70;
+    updateGame(s); assert(sphere.vel[axis] > 0, axis + ' crosses the seam');
+    for (let i = 0; i < 90; i++) updateGame(s);
+    assert(sphere.collected, axis + ' collects across seam');
+  }
+});
+
+test('walled deathmatch never attracts spheres through opposite edges', () => {
+  const { s, sphere } = sphereFixture(2, 'deathmatch');
+  s.players[0].ship.pos = { x: 20, y: 360 };
+  s.players[1].ship.pos = { x: 640, y: 650 };
+  sphere.pos = { x: 1210, y: 360 };
+  updateGame(s); assertEq(sphere.vel.x, 0, 'no torus attraction in walled arena');
+});
+
+test('nearby co-op pilots do not cancel pull or collect a sphere twice', () => {
+  const { s, sphere } = sphereFixture(2, 'coop-campaign');
+  s.players[0].ship.pos.x = 650; s.players[1].ship.pos.x = 870;
+  updateGame(s); assert(sphere.vel.x < 0, 'stable first pilot wins equal-distance tie');
+  s.players[0].ship.pos = { ...sphere.pos }; s.players[1].ship.pos = { ...sphere.pos };
+  updateGame(s);
+  assertEq(s.players.reduce((n,p) => n + p.runStats.powerupsCollected, 0), 1, 'single owner');
+  assert(Number.isFinite(sphere.vel.x) && Number.isFinite(sphere.vel.y), 'finite at exact overlap');
+});
+
+test('expired spheres cannot apply a power-up at exact overlap', () => {
+  const { s, sphere } = sphereFixture(); sphere.pos = { ...s.players[0].ship.pos }; sphere.ttl = 1;
+  updateGame(s); assertEq(s.players[0].runStats.powerupsCollected, 0, 'no expired pickup');
+});
+
 // bc7ec95 — distinct 2P spawn.
 test('bc7ec95 distinct 2P spawn', () => {
   const s = makeInitialState();
