@@ -76,3 +76,31 @@ The case uses a 320px viewport, checks for horizontal overflow and verifies a
 44px reconnect touch target. HTTP responses are fixtures and external writes remain blocked; this does not
 prove real gameplay publication. That live-run gate, the shared four-game
 account matrix and physical acceptance remain open.
+
+## Selected receipt review and removal
+
+Saved scores are listed individually for the selected account, with their
+original completion time and retained submission/rejection status. New runs
+persist both original start and finish timestamps before asynchronous signing.
+RETRY SCORE submits the selected snapshot; REMOVE SAVED SCORE asks for
+confirmation and deletes only that local retry copy, preserving other runs and
+accounts. Cancellation does nothing. Active submissions cannot be removed,
+and a failed storage write retains the receipt and reports the failure.
+Published scores are not deleted by this control.
+
+Malformed, duplicated or oversized existing storage is preserved rather than
+rewritten with only the entries that could be read. Valid entries remain
+available for retry, new receipts remain in memory for the visit, and the UI
+explains the durability limit. Removal is disabled until the stored data can be
+read safely. HTTP submission and response-body reads use a fifteen-second
+abort deadline so a stalled request releases explicit retry. Permanent 400,
+409 or 422 rejections retain the original receipt and appear as rejected;
+authentication failures remain available for reconnect and explicit retry.
+
+Focused tests cover persisted rejection/timestamps, owner and selected-run
+isolation, in-flight removal, corrupt storage preservation, removal write
+failure, HTTP rejection integrity and actual timeout/retry release. The
+production-build browser gate checks keyboard cancellation/confirmation,
+selected removal and preservation across relaunch at a 320px viewport. These
+private fixtures do not prove actual public earned-score or physical-device
+acceptance.

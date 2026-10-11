@@ -81,3 +81,83 @@ try {
   assert.equal(requests, 0);
 } finally { globalThis.fetch = originalFetch; }
 console.log('PASS a provider returning another account signature cannot reach the score endpoint');
+
+// Rejection status and timestamps remain with the original earned receipt.
+data.clear();
+const review = new SoloScoreOutbox(storage);
+const dated = review.enqueue(accountA, { ...input, run_id: '100', started_at: 1791700000, finished_at: 1791700009 });
+review.enqueue(accountA, { ...input, run_id: '101' });
+review.enqueue(accountB, { ...input, run_id: '102' });
+await review.retry(dated, session(accountA), async () => ({ ok: false, error: 'invalid_score', status: 422 }));
+const afterReject = new SoloScoreOutbox(storage);
+const rejected = afterReject.pending(accountA).find(r => r.input.run_id === '100')!;
+assert.equal(rejected.rejected, true);
+assert.equal(rejected.lastError, 'invalid_score');
+assert.equal(rejected.input.finished_at, 1791700009);
+assert.equal(afterReject.remove(rejected, accountB), false);
+assert.equal(afterReject.remove(rejected, accountA), true);
+assert.deepEqual(new SoloScoreOutbox(storage).pending(accountA).map(r => r.input.run_id), ['101']);
+assert.equal(new SoloScoreOutbox(storage).pending(accountB).some(r => r.input.run_id === '102'), true);
+console.log('PASS permanent rejection and original dates survive reload; selected owner removal preserves other runs and accounts');
+
+const working = afterReject.pending(accountA)[0];
+let finish!: () => void;
+const waiting = new Promise<void>(resolve => { finish = resolve; });
+const inFlight = afterReject.retry(working, session(accountA), async () => { await waiting; return { ok: false, error: 'network_error' }; });
+assert.equal(afterReject.remove(working, accountA), false);
+finish(); await inFlight;
+assert.equal(afterReject.pending(accountA).length, 1);
+console.log('PASS a receipt cannot be removed during its active submission');
+
+const brokenText = JSON.stringify([{ invalid: true }, { pubkey: accountA, input: { ...input, run_id: '103' } }]);
+data.set(SOLO_SCORE_OUTBOX_KEY, brokenText);
+const protectedOutbox = new SoloScoreOutbox(storage);
+assert.equal(protectedOutbox.storageProblem, 'corrupt');
+assert.equal(protectedOutbox.durable, false);
+const readable = protectedOutbox.pending(accountA)[0];
+protectedOutbox.enqueue(accountA, { ...input, run_id: '104' });
+assert.equal(protectedOutbox.remove(readable, accountA), false);
+assert.equal(data.get(SOLO_SCORE_OUTBOX_KEY), brokenText);
+assert.equal(protectedOutbox.pending(accountA).length, 2);
+console.log('PASS malformed existing storage is preserved byte for byte, with new runs retained for this visit');
+
+const failureData = new Map<string, string>();
+let failWrites = false;
+const unstable = new SoloScoreOutbox(() => ({ getItem: key => failureData.get(key) ?? null, setItem: (key, value) => { if (failWrites) throw new Error('quota'); failureData.set(key, value); } }));
+const removable = unstable.enqueue(accountA, { ...input, run_id: '105' });
+failWrites = true;
+assert.equal(unstable.remove(removable, accountA), false);
+assert.equal(unstable.pending(accountA).length, 1);
+assert.equal(JSON.parse(failureData.get(SOLO_SCORE_OUTBOX_KEY)!).length, 1);
+console.log('PASS a failed removal write retains the original receipt');
+
+const authenticated = session(accountA);
+authenticated.signer.signEvent = async template => ({ ...template, pubkey: accountA, id: '', sig: '', created_at: 1, tags: template.tags ?? [] });
+const beforeHttp = globalThis.fetch;
+try {
+  globalThis.fetch = async () => new Response(JSON.stringify({ ok: false, error: 'invalid_score' }), { status: 422 });
+  assert.deepEqual(await submitSoloScore(authenticated, saved.input), { ok: false, error: 'invalid_score', status: 422 });
+  globalThis.fetch = async () => new Response(JSON.stringify({ ok: true, id: 'misleading', published: { ok: 1, total: 1 } }), { status: 500 });
+  assert.deepEqual(await submitSoloScore(authenticated, saved.input), { ok: false, error: 'bad_response', status: 500 });
+  console.log('PASS HTTP rejection status is retained and an error-status success body cannot confirm publication');
+
+  const timeoutData = new Map<string, string>();
+  const timed = new SoloScoreOutbox(() => ({ getItem: key => timeoutData.get(key) ?? null, setItem: (key, value) => { timeoutData.set(key, value); } }));
+  const timedReceipt = timed.enqueue(accountA, { ...input, run_id: '106' });
+  globalThis.fetch = async (_url, options) => {
+    assert(options?.signal);
+    return new Promise((_resolve, reject) => options.signal!.addEventListener('abort', () => reject(options.signal!.reason), { once: true }));
+  };
+  // Keep Node alive while its real AbortSignal deadline proves retry release.
+  const watchdog = setTimeout(() => { throw new Error('HTTP deadline did not release'); }, 20_000);
+  try {
+    const start = Date.now();
+    assert.equal((await timed.retry(timedReceipt, authenticated, submitSoloScore)).ok, false);
+    assert(Date.now() - start >= 14_000 && Date.now() - start < 20_000);
+    assert.equal(timed.pending(accountA).length, 1);
+    globalThis.fetch = async () => new Response(JSON.stringify({ ok: true, id: 'retry-confirmed', published: { ok: 1, total: 1 } }));
+    assert.equal((await timed.retry(timedReceipt, authenticated, submitSoloScore)).ok, true);
+    assert.equal(timed.pending(accountA).length, 0);
+  } finally { clearTimeout(watchdog); }
+  console.log('PASS a stalled HTTP submission times out, retains its receipt and releases a successful retry');
+} finally { globalThis.fetch = beforeHttp; }

@@ -9330,7 +9330,7 @@ function renderMusicPlayer(state: GameState, onBack: () => void): void {
   };
 
   const addRow = (t: import('./music.js').TrackInfo): void => {
-    const row = el('div', { parent: list });
+    const row = el('div', { parent: list, attrs: { role: 'group' } });
     row.style.cssText = [
       'display:flex', 'align-items:center', 'gap:10px',
       'padding:10px 12px', 'border-radius:8px',
@@ -10903,7 +10903,7 @@ export function renderRelaySettings(onBack: () => void): void {
     for (const url of relays) {
       const enabled = isRelayEnabled(url);
       const isDefault = isDefaultRelay(url);
-      const row = el('div', { parent: list });
+      const row = el('div', { parent: list, attrs: { role: 'group' } });
       row.style.cssText = 'display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;background:rgba(0,0,0,0.4);border:1px solid rgba(91,157,255,0.25);border-radius:8px;padding:8px 12px;';
 
       const toggle = el('button', { parent: row });
@@ -11020,26 +11020,59 @@ export function refreshScoreRecovery(state: GameState): void {
   const banner = el('div', { parent: document.body, attrs: { id: 'pal-score-recovery', role: 'status', 'aria-live': 'polite' } });
   banner.style.cssText = 'position:fixed;bottom:max(12px,env(safe-area-inset-bottom,0px));left:12px;right:12px;z-index:9998;max-width:560px;margin:auto;padding:12px;background:#100820;color:#ffd84a;border:1px solid #ffd84a;border-radius:8px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;pointer-events:auto;touch-action:manipulation;font-family:ui-monospace,monospace;';
   const status = el('span', { parent: banner, text: `${pending.length} SCORE${pending.length === 1 ? '' : 'S'} WAITING TO PUBLISH${outbox.durable ? '' : ' · KEEP THIS PAGE OPEN TO RETRY'}` });
-  const retry = el('button', { parent: banner, className: 'menu-btn secondary', text: session.signer.capabilities.canSignEvents ? 'RETRY SCORE' : 'RECONNECT TO RETRY' });
-  retry.style.cssText = 'min-height:44px;touch-action:manipulation;';
-  retry.addEventListener('click', () => {
-    if (!state.session?.signer.capabilities.canSignEvents) {
-      renderSignerRecovery(state);
-      return;
+  if (outbox.storageProblem === 'corrupt') {
+    el('span', { parent: banner, text: 'Existing saved data could not be read safely and has been preserved. Keep this page open for new runs; removal is unavailable.' });
+  }
+  const list = el('div', { parent: banner });
+  list.style.cssText = 'width:100%;max-height:35vh;overflow:auto;overflow-wrap:anywhere;';
+  let firstRetry: HTMLButtonElement | null = null;
+  for (const receipt of pending) {
+    const row = el('div', { parent: list, attrs: { role: 'group' } });
+    row.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 0;border-top:1px solid #71592a;';
+    const finished = receipt.input.finished_at ? receipt.input.finished_at * 1000 : Number(receipt.input.run_id);
+    const date = finished >= 946684800000 && Number.isFinite(finished)
+      ? new Date(finished).toLocaleString() : 'Original date unavailable';
+    row.setAttribute('aria-label', `Saved score: ${receipt.input.score.toLocaleString()} points · ${date}`);
+    el('span', { parent: row, text: `${receipt.input.score.toLocaleString()} points · ${date}` });
+    if (receipt.lastError) {
+      el('span', { parent: row, text: `${receipt.rejected ? 'Score rejected' : 'Not published'}: ${receipt.lastError.replace(/[_-]/g, ' ')}. Your saved run is retained.` });
     }
-    retry.disabled = true;
-    status.textContent = 'PUBLISHING YOUR SCORE…';
-    // retry() rechecks both the session and signer pubkeys and uses the saved
-    // run snapshot. It never borrows the new account or creates a guest.
-    void outbox.retry(pending[0], state.session, submitSoloScore).finally(() => refreshScoreRecovery(state));
-  });
+    const retry = el('button', { parent: row, className: 'menu-btn secondary', text: session.signer.capabilities.canSignEvents ? 'RETRY SCORE' : 'RECONNECT TO RETRY' });
+    firstRetry ??= retry;
+    retry.style.cssText = 'min-height:44px;touch-action:manipulation;font:inherit;letter-spacing:normal;white-space:normal;';
+    const remove = el('button', { parent: row, className: 'menu-btn secondary', text: 'REMOVE SAVED SCORE' });
+    remove.style.cssText = retry.style.cssText;
+    remove.disabled = outbox.storageProblem === 'corrupt';
+    remove.addEventListener('click', () => {
+      if (state.session?.pubkey !== receipt.pubkey) return;
+      if (!window.confirm(`Remove the saved retry for ${receipt.input.score.toLocaleString()} points (${date})?\n\nThis removes this device's retry copy. It does not delete an already published score.`)) return;
+      if (state.session?.pubkey !== receipt.pubkey) return;
+      if (!outbox.remove(receipt, state.session.pubkey)) {
+        status.textContent = 'Could not save this removal. Your score is retained; check this device’s storage and try again.';
+        return;
+      }
+      refreshScoreRecovery(state);
+    });
+    retry.addEventListener('click', () => {
+      if (state.session?.pubkey !== receipt.pubkey) return;
+      if (!state.session.signer.capabilities.canSignEvents) {
+        renderSignerRecovery(state);
+        return;
+      }
+      retry.disabled = true;
+      remove.disabled = true;
+      status.textContent = 'PUBLISHING YOUR SCORE…';
+      // Recheck the owner and signer, using this selected original run snapshot.
+      void outbox.retry(receipt, state.session, submitSoloScore).finally(() => refreshScoreRecovery(state));
+    });
+  }
   if (isArcadeSignerSession(session)) {
     el('span', { parent: banner, text: 'Reconnect in the arcade, then launch Pallasite to retry this saved score.' });
     const reconnect = el('button', { parent: banner, className: 'menu-btn secondary', text: 'RECONNECT IN ARCADE' });
     reconnect.addEventListener('click', () => window.location.assign(`${ARCADE_ORIGIN}/game/pallasite`));
     reconnect.style.cssText = 'display:inline-flex;align-items:center;min-height:44px;max-width:100%;box-sizing:border-box;font:inherit;letter-spacing:normal;white-space:normal;touch-action:manipulation;text-decoration:none;';
   }
-  if (hadFocus) retry.focus({ preventScroll: true });
+  if (hadFocus) firstRetry?.focus({ preventScroll: true });
 }
 
 /** Preserve the earned run and account before asynchronous signing or navigation. */
@@ -11057,6 +11090,8 @@ function publishSoloScoreForRun(state: GameState): void {
     wave: state.wave,
     duration_ms: Math.max(0, Math.floor(state.runTimeMs)),
     run_id: runId,
+    started_at: Math.floor(state.runStartedAt / 1000),
+    finished_at: Math.floor(Date.now() / 1000),
     mode: soloMode,
     player_name: sameAccount ? scoreboardNameFor(state) : owner?.slice(0, 8) ?? 'Anonymous',
     ...(owner && state.profile?.pubkey === owner && state.profile.nip05 ? { nip05: state.profile.nip05 } : {}),

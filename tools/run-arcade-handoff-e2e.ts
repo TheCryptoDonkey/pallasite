@@ -1,12 +1,12 @@
 /** Real worker lifecycle and signed MessagePort handoff, using private local peers. */
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
 import { schnorr } from '@noble/curves/secp256k1.js';
 import { bytesToHex, hexToBytes } from '@noble/curves/utils.js';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { chromium, type BrowserContext } from 'playwright';
+import { chromium, type BrowserContext, type Page } from 'playwright';
 import { SOLO_SCORE_OUTBOX_KEY } from '../src/solo-score-outbox.js';
 
 const root = resolve('dist');
@@ -44,6 +44,7 @@ const event = { id: bytesToHex(digest), pubkey, sig: bytesToHex(schnorr.sign(dig
 const payload = { v: 1, game: 'pallasite', target: gameOrigin, channel: 'private-arcade-fixture-channel', canSign: true, profile: { name: 'Arcade fixture' }, event };
 const launchUrl = (path: string) => `${gameOrigin}${path}#gamestr-auth=${Buffer.from(JSON.stringify(payload)).toString('base64url')}`;
 const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH });
+let currentPage: Page | null = null;
 async function isolated(path = '/?p1=1', viewport = { width: 1180, height: 820 }): Promise<BrowserContext> {
   const context = await browser.newContext({ viewport });
   await context.route('**/*', route => new URL(route.request().url()).origin === gameOrigin && route.request().method() === 'GET' ? route.continue() : route.abort());
@@ -88,6 +89,7 @@ async function launch(context: BrowserContext) {
   const popup = context.waitForEvent('page');
   await parent.locator('#play').click();
   const game = await popup;
+  currentPage = game;
   await game.waitForFunction(key => (globalThis as any).__signetSignerInfo?.pubkey === key, pubkey);
   assert.equal(await game.evaluate(() => location.hash), '');
   assert.equal(await game.evaluate(() => window.opener), null);
@@ -221,6 +223,45 @@ try {
   assert.equal(remaining[0].pubkey, other);
   console.log('PASS declined score survives arcade reconnection and retries under the same account without guest fallback');
   await recovery.close();
+
+  const removal = await isolated('/', { width: 320, height: 568 });
+  await removal.addInitScript(({ origin, key, receipts }) => {
+    if (location.origin === origin && !localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify(receipts));
+  }, { origin: gameOrigin, key: SOLO_SCORE_OUTBOX_KEY, receipts: [
+    { pubkey, input: { ...scoreInput, finished_at: 1791700009 }, lastError: 'invalid_score', rejected: true },
+    { pubkey, input: { ...scoreInput, score: 126, run_id: '123456790' } },
+    { pubkey: other, input: { ...scoreInput, score: 127, run_id: '987654321' } },
+  ] });
+  const review = await launch(removal);
+  await review.getByText('Score rejected: invalid score. Your saved run is retained.', { exact: true }).waitFor();
+  const controls = review.getByRole('button', { name: 'REMOVE SAVED SCORE', exact: true });
+  assert.equal(await controls.count(), 2);
+  const target = await controls.first().boundingBox();
+  assert(target && target.height >= 44);
+  assert(await review.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await controls.first().focus();
+  const cancel = review.waitForEvent('dialog').then(dialog => { assert(dialog.message().includes('125 points')); return dialog.dismiss(); });
+  await review.keyboard.press('Enter'); await cancel;
+  assert.equal(await review.evaluate(key => JSON.parse(localStorage.getItem(key)!).length, SOLO_SCORE_OUTBOX_KEY), 3);
+  const confirm = review.waitForEvent('dialog').then(dialog => dialog.accept());
+  await review.keyboard.press('Enter'); await confirm;
+  await review.waitForFunction(() => document.querySelectorAll('#pal-score-recovery button').length === 3);
+  const retained = await review.evaluate(key => JSON.parse(localStorage.getItem(key)!), SOLO_SCORE_OUTBOX_KEY);
+  assert.deepEqual(retained.map((r: any) => r.input.run_id), ['123456790', '987654321']);
+  assert.equal(retained[1].pubkey, other);
+  const returned = await launch(removal);
+  await returned.getByRole('button', { name: 'REMOVE SAVED SCORE', exact: true }).waitFor();
+  assert.equal(await returned.getByRole('button', { name: 'REMOVE SAVED SCORE', exact: true }).count(), 1);
+  assert(!await returned.locator('#pal-score-recovery').textContent().then(text => text?.includes('127 points')));
+  console.log('PASS keyboard cancellation and confirmed selected removal preserve other runs/accounts across relaunch at 320px');
+  await removal.close();
+} catch (error) {
+  if (currentPage && !currentPage.isClosed()) {
+    const state = await currentPage.evaluate(() => ({ phase: document.body.dataset.phase, text: document.getElementById('ui-root')?.textContent?.slice(0, 2500) })).catch(() => null);
+    await writeFile('/tmp/pallasite-arcade-handoff-failure.json', JSON.stringify({ error: String(error), state }, null, 2));
+    await currentPage.screenshot({ path: '/tmp/pallasite-arcade-handoff-failure.png' }).catch(() => undefined);
+  }
+  throw error;
 } finally {
   await browser.close();
   await new Promise<void>(done => server.close(() => done()));
