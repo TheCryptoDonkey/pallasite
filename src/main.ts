@@ -14,7 +14,7 @@ import { getFlavour } from './flavour.js';
 import { lockInDifficulty, getStoredDifficulty, setStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadCriticalCampaignAssets, setRenderMode, getRenderModeKind, drawAsciiHud, setShowPlayerIdentity, type CriticalAssetReport } from './render.js';
-import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindPreRun, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderSignerRecovery, renderDuelLobby, renderDuelConnecting, renderEventLobby, renderGamepadTestPage, simulateStart, boothPilotSessionWasClaimed } from './ui.js';
+import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindPreRun, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderSignerRecovery, renderDuelLobby, renderDuelConnecting, renderEventLobby, renderGamepadTestPage, simulateStart, boothPilotSessionWasClaimed, refreshScoreRecovery } from './ui.js';
 import { isBlessed } from './v4v.js';
 import { postHeartbeat } from './faucet.js';
 import { currentMode, lockInMode, getStoredMode, isStoredDefenderMode, type RunMode } from './mode.js';
@@ -34,6 +34,7 @@ import {
 } from './stream-session.js';
 import { getActiveSkinId } from './skins.js';
 import { consumeArcadeSession, handleAuthCallback, tryRestore, sweepSignetArtefacts, createKioskSession, isAuthOnlySignerError } from './auth.js';
+import { isArcadeHandoffSession } from './arcade-handoff.js';
 import * as audio from './audio.js';
 import { getMusicDebugSnapshot, musicForceRefresh, musicSetTrackForState, preloadAllTracks, musicSetPaused, musicSetMuted, musicResetElements, musicWarmUpAll, currentTrackId, musicSuppressStatePlay, musicPoolActive } from './music.js';
 import { stemsTickForState } from './music-stems.js';
@@ -1376,6 +1377,7 @@ function startRunNow(): void {
   startGame(state, spectator ? spectateSeed : peer ? mpSeed : review ? 0x50414c31 : undefined,
     review ? { ...currentStartOptions(), players: 1, runMode: 'campaign', defender: false, aiOpponents: false } : currentStartOptions());
   if (review) state.cheatedThisRun = true; // repeatable art practice is unranked
+  refreshScoreRecovery(state);
   applyDeathmatchHarnessOptions();
   restoreHeldInputsAfterStart();
   // Only force wavestart for the standard campaign — startGame on the
@@ -2467,6 +2469,7 @@ function loop(now: number): void {
 
   // Phase transitions render UI overlays
   if (state.phase !== lastPhase) {
+    refreshScoreRecovery(state);
     if (state.phase === 'gameover') {
       renderGameOver(state);
     } else if (state.phase === 'title') {
@@ -2831,6 +2834,7 @@ async function boot(): Promise<void> {
     // the wizard's per-pilot sign-in overrides it for whoever is actually playing.)
     if (session && !boothPilotSessionWasClaimed()) {
       state.session = session;
+      refreshScoreRecovery(state);
       if (shouldRefreshBoothLobbyAfterSession && state.phase === 'title') {
         renderAttract(state);
       }
@@ -3838,12 +3842,15 @@ function setupAudioDebugOverlay(): void {
 
 function setupServiceWorker(): void {
   if (!('serviceWorker' in navigator)) return;
+  const previouslyControlled = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.register('/sw.js').then(reg => {
     if (!reg) return;
 
-    // Reload exactly once when a new worker takes control.
+    // First installation needs no reload. A live arcade bridge cannot survive
+    // an automatic reload after its one-use launch fragment has been consumed.
     let reloaded = false;
     navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!previouslyControlled || isArcadeHandoffSession(state.session)) return;
       if (reloaded) return;
       reloaded = true;
       window.location.reload();
@@ -3853,6 +3860,13 @@ function setupServiceWorker(): void {
       const waiting = reg.waiting;
       if (!waiting) return;
       if (!navigator.serviceWorker.controller) return;
+      if (isArcadeHandoffSession(state.session)) {
+        showUpdateBanner(() => {
+          waiting.postMessage({ type: 'SKIP_WAITING' });
+          window.location.assign('https://arcade.600.wtf/game/pallasite');
+        }, { message: 'UPDATE READY · RELAUNCH FROM THE ARCADE', action: 'RETURN TO ARCADE', pending: 'RETURNING...' });
+        return;
+      }
       // Auto-update on safe surfaces (watch page, controller PWA, jury,
       // title screen, gameover) — the user shouldn't have to chase a
       // banner. Mid-run shows the banner so we don't yank a play in

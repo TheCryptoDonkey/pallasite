@@ -40,6 +40,9 @@ const POST_SIGN_GAP_MS = 80;
 const QUEUE_TIMEOUT_MS = 45_000;
 
 interface QueuedSign {
+  // The queue is shared by all accounts. Bind the signing operation to the
+  // request, rather than whichever signer happened to start the queue runner.
+  sign: Signer['signEvent'];
   template: Parameters<Signer['signEvent']>[0];
   resolve: (event: Awaited<ReturnType<Signer['signEvent']>>) => void;
   reject: (err: unknown) => void;
@@ -50,7 +53,7 @@ let processing = false;
 let inFlight = false;
 let lastSignFinishedAt = 0;
 
-function runQueue(orig: Signer['signEvent']): void {
+function runQueue(): void {
   if (processing) return;
   processing = true;
   void (async () => {
@@ -60,7 +63,7 @@ function runQueue(orig: Signer['signEvent']): void {
       const gap = Math.max(0, POST_SIGN_GAP_MS - (Date.now() - lastSignFinishedAt));
       if (gap > 0) await new Promise((r) => setTimeout(r, gap));
       inFlight = true;
-      // Race orig() against the queue's hard timeout. The orig() promise
+      // Race this request's signer against the queue's hard timeout. Its promise
       // may keep running in the background after we move on (we can't
       // cancel a NIP-07 extension's signEvent), but `await` releases so
       // the next task gets its turn. Caller already rejected via its
@@ -74,7 +77,7 @@ function runQueue(orig: Signer['signEvent']): void {
           );
         });
         try {
-          const ev = await Promise.race([orig(task.template), timeout]);
+          const ev = await Promise.race([task.sign(task.template), timeout]);
           task.resolve(ev);
         } catch (err) {
           task.reject(err);
@@ -103,8 +106,8 @@ export function serialiseSigner(signer: Signer): Signer {
     get(target, prop, receiver): unknown {
       if (prop === 'signEvent') {
         return (template: Parameters<Signer['signEvent']>[0]) => new Promise<Awaited<ReturnType<Signer['signEvent']>>>((resolve, reject) => {
-          queue.push({ template, resolve, reject });
-          runQueue(origSignEvent);
+          queue.push({ sign: origSignEvent, template, resolve, reject });
+          runQueue();
         });
       }
       return Reflect.get(target, prop, receiver);

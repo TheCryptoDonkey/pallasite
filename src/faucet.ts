@@ -556,6 +556,7 @@ export async function submitSoloScore(
   } catch (err) {
     return { ok: false, error: 'sign_failed', detail: err instanceof Error ? err.message : String(err) };
   }
+  if (signedAuth.pubkey !== session.pubkey) return { ok: false, error: 'wrong_signer' };
   let res: Response;
   try {
     res = await fetch(`${API_BASE}/score`, {

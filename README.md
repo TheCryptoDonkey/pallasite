@@ -25,9 +25,18 @@ pnpm test:presentation
 pnpm test:menus
 pnpm test:coop-campaign --forge
 pnpm build
+pnpm test:arcade
+pnpm test:sign-queue
+pnpm test:score-recovery
 ```
 
 `pnpm build` typechecks and emits the static app into `dist/`. It uses the committed Signet Login bundle by default; set `SIGNET_LOGIN_SYNC_LOCAL=1 pnpm build` only when intentionally testing a sibling Signet Login build.
+
+`pnpm test:arcade` uses that production build to check a signed arcade launch
+through real first-install and update service-worker lifecycles. The booth uses
+the supplied account for player one; other pilots and ordinary walk-up visitors
+still choose their own identities. Worker updates offer an explicit arcade
+relaunch while that temporary signing connection is active.
 
 Graphics use the Blender Ultra presentation across the game, with automatic performance scaling. Settings → PERFORMANCE offers Ultra, Balanced and Low budgets; phones and lighter budgets use baked 3D art. Classic remains selectable. Rounded powerups, smooth warp arrival, material-specific dust and collectible mineral shards share the new presentation. Drift after wave 25 cycles through three new vistas and bounded difficulty with regular recovery waves. Open `?graphicsReview=1` for unranked before/after practice across all 25 campaign levels and Drift waves 26–31. See [the Ultra art and verification notes](tools/graphics-lab/README.md) and [the earlier graphics and playability review](docs/graphics-and-playability-review.md) for pipeline details and device-testing limits.
 
