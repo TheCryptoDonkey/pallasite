@@ -221,8 +221,9 @@ export function drawLevelOneUfoThrust(ctx:CanvasRenderingContext2D,u:Ufo):void {
   ctx.save();ctx.translate(u.pos.x,u.pos.y+r*.12);ctx.shadowBlur=0;
   ctx.globalCompositeOperation='lighter';
   const width=r*(2.7+power*.2),height=r*1.75;
-  ctx.globalAlpha=.34+power*.13;ctx.drawImage(glow('#7952ee'),-width/2,-height/2,width,height);
-  ctx.globalAlpha=.3+power*.12;ctx.drawImage(glow('#326fff'),-r*.7,-r*.42,r*1.4,r*.84);
+  const themed=sanctumThemed();
+  ctx.globalAlpha=.34+power*.13;ctx.drawImage(glow(themed?'#f69b43':'#7952ee'),-width/2,-height/2,width,height);
+  ctx.globalAlpha=.3+power*.12;ctx.drawImage(glow(themed?'#ffd38a':'#326fff'),-r*.7,-r*.42,r*1.4,r*.84);
   ctx.restore();
 }
 
