@@ -57,7 +57,7 @@
 #       handle /api/* { reverse_proxy 127.0.0.1:8787 }
 #       handle {
 #           root * <pallasite-static-root>
-#           @spa { not path *.js *.css *.map *.png *.jpg *.jpeg *.svg *.webp *.woff *.woff2 *.opus *.mp3 *.json *.webmanifest *.ico *.txt }
+#           @spa { not path *.js *.css *.map *.png *.jpg *.jpeg *.svg *.webp *.woff *.woff2 *.opus *.m4a *.mp3 *.json *.webmanifest *.ico *.txt *.glb *.gltf *.bin }
 #           rewrite @spa /index.html
 #           file_server
 #           @hashed_real { path /assets/* /music/* /backgrounds/* ; file }

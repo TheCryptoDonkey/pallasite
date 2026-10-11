@@ -35,10 +35,15 @@
 #           # extensions are excluded so missing /assets/<hash>.js
 #           # falls through to file_server and returns a clean 404.
 #           @spa {
-#               not path *.js *.css *.map *.png *.jpg *.jpeg *.svg *.webp *.woff *.woff2 *.opus *.mp3 *.json *.webmanifest *.ico *.txt
+#               not path *.js *.css *.map *.png *.jpg *.jpeg *.svg *.webp *.woff *.woff2 *.opus *.m4a *.mp3 *.json *.webmanifest *.ico *.txt *.glb *.gltf *.bin
 #           }
 #           rewrite @spa /index.html
 #
+#           @glb_model {
+#               path *.glb
+#               file
+#           }
+#           header @glb_model Content-Type model/gltf-binary
 #           file_server
 #
 #           # Long-cache header only on real files. Without the `file`
@@ -57,7 +62,7 @@
 #   <hostname> {
 #       root * /opt/<app>
 #       @spa {
-#           not path *.js *.css *.map *.png *.jpg *.jpeg *.svg *.webp *.woff *.woff2 *.opus *.mp3 *.json *.webmanifest *.ico *.txt
+#           not path *.js *.css *.map *.png *.jpg *.jpeg *.svg *.webp *.woff *.woff2 *.opus *.m4a *.mp3 *.json *.webmanifest *.ico *.txt *.glb *.gltf *.bin
 #       }
 #       rewrite @spa /index.html
 #       file_server
@@ -91,3 +96,14 @@
 #
 #   # Root: expect HTTP/2 200 + content-type text/html
 #   curl -sI https://pallasite.app/
+
+# Ultra model routing applied 2026-10-11 to the Pallasite co-hosted block.
+# Model extensions must bypass @spa: returning index.html for a real GLB
+# prevents the Ultra renderer from loading. Missing models must return 404.
+# Only the Pallasite site block was changed; configuration was validated
+# before reloading Caddy. Previous configuration is retained on the host at:
+# /etc/caddy/backups/Caddyfile.pre-pallasite-models-20261011-082326
+# Verify real model bytes, MIME type and missing-file status with:
+#   node tools/graphics-lab/check-release.mjs <deployed-commit-sha>
+#   curl -sSI https://pallasite.app/graphics/level-one/stony-cinematic.glb
+#   curl -sSI https://pallasite.app/graphics/level-one/missing-model.glb
