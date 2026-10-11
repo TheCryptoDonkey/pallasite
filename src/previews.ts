@@ -9,8 +9,9 @@
  * just to feed them with synthetic entities.
  */
 
+import { drawRoundedPowerCell } from './powerup-art.js';
+import { pickupArtUrl } from './level-one-art.js';
 import type { AsteroidType, PowerUpType } from './types.js';
-import { POWERUP_CONFIG } from './types.js';
 import { getAsteroidStyle } from './a11y.js';
 
 const PREVIEW_SIZE = 38;
@@ -113,21 +114,12 @@ export function sniperPreview(): HTMLCanvasElement {
 
 export function powerupPreview(type: PowerUpType): HTMLCanvasElement {
   const { canvas, ctx } = makeCanvas();
-  const cfg = POWERUP_CONFIG[type];
   const r = PREVIEW_SIZE * 0.32;
-  ctx.lineWidth = 1.4;
-  ctx.strokeStyle = cfg.colour;
-  ctx.shadowColor = cfg.colour;
-  ctx.shadowBlur = 6;
-  ctx.beginPath();
-  ctx.arc(0, 0, r, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = cfg.colour;
-  ctx.font = `bold ${Math.round(r * 1.2)}px ui-monospace, monospace`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(cfg.glyph, 0, 1);
+  drawRoundedPowerCell(ctx,type,r);
+  const plate=new Image();
+  plate.onload=()=>{ctx.clearRect(-PREVIEW_SIZE/2,-PREVIEW_SIZE/2,PREVIEW_SIZE,PREVIEW_SIZE);
+    ctx.drawImage(plate,-r*1.5,-r*1.5,r*3,r*3);};
+  plate.src=pickupArtUrl(type+'-128','webp');
   return canvas;
 }
 

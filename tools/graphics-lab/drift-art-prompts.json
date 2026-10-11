@@ -1,0 +1,15 @@
+{
+  "tool": "built-in image_gen",
+  "assets": [
+    "public/backgrounds/drift-lagoon.webp",
+    "public/backgrounds/drift-rings.webp",
+    "public/backgrounds/drift-galaxy.webp",
+    "public/backgrounds/warp-tunnel-ultra.webp"
+  ],
+  "prompts": [
+    "Cinematic photorealistic deep-space panorama for an arcade asteroid game, 16:9 landscape. A vast turquoise and indigo nebula lagoon with gold-lit fine dust filaments mainly along the upper left and far right margins, dense intricate Hubble-like cloud structure, scattered fine white distant stars. Central and lower-central 60 percent is very dark navy open space so small ships and projectiles remain readable. Awe-inspiring elegant astrophotography, rich nuanced colour, physically textured gases, no flat illustration. No text, no UI, no spaceships, no foreground asteroids, no logos. Full bleed single scene.",
+    "Cinematic photorealistic deep-space panorama for an arcade asteroid game, 16:9 landscape. An immense distant ringed sapphire gas giant sits high on the right edge, only part of its disk visible, fine icy luminous rings sweep diagonally across the upper third, tiny moons beyond, subtle violet and warm amber nebula along left edge. Central and lower-central 60 percent is very dark navy open space so small ships and projectiles remain readable. Rich realistic cloud bands and textured planetary shadow, elegant premium science-fiction vista, fine stars, no text, no UI, no spaceships, no foreground asteroids, no logos. Full bleed single scene.",
+    "Cinematic photorealistic deep-space panorama for an arcade asteroid game, 16:9 landscape. A luminous distant rose-gold spiral galaxy seen at a low oblique angle stretches across the top third, tiny blue stellar clusters and intricate dark dusty lanes, faint crimson and violet wisps curl down outer edges. Central and lower-central 60 percent is very dark navy open space so small ships and projectiles remain readable. Awe-inspiring detailed astrophotography, restrained warm highlights and rich space darkness. No text, no UI, no spaceships, no foreground asteroids, no logos. Full bleed single scene.",
+    "Single full-bleed cinematic photorealistic hyperspace wormhole tunnel background for a premium cosmic arcade game. Landscape 16:9, looking straight down an immense deep tunnel converging slightly left of centre. Rich physically textured wisps of luminous turquoise and sapphire plasma twist helically down the tunnel walls, fine magenta-violet and molten amber filaments, sparse elongated stars, scattered dark mineral dust. Deep open almost black circular throat at centre, a tiny distant blue galaxy beyond it. Strong perspective depth, restrained brilliant edges, complex turbulent volumetric gas, moody expensive sci-fi cinematic VFX, realistic astrophotography texture, not a flat graphic or a set of concentric line circles. Outer corners very dark navy, keep no giant white centre flash. No text, no symbols, no UI, no spacecraft, no logos, no lens labels, no border."
+  ]
+}

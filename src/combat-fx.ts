@@ -23,13 +23,15 @@ function light(colour: string): HTMLCanvasElement {
   return canvas;
 }
 
-export function drawLitParticles(ctx: CanvasRenderingContext2D, particles: ReadonlyArray<Particle>, budget: number, trails: boolean): void {
+export function drawLitParticles(ctx: CanvasRenderingContext2D, particles: ReadonlyArray<Particle>, budget: number, trails: boolean,
+  custom?:(ctx:CanvasRenderingContext2D,p:Particle,trails:boolean)=>boolean): void {
   ctx.save();
   ctx.shadowBlur = 0;
   ctx.globalCompositeOperation = 'lighter';
   const stride = Math.max(1, Math.ceil(particles.length / budget));
   for (let i = 0; i < particles.length; i += stride) {
     const p = particles[i];
+    if(custom?.(ctx,p,trails))continue;
     const alpha = Math.max(0, Math.min(1, p.ttl / p.maxTtl));
     if (alpha < 0.05) continue;
     const r = p.size * (1 + alpha);
@@ -54,8 +56,9 @@ export function forgeCharge(state: GameState, core: Asteroid): number {
   return Math.max(0, Math.min(1, 1 - (state.forgePulseAt - state.elapsed) / FORGE_PULSE_WARNING_MS));
 }
 
-export function bossReadout(state: GameState) {
-  if ((state.wave !== 17 && state.wave !== 25) || state.phase !== 'playing') return null;
+export function bossReadout(state: GameState, forFraming = false) {
+  const visiblePhase = state.phase === 'playing' || (forFraming && (state.phase === 'paused' || state.phase === 'wavestart'));
+  if ((state.wave !== 17 && state.wave !== 25) || !visiblePhase) return null;
   const core = state.asteroids.find(a => a.alive && a.stationPart === 'core');
   if (!core) return null;
   const forge = state.wave === 25;

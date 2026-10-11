@@ -17,7 +17,7 @@ import { render, preloadCriticalCampaignAssets, setRenderMode, getRenderModeKind
 import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindPreRun, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderSignerRecovery, renderDuelLobby, renderDuelConnecting, renderEventLobby, renderGamepadTestPage, simulateStart, boothPilotSessionWasClaimed } from './ui.js';
 import { isBlessed } from './v4v.js';
 import { postHeartbeat } from './faucet.js';
-import { currentMode, getStoredMode, isStoredDefenderMode, type RunMode } from './mode.js';
+import { currentMode, lockInMode, getStoredMode, isStoredDefenderMode, type RunMode } from './mode.js';
 import { deathmatchActive } from './deathmatch.js';
 import { pollGamepads, getPadFlightMode, getPadAutoThrust, getPadFlightModeForSlot, getBoothPadSlotBinding } from './gamepads.js';
 import {
@@ -41,13 +41,16 @@ import { setupTouchControls } from './touch.js';
 import { getDisplayMode, applyDisplayMode } from './display.js';
 import { warmWebGLIfPreviouslyEnabled, ensureWebGLForCurrentStyle, prewarmWebGLMeshesForCurrentStyle, getTheme, getAsciiCols, getBitDepth, getBitColour, getVisualStyle, isWebGLOverlayReady, getRenderDprCap, getBrightness, mobileRuntimeActive, reducedFxActive, recordFrameTime, resetFrameTimes } from './visual-style.js';
 import { applyPostFx } from './postfx/index.js';
+import { levelOneReview } from './level-one-impacts.js';
+import { levelOneStatus, setLevelOneLook, setLevelOneShadows } from './level-one-refresh.js';
+import { getQualityPreference, setQualityPreference } from './visual-style.js';
 import { checkForUpdate, querySwVersion } from './version.js';
 import { InputLog, samplePlayerInput, encodePlayerInput, decodePlayerInput, applyPlayerInput, localEdges, ensureLocalEdges, EMPTY_INPUT, isPeerActive, setPeerActive } from './netcode.js';
 import { hashState, PEER_HASH_PERIOD, serializeForCanary } from './peer-canary.js';
 import { SnapshotRing, restoreSim } from './rollback.js';
 import { WebSocketPeer, SpectatorPeer, type HumanSlotConfig, type Peer, type PeerSlot } from './peer.js';
-import type { DeathmatchRules, GameState } from './types.js';
-import { DOWN_DOUBLE_TAP_WINDOW_MS, WORLD_W, WORLD_H } from './types.js';
+import type { DeathmatchRules, GameState, PowerUpType } from './types.js';
+import { DOWN_DOUBLE_TAP_WINDOW_MS, WORLD_W, WORLD_H, POWERUP_CONFIG, POWERUP_RADIUS, POWERUP_TTL_MS, COIN_RADIUS, COIN_TTL_MS } from './types.js';
 
 function redirectApexRootToDefaultScreen(): void {
   try {
@@ -1369,7 +1372,10 @@ function startRunNow(): void {
   } else {
     setDailySeed(getStoredDailyPref() ? todayUTC() : null);
   }
-  startGame(state, spectator ? spectateSeed : peer ? mpSeed : undefined, currentStartOptions());
+  const review = levelOneReview && !peer && !spectator;
+  startGame(state, spectator ? spectateSeed : peer ? mpSeed : review ? 0x50414c31 : undefined,
+    review ? { ...currentStartOptions(), players: 1, runMode: 'campaign', defender: false, aiOpponents: false } : currentStartOptions());
+  if (review) state.cheatedThisRun = true; // repeatable art practice is unranked
   applyDeathmatchHarnessOptions();
   restoreHeldInputsAfterStart();
   // Only force wavestart for the standard campaign — startGame on the
@@ -3090,6 +3096,68 @@ async function boot(): Promise<void> {
     // Old "PROTECT THE 600 BILLION" toast removed — DEFENDER mode is
     // being rebuilt as classic Defender (humanoids / landers /
     // smartbomb) and has no 600bn theme anymore.
+  }
+
+  if (levelOneReview && !peer && !spectator) {
+    const bar = document.createElement('div');
+    bar.id = 'graphics-review';
+    bar.setAttribute('aria-label', 'Whole game graphics comparison');
+    bar.style.cssText = 'position:fixed;z-index:10000;bottom:max(10px,env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);display:flex;flex-wrap:wrap;justify-content:center;gap:6px;max-width:95vw;width:max-content;padding:8px;border:1px solid #708b91;border-radius:10px;background:rgba(5,12,20,.92);color:#d6e5e9;font:12px system-ui;';
+    const label = document.createElement('span'); label.style.cssText = 'width:100%;text-align:center;font-size:11px;';
+    label.textContent = 'ULTRA PRACTICE · unranked · rock collisions ON · arrows / WASD · Space fire · ↓ shield · Shift / H teleport · Esc pause'; bar.append(label);
+    let refreshed = true;
+    const addButton = (text: string, action: (button: HTMLButtonElement) => void): HTMLButtonElement => {
+      const button = document.createElement('button'); button.textContent = text;
+      button.style.cssText = 'padding:6px 9px;border:1px solid #76949b;border-radius:5px;background:#172c36;color:#effaff;font:inherit;cursor:pointer;';
+      button.addEventListener('click', () => { action(button); button.blur(); }); bar.append(button); return button;
+    };
+    const look = addButton('Show current', button => {
+      refreshed = !refreshed; setLevelOneLook(refreshed);
+      button.textContent = refreshed ? 'Show current' : 'Show refreshed';
+      button.setAttribute('aria-pressed', String(refreshed));
+    }); look.setAttribute('aria-pressed','true');
+    addButton('Restart level 1', () => { startRunNow(); });
+    const waveSelect=document.createElement('select');waveSelect.setAttribute('aria-label','Preview level');
+    waveSelect.style.cssText='background:#172c36;color:#effaff;border:1px solid #76949b;border-radius:5px;font:inherit;';
+    for(let wave=1;wave<=31;wave++){const option=document.createElement('option');option.value=String(wave);option.textContent=wave>25?`Drift ${wave}`:`Level ${wave}`;waveSelect.append(option);}
+    waveSelect.addEventListener('change',()=>{lockInMode(Number(waveSelect.value)>25?'drift':'campaign');if(state.phase==='paused')resumeGame(state);cheatJumpToWave(state,Number(waveSelect.value));waveSelect.blur();});bar.append(waveSelect);
+    const drops=addButton('Try power-ups',()=>{
+      if(state.phase!=='playing')return;
+      const types=Object.keys(POWERUP_CONFIG) as PowerUpType[];
+      types.forEach((type,i)=>{
+        if(state.powerups.some(p=>p.alive&&!p.collected&&p.type===type))return;
+        state.powerups.push({type,pos:{x:340+(i%3)*300,y:i<3?240:500},vel:{x:0,y:0},radius:POWERUP_RADIUS,
+          alive:true,collected:false,ttl:POWERUP_TTL_MS});
+      });
+    });drops.title='Drop the six real pickups to compare their appearance and try their effects in practice';
+    const collectables=addButton('Try collectables',()=>{
+      if(state.phase!=='playing')return;
+      for(let i=0;i<6;i++)state.coins.push({kind:i<3?'sat':'dust',value:i<3?i+1:10,sourceType:'stony',
+        pos:{x:390+(i%3)*250,y:i<3?250:470},vel:{x:0,y:0},radius:COIN_RADIUS,ttl:COIN_TTL_MS,alive:true,collected:false});
+    });collectables.title='Drop gold sats and score-only mineral dust in this unranked practice';
+    const triggerCrash=(final:boolean)=>{
+      if(state.phase!=='playing'||!state.players[0].ship.alive)return;
+      const rock=state.asteroids.find(a=>a.alive&&a.depth===3&&!a.terrain);
+      if(!rock)return;
+      if(final)state.players[0].lives=1;
+      const ship=state.players[0].ship;ship.shieldUp=false;ship.invulnerableUntil=0;ship.hyperspaceCloakMs=0;
+      ship.pos={...rock.pos};ship.vel={...rock.vel};
+    };
+    const crash=addButton('Try ship crash',()=>triggerCrash(false));crash.title='Trigger a real unshielded rock collision to review the player explosion in this unranked practice';
+    const finalCrash=addButton('Try final death',()=>triggerCrash(true));finalCrash.title='Use the last practice life and replay the final reactor breakup';
+    const quality = document.createElement('select'); quality.setAttribute('aria-label','Graphics quality');
+    quality.style.cssText = 'background:#172c36;color:#effaff;border:1px solid #76949b;border-radius:5px;font:inherit;';
+    for (const [value,text] of [['auto','Auto'],['low','Low'],['balanced','Balanced'],['high','Ultra']]) {
+      const option = document.createElement('option'); option.value = value; option.textContent = text; quality.append(option);
+    }
+    quality.value = getQualityPreference();
+    quality.addEventListener('change', () => { setQualityPreference(quality.value as 'auto'|'low'|'balanced'|'high'); quality.blur(); }); bar.append(quality);
+    let shadows = true;
+    addButton('Shadows on', button => { shadows = !shadows; setLevelOneShadows(shadows); button.textContent = `Shadows ${shadows ? 'on' : 'off'}`; });
+    const status = document.createElement('span'); status.id = 'graphics-review-status'; status.style.cssText = 'width:100%;text-align:center;font-size:11px;color:#a2bdc5;'; bar.append(status);
+    document.body.append(bar);
+    window.setInterval(() => { status.textContent = `${levelOneStatus()} · level ${state.wave}`;if(document.activeElement!==waveSelect)waveSelect.value=String(state.wave);drops.disabled=state.phase!=='playing';collectables.disabled=drops.disabled;crash.disabled=drops.disabled||!state.players[0].ship.alive;finalCrash.disabled=crash.disabled; },250);
+    queueMicrotask(() => { simulateStart(); });
   }
 
   // ── Live-watch / broadcast surface gate ─────────────────────────────────

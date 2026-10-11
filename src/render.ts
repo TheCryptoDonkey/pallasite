@@ -6,7 +6,12 @@
  * generated art.
  */
 
+import { driftVista, DRIFT_VISTAS } from './drift-profile.js';
+import { drawUltraWarp, preloadUltraWarpArt } from './ultra-warp.js';
 import { drawLitParticles, drawBossReactor, drawBossStatus, bossReadout } from './combat-fx.js';
+import { isRockDustParticle } from './level-one-impacts.js';
+import { ULTRA_PILOT_COLOURS as PLAYER_COLOURS } from './ultra-materials.js';
+export { PLAYER_COLOURS };
 import type {
   GameState, Ship, Asteroid, AsteroidType, Bullet, Coin, Particle, Ufo, Mine, PowerUp, ReplaySnapshot, Debris, Shockwave, HyperspaceEffect,
 } from './types.js';
@@ -14,6 +19,7 @@ import {
   WORLD_W, WORLD_H, WARP_MS, WAVE_CLEAR_GRACE_MS, waveName, waveSubtitle, waveTagline, waveSetPieceBanner, POWERUP_CONFIG, FORGE_RING_R,
   REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS, COMBO_MAX,
   intertitleForWave, INTERTITLE_MS,
+  SATBOOST_MUL,
 } from './types.js';
 import { getCachedGhost, ghostScoreAt, ghostPoseAt } from './ghost.js';
 import { getActiveSeed } from './seed.js';
@@ -28,6 +34,8 @@ import { buildSeamlessStarfield, drawParallaxStarfield } from './starfield.js';
 import { isSanctumMode } from './mode.js';
 import { arenaActive, arenaCage, type ArenaCage } from './arena.js';
 import { deathmatchActive, deathmatchWorldH, deathmatchWorldW } from './deathmatch.js';
+import { prepareLevelOne, levelOneBackground, drawLevelOneRock, drawLevelOneMeshes, drawLevelOneImpacts, refreshedRock, refreshedShip, refreshedUfo, drawLevelOneUfo, drawUltraMineBody, drawUltraGravityField, levelOneActive, ultraCategory, refreshedPowerup } from './level-one-refresh.js';
+import { updateLevelOneFlight, drawLevelOneShip, drawLevelOneShield, drawLevelOneBullet, drawLevelOneTeleport, drawLevelOneDebris, drawLevelOnePowerup, drawLevelOneUfoThrust, drawLevelOneDeath, drawLevelOneCrashParticle, drawLevelOneCollectable } from './level-one-flight.js';
 
 interface WorldBounds {
   x0: number;
@@ -159,32 +167,39 @@ function loadDecodedImage(src: string): Promise<HTMLImageElement> {
  *  wave-1 deep-space shot. */
 function backgroundUrlForWave(wave: number): string {
   if (wave === 1 && (getFlavour() === '600bn' || isSanctumMode())) return '/backgrounds/sanctum-space.webp';
+  if(wave>25)return `/backgrounds/drift-${driftVista(wave).asset}.webp`;
   return `/backgrounds/wave-${wave}.webp`;
 }
 
 export function preloadBackground(wave: number): void {
+  if(wave>1&&(getVisualStyle('ship')!=='vector'||getVisualStyle('particle')!=='vector'))void preloadUltraWarpArt();
   void preloadBackgroundReady(wave);
 }
 
+function backgroundCacheKey(wave:number):number {
+  return wave>25?26+DRIFT_VISTAS.indexOf(driftVista(wave)):wave;
+}
+
 export function preloadBackgroundReady(wave: number): Promise<boolean> {
-  const cached = overrideImages.get(wave);
+  const key=backgroundCacheKey(wave);
+  const cached = overrideImages.get(key);
   if (cached && cached !== 'failed' && cached !== 'pending') {
     return decodeImage(cached).then(() => true);
   }
-  const pending = overrideImagePromises.get(wave);
+  const pending = overrideImagePromises.get(key);
   if (pending) return pending;
-  overrideImages.set(wave, 'pending');
+  overrideImages.set(key, 'pending');
   const src = backgroundUrlForWave(wave);
   const promise = loadDecodedImage(src)
     .then((img) => {
-      overrideImages.set(wave, img);
+      overrideImages.set(key, img);
       return true;
     })
     .catch(() => {
-      overrideImages.set(wave, 'failed');
+      overrideImages.set(key, 'failed');
       return false;
     });
-  overrideImagePromises.set(wave, promise);
+  overrideImagePromises.set(key, promise);
   return promise;
 }
 
@@ -195,13 +210,13 @@ export function preloadBackgroundReady(wave: number): Promise<boolean> {
  *  returns wave-1.webp even though backgroundUrlForWave would now hand back
  *  sanctum-space.webp. */
 export function invalidateBackgroundCache(wave: number): void {
-  overrideImages.delete(wave);
-  overrideImagePromises.delete(wave);
+  overrideImages.delete(backgroundCacheKey(wave));
+  overrideImagePromises.delete(backgroundCacheKey(wave));
 }
 
 function tryLoadOverride(wave: number): HTMLImageElement | null {
-  const cached = overrideImages.get(wave);
-  if (cached === 'failed') return null;
+  const cached = overrideImages.get(backgroundCacheKey(wave));
+  if (cached === 'failed') return wave>25?tryLoadOverride(2+DRIFT_VISTAS.indexOf(driftVista(wave))*7):null;
   if (cached === 'pending') return null;
   if (cached) return cached;
   preloadBackground(wave);
@@ -312,12 +327,12 @@ function buildProceduralBackground(wave: number): HTMLCanvasElement {
  * meant the first-frame "no override yet, set ''" call was sticky.
  */
 let lastBodyBgKey = '';
-function syncBodyBackground(wave: number, hasOverride: boolean): void {
-  const key = hasOverride ? `w${wave}` : '';
+function syncBodyBackground(override: HTMLImageElement | null): void {
+  const key = override?.src ?? '';
   if (key === lastBodyBgKey) return;
   lastBodyBgKey = key;
   if (typeof document === 'undefined') return;
-  document.body.style.backgroundImage = key ? `url(${backgroundUrlForWave(wave)})` : '';
+  document.body.style.backgroundImage = key ? `url(${key})` : '';
 }
 
 /** Safe-area insets in CSS pixels. Zero on desktop and Android without notch;
@@ -1930,8 +1945,8 @@ function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: nu
     wave = Math.max(1, state.wave);
     titleBgStartedAt = 0;  // reset so re-entering title starts the cycle from #1
   }
-  const override = tryLoadOverride(wave);
-  syncBodyBackground(wave, override !== null);
+  const override = levelOneBackground(wave) ?? tryLoadOverride(wave);
+  syncBodyBackground(override);
 
   if (renderMode.kind === 'modern') {
     // Modern fill: bg covers the entire canvas in canvas-pixel space, not the
@@ -1992,6 +2007,7 @@ function drawBackground(ctx: CanvasRenderingContext2D, state: GameState, now: nu
 // ── Ship ──────────────────────────────────────────────────────────────────────
 
 function drawShield(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapsed: number): void {
+  if (drawLevelOneShield(ctx, ship, elapsed)) return;
   if (!ship.shieldUp || !ship.alive) return;
   // 3D shield dome renders on the WebGL overlay — skip the 2D path entirely
   // when ship-tier is mesh and the overlay is ready so the player sees the
@@ -2036,7 +2052,6 @@ function drawShield(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elap
 /** Per-slot identity colours, shared by the on-ship marker, the couch HUD
  *  readouts, and the deathmatch radar so a given pilot reads the same colour
  *  everywhere. P1 keeps the classic green; P2 is a contrasting ally cyan. */
-export const PLAYER_COLOURS = ['#58ff58', '#5bd0ff', '#ffb24a', '#ff7ad0', '#b48cff', '#8cffb4', '#ff6b6b', '#ffd84a'];
 
 function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapsed: number, idleSway = false, forceCanvas = false, tint?: string): void {
   if (!ship.alive) return;
@@ -2047,6 +2062,7 @@ function drawShip(ctx: CanvasRenderingContext2D, ship: Ship, now: number, elapse
     if (ship.hyperspaceMalfunction) drawHyperspaceMalfunction(ctx, ship, now);
     return;
   }
+  if (drawLevelOneShip(ctx, ship, now, elapsed, forceCanvas,tint)) return;
   const flickerOff = ship.invulnerableUntil > elapsed && Math.floor(now / 80) % 2 === 0;
   if (flickerOff) return;
 
@@ -2770,6 +2786,7 @@ function drawStationPart(ctx: CanvasRenderingContext2D, a: Asteroid, now: number
 
 function drawAsteroid(ctx: CanvasRenderingContext2D, a: Asteroid, now: number): void {
   if (!a.alive) return;
+  if (drawLevelOneRock(ctx, a)) return;
   const style = getAsteroidStyle(a.type);
   // MESH-tier asteroids are rendered by the WebGL overlay below. Skip
   // the 2D path entirely so the player sees one mesh per rock instead
@@ -3194,6 +3211,8 @@ function drawSixHundredBnLogoUfo(ctx: CanvasRenderingContext2D, u: Ufo, now: num
 }
 
 function drawUfo(ctx: CanvasRenderingContext2D, u: Ufo, now: number): void {
+  drawLevelOneUfoThrust(ctx,u);
+  if (drawLevelOneUfo(ctx, u)) return;
   if (!u.alive) return;
   // UFOs render as a 3D saucer on the WebGL overlay when EITHER the ship
   // tier OR the asteroid tier is mesh — the player almost always expects
@@ -3710,19 +3729,27 @@ function drawMine(ctx: CanvasRenderingContext2D, m: Mine, now: number): void {
   const pulse = 0.5 + 0.5 * Math.sin(now * 0.005);
 
   ctx.save();
-  ctx.translate(m.pos.x, m.pos.y);
 
-  // Faint gravity well rings (animated outward)
-  ctx.lineWidth = 1;
-  for (let i = 0; i < 3; i++) {
-    const phase = ((t * 0.5 + i / 3) % 1);
-    const r = m.gravityRange * phase;
-    const alpha = (1 - phase) * 0.18;
-    ctx.strokeStyle = `rgba(255, 80, 80, ${alpha})`;
-    ctx.beginPath();
-    ctx.arc(0, 0, r, 0, Math.PI * 2);
-    ctx.stroke();
+  // Classic rings; Ultra adds a stable field boundary and inward accretion.
+  if (!drawUltraGravityField(ctx, m)) {
+    ctx.translate(m.pos.x,m.pos.y);
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 3; i++) {
+      const phase = ((t * 0.5 + i / 3) % 1);
+      const r = m.gravityRange * phase;
+      const alpha = (1 - phase) * 0.18;
+      ctx.strokeStyle = `rgba(255, 80, 80, ${alpha})`;
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
   }
+
+  // Keep the authoritative gravity-range cue above the new Blender body.
+  ctx.restore();
+  if(drawUltraMineBody(ctx,m))return;
+  ctx.save();ctx.translate(m.pos.x,m.pos.y);
 
   // Core (dark sphere with pulsing red)
   ctx.shadowColor = '#ff5050';
@@ -3768,6 +3795,7 @@ function drawMine(ctx: CanvasRenderingContext2D, m: Mine, now: number): void {
 // ── Bullets ───────────────────────────────────────────────────────────────────
 
 function drawBullet(ctx: CanvasRenderingContext2D, b: Bullet, friendly: boolean): void {
+  if (drawLevelOneBullet(ctx, b, friendly)) return;
   if (!b.alive) return;
   const speed = Math.max(0.001, Math.hypot(b.vel.x, b.vel.y));
   const len = Math.max(6, speed * 0.012);
@@ -3997,6 +4025,7 @@ function drawBullet(ctx: CanvasRenderingContext2D, b: Bullet, friendly: boolean)
 
 function drawCoin(ctx: CanvasRenderingContext2D, c: Coin, now: number): void {
   if (!c.alive || c.collected) return;
+  if(drawLevelOneCollectable(ctx,c))return;
   const fadeIn = c.ttl > 7000 ? Math.min(1, (8000 - c.ttl) / 200) : 1;
   const fadeOut = c.ttl < 1500 ? c.ttl / 1500 : 1;
   const alpha = fadeIn * fadeOut;
@@ -4139,6 +4168,7 @@ function drawDustShape(ctx: CanvasRenderingContext2D, type: AsteroidType, r: num
 // ── Power-up ──────────────────────────────────────────────────────────────────
 
 function drawPowerUp(ctx: CanvasRenderingContext2D, p: PowerUp, now: number): void {
+  if(drawLevelOnePowerup(ctx,p))return;
   if (!p.alive || p.collected) return;
   // Powerups follow the 'particle' visual tier (decorative field
   // items, same bucket as particles in the settings UI). When on mesh
@@ -4248,6 +4278,7 @@ function drawDeathmatchLocalMarker(ctx: CanvasRenderingContext2D, ship: Ship, no
  * the lot; per-piece transform via translate + rotate. Fade with TTL.
  */
 function drawDebris(ctx: CanvasRenderingContext2D, debris: ReadonlyArray<Debris>): void {
+  if(drawLevelOneDebris(ctx,debris))return;
   if (debris.length === 0) return;
   ctx.save();
   ctx.lineCap = 'round';
@@ -4262,6 +4293,12 @@ function drawDebris(ctx: CanvasRenderingContext2D, debris: ReadonlyArray<Debris>
     ctx.translate(d.pos.x, d.pos.y);
     ctx.rotate(d.rot);
     const half = d.length / 2;
+    if (levelOneActive()) {
+      // Actual tumbling debris trajectories, now clad in torn armour plates.
+      ctx.fillStyle = '#a5b6bd'; ctx.strokeStyle = '#e4cda0'; ctx.lineWidth = .5;
+      ctx.beginPath();ctx.moveTo(-half,-1);ctx.lineTo(half*.8,-1.4);ctx.lineTo(half,1);ctx.lineTo(-half*.7,1.5);ctx.closePath();ctx.fill();ctx.stroke();
+      ctx.restore(); continue;
+    }
     ctx.beginPath();
     ctx.moveTo(-half, 0);
     ctx.lineTo(half, 0);
@@ -4281,7 +4318,9 @@ function drawParticles(ctx: CanvasRenderingContext2D, particles: ReadonlyArray<P
   ctx.shadowBlur = 0;
   if (particleShaded) {
     ctx.restore();
-    drawLitParticles(ctx, particles, getParticleBudget(), !mobileLite && !shouldReduceMotion());
+    const mineralDust = ultraCategory('asteroid'), crash = ultraCategory('ship');
+    drawLitParticles(ctx, particles, getParticleBudget(), !mobileLite && !shouldReduceMotion(),
+      (ctx, p, trails) => (mineralDust && isRockDustParticle(p)) || (crash && drawLevelOneCrashParticle(ctx, p, trails)));
     return;
   }
   // VECTOR tier — flat alpha-blended disc per particle, batched.
@@ -4622,7 +4661,7 @@ function drawHud(ctx: CanvasRenderingContext2D, s: GameState): void {
     drawChip('⚡ RAPID', p0.rapidExpiresAt - s.elapsed, 8000, '#ff8a3a');
   }
   if (s.elapsed < p0.satboostExpiresAt) {
-    drawChip('₿ ×2 SATS', p0.satboostExpiresAt - s.elapsed, 12000, '#ffd84a');
+    drawChip(`₿ ×${SATBOOST_MUL} SATS`, p0.satboostExpiresAt - s.elapsed, 12000, '#ffd84a');
   }
   if (s.elapsed < p0.tridentExpiresAt) {
     drawChip('⋔ TRIDENT', p0.tridentExpiresAt - s.elapsed, 6000, '#ffd84a');
@@ -5107,6 +5146,19 @@ function spawnWarpAsteroid(now: number): void {
  * No text — the wavestart banner that follows handles the wave name + lore.
  */
 function drawWarp(ctx: CanvasRenderingContext2D, s: GameState, now: number): void {
+  if(ultraCategory('ship')||ultraCategory('particle')) {
+    // Keep crop, breathing motion, brightness and gutters identical on both
+    // sides of the phase boundary; only the tunnel layer fades away.
+    drawBackground(ctx,{...s,wave:s.warpTargetWave},now);
+    ctx.save();
+    if(renderMode.kind==='modern') {
+      const scale=Math.max(renderMode.vw/WORLD_W,renderMode.vh/WORLD_H);
+      ctx.setTransform(renderMode.dpr*scale,0,0,renderMode.dpr*scale,
+        renderMode.dpr*(renderMode.vw-WORLD_W*scale)/2,
+        renderMode.dpr*(renderMode.vh-WORLD_H*scale)/2);
+    }
+    drawUltraWarp(ctx,s);ctx.restore();return;
+  }
   // Reset per-warp transients when a new warp begins (phaseStart is the warp ID)
   if (s.phaseStart !== warpRunId) {
     warpRunId = s.phaseStart;
@@ -5398,7 +5450,8 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
   drawStars(ctx, now);
 
   const wallElapsed = state.elapsed - dr.startedAt;
-  const gameTime = replayGameTime(dr.spanMs, wallElapsed);
+  const liveImpact=dr.liveImpactUntil!==undefined && state.elapsed<dr.liveImpactUntil;
+  const gameTime = liveImpact?dr.spanMs:replayGameTime(dr.spanMs, wallElapsed);
   const snap = pickSnapshot(dr.snapshots, gameTime);
 
   // Feed the mesh overlay the SNAPSHOT entities — not empty lists. On the
@@ -5416,9 +5469,9 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
     const ufosMesh = getVisualStyle('ship') === 'mesh' || asteroidTier === 'mesh';
     callWebGLOverlay({
       asteroids: asteroidTier === 'mesh'
-        ? snap.asteroids.filter((a) => (a.depth ?? 3) === 3)
+        ? snap.asteroids.filter((a) => !refreshedRock(a) && (a.depth ?? 3) === 3)
         : [],
-      ufos: ufosMesh ? snap.ufos : [],
+      ufos: ufosMesh ? snap.ufos.filter(()=>!refreshedUfo()) : [],
       powerups: [],
       ships: [],
       elapsed: state.elapsed,
@@ -5436,9 +5489,25 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
   // gutter guard as the live path. The vignette below is device space and is
   // left unclipped on purpose so it still frames the whole screen.
   ctx.save();
+  // A gentle impact-centred push-in gives the final breakup space to read.
+  // The same transform reaches the live 3D overlay and the baked fallback.
+  if(levelOneActive()&&!liveImpact&&!shouldReduceMotion()) {
+    const slowTime=Math.min(REPLAY_SLOW_MS,dr.spanMs),impactWall=dr.spanMs-slowTime+slowTime/REPLAY_SLOW_RATE;
+    const approach=Math.max(0,Math.min(1,(wallElapsed-impactWall+450)/1500));
+    const zoom=1+.16*(approach*approach*(3-2*approach));
+    const cx=Math.max(240,Math.min(WORLD_W-240,dr.explosionAt.x)),cy=Math.max(160,Math.min(WORLD_H-160,dr.explosionAt.y));
+    ctx.translate(cx,cy);ctx.scale(zoom,zoom);ctx.translate(-cx,-cy);
+  }
   ctx.beginPath();
   ctx.rect(0, 0, WORLD_W, WORLD_H);
   ctx.clip();
+
+  const replayShip:Ship={...state.players[0].ship,...snap.ship,
+    alive:snap.ship.alive&&gameTime<dr.spanMs,shieldUp:false,hyperspaceCloakMs:0,invulnerableUntil:0,recoilOffset:0};
+  // Replay the same Blender bodies and real crash debris, using a view of
+  // snapshot entities. Never write replay poses back into simulation state.
+  if(levelOneActive())drawLevelOneMeshes(ctx,ctx.canvas as HTMLCanvasElement,
+    {...state,asteroids:snap.asteroids,ufos:snap.ufos,powerups:[],coins:[],players:[{...state.players[0],ship:replayShip}]},[0],[0],now,state);
 
   for (const a of snap.asteroids) drawAsteroid(ctx, a, now);
   for (const m of snap.mines) drawMine(ctx, m, now);
@@ -5458,17 +5527,19 @@ function drawReplay(ctx: CanvasRenderingContext2D, state: GameState, now: number
       shieldUp: false, shieldExpiresAt: 0, shieldReadyAt: 0, recoilOffset: 0,
       shieldHitFlash: 0, lastHyperspaceAt: 0,
     };
-    drawShip(ctx, fauxShip, now, 0, false, true);
+    drawShip(ctx, fauxShip, now, 0, false, !levelOneActive());
   }
 
   // Real death-explosion: particles + ship debris that updateGame re-spawns
   // when replay-time crosses the impact frame. Same composition as killShip
   // during live play so the cinematic matches exactly. The synthetic ring
   // overlay is gone — particles + debris carry the moment.
+  drawLevelOneDeath(ctx,state);
   drawParticles(ctx, state.particles);
   drawDebris(ctx, state.debris);
-  drawShockwaves(ctx, state.shockwaveRings, now);
+  drawShockwaves(ctx, state.shockwaveRings, now,levelOneActive());
   ctx.restore();  // release the world-rect clip before the device-space vignette
+  if(liveImpact)return;
 
   // Red vignette: clear at the centre, deepening to red at the edges. Drawn
   // in device space so it frames the whole screen — modern-mode letterbox
@@ -5523,6 +5594,7 @@ function drawHyperspaceEffects(ctx: CanvasRenderingContext2D, effects: Hyperspac
   const COLLAPSE_MS = 350;
   const EMERGE_MS = 400;
   for (const e of effects) {
+    if (drawLevelOneTeleport(ctx, e, now)) continue;
     const lifeMs = e.kind === 'collapse' ? COLLAPSE_MS : EMERGE_MS;
     const age = (now - e.startMs) / lifeMs;
     if (age >= 1 || age < 0) continue;
@@ -5642,12 +5714,13 @@ function drawWaveClearCountdown(ctx: CanvasRenderingContext2D, state: GameState)
 // Self-prunes dead rings each frame — no game-tick coupling. Drawn inside the
 // shake transform so the ring moves with the world that spawned it.
 
-function drawShockwaves(ctx: CanvasRenderingContext2D, rings: Shockwave[], now: number): void {
+function drawShockwaves(ctx: CanvasRenderingContext2D, rings: Shockwave[], now: number, hide=false): void {
   const RING_LIFETIME_MS = 380;
   const RING_GROWTH = 2.2;
   for (const r of rings) {
     const age = (now - r.startMs) / RING_LIFETIME_MS;
     if (age >= 1 || age < 0) continue;
+    if(hide)continue;
     const ease = 1 - Math.pow(1 - age, 3);
     const radius = r.baseRadius * (1 + ease * RING_GROWTH);
     const alpha = (1 - age) * 0.85;
@@ -5942,7 +6015,7 @@ function drawHudLayer(ctx: CanvasRenderingContext2D, state: GameState): void {
     if (state.elapsed < p.rapidExpiresAt) chips.push('RAPID');
     if (state.elapsed < p.tridentExpiresAt) chips.push('TRIDENT');
     if (state.elapsed < p.magnetExpiresAt) chips.push('MAGNET');
-    if (state.elapsed < p.satboostExpiresAt) chips.push('×2 SATS');
+    if (state.elapsed < p.satboostExpiresAt) chips.push(`×${SATBOOST_MUL} SATS`);
     ctx.font = '10px ui-monospace, monospace';
     ctx.fillStyle = '#ffd480';
     ctx.fillText(compact ? [`W${state.wave}`, ...chips].join(' · ') : chips.join(' · '),
@@ -5993,6 +6066,7 @@ export function drawAsciiHud(canvas: HTMLCanvasElement, state: GameState): void 
 // ── Main render ───────────────────────────────────────────────────────────────
 
 export function render(canvas: HTMLCanvasElement, state: GameState, now: number): void {
+  prepareLevelOne(state);
   const ctx = canvas.getContext('2d')!;
   const hud = hudContext(canvas);
   if (hud) { hud.setTransform(1, 0, 0, 1, 0, 0); hud.clearRect(0, 0, canvas.width, canvas.height); }
@@ -6016,7 +6090,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // phase branches, so the transform, the seam-wrap offsets, the clip and the
   // star field all share one camera. Render-only: the sim never sees any of
   // this, so B3 determinism is untouched.
-  const framedBoss = renderMode.kind === 'modern' ? bossReadout(state) : null;
+  const framedBoss = renderMode.kind === 'modern' ? bossReadout(state, true) : null;
   const followActive = (!!renderMode.follow || !!framedBoss) && isFollowPhase(state.phase);
   // Arena cage: shown from wavestart onward (title keeps the bg cycle).
   const arenaRun = arenaActive() && state.phase !== 'title';
@@ -6242,6 +6316,9 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   const introHidesField = state.phase === 'wavestart'
     && (intertitleHoldMs(state) === 0 || isIntertitleHolding(state));
 
+  updateLevelOneFlight(state);
+  if (!introHidesField) drawLevelOneMeshes(ctx, canvas, state, ghostXs, ghostYs, now);
+
   const sortedAsteroids = state.asteroids.slice().sort((p, q) => (p.depth ?? 3) - (q.depth ?? 3));
   if (!introHidesField) for (const dx of ghostXs) {
     for (const dy of ghostYs) {
@@ -6254,6 +6331,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       // ("ship goes behind some asteroids"). Ship now stays on top of
       // every band; depth still reads via size/speed/opacity cues.
       drawBossReactor(ctx, state, !mobileLite, shouldReduceMotion());
+      drawLevelOneImpacts(ctx, state);
       for (const a of sortedAsteroids) {
         if (!visibleInDeathmatchView(a.pos.x, a.pos.y, a.radius)) continue;
         const dCfg = DEPTH_CONFIGS[a.depth ?? 3];
@@ -6308,6 +6386,7 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
   // before they fade. Pulling them out of the ghost loop saves up to N
   // particle-arcs per pass on a death-explosion frame (80+ particles ×
   // 3 passes = 240+ arcs reduced to 80).
+  drawLevelOneDeath(ctx,state);
   drawParticles(ctx, state.particles);
   drawDebris(ctx, state.debris);
   drawShockwaves(ctx, state.shockwaveRings, now);
@@ -6381,16 +6460,16 @@ export function render(canvas: HTMLCanvasElement, state: GameState, now: number)
       return x + r >= left && x - r <= right && y + r >= top && y - r <= bottom;
     };
     const meshAsteroids = !holding && asteroidTier === 'mesh'
-      ? state.asteroids.filter((a) => (a.depth ?? 3) === 3 && meshVisible(a.pos.x, a.pos.y, a.radius))
+      ? state.asteroids.filter((a) => !refreshedRock(a) && (a.depth ?? 3) === 3 && meshVisible(a.pos.x, a.pos.y, a.radius))
       : [];
     const meshUfos = !holding && ufosMesh
-      ? state.ufos.filter((u) => meshVisible(u.pos.x, u.pos.y, u.radius))
+      ? state.ufos.filter((u) => !refreshedUfo(u) && meshVisible(u.pos.x, u.pos.y, u.radius))
       : [];
     const meshPowerups = !holding && particleTier === 'mesh'
-      ? state.powerups.filter((p) => meshVisible(p.pos.x, p.pos.y, p.radius + 30))
+      ? state.powerups.filter((p) => !refreshedPowerup(p.type) && meshVisible(p.pos.x, p.pos.y, p.radius + 30))
       : [];
     const meshShips = !holding && shipTier === 'mesh'
-      ? state.players.map((pl) => meshVisible(pl.ship.pos.x, pl.ship.pos.y, pl.ship.radius + 80) ? pl.ship : null)
+      ? state.players.map((pl) => !refreshedShip() && meshVisible(pl.ship.pos.x, pl.ship.pos.y, pl.ship.radius + 80) ? pl.ship : null)
       : [];
     // Per-slot identity tint so 2P couch / duel mesh ships read in their HUD
     // chip colours (P1 green, P2 blue) — same gate as the 2D drawShip tint

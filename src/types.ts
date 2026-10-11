@@ -1,3 +1,4 @@
+import { driftVista } from './drift-profile.js';
 /** Game-wide types. */
 
 import type { SignetSession } from 'signet-login';
@@ -269,7 +270,7 @@ export const UFO_HP_BOSS_PHASE3 = 9;
  * Pickup kinds. Two-tier economy:
  *   - 'sat' — yellow ₿ coin, only drops in Nostr mode at SAT_DROP_CHANCE per
  *     break. Worth real sats. Affected by the satboost power-up.
- *   - 'dust' — green olivine shard, the bread-and-butter drop in both modes.
+ *   - 'dust' — collectible mineral shard, the bread-and-butter drop in both modes.
  *     Pure score reward, never sats. Always available so guest players still
  *     get pickup feedback after every kill.
  */
@@ -282,8 +283,8 @@ export interface Coin extends Entity {
   /** Per-pickup payload — sats for `kind:'sat'`, score-bonus points for `kind:'dust'` */
   value: number;
   /** Source asteroid type when the coin came from an asteroid break. Used by
-   *  the renderer to tint dust shards (so iron rocks drop orange shards,
-   *  chondrites blue, etc.) and by spawnCoins to scale score-mul. Undefined
+   *  the renderer to select mineral colour, silhouette and surface, and by
+   *  spawnCoins to scale score-mul. Undefined
    *  when the drop came from a mine, UFO, or other non-asteroid source. */
   sourceType?: AsteroidType;
 }
@@ -364,18 +365,19 @@ export const STATION_ARMS = 3;
 // for everyone; desktop just reads as a tighter, denser rig).
 export const STATION_ARM_R = 76;                // arm-beam distance from the core (just clears the core rim)
 export const STATION_EMITTER_R = 112;           // emitter-pod distance — the arm tip
-export const STATION_ROT_SPEED = (Math.PI * 2) / 19000;  // rad/ms — ~19s per rev (slow enough to target parts)
-export const STATION_EMITTER_HP = 4;            // hits to knock out an emitter pod
+export const STATION_ROT_SPEED = (Math.PI * 2) / 22000;  // rad/ms — ~22s per rev, longer firing windows
+export const STATION_CORE_HP: Record<'easy' | 'normal' | 'hard', number> = { easy: 75, normal: 110, hard: 190 };
+export const STATION_EMITTER_HP = 3;            // hits to disable a pod and relieve missile pressure
 // A pod launches a HOMING MISSILE every STATION_MISSILE_MS (one pod per cycle)
 // up to a live cap — it tracks the pilot and must be shot down or out-juked.
 // Kill the pods to choke the stream. Cadence eases on easy, sharpens on hard.
-export const STATION_MISSILE_MS: Record<'easy' | 'normal' | 'hard', number> = { easy: 3400, normal: 2500, hard: 1800 };
-export const STATION_MISSILE_CAP: Record<'easy' | 'normal' | 'hard', number> = { easy: 3, normal: 4, hard: 6 };
-export const STATION_MISSILE_SPEED = 165;       // px/s — the turn cap is what makes it dodgeable
+export const STATION_MISSILE_MS: Record<'easy' | 'normal' | 'hard', number> = { easy: 4200, normal: 3200, hard: 2200 };
+export const STATION_MISSILE_CAP: Record<'easy' | 'normal' | 'hard', number> = { easy: 2, normal: 3, hard: 5 };
+export const STATION_MISSILE_SPEED = 150;       // px/s — the turn cap is what makes it dodgeable
 export const STATION_MISSILE_TURN = 1.8;        // rad/s steering cap (out-juke with a hard perpendicular cut)
-export const STATION_MISSILE_TTL_MS = 6000;
+export const STATION_MISSILE_TTL_MS = 5000;
 export const STATION_MISSILE_RADIUS = 6;        // chunky enough to shoot down comfortably
-export const STATION_AMBIENT_MS = 5200;         // an ambient rock of a random type drifts through this often
+export const STATION_AMBIENT_MS = 6500;         // an ambient rock of a random type drifts through this often
 export const VEIN_SATS_PER_HIT = 0;    // score-only drip; the jackpot is the sat moment
 export const VEIN_SCORE_PER_HIT = 35;
 export const VEIN_JACKPOT_SATS = 4;
@@ -509,6 +511,8 @@ export interface DeathReplay {
   snapshots: ReplaySnapshot[];
   /** Sim-clock ms at the moment playback (re-)started. */
   startedAt: number;
+  /** Live final-impact beat; clear its effects when playback begins. */
+  liveImpactUntil?: number;
   /** Captured game-time span, ms — last sample.t minus first sample.t.
    *  This is the SNAPSHOT span; the actual playback runs an additional
    *  REPLAY_EXPLOSION_MS past this to render the death explosion. */
@@ -741,6 +745,8 @@ export interface GameState {
   forgeEscaped: boolean;
   /** Next core pulse on the simulation clock; zero until first damage. */
   forgePulseAt: number;
+  /** Attack-free approach time, consumed only during play on waves 17 and 25. */
+  bossOpeningMs: number;
 
   /** 600bn Defender bonus wave (`?defender=1`). When true, council
    *  asteroids drift through the wide arena as defendees and the
@@ -1004,27 +1010,28 @@ export const FORGE_SEGMENTS = 12;                     // destructible shell pods
 export const FORGE_RING_R = 112 * FORGE_SCALE;        // shell-ring radius (≈67)
 export const FORGE_CORE_R = 38 * FORGE_SCALE;         // core radius (≈23)
 export const FORGE_SEG_R = 26 * FORGE_SCALE;          // shell-pod radius (≈16) — near-solid ring at 12 pods
-export const FORGE_SPIN = STATION_ROT_SPEED * 1.6;    // rad/ms — ~12s/rev; the firing gap sweeps
+export const FORGE_SPIN = STATION_ROT_SPEED * 1.6;    // rad/ms — ~14s/rev; a steadier firing gap
 export const FORGE_CENTRE_Y = 300;                    // rig centre Y (portrait shows full world height)
-export const FORGE_SPAWN = { x: WORLD_W / 2 - 130, y: WORLD_H - 240 }; // diagonal approach, above portrait thumb controls
+export const FORGE_SPAWN = { x: WORLD_W * .2, y: WORLD_H - 180,
+  rot: Math.atan2(FORGE_CENTRE_Y - (WORLD_H - 180), WORLD_W / 2 - WORLD_W * .2) }; // outer approach, facing the core
 export const FORGE_CAM_BIAS = 0.3;                    // portrait follow-cam pull toward the core (render.ts)
-export const FORGE_ROCK_MS = 4500;                    // ms between forged lethal rocks
+export const FORGE_ROCK_MS = 6000;                    // ms between forged lethal rocks
 export const FORGE_ROCK_SPREAD = 300;                 // forged rocks drop from a ±150 top band
 
 /** Per-difficulty Forge tuning (easy / normal / hard). */
-export const FORGE_CORE_HP: Record<'easy' | 'normal' | 'hard', number> = { easy: 90, normal: 140, hard: 200 };
-export const FORGE_VENT_HP: Record<'easy' | 'normal' | 'hard', number> = { easy: 4, normal: 5, hard: 5 };
+export const FORGE_CORE_HP: Record<'easy' | 'normal' | 'hard', number> = { easy: 75, normal: 115, hard: 175 };
+export const FORGE_VENT_HP: Record<'easy' | 'normal' | 'hard', number> = { easy: 3, normal: 4, hard: 5 };
 export const FORGE_MISSILE_CAP: Record<'easy' | 'normal' | 'hard', number> = { easy: 1, normal: 2, hard: 3 };
 export const FORGE_MISSILE_SPEED_MUL: Record<'easy' | 'normal' | 'hard', number> = { easy: 0.66, normal: 1, hard: 1 };
 export const FORGE_MISSILE_TTL_MUL: Record<'easy' | 'normal' | 'hard', number> = { easy: 0.42, normal: 1, hard: 1 };
-export const FORGE_MISSILE_TURN_MUL: Record<'easy' | 'normal' | 'hard', number> = { easy: 0.25, normal: 1, hard: 1 };  // easy: barely homes — out-jukeable
-export const FORGE_PULSE_DENSITY_MUL: Record<'easy' | 'normal' | 'hard', number> = { easy: 0.5, normal: 1, hard: 1 };
-export const FORGE_PULSE_CADENCE_MUL: Record<'easy' | 'normal' | 'hard', number> = { easy: 1.8, normal: 1, hard: 1 };  // easy: pulses far less often
-export const FORGE_ROCK_CAP: Record<'easy' | 'normal' | 'hard', number> = { easy: 2, normal: 3, hard: 3 };
+export const FORGE_MISSILE_TURN_MUL: Record<'easy' | 'normal' | 'hard', number> = { easy: 0.25, normal: 0.75, hard: 1 };  // easy: barely homes — out-jukeable
+export const FORGE_PULSE_DENSITY_MUL: Record<'easy' | 'normal' | 'hard', number> = { easy: 0.5, normal: 0.9, hard: 1 };
+export const FORGE_PULSE_CADENCE_MUL: Record<'easy' | 'normal' | 'hard', number> = { easy: 1.8, normal: 1.2, hard: 1 };  // easy: pulses far less often
+export const FORGE_ROCK_CAP: Record<'easy' | 'normal' | 'hard', number> = { easy: 2, normal: 2, hard: 3 };
 
 /** Pulse density (bullets/ring) + cadence (ms) by core-HP band — ramps as the
  *  core is worn down. Multiplied by the difficulty muls above. */
-export const FORGE_PULSE_WARNING_MS = 900;
+export const FORGE_PULSE_WARNING_MS = 1100;
 export const FORGE_PULSE_DENSITY = { fresh: 10, mid: 13, low: 18 };
 export const FORGE_PULSE_CADENCE_MS = { fresh: 3800, mid: 3200, low: 2600 };
 
@@ -1038,15 +1045,15 @@ export const FORGE_MELTDOWN_R_START = 180;            // ring radius at onset (o
 export const FORGE_MELTDOWN_R_MIN = 110;              // ring radius at core death (max squeeze)
 export const FORGE_MELTDOWN_SPIN = -FORGE_SPIN * 0.55; // rad/ms — the ring counter-rotates as it closes
 export const FORGE_MELTDOWN_WELL_RANGE = 240;         // wide pull field (vs 150) — no calm camp spot; the WIDTH is the anti-camp
-export const FORGE_MELTDOWN_WELL_STRENGTH = 190;      // MUST stay < SHIP_THRUST (240) or the well is inescapable; 190 = firm but you can thrust out
+export const FORGE_MELTDOWN_WELL_STRENGTH = 155;      // below SHIP_THRUST (240); containment tugs without trapping an approach
 
 // Escape / the chase (final phase): below FORGE_ESCAPE_FRAC the core breaks
 // containment — the rig + wells tear apart and the bare core FLEES the nearest
 // pilot, weaving and steering off the walls. You run it down to finish it.
 export const FORGE_ESCAPE_FRAC = 0.2;                 // core HP fraction that triggers the breakout
-export const FORGE_ESCAPE_SPEED = 165;                // px/s base UFO drift (×0.72 easy / ×1.12 hard); well under the ship's ~600 terminal
-export const FORGE_ESCAPE_ZIG_MS = 800;               // how often the fleeing core zig-zags to a new heading + fires (UFO-style)
-export const FORGE_ESCAPE_HP: Record<'easy' | 'normal' | 'hard', number> = { easy: 5, normal: 8, hard: 11 };  // chase = a SHORT punchy run-down, not an 18-hit grind
+export const FORGE_ESCAPE_SPEED = 150;                // px/s base UFO drift (×0.72 easy / ×1.12 hard); well under the ship's ~600 terminal
+export const FORGE_ESCAPE_ZIG_MS = 1000;               // how often the fleeing core zig-zags to a new heading + fires (UFO-style)
+export const FORGE_ESCAPE_HP: Record<'easy' | 'normal' | 'hard', number> = { easy: 4, normal: 6, hard: 10 };  // chase = a SHORT punchy run-down, not an 18-hit grind
 
 /** Grab-everything grace window after a wave is cleared, before the warp.
  *  Lets the player scoop loose coins / power-ups; ship is invulnerable for
@@ -1097,6 +1104,8 @@ export const SHIELD_COOLDOWN_MS = 3000;
 
 export const BULLET_SPEED = 520;      // px/s
 export const BULLET_TTL_MS = 1000;
+export const CAMPAIGN_BULLET_TTL_MS = 1500;
+export const BOSS_OPENING_MS = 3000;
 export const BULLET_RADIUS = 2;
 
 export const ASTEROID_BASE_SPEED = 60;    // px/s base
@@ -1184,12 +1193,12 @@ export const WAVE_LORE: readonly WaveLore[] = [
 
 /** Lookup the lore subtitle for a wave (1-indexed). Null for waves outside the table. */
 export function waveSubtitle(wave: number): string | null {
-  return WAVE_LORE[wave - 1]?.subtitle ?? null;
+  return WAVE_LORE[wave - 1]?.subtitle ?? (wave>25?driftVista(wave).subtitle:null);
 }
 
 /** Lookup the brand-voice tactical tagline for a wave (1-indexed). Null for waves outside the table. */
 export function waveTagline(wave: number): string | null {
-  return WAVE_LORE[wave - 1]?.tagline ?? null;
+  return WAVE_LORE[wave - 1]?.tagline ?? (wave>25?'Find your rhythm. Keep drifting.':null);
 }
 
 /**
@@ -1225,7 +1234,7 @@ export const FINAL_WAVE = 25;
 
 /** Get the lore name for a given wave number (1-indexed). Falls back to "WAVE N" beyond the table. */
 export function waveName(wave: number): string {
-  return WAVE_NAMES[wave - 1] ?? `WAVE ${wave}`;
+  return WAVE_NAMES[wave - 1] ?? (wave>25?driftVista(wave).name:`WAVE ${wave}`);
 }
 
 // ── Story arc — three acts over the 25 waves ────────────────────────────────
@@ -1296,11 +1305,11 @@ export function gameOverArcLine(wave: number): string | null {
 }
 
 export const UFO_RADIUS: Record<UfoType, number> = {
-  cruiser: 22,
-  elite: 12,
-  tank: 30,
-  sniper: 14,
-  boss: 50,
+  cruiser: 30,
+  elite: 19,
+  tank: 40,
+  sniper: 21,
+  boss: 64,
 };
 export const UFO_SPEED: Record<UfoType, number> = {
   cruiser: 110,

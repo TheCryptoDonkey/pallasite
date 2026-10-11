@@ -10327,7 +10327,7 @@ export function renderSettings(onBack: () => void): void {
   const qualitySelect = el('select', { parent: qualityRow }) as HTMLSelectElement;
   qualitySelect.id = 'graphics-quality';
   qualitySelect.style.cssText = 'min-height:44px;background:#101722;color:#e0ece8;border:1px solid #668d88;padding:8px;font:inherit;max-width:100%;';
-  for (const [value, label] of [['auto', 'AUTO · adapts as you play'], ['high', 'HIGH · full effects'], ['balanced', 'BALANCED'], ['low', 'LOW · shaded 2D']]) {
+  for (const [value, label] of [['auto', 'AUTO · adapts as you play'], ['high', 'ULTRA · live 3D and full effects'], ['balanced', 'BALANCED · baked 3D'], ['low', 'LOW · light baked 3D']]) {
     const option = el('option', { parent: qualitySelect, text: label }) as HTMLOptionElement;
     option.value = value;
   }

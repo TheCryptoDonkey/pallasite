@@ -32,7 +32,7 @@ Reuses EAGLE STATION tech wholesale — `stationPart` `core`/`arm`/`emitter` ren
 |---|---|---|
 | Core | vein, radius **22.8**, `stationPart:'core'` | the weak point; silent until first hit |
 | Shell | **12** destructible pods (`stationPart:'emitter'`), radius **15.6**, on a ring radius **67** | peel them to open a firing line on the core |
-| Spin | `STATION_ROT_SPEED × 1.6` (~12 s/rev) | the gap sweeps; randomised-rotation pulse stops camping a fixed gap |
+| Spin | `STATION_ROT_SPEED × 1.6` (~14 s/rev) | the gap sweeps; randomised-rotation pulse stops camping a fixed gap |
 | Centre | `(640, 300)` | fits full world height (portrait shows full height) |
 | Breach beat | at ≤ half the shell down | `SHELL BREACHED · CORE EXPOSED` + shockwave/trauma |
 | Clear | core death → `stationCoreFinale` | blows the rig, scatters loot |
@@ -43,23 +43,29 @@ The whole rig spans ~166 px — comfortably inside the ~324 px portrait strip wi
 
 | Lever | Easy | Normal | Hard |
 |---|---|---|---|
-| Core HP | 90 | 140 | 200 |
-| Vent HP | 4 | 5 | 5 |
+| Core HP | 75 | 115 | 175 |
+| Vent HP | 3 | 4 | 5 |
 | Missile cap (concurrent) | 1 | 2 | 3 |
-| Missile cadence (ms) | 3400 | 2500 | 1800 |
-| Missile speed × | 0.78 | 1 | 1 |
-| Missile TTL × | 0.6 | 1 | 1 |
-| Missile **turn** × | **0.45** | 1 | 1 |
-| Pulse density × | 0.6 | 1 | 1 |
-| Pulse cadence × | 1.3 (slower) | 1 | 1 |
-| Forged-rock cap | 2 | 3 | 3 |
+| Missile cadence (ms) | 4200 | 3200 | 2200 |
+| Missile speed × | 0.66 | 1 | 1 |
+| Missile TTL × | 0.42 | 1 | 1 |
+| Missile **turn** × | **0.25** | 0.75 | 1 |
+| Pulse density × | 0.5 | 0.9 | 1 |
+| Pulse cadence × | 1.8 (slower) | 1.2 | 1 |
+| Forged-rock cap | 2 | 2 | 3 |
 
-The missile **turn** scale is the big easy lever (1.8 → 0.81 rad/s) — they become out-jukeable instead of inescapable. It lives in the **shared** homing loop, so EAGLE STATION's easy missiles ease too (consistent).
+The missile **turn** scale is the big easy lever (1.8 → 0.45 rad/s) — they become out-jukeable instead of inescapable. It lives in the **shared** homing loop, so EAGLE STATION's easy missiles ease too (consistent).
+
+The October 2026 balance pass shortens both reactor fights, slows missiles to
+150 px/s with a 5-second base lifetime, and spaces forged minions every 6 seconds.
+Containment retains its five large, visible nodes and 240px pull range, with
+155px/s² strength. The chase moves at 150px/s and changes heading every second;
+its remaining health is 4 / 6 / 10 on Easy / Normal / Hard.
 
 ### 3.3 The core pulse (`forgeCorePulse`)
 
 - A dense **360° ring**, rotation **randomised each beat** (anti-camp).
-- **Telegraphed**: the core glows + sheds sparks for ~440 ms before release, so it reads as a wind-up.
+- **Telegraphed**: the core glows + sheds sparks for 1100 ms before release, so it reads as a wind-up.
 - **Ramps as HP drops** — density `{fresh 10, mid 13, low 18}`, cadence `{fresh 3800, mid 3200, low 2600} ms` (× difficulty above).
 - Bullet speed `UFO_BULLET_SPEED × MUL.boss × 0.75`.
 - Gated on `core.hp < core.hpMax` — **wakes on first hit only** (confirmed as the wanted behaviour, not pulse-from-start).
@@ -72,7 +78,7 @@ The missile **turn** scale is the big easy lever (1.8 → 0.81 rad/s) — they b
 
 ### 3.5 Spawn + camera
 
-- Player spawns at a **bottom corner** `(510, 640)` — diagonal to the central Forge, not dead-below.
+- Player spawns at a **outer diagonal approach** `(256, 540)` — about 453 world units from the central Forge, facing the core. Both W17 and W25 allow three seconds of active play before shell missiles or reinforcements begin; intros and pauses preserve that window. Campaign shots now live for 1.5 seconds (about 780 world units at Normal speed), while arena/deathmatch retain their one-second lifetime.
 - **Camera** (`render.ts`, `CAM_BOSS_BIAS` = **0.3**): the portrait follow-cam is biased gently toward a `stationPart:'core'` so the corner ship + the boss frame together. **Must stay gentle** — 0.7 locked the camera to the boss and the ship flew off-screen. Render-only → co-op-safe.
 
 ## 4. Portrait — the load-bearing constraint
@@ -87,7 +93,7 @@ The campaign sim is a fixed **1280×720**, aspect-agnostic; portrait uses a rend
 ## 5. Slice plan
 
 **Slice 1 — The Forge fortress (this spec).** Productionise the spike as the real W25. Checklist in §6.
-**Slice 2 — Meltdown / Event Horizon. ✅ BUILT.** Below `FORGE_MELTDOWN_FRAC` (0.34) the containment fails: a ring of 5 indestructible gravity wells (`makeMine`, hp 99999) spawns and tightens `FORGE_MELTDOWN_R_START`→`R_MIN` (180→110) as the core is pushed to death, slowly counter-rotating — squeezing the fight into the pulse zone. Driven from the Forge tick; `forgeMeltdown` flag on GameState + rollback (4 sites). Wells kept **escapable** — peak strength (`FORGE_MELTDOWN_WELL_STRENGTH` 190) MUST stay < `SHIP_THRUST` (240) or you can't thrust out; the *wide range* (240) is the anti-camp, not raw strength. Wave-25's black-hole background reinforces it.
+**Slice 2 — Meltdown / Event Horizon. ✅ BUILT.** Below `FORGE_MELTDOWN_FRAC` (0.34) the containment fails: a ring of 5 indestructible gravity wells (`makeMine`, hp 99999) spawns and tightens `FORGE_MELTDOWN_R_START`→`R_MIN` (180→110) as the core is pushed to death, slowly counter-rotating — squeezing the fight into the pulse zone. Driven from the Forge tick; `forgeMeltdown` flag on GameState + rollback (4 sites). Wells kept **escapable** — peak strength (`FORGE_MELTDOWN_WELL_STRENGTH` 155) MUST stay < `SHIP_THRUST` (240) or you can't thrust out; the *wide range* (240) is the anti-camp, not raw strength. Wave-25's black-hole background reinforces it.
 
 **Finale: the chase + the detonation. ✅ BUILT.** Below `FORGE_ESCAPE_FRAC` (0.2) the core **breaks containment**: the rig + wells tear apart and the bare core flees like a UFO — flies straight, bounces off the walls, zig-zags to a new heading every `FORGE_ESCAPE_ZIG_MS`, leans away only when you're right on it (else roams, crossing your aim), and fires aimed shots (the 360° pulse stops). Pinned to a hittable size (the vein would otherwise shrink to a dot); speed + fire-rate difficulty-scaled (`forgeEscaped` flag). On core death (`stationCoreFinale`, gated to W25): a full-screen **white flash** (`s.flash` — a new screen-flash field rendered in `drawScreenFlash`, decayed in updateGame, rollback-serialised), screen-filling shockwaves + a ~390-particle storm + a SHORT punch (140ms, not a long freeze that would stall the burst), held by `bossHold` for the 5s grace so it plays out before the completion card. **Difficulty rebalance** baked in: easy pulse density/cadence + homing-missile turn/speed/ttl much gentler.
 **Slice 3 — Forge callbacks. ✅ BUILT.** The forge's "places stones" now births recognisable earlier-run foes instead of generic rocks — W4 **elite UFOs**, W7/W12 **iron** (tanky), and **chondrite** (splits into a swarm) — the "I placed all of these" payoff + sustaining targets. Difficulty-weighted (easy = fewer elites, gentler rocks), capped across all placed foes (rocks + ufos), stops once the core breaks free, and the detonation clears lingering elites. NB: the EAGLE-STATION-pod callback (W17) was tried and **dropped** — a free `stationPart` emitter careens off the pinned shell ring (asteroid bounce) and reads as a glitch. Right way (future): a *deployed turret* that parks away from the ring and holds position firing.

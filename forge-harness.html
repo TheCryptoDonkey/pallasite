@@ -1,22 +1,111 @@
 <!doctype html><meta charset="utf-8"><title>forge harness</title>
 <pre id="out"></pre><canvas id="game" width="1280" height="720"></canvas>
 <script type="module">
-import { makeInitialState, startGame, beginWave, updateGame, fireBullet } from '/src/game.ts';
+import { makeInitialState, startGame, beginWave, updateGame, fireBullet, spawnAsteroid } from '/src/game.ts';
 import { setStoredDifficulty } from '/src/difficulty.ts';
 import { snapshotSim, restoreSim } from '/src/rollback.ts';
 import { serializeForCanary } from '/src/peer-canary.ts';
 import { forgeCharge, drawBossReactor, bossReadout } from '/src/combat-fx.ts';
 import { setQualityPreference } from '/src/visual-style.ts';
+import { FORGE_PULSE_WARNING_MS, BOSS_OPENING_MS, BULLET_TTL_MS, CAMPAIGN_BULLET_TTL_MS } from '/src/types.ts';
 const out = document.querySelector('#out');
 const passed = [];
 function check(ok, message) { if (!ok) throw new Error(message); passed.push(message); }
-function fresh(difficulty) {
+function fresh(difficulty, wave=25, opts={runMode:'campaign'}, elapsed=0) {
   setStoredDifficulty(difficulty);
-  const s = makeInitialState(); startGame(s, 0x72525); beginWave(s,25);
+  const s = makeInitialState(); startGame(s, 0x72525,opts); s.elapsed=elapsed; beginWave(s,wave);
   s.phase='playing'; s.players[0].ship.invulnerableUntil=1e9;
   return s;
 }
+function hit(s,target) {
+  s.hitStopSteps=0;
+  fireBullet(s,s.players[0]);
+  const bullet=s.bullets[s.bullets.length-1];
+  bullet.pos={...target.pos};bullet.vel={x:0,y:0};
+  updateGame(s);
+}
 try {
+  for(const wave of [17,25]) {
+    for(const mode of ['campaign','coop-campaign']) {
+      const s=fresh('normal',wave,{runMode:mode,players:mode==='campaign'?1:2},119990);
+      const core=s.asteroids.find(a=>a.stationPart==='core');
+      for(const p of s.players) {
+        const dx=core.pos.x-p.ship.pos.x,dy=core.pos.y-p.ship.pos.y;
+        check(Math.hypot(dx,dy)>380, `W${wave} ${mode}: each pilot starts on a distant approach`);
+        check(Math.min(...s.asteroids.map(a=>Math.hypot(a.pos.x-p.ship.pos.x,a.pos.y-p.ship.pos.y)-a.radius-p.ship.radius))>240, `W${wave} ${mode}: starting ship clears the full rig`);
+        check((dx*Math.cos(p.ship.rot)+dy*Math.sin(p.ship.rot))/Math.hypot(dx,dy)>.99, `W${wave} ${mode}: pilots face the reactor`);
+      }
+      s.phase='wavestart';
+      for(let i=0;i<30;i++)updateGame(s);
+      check(s.bossOpeningMs===BOSS_OPENING_MS, `W${wave} ${mode}: intro preserves the opening window`);
+      s.phase='paused';for(let i=0;i<30;i++)updateGame(s);
+      check(s.bossOpeningMs===BOSS_OPENING_MS, `W${wave} ${mode}: pause preserves the opening window`);
+      check(bossReadout(s,true)?.core===core&&!bossReadout(s), `W${wave} ${mode}: pause preserves camera framing without a live combat HUD`);
+      s.phase='playing';
+      for(let i=0;i<60;i++)updateGame(s);
+      const snap=snapshotSim(s),future=[];
+      for(let i=0;i<100;i++) {
+        updateGame(s);future.push(serializeForCanary(s));
+        if(s.enemyBullets.length||s.ufos.length||s.asteroids.some(a=>!a.stationPart))throw new Error(`W${wave} ${mode}: opening attack at step ${i}`);
+      }
+      passed.push(`W${wave} ${mode}: no opening attacks at an arbitrary campaign clock`);
+      restoreSim(s,snap);
+      for(let i=0;i<100;i++){updateGame(s);if(serializeForCanary(s)!==future[i])throw new Error(`W${wave} ${mode}: opening rollback diverged at ${i}`);}
+      passed.push(`W${wave} ${mode}: opening window resimulates identically`);
+      for(let i=0;i<500;i++)updateGame(s);
+      check(s.bossOpeningMs===0&&s.enemyBullets.some(b=>b.homing), `W${wave} ${mode}: attacks resume after the approach`);
+    }
+  }
+  {
+    const s=fresh('normal',1),p=s.players[0];
+    const cover=spawnAsteroid('small',1,{x:1000,y:100},{x:0,y:0},'iron');
+    s.asteroids=[cover];s.ufos=[];s.mines=[];s.nextUfoSpawn=1e9;
+    p.ship.pos={x:100,y:360};p.ship.rot=0;p.ship.vel={x:0,y:0};
+    fireBullet(s,p);const bullet=s.bullets.at(-1);
+    check(bullet.ttl===CAMPAIGN_BULLET_TTL_MS, 'campaign shots get the longer lifetime');
+    for(let i=0;i<65;i++)updateGame(s);
+    check(bullet.alive&&bullet.ttl>0&&bullet.pos.x>660, 'campaign shot survives beyond its former one-second range');
+    const target=spawnAsteroid('small',1,{x:760,y:360},{x:0,y:0},'stony');target.hp=1;s.asteroids.push(target);
+    for(let i=0;i<15;i++)updateGame(s);
+    check(!target.alive, 'a real campaign shot hits a target beyond the former range');
+    s.asteroids=[cover];s.bullets=[];s.hitStopSteps=0;
+    fireBullet(s,p);const expiry=s.bullets.at(-1);
+    for(let i=0;i<92;i++)updateGame(s);
+    check(!s.bullets.includes(expiry), 'longer shots still expire and leave the simulation');
+    s.bullets=[];p.keys.Space=true;const fired=s.bulletsFiredThisWave;
+    for(let i=0;i<180;i++)updateGame(s);
+    check(s.bulletsFiredThisWave-fired>=13, 'holding fire continues shooting throughout three seconds');
+    for(const runMode of ['arena','deathmatch']) {
+      const versus=fresh('normal',1,{runMode,players:2,aiOpponents:false});
+      fireBullet(versus,versus.players[0]);
+      check(versus.bullets.at(-1).ttl===BULLET_TTL_MS, `${runMode}: original shot lifetime is preserved`);
+    }
+  }
+  for (const difficulty of ['easy','normal','hard']) {
+    const s=fresh(difficulty,17),seen=new Set();
+    let firstMissile=0,peak=0;
+    for(let i=0;i<1200;i++) {
+      updateGame(s);
+      for(const b of s.enemyBullets.filter(b=>b.homing)) {
+        seen.add(b.id);if(!firstMissile)firstMissile=s.elapsed;
+      }
+      peak=Math.max(peak,s.enemyBullets.filter(b=>b.homing).length);
+    }
+    const oldCadence={easy:3400,normal:2500,hard:1800}[difficulty];
+    check(firstMissile>oldCadence, `${difficulty}: station allows more approach time before its first missile`);
+    check(seen.size<Math.floor(s.elapsed/oldCadence), `${difficulty}: station fires fewer missiles over a sustained engagement`);
+    check(peak<={easy:2,normal:3,hard:5}[difficulty], `${difficulty}: station missile pressure stays capped`);
+    for(const pod of s.asteroids.filter(a=>a.alive&&a.stationPart==='emitter')) {
+      for(let i=0;i<3;i++)hit(s,pod);
+      check(!pod.alive, `${difficulty}: three real shots disable a station pod`);
+    }
+    s.enemyBullets=[];
+    for(let i=0;i<300;i++){s.hitStopSteps=0;updateGame(s);}
+    check(!s.enemyBullets.some(b=>b.homing), `${difficulty}: disabling all pods stops the missile stream`);
+    const core=s.asteroids.find(a=>a.alive&&a.stationPart==='core');
+    core.hp=1;hit(s,core);
+    check(!s.asteroids.some(a=>a.alive&&a.stationPart), `${difficulty}: a real core kill clears the station rig`);
+  }
   for (const difficulty of ['easy','normal','hard']) {
     const s=fresh(difficulty);
     const core=s.asteroids.find(a=>a.stationPart==='core');
@@ -25,7 +114,7 @@ try {
     core.hp--;
     updateGame(s);
     const deadline=s.forgePulseAt;
-    check(deadline-s.elapsed>=900, `${difficulty}: first hit allows a full warning`);
+    check(deadline-s.elapsed>=FORGE_PULSE_WARNING_MS, `${difficulty}: first hit allows a full warning`);
     s.elapsed=deadline-300;
     core.hp=core.hpMax*0.6;
     updateGame(s);

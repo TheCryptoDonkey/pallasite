@@ -1,0 +1,230 @@
+[
+  {
+    "name": "rock-stony-64.webp",
+    "bytes": 18632
+  },
+  {
+    "name": "rock-stony-128.webp",
+    "bytes": 38830
+  },
+  {
+    "name": "rock-iron-64.webp",
+    "bytes": 12014
+  },
+  {
+    "name": "rock-iron-128.webp",
+    "bytes": 25808
+  },
+  {
+    "name": "rock-chondrite-64.webp",
+    "bytes": 16208
+  },
+  {
+    "name": "rock-chondrite-128.webp",
+    "bytes": 33040
+  },
+  {
+    "name": "rock-pallasite-64.webp",
+    "bytes": 19224
+  },
+  {
+    "name": "rock-pallasite-128.webp",
+    "bytes": 41056
+  },
+  {
+    "name": "rock-carbonaceous-64.webp",
+    "bytes": 9834
+  },
+  {
+    "name": "rock-carbonaceous-128.webp",
+    "bytes": 18610
+  },
+  {
+    "name": "rock-mesosiderite-64.webp",
+    "bytes": 15890
+  },
+  {
+    "name": "rock-mesosiderite-128.webp",
+    "bytes": 32790
+  },
+  {
+    "name": "rock-achondrite-64.webp",
+    "bytes": 15708
+  },
+  {
+    "name": "rock-achondrite-128.webp",
+    "bytes": 30830
+  },
+  {
+    "name": "rock-kinetic-64.webp",
+    "bytes": 15282
+  },
+  {
+    "name": "rock-kinetic-128.webp",
+    "bytes": 25944
+  },
+  {
+    "name": "rock-volatile-64.webp",
+    "bytes": 17002
+  },
+  {
+    "name": "rock-volatile-128.webp",
+    "bytes": 29262
+  },
+  {
+    "name": "rock-ballast-64.webp",
+    "bytes": 13024
+  },
+  {
+    "name": "rock-ballast-128.webp",
+    "bytes": 27620
+  },
+  {
+    "name": "rock-tektite-64.webp",
+    "bytes": 15516
+  },
+  {
+    "name": "rock-tektite-128.webp",
+    "bytes": 27584
+  },
+  {
+    "name": "rock-lodestone-64.webp",
+    "bytes": 17210
+  },
+  {
+    "name": "rock-lodestone-128.webp",
+    "bytes": 28638
+  },
+  {
+    "name": "ufo-elite.glb",
+    "bytes": 1574048
+  },
+  {
+    "name": "ufo-elite-128.webp",
+    "bytes": 5108
+  },
+  {
+    "name": "ufo-elite-256.webp",
+    "bytes": 8556
+  },
+  {
+    "name": "ufo-tank.glb",
+    "bytes": 1648840
+  },
+  {
+    "name": "ufo-tank-128.webp",
+    "bytes": 5258
+  },
+  {
+    "name": "ufo-tank-256.webp",
+    "bytes": 8714
+  },
+  {
+    "name": "ufo-sniper.glb",
+    "bytes": 1523624
+  },
+  {
+    "name": "ufo-sniper-128.webp",
+    "bytes": 4988
+  },
+  {
+    "name": "ufo-sniper-256.webp",
+    "bytes": 8366
+  },
+  {
+    "name": "ufo-boss.glb",
+    "bytes": 1769868
+  },
+  {
+    "name": "ufo-boss-128.webp",
+    "bytes": 5722
+  },
+  {
+    "name": "ufo-boss-256.webp",
+    "bytes": 10088
+  },
+  {
+    "name": "station-core.glb",
+    "bytes": 611708
+  },
+  {
+    "name": "station-core-128.webp",
+    "bytes": 8760
+  },
+  {
+    "name": "station-core-256.webp",
+    "bytes": 22664
+  },
+  {
+    "name": "station-arm.glb",
+    "bytes": 253144
+  },
+  {
+    "name": "station-arm-128.webp",
+    "bytes": 1990
+  },
+  {
+    "name": "station-arm-256.webp",
+    "bytes": 4006
+  },
+  {
+    "name": "station-emitter.glb",
+    "bytes": 227096
+  },
+  {
+    "name": "station-emitter-128.webp",
+    "bytes": 2706
+  },
+  {
+    "name": "station-emitter-256.webp",
+    "bytes": 5490
+  },
+  {
+    "name": "forge-core.glb",
+    "bytes": 1016276
+  },
+  {
+    "name": "forge-core-128.webp",
+    "bytes": 9592
+  },
+  {
+    "name": "forge-core-256.webp",
+    "bytes": 24632
+  },
+  {
+    "name": "forge-emitter.glb",
+    "bytes": 236892
+  },
+  {
+    "name": "forge-emitter-128.webp",
+    "bytes": 2818
+  },
+  {
+    "name": "forge-emitter-256.webp",
+    "bytes": 5728
+  },
+  {
+    "name": "mine.glb",
+    "bytes": 415036
+  },
+  {
+    "name": "mine-128.webp",
+    "bytes": 5362
+  },
+  {
+    "name": "mine-256.webp",
+    "bytes": 12290
+  },
+  {
+    "name": "missile.glb",
+    "bytes": 48348
+  },
+  {
+    "name": "missile-128.webp",
+    "bytes": 2398
+  },
+  {
+    "name": "missile-256.webp",
+    "bytes": 2740
+  }
+]

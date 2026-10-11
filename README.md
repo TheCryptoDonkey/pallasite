@@ -29,7 +29,7 @@ pnpm build
 
 `pnpm build` typechecks and emits the static app into `dist/`. It uses the committed Signet Login bundle by default; set `SIGNET_LOGIN_SYNC_LOCAL=1 pnpm build` only when intentionally testing a sibling Signet Login build.
 
-Graphics default to the modern presentation with automatic performance scaling. Settings → PERFORMANCE offers fixed budgets; LOW uses shaded 2D for older devices. See [the graphics and playability review](docs/graphics-and-playability-review.md) for changes and device-testing limits.
+Graphics use the Blender Ultra presentation across the game, with automatic performance scaling. Settings → PERFORMANCE offers Ultra, Balanced and Low budgets; phones and lighter budgets use baked 3D art. Classic remains selectable. Rounded powerups, smooth warp arrival, material-specific dust and collectible mineral shards share the new presentation. Drift after wave 25 cycles through three new vistas and bounded difficulty with regular recovery waves. Open `?graphicsReview=1` for unranked before/after practice across all 25 campaign levels and Drift waves 26–31. See [the Ultra art and verification notes](tools/graphics-lab/README.md) and [the earlier graphics and playability review](docs/graphics-and-playability-review.md) for pipeline details and device-testing limits.
 
 ## Deploy
 
