@@ -34,6 +34,12 @@ for(const mode of modes) {
     await page.waitForFunction(()=>window.__pallasiteState?.phase==='playing',null,{timeout:45000});
     const moduleUrl=n=>urls[`/src/${n}.ts`]??`${base}/src/${n}.ts`;
     const modules=Object.fromEntries(['game','render','seed','sanctum-avatars','sanctum-art','level-one-refresh','level-one-flight','visual-style','a11y'].map(n=>[n,moduleUrl(n)]));
+    if(mode==='mode-picker') {
+      // The graphics-review launcher intentionally forces campaign. Start
+      // from the stored Sanctum choice through the regular game API instead.
+      await page.evaluate(async m=>{const g=await import(m.game),s=window.__pallasiteState;g.startGame(s,0x600b);s.cheatedThisRun=true;s.players[0].ship.invulnerableUntil=1e9;},modules);
+      await page.waitForFunction(()=>window.__pallasiteState.phase==='playing',null,{timeout:45000});
+    }
     if(mode==='ultra'||mode==='short'||mode==='late-portrait'||mode==='missing'||mode==='mode-picker') {
       await page.waitForFunction(async u=>(await import(u)).levelOneLive(),modules['level-one-refresh'],{timeout:60000});
     }

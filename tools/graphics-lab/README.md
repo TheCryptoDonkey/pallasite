@@ -40,6 +40,8 @@ signal UFO, Bitcoin drops, real shrink/destruction/collection, render state
 and RNG invariance, bounded caches, pause and reduced motion. Desktop, Low,
 phone, short landscape, WebGL failure, missing/late portraits and WebKit
 captures/results go to the ignored `tools/record-out/graphics-refresh/`.
+It also starts the stored SANCTUM mode on the main flavour and checks Classic
+switching plus 72-member/300-drop overflow in a controlled unranked scene.
 Viewport checks are not physical-device performance certification.
 
 Use the normal game at `http://127.0.0.1:5180/?menu=1`, or open
