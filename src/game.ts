@@ -58,7 +58,7 @@ import {
   MINE_RADIUS, MINE_GRAVITY_RANGE, MINE_GRAVITY_STRENGTH, MINE_POINTS, MINE_SATS_DROP, MINE_HP_BASE,
   MINE_CANDIDATE_POSITIONS, MINE_COUNT_BY_WAVE,
   COMBO_WINDOW_MS, COMBO_MAX,
-  POWERUP_CONFIG, POWERUP_TTL_MS, POWERUP_RADIUS,
+  POWERUP_CONFIG, POWERUP_TTL_MS, POWERUP_RADIUS, POWERUP_PULL_RANGE, POWERUP_PULL_SPEED,
   RAPID_COOLDOWN_MUL, SATBOOST_MUL,
   TRIDENT_SPREAD, MAGNET_MAX_ACCEL, MAGNET_RANGE,
   satBudgetForWave,
@@ -4798,16 +4798,37 @@ export function updateGame(s: GameState): void {
       p.vel.x *= Math.exp(-0.6 * dt);
       p.vel.y *= Math.exp(-0.6 * dt);
       p.ttl -= dt * 1000;
-      if (p.ttl <= 0) p.alive = false;
+      if (p.ttl <= 0) { p.alive = false; continue; }
       if (arena) confineToArena(p.pos, p.vel, p.radius, cage, 0.55);
       else if (deathmatch) confineToDeathmatch(p.pos, p.vel, p.radius, 0.5);
       else wrap(p.pos);
+      // Choose one nearest living pilot (stable player order breaks ties).
+      // Fold only wrapping worlds; walled modes must not pull through walls.
+      let nearestSq = POWERUP_PULL_RANGE * POWERUP_PULL_RANGE;
+      let pullX = 0, pullY = 0;
+      for (const pl of s.players) {
+        if (!pl.ship.alive) continue;
+        let dx = pl.ship.pos.x - p.pos.x, dy = pl.ship.pos.y - p.pos.y;
+        if (!arena && !deathmatch) {
+          dx = ((dx + WORLD_W / 2) % WORLD_W + WORLD_W) % WORLD_W - WORLD_W / 2;
+          dy = ((dy + WORLD_H / 2) % WORLD_H + WORLD_H) % WORLD_H - WORLD_H / 2;
+        }
+        const distSq = dx * dx + dy * dy;
+        if (distSq < nearestSq) { nearestSq = distSq; pullX = dx; pullY = dy; }
+      }
+      if (nearestSq < POWERUP_PULL_RANGE * POWERUP_PULL_RANGE && nearestSq > 0) {
+        const dist = Math.sqrt(nearestSq), speed = Math.min(POWERUP_PULL_SPEED, dist * 5);
+        const response = 1 - Math.exp(-6 * dt);
+        p.vel.x += (pullX / dist * speed - p.vel.x) * response;
+        p.vel.y += (pullY / dist * speed - p.vel.y) * response;
+      }
       for (const pl of s.players) {
         if (pl.ship.alive && circlesHit(pl.ship, p)) {
           p.collected = true;
           pl.runStats.powerupsCollected += 1;
           applyPowerUp(s, p, now, pl);
           spawnParticles(s, p.pos.x, p.pos.y, 14, '#ffffff', 200, 600);
+          break;
         }
       }
     }

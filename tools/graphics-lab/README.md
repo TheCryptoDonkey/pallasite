@@ -70,9 +70,13 @@ No frame-rate promise is made for untested hardware.
   64px, other baked tiers 128px sixteen-frame mineral turntables, loaded by
   encountered type. Veins retain the readable gold health arc; terrain cover
   uses the same geometry without changing its collision or invulnerability.
-- Cruiser, Elite, Tank, Sniper and Boss retain distinct Blender silhouettes.
-  New classes add armour, weapons or sensor hardware to the approved hull and
-  independent rotor. Purple/blue glow stays below each banked hull. Boss
+- Cruiser, Elite, Tank, Sniper and Boss use `fleet-2` Blender silhouettes:
+  a scout sensor bank, swept Elite vanes, eight vented Tank shield plates,
+  twin Sniper accelerators/targeting eye, and a four-bastion command crown.
+  Class-coloured glass, reactor lenses and underside drive light match the
+  live models, Low/phone plates and five finite immediate fallback canvases.
+  The common hull and independent rotor remain. Weapon lenses brighten in
+  the last 360ms before firing, without changing the shot deadline. Boss
   phase escalation retains its existing attack timing and brighter reactors.
   All five classes now have larger authoritative radii (30/19/40/21/64px),
   so the enlarged bodies remain shootable in every graphics tier.
@@ -107,6 +111,12 @@ No frame-rate promise is made for untested hardware.
   explicit `rounded-2` URL revision; a shaded sphere is available immediately
   during loading or complete asset failure. How-to-play previews show the
   same plates. Classic remains the saved per-category choice.
+- Spherical power-ups steer toward the nearest living pilot within 150 world
+  pixels, with a damped 320px/s target speed and a gentle arrival slowdown.
+  Their normal drift remains outside the field. Campaign/Sanctum/Drift use
+  shortest wrap paths; walled modes use direct distances. Co-op ties resolve
+  by stable player order and each sphere applies once. Expired spheres cannot
+  be collected. The Magnet buff's existing whole-screen coin/shard pull stays.
 - Enhanced inter-wave warps use a generated plasma tunnel, lit apertures, curled streaks and up
   to four textured mineral flybys. The aperture treatment also appears on
   actual ship departure/arrival. Reduced motion uses a destination fade with
@@ -123,6 +133,16 @@ Live visible copies cap at 48 rocks, 16 aliens, 24 power-ups, eight pilots and
 16 mines; overflow stays visible through baked art. Collectibles instance to
 256 visible seam copies per kind, two material batches per kind, with baked
 overflow. Ship armour batches to seven materials and pickup spheres to five.
+
+Fleet regeneration: run Blender in background with
+`--python tools/graphics-lab/alien_fleet_authoring.py`, then
+`node tools/graphics-lab/optimise-alien-fleet.mjs`. The unchanged `ufo.blend`
+is the common master; `ufo-cruiser.blend` and the four class masters remain
+editable. The campaign author/export scripts also call this pipeline.
+`check-alien-fleet.mjs` exercises all classes, real damage/destruction,
+magnetic collection, crowded overflow, mobile/Low and missing-art paths.
+The regression harness covers all six sphere effects, range, dead ships,
+wrap seams, walled arenas, co-op ownership and expiry.
 The extra rendering surface caps at 2560x1440; shadow resolution is 2048.
 Four shared local lights remain fixed regardless of pilot/pickup counts.
 Mechanical explosions cap at four events and player bursts at three, with a
