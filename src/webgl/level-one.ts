@@ -340,10 +340,17 @@ export async function createLevelOneRenderer() {
       const thrust=model.userData.thrust as THREE.Group,speed=Math.hypot(u.vel.x,u.vel.y),power=Math.min(1,speed/100);
       model.updateMatrixWorld(true);
       thrust.position.copy(model.position);thrust.quaternion.copy(model.quaternion);thrust.scale.copy(model.scale);
+      if(themed){
+        // Keep the halo behind the whole relic in camera space. Attaching it
+        // to the tumbling local underside puts it over the clock on a half-turn.
+        thrust.quaternion.identity();thrust.position.z-=u.radius*1.6*.65;
+      }
       const pulse=reducedMotion?1:1+.035*Math.sin(animationTime*.003);
       thrust.children[0].position.set(0,0,-.43);thrust.children[0].scale.setScalar((2.75+power*.18)*pulse);
       thrust.children[1].position.set(0,0,-.36);thrust.children[1].scale.setScalar(.95*pulse);
-      if(dx===0){driveCentre.set(0,0,-.38).applyMatrix4(model.matrixWorld);ufoLight.position.copy(driveCentre);ufoLight.intensity=180+170*power;}
+      // The relic's drive sits directly behind its clock reverse. Keep that
+      // local light quiet enough to preserve the engraving when it faces us.
+      if(dx===0){driveCentre.set(0,0,-.38).applyMatrix4(model.matrixWorld);ufoLight.position.copy(driveCentre);ufoLight.intensity=(180+170*power)*(themed?.12:1);}
       model.traverse(o=>{if(o instanceof THREE.Mesh){const mat=o.material as THREE.MeshStandardMaterial;
         mat.emissive.copy(mat.userData.baseEmission).lerp(hitColor,u.hitFlash*.65);
         mat.emissiveIntensity=mat.userData.baseStrength+(u.hitFlash*.6)+(u.type==='boss'?(u.bossPhase-1)*.22:0);
