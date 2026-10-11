@@ -1,0 +1,4 @@
+# Offline intermediate frames are reproduced by render-assets.py.
+assets/frames/
+assets/*.blend1
+__pycache__/

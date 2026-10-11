@@ -1,0 +1,154 @@
+{
+  "master": {
+    "width": 1672,
+    "height": 941
+  },
+  "files": [
+    {
+      "name": "ship-128.webp",
+      "width": 128,
+      "bytes": 4006
+    },
+    {
+      "name": "ship-256.webp",
+      "width": 256,
+      "bytes": 9498
+    },
+    {
+      "name": "ship-512.webp",
+      "width": 512,
+      "bytes": 22132
+    },
+    {
+      "name": "ship-1024.webp",
+      "width": 1024,
+      "bytes": 56474
+    },
+    {
+      "name": "ship-atlas-128.webp",
+      "width": 1024,
+      "height": 512,
+      "frames": 32,
+      "frameSize": 128,
+      "bytes": 121908
+    },
+    {
+      "name": "ship-atlas-256.webp",
+      "width": 2048,
+      "height": 1024,
+      "frames": 32,
+      "frameSize": 256,
+      "bytes": 217310
+    },
+    {
+      "name": "stony-128.webp",
+      "width": 128,
+      "bytes": 3952
+    },
+    {
+      "name": "stony-256.webp",
+      "width": 256,
+      "bytes": 11452
+    },
+    {
+      "name": "stony-512.webp",
+      "width": 512,
+      "bytes": 39304
+    },
+    {
+      "name": "stony-1024.webp",
+      "width": 1024,
+      "bytes": 141856
+    },
+    {
+      "name": "stony-atlas-128.webp",
+      "width": 1024,
+      "height": 512,
+      "frames": 32,
+      "frameSize": 128,
+      "bytes": 124460
+    },
+    {
+      "name": "stony-atlas-256.webp",
+      "width": 2048,
+      "height": 1024,
+      "frames": 32,
+      "frameSize": 256,
+      "bytes": 244268
+    },
+    {
+      "name": "pallasite-128.webp",
+      "width": 128,
+      "bytes": 4986
+    },
+    {
+      "name": "pallasite-256.webp",
+      "width": 256,
+      "bytes": 14170
+    },
+    {
+      "name": "pallasite-512.webp",
+      "width": 512,
+      "bytes": 44590
+    },
+    {
+      "name": "pallasite-1024.webp",
+      "width": 1024,
+      "bytes": 139976
+    },
+    {
+      "name": "pallasite-atlas-128.webp",
+      "width": 1024,
+      "height": 512,
+      "frames": 32,
+      "frameSize": 128,
+      "bytes": 145136
+    },
+    {
+      "name": "pallasite-atlas-256.webp",
+      "width": 2048,
+      "height": 1024,
+      "frames": 32,
+      "frameSize": 256,
+      "bytes": 304236
+    },
+    {
+      "name": "ship-cinematic.glb",
+      "bytes": 221580
+    },
+    {
+      "name": "stony-cinematic.glb",
+      "bytes": 3442072
+    },
+    {
+      "name": "pallasite-cinematic.glb",
+      "bytes": 3613552
+    },
+    {
+      "name": "stony-previous.glb",
+      "bytes": 1214012
+    },
+    {
+      "name": "pallasite-previous.glb",
+      "bytes": 1252292
+    },
+    {
+      "name": "background-960.webp",
+      "width": 960,
+      "height": 540,
+      "bytes": 29392
+    },
+    {
+      "name": "background-1600.webp",
+      "width": 1600,
+      "height": 900,
+      "bytes": 68076
+    },
+    {
+      "name": "background-native.webp",
+      "width": 1672,
+      "height": 941,
+      "bytes": 73668
+    }
+  ]
+}

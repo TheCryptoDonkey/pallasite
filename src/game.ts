@@ -10,6 +10,8 @@ import type {
   SimTransition, SimTransitionKind, PlayerState, RunStats, DeathmatchRules, DeathmatchEndReason,
 } from './types.js';
 import { recordStreamEvent } from './stream-session.js';
+import { levelOneReview, recordRockImpact, resetRockImpacts, markRockDustParticles } from './level-one-impacts.js';
+import { recordPlayerBurst, recordMechanicalBurst, resetPlayerBursts, markPlayerBurstParticles } from './level-one-death.js';
 import { getGameConfig } from './faucet.js';
 import { getFlavour } from './flavour.js';
 import { asteroidBounceEnabled } from './bounce.js';
@@ -18,7 +20,7 @@ import { getCouncil } from './sanctum-avatars.js';
 import { DEPTH_CONFIGS, decorativeSpawnCount, getParallaxTier, pickDecorativeDepth } from './parallax.js';
 import {
   waveName, FINAL_WAVE, ASTEROID_TYPE_CONFIG,
-  REPLAY_RECORD_INTERVAL_MS, REPLAY_BUFFER_FRAMES, REPLAY_TOTAL_WALL_MS, REPLAY_EXPLOSION_WALL_MS,
+  REPLAY_RECORD_INTERVAL_MS, REPLAY_BUFFER_FRAMES,
   REPLAY_SLOW_MS, REPLAY_SLOW_RATE, REPLAY_EXPLOSION_MS,
   LURK_CENTRE_RADIUS_PX, LURK_VEL_THRESHOLD, LURK_DURATION_MS, LURK_TOAST_MS,
   WARP_SKIP_AFTER_MS,
@@ -31,14 +33,14 @@ import {
   HYPERSPACE_COOLDOWN_MS, HYPERSPACE_CLOAK_MS, HYPERSPACE_MALFUNCTION_CHANCE, HYPERSPACE_SAFE_DIST,
   HYPERSPACE_CONSECUTIVE_WINDOW_MS, HYPERSPACE_DETONATE_RANGE,
   SHIELD_DURATION_MS, SHIELD_COOLDOWN_MS,
-  BULLET_SPEED, BULLET_TTL_MS, BULLET_RADIUS,
+  BULLET_SPEED, BULLET_TTL_MS, CAMPAIGN_BULLET_TTL_MS, BOSS_OPENING_MS, BULLET_RADIUS,
   ASTEROID_BASE_SPEED, ASTEROID_SPEED_PER_WAVE,
   COIN_RADIUS, COIN_TTL_MS,
   POINTS_PER_SIZE, SATS_PER_SIZE, RADIUS_PER_SIZE,
   VEIN_HP_BASE, VEIN_HP_EASY_MUL, VEIN_HP_HARD_MUL,
   VEIN_RADIUS_MUL, VEIN_MIN_RADIUS_SCALE, VEIN_SATS_PER_HIT, VEIN_SCORE_PER_HIT,
   VEIN_RETALIATE_PER_N_HITS, VEIN_SHARD_SPEED, VEIN_SHARD_TTL_MS, VEIN_SHARD_RADIUS,
-  STATION_ARMS, STATION_ARM_R, STATION_EMITTER_R, STATION_ROT_SPEED, STATION_EMITTER_HP, STATION_AMBIENT_MS,
+  STATION_ARMS, STATION_ARM_R, STATION_EMITTER_R, STATION_ROT_SPEED, STATION_CORE_HP, STATION_EMITTER_HP, STATION_AMBIENT_MS,
   STATION_MISSILE_MS, STATION_MISSILE_CAP, STATION_MISSILE_SPEED, STATION_MISSILE_TURN, STATION_MISSILE_TTL_MS, STATION_MISSILE_RADIUS,
   FORGE_SPAWN, FORGE_CENTRE_Y, FORGE_SEGMENTS, FORGE_RING_R, FORGE_CORE_R, FORGE_SEG_R, FORGE_SPIN, FORGE_ROCK_MS, FORGE_ROCK_SPREAD,
   FORGE_CORE_HP, FORGE_VENT_HP, FORGE_MISSILE_CAP, FORGE_MISSILE_SPEED_MUL, FORGE_MISSILE_TTL_MUL, FORGE_MISSILE_TURN_MUL,
@@ -64,6 +66,7 @@ import {
 import type { PowerUp, PowerUpType } from './types.js';
 import * as audio from './audio.js';
 import { preloadBackground, invalidateBackgroundCache } from './render.js';
+import { driftProfile } from './drift-profile.js';
 import { currentMods, lockInDifficulty, getStoredDifficulty, currentDifficulty } from './difficulty.js';
 import { lockInMode, getStoredMode, currentMode, isEndlessMode, isSanctumMode, isDefenderMode, isCoopCampaignMode, type RunMode } from './mode.js';
 import { arenaActive, arenaCage, confineToArena, clampToArena, outsideArena } from './arena.js';
@@ -83,8 +86,6 @@ import { haptic } from './haptics.js';
 import { markSkinUnlocked } from './skins.js';
 import {
   getVisualStyle,
-  isWebGLOverlayReady,
-  callWebGLShipExplosion,
   callWebGLClearShipChunks,
 } from './visual-style.js';
 import { SpatialHash, type SpatialCircle } from './spatial.js';
@@ -148,6 +149,7 @@ export function makeInitialState(): GameState {
     forgeMeltdown: false,
     forgeEscaped: false,
     forgePulseAt: 0,
+    bossOpeningMs: 0,
     defenderMode: false,
     defenderTimerMs: 0,
     defenderCouncilLost: 0,
@@ -327,6 +329,8 @@ export interface StartGameOptions {
 }
 
 export function startGame(s: GameState, forcedSeed?: number, opts?: StartGameOptions): void {
+  resetRockImpacts(s);
+  resetPlayerBursts(s);
   // 600bn flavour now runs through the standard Pallasite startGame +
   // beginWave path. beginWave(s, 1) detects flavour=600bn and spawns
   // council-member-textured asteroids instead of the wave-1 default.
@@ -591,7 +595,8 @@ export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?
   // not a hazard the player has to dodge. Standard asteroids use the per-wave
   // speed band as before.
   let radius = RADIUS_PER_SIZE[size] * (isVein ? VEIN_RADIUS_MUL : 1) * depthCfg.sizeMul;
-  const speedBase = (ASTEROID_BASE_SPEED + wave * ASTEROID_SPEED_PER_WAVE) * mods.asteroidSpeedMul * depthCfg.speedMul;
+  const drift = driftProfile(wave, currentMode());
+  const speedBase = (ASTEROID_BASE_SPEED + (drift?.speedWave ?? wave) * ASTEROID_SPEED_PER_WAVE) * mods.asteroidSpeedMul * depthCfg.speedMul;
   const sizeMul = size === 'large' ? 0.7 : size === 'medium' ? 1 : 1.5;
   const speed = isVein
     ? speedBase * 0.2 * (0.7 + gameRng() * 0.6)
@@ -625,6 +630,12 @@ export function spawnAsteroid(size: AsteroidSize, wave: number, pos?: Vec2, vel?
     radius *= 1.55;
     velocity.x *= 0.4;
     velocity.y *= 0.4;
+  }
+  // Also bound inherited fragment/kick velocities in the endless section.
+  if (drift && depth === 3 && !opts?.terrain) {
+    const limit = (size === 'large' ? 155 : size === 'medium' ? 205 : 265) * mods.asteroidSpeedMul;
+    const magnitude = Math.hypot(velocity.x, velocity.y);
+    if (magnitude > limit) velocity = { x: velocity.x * limit / magnitude, y: velocity.y * limit / magnitude };
   }
   const cfg = ASTEROID_TYPE_CONFIG[t];
 
@@ -946,14 +957,16 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
   // you knock it out. Break the core to bring the whole rig down. Pure geometry
   // + the deterministic RNG drive it, so co-op lockstep is unaffected.
   17: {
-    playerSpawn: { x: WORLD_W / 2, y: WORLD_H - 90 },
+    // Start on an outer approach, facing the reactor, with space to accelerate.
+    playerSpawn: { x: WORLD_W * .2, y: WORLD_H - 140,
+      rot: Math.atan2(WORLD_H / 2 - (WORLD_H - 140), WORLD_W / 2 - WORLD_W * .2) },
     setup(s) {
       const cx = WORLD_W / 2, cy = WORLD_H / 2;
       const d = currentDifficulty();
       // Core reactor — the weak point. No shard-retaliation here: the threat is
       // the rocks the pods throw, so stacking retaliation on top read as "too
       // hard". Just a destructible reactor you chip through the rotating arms.
-      const coreHp = d === 'easy' ? 90 : d === 'hard' ? 220 : 140;
+      const coreHp = STATION_CORE_HP[d];
       const core = spawnAsteroid('large', s.wave, { x: cx, y: cy }, { x: 0, y: 0 }, 'pallasite', { vein: true });
       core.hp = coreHp;
       core.hpMax = coreHp;
@@ -969,12 +982,14 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
         arm.radius = 30;  // slimmer cover so the tighter ring still clears the core (no overlap → no shove)
         arm.stationPart = 'arm';
         arm.stationSlot = slot;
+        arm.rot = slot;
         s.asteroids.push(arm);
         const em = spawnAsteroid('small', s.wave, { x: cx + Math.cos(slot) * STATION_EMITTER_R, y: cy + Math.sin(slot) * STATION_EMITTER_R }, { x: 0, y: 0 }, 'pallasite');
         em.hp = STATION_EMITTER_HP;
         em.hpMax = STATION_EMITTER_HP;
         em.stationPart = 'emitter';
         em.stationSlot = slot;
+        em.rot = slot;
         s.asteroids.push(em);
       }
     },
@@ -998,7 +1013,7 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
       // at the nearest pilot — it then steers (see the enemy-bullet update) and
       // can be shot down. Kill the pods to choke the stream. Stateless boundary.
       const missileMs = STATION_MISSILE_MS[d];
-      if (Math.floor(s.elapsed / missileMs) > Math.floor(prev / missileMs)) {
+      if (s.bossOpeningMs <= 0 && Math.floor(s.elapsed / missileMs) > Math.floor(prev / missileMs)) {
         const missiles = s.enemyBullets.filter(b => b.alive && b.homing).length;
         const emitters = s.asteroids.filter(a => a.alive && a.stationPart === 'emitter');
         if (emitters.length > 0 && missiles < STATION_MISSILE_CAP[d]) {
@@ -1034,9 +1049,9 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
       }
       // Ambient debris: a rock of a random type drifts through now and then so
       // the field isn't dead between drone launches.
-      if (Math.floor(s.elapsed / STATION_AMBIENT_MS) > Math.floor(prev / STATION_AMBIENT_MS)) {
+      if (s.bossOpeningMs <= 0 && Math.floor(s.elapsed / STATION_AMBIENT_MS) > Math.floor(prev / STATION_AMBIENT_MS)) {
         const loose = s.asteroids.filter(a => a.alive && a.stationPart == null && !a.isVein).length;
-        if (loose < 5) {
+        if (loose < 3) {
           const types: AsteroidType[] = ['iron', 'pallasite', 'stony', 'chondrite'];
           const t = types[Math.floor(gameRng() * types.length)];
           s.asteroids.push(spawnAsteroid(gameRng() < 0.5 ? 'large' : 'medium', s.wave, undefined, undefined, t));
@@ -1064,7 +1079,7 @@ const WAVE_SET_PIECES: Record<number, WaveSetPiece> = {
       const N = 5;
       for (let i = 0; i < N; i++) {
         const ang = (Math.PI * 2 * i) / N - Math.PI / 2;  // point-up pentagon
-        s.mines.push(makeMine({ x: cx + Math.cos(ang) * ringR, y: cy + Math.sin(ang) * ringR }));
+        s.mines.push(makeMine({ x: cx + Math.cos(ang) * ringR, y: cy + Math.sin(ang) * ringR }, MINE_HP_BASE, 20));
       }
       // The eye of the storm — a vein prize reachable only by threading the
       // pentagon. Difficulty-scaled so it's a real commitment.
@@ -1185,6 +1200,7 @@ const THE_FORGE: WaveSetPiece = {
       seg.hp = FORGE_VENT_HP[d]; seg.hpMax = FORGE_VENT_HP[d];
       seg.stationPart = 'emitter';
       seg.stationSlot = slot;
+      seg.rot = slot;
       s.asteroids.push(seg);
     }
   },
@@ -1206,7 +1222,7 @@ const THE_FORGE: WaveSetPiece = {
     // what makes it a fight, not target practice. (Built on EAGLE STATION; the
     // missiles steer at a difficulty-scaled turn cap in the enemy-bullet update.)
     const missileMs = STATION_MISSILE_MS[d];
-    if (Math.floor(s.elapsed / missileMs) > Math.floor(prev / missileMs)) {
+    if (s.bossOpeningMs <= 0 && Math.floor(s.elapsed / missileMs) > Math.floor(prev / missileMs)) {
       const missiles = s.enemyBullets.filter(b => b.alive && b.homing).length;
       const pods = s.asteroids.filter(a => a.alive && a.stationPart === 'emitter');
       if (pods.length > 0 && missiles < FORGE_MISSILE_CAP[d]) {
@@ -1257,7 +1273,7 @@ const THE_FORGE: WaveSetPiece = {
     }
 
     // THE FORGE PULSES — the core wakes on its first hit, then every few seconds
-    // it charges for 900ms and releases a dense 360° ring of bullets.
+    // it gives a full charge warning and releases a 360° ring of bullets.
     // Rotation is randomised each beat (no fixed-gap camp); density + cadence
     // ramp as the core is worn down. See forgeCorePulse.
     if (core && core.hp < core.hpMax && !s.forgeEscaped) {
@@ -1295,6 +1311,7 @@ const THE_FORGE: WaveSetPiece = {
           const ang = (Math.PI * 2 * i) / FORGE_MELTDOWN_WELLS - Math.PI / 2;
           const w = makeMine({ x: cx + Math.cos(ang) * FORGE_MELTDOWN_R_START, y: cy + Math.sin(ang) * FORGE_MELTDOWN_R_START }, 99999);
           w.gravityRange = FORGE_MELTDOWN_WELL_RANGE;       // wide field — can't find a calm spot
+          w.radius = 22;                                  // visible containment nodes, matching their contact bodies
           w.gravityStrength = FORGE_MELTDOWN_WELL_STRENGTH; // strong pull — camping the core gets dragged off
           s.mines.push(w);
         }
@@ -1390,7 +1407,7 @@ const THE_FORGE: WaveSetPiece = {
     // leans on the gentler rocks. Stops once the core breaks free (the chase is
     // the bare core alone). NB: no free rig pods — a loose emitter careens off the
     // pinned shell ring like a glitch; only rocks (which bounce normally) + ufos.
-    if (!s.forgeEscaped && Math.floor(s.elapsed / FORGE_ROCK_MS) > Math.floor(prev / FORGE_ROCK_MS)) {
+    if (s.bossOpeningMs <= 0 && !s.forgeEscaped && Math.floor(s.elapsed / FORGE_ROCK_MS) > Math.floor(prev / FORGE_ROCK_MS)) {
       const placed = s.asteroids.filter(a => a.alive && a.stationPart == null && !a.isVein).length
                    + s.ufos.filter(u => u.alive).length;
       if (placed < FORGE_ROCK_CAP[d]) {
@@ -1821,7 +1838,9 @@ function beginDeathmatch(s: GameState): void {
 }
 
 export function beginWave(s: GameState, wave: number): void {
+  resetRockImpacts(s);resetPlayerBursts(s);
   s.wave = wave;
+  s.bossOpeningMs = !arenaActive() && !deathmatchActive() && (wave === 17 || wave === 25) ? BOSS_OPENING_MS : 0;
   // Milestone achievements on wave entry — fired here so the badge lands
   // during the wavestart banner rather than mid-fight.
   if (wave === FINAL_WAVE) markAchievement(s, 'first-wave-25');
@@ -1894,6 +1913,7 @@ export function beginWave(s: GameState, wave: number): void {
     beginDeathmatch(s);
     return;
   }
+  const drift = driftProfile(wave, currentMode());
   const setPiece = WAVE_SET_PIECES[wave];
   // 600bn flavour overrides wave 1 with the council ring — every
   // asteroid is a member-textured large that splits into smaller
@@ -1938,9 +1958,17 @@ export function beginWave(s: GameState, wave: number): void {
     // debut. Thin the field by two on these two waves so the new UFO threat
     // reads as the headline rather than piling onto a maxed-out rock field.
     const spikeRelief = wave === 10 || wave === 11 ? 2 : 0;
-    const count = Math.max(1, Math.round(Math.min(13, 4 + wave) * multiplier) - spikeRelief);
+    const count = Math.max(1, Math.round((drift?.rockCount ?? Math.min(13, 4 + wave)) * multiplier) - spikeRelief);
     for (let i = 0; i < count; i++) {
       s.asteroids.push(spawnAsteroid('large', wave));
+    }
+  }
+  if (drift) {
+    s.nextUfoSpawn = drift.ufoIntervalFloorMs * currentMods().ufoIntervalMul;
+    // A fetchable heart each recovery wave, retaining the existing five-life cap.
+    if (drift.recovery && p0.ship.alive && p0.lives < 5) {
+      const pos = pickExtraLifeSpawn(s, p0);
+      maybeDropPowerUp(s, pos.x, pos.y, 'extralife');
     }
   }
   // Parallax decoration — extra rocks on non-gameplay bands. Gated by
@@ -1996,7 +2024,7 @@ export function beginWave(s: GameState, wave: number): void {
   // WAVESTART_SKIP_AFTER_MS.
   const wavestartMs = isActWave
     ? INTERTITLE_MS
-    : (wave === 1 && (getFlavour() === '600bn' || isSanctumMode()) ? 9_000 : WAVESTART_MS);
+    : drift ? 2400 : (wave === 1 && (getFlavour() === '600bn' || isSanctumMode()) ? 9_000 : WAVESTART_MS);
   // Hand control to the player once the wavestart banner has held.
   scheduleSimTransition(s, 'wave-begin-play', s.elapsed + wavestartMs, epoch);
 }
@@ -2508,7 +2536,8 @@ function maybeDropPowerUp(s: GameState, x: number, y: number, force?: PowerUpTyp
     collected: false,
   });
   const cfg = POWERUP_CONFIG[type];
-  toastNow(s, `${cfg.glyph} ${cfg.pickupLabel} DROPPED`);
+  const label=type==='satboost'?`SATS ×${SATBOOST_MUL}`:cfg.pickupLabel;
+  toastNow(s, `${cfg.glyph} ${label} DROPPED`);
   audio.powerupDrop();
   // Sparkle burst at the drop site
   spawnParticles(s, x, y, 18, cfg.colour, 220, 700);
@@ -2535,7 +2564,7 @@ function applyPowerUp(s: GameState, pu: PowerUp, now: number, p: PlayerState): v
     toastNow(s, cfg.pickupLabel);
     return;
   }
-  toastNow(s, cfg.pickupLabel);
+  toastNow(s,pu.type==='satboost'?`SATS ×${SATBOOST_MUL}`:cfg.pickupLabel);
   audio.powerupPickup();
 }
 
@@ -2625,7 +2654,7 @@ function clearStage(s: GameState, opts: { autoCollect: boolean }): void {
 
 /** UFO species is locked per wave — see UFO_TYPE_BY_WAVE. */
 function pickUfoType(wave: number): UfoType {
-  return UFO_TYPE_BY_WAVE[wave - 1] ?? 'cruiser';
+  return driftProfile(wave, currentMode())?.ufoType ?? UFO_TYPE_BY_WAVE[wave - 1] ?? 'cruiser';
 }
 
 function spawnUfo(s: GameState): void {
@@ -2769,6 +2798,7 @@ function updateUfos(s: GameState, dt: number): void {
         u.shootTimer = UFO_SHOOT_INTERVAL[u.type];
         ufoShootAt(s, u, s.players[0].ship.pos);
       }
+      if (driftProfile(s.wave, currentMode())) u.shootTimer *= 1.3;
     }
   }
   const before = s.ufos.length;
@@ -2880,11 +2910,11 @@ function veinRetaliateShard(s: GameState, a: Asteroid, target: Vec2, speed: numb
 
 // ── Mines ─────────────────────────────────────────────────────────────────────
 
-function makeMine(pos: Vec2, hp: number = MINE_HP_BASE): Mine {
+function makeMine(pos: Vec2, hp: number = MINE_HP_BASE, radius: number = MINE_RADIUS): Mine {
   return {
     pos: { x: pos.x, y: pos.y },
     vel: { x: 0, y: 0 },     // static — never drifts
-    radius: MINE_RADIUS,
+    radius,
     alive: true,
     id: nextStreamEntityId(),
     age: 0,
@@ -2926,9 +2956,9 @@ function placeWaveMines(s: GameState, wave: number): void {
     [indices[i], indices[k]] = [indices[k], indices[i]];
   }
   const chosen = indices.slice(0, count);
-  for (const idx of chosen) {
+  for (const [i, idx] of chosen.entries()) {
     const pos = MINE_CANDIDATE_POSITIONS[idx];
-    s.mines.push(makeMine(pos));
+    s.mines.push(makeMine(pos, MINE_HP_BASE, wave >= 14 && i % 2 === 0 ? 18 : MINE_RADIUS));
   }
   audio.mineArm();
 }
@@ -2967,6 +2997,7 @@ function updateMines(s: GameState, dt: number, _now: number): void {
 
 function destroyMine(s: GameState, m: Mine, p: PlayerState): void {
   if (!m.alive) return;
+  recordMechanicalBurst(s,m.pos,{x:0,y:0},.5);
   m.alive = false;
   p.runStats.minesDestroyed += 1;
   markAchievement(s, 'first-mine');
@@ -3075,6 +3106,7 @@ function damageUfo(s: GameState, u: Ufo, p: PlayerState): void {
 }
 
 function destroyUfo(s: GameState, u: Ufo, p: PlayerState): void {
+  recordMechanicalBurst(s,u.pos,u.vel,u.type==='tank'?1.1:.8,u.type==='boss');
   u.alive = false;
   s.ufoKilledThisWave = true;
   if (u.type !== 'boss') s.ufoKillsThisWave += 1;
@@ -3162,7 +3194,7 @@ export function fireBullet(s: GameState, p: PlayerState): void {
       radius: BULLET_RADIUS,
       alive: true,
       id: nextStreamEntityId(),
-      ttl: BULLET_TTL_MS,
+      ttl: arenaActive() || deathmatchActive() ? BULLET_TTL_MS : CAMPAIGN_BULLET_TTL_MS,
       pierceLeft: 1,
       caromHit: false,
       wrapped: false,
@@ -3385,7 +3417,7 @@ export function tryActivateShield(s: GameState, now: number, p: PlayerState): bo
   const mods = currentMods();
   p.ship.shieldUp = true;
   p.ship.shieldExpiresAt = now + SHIELD_DURATION_MS;
-  p.ship.shieldReadyAt = now + SHIELD_DURATION_MS + SHIELD_COOLDOWN_MS * mods.shieldCooldownMul;
+  p.ship.shieldReadyAt = now + SHIELD_DURATION_MS + SHIELD_COOLDOWN_MS * mods.shieldCooldownMul * (driftProfile(s.wave, currentMode())?.defenceCooldownMul ?? 1);
   if (!p.ai) {
     audio.shieldUp();
     recordStreamEvent('sb', p.ship.pos.x, p.ship.pos.y);
@@ -3427,7 +3459,7 @@ export function tryHyperspace(s: GameState, now: number, p: PlayerState): void {
   if (now < p.ship.hyperspaceReadyAt) return;
   const mods = currentMods();
   cancelShield(s, p);
-  p.ship.hyperspaceReadyAt = now + HYPERSPACE_COOLDOWN_MS * mods.hyperspaceCooldownMul;
+  p.ship.hyperspaceReadyAt = now + HYPERSPACE_COOLDOWN_MS * mods.hyperspaceCooldownMul * (driftProfile(s.wave, currentMode())?.defenceCooldownMul ?? 1);
   p.ship.hyperspaceCloakMs = HYPERSPACE_CLOAK_MS;
   // Capture the departure point before zeroing velocity — through-mine
   // detonation needs the ship's current position, which is still valid
@@ -3714,27 +3746,33 @@ function stopGameplayAudio(): void {
  * whatever's currently in `s.deathReplay`. The post-replay transition to the
  * gameover screen is scheduled on the sim clock.
  */
-export function startDeathReplay(s: GameState): void {
+export function startDeathReplay(s: GameState,showLiveImpact=false): void {
   if (!s.deathReplay) return;
-  s.deathReplay.startedAt = s.elapsed;
+  const liveBeat=showLiveImpact?650:0;
+  s.deathReplay.startedAt = s.elapsed+liveBeat;
   // Re-arm the impact-frame explosion spawn — the flag is sticky from the
   // previous play, so a REPLAY KILL click would otherwise skip the explosion
   // entirely. Clear lingering particles/debris from the prior replay so the
   // prelude isn't haunted by faded remnants.
   s.deathReplay.explosionSpawned = false;
-  s.particles = [];
-  s.debris = [];
-  s.shockwaveRings = [];
+  if(liveBeat)s.deathReplay.liveImpactUntil=s.deathReplay.startedAt;
+  else {
+    delete s.deathReplay.liveImpactUntil;
+    s.particles = [];s.debris = [];s.shockwaveRings = [];
+    resetPlayerBursts(s);callWebGLClearShipChunks();
+  }
   s.phase = 'deathreplay';
   s.phaseStart = s.deathReplay.startedAt;
   audio.thrustOff();
   audio.ufoSirenStop();
   audio.setMusicDuck(0.2);
   // Post-replay transition to the gameover screen, on the sim clock.
+  const slowSpan=Math.min(REPLAY_SLOW_MS,s.deathReplay.spanMs);
+  const reviewPrelude=Math.max(0,s.deathReplay.spanMs-slowSpan)+slowSpan/REPLAY_SLOW_RATE;
   scheduleSimTransition(
     s,
     'deathreplay-end',
-    s.elapsed + REPLAY_TOTAL_WALL_MS + REPLAY_EXPLOSION_WALL_MS,
+    s.deathReplay.startedAt + reviewPrelude+3000,
   );
 }
 
@@ -3991,17 +4029,25 @@ export function updateGame(s: GameState): void {
     // play so the explosion matches exactly. Guarded by explosionSpawned.
     if (s.phase === 'deathreplay' && s.deathReplay && !s.deathReplay.explosionSpawned) {
       const dr = s.deathReplay;
+      if(dr.liveImpactUntil!==undefined && now>=dr.liveImpactUntil) {
+        delete dr.liveImpactUntil;
+        s.particles=[];s.debris=[];s.shockwaveRings=[];
+        resetPlayerBursts(s);callWebGLClearShipChunks();
+      }
       const wallElapsed = now - dr.startedAt;
       const slowGameTime = Math.min(REPLAY_SLOW_MS, dr.spanMs);
       const fastGameTime = Math.max(0, dr.spanMs - slowGameTime);
       const fastWallEnd = fastGameTime;
       const slowWall = Math.max(0, wallElapsed - fastWallEnd);
       const gameTime = Math.min(dr.spanMs + REPLAY_EXPLOSION_MS, fastGameTime + slowWall * REPLAY_SLOW_RATE);
-      if (gameTime >= dr.spanMs) {
+      if (dr.liveImpactUntil===undefined && gameTime >= dr.spanMs) {
         dr.explosionSpawned = true;
+        recordPlayerBurst(s,dr.explosionAt,dr.explosionShip.vel,dr.explosionShip.rot,true);
+        const particleStart=s.particles.length;
         spawnParticles(s, dr.explosionAt.x, dr.explosionAt.y, 42, '#58ff58', 280, 1100);
         spawnParticles(s, dr.explosionAt.x, dr.explosionAt.y, 22, '#ffd84a', 200,  700);
         spawnParticles(s, dr.explosionAt.x, dr.explosionAt.y, 18, '#ffffff', 380,  450);
+        markPlayerBurstParticles(s,particleStart);
         spawnShockwave(s, dr.explosionAt.x, dr.explosionAt.y, 48, '#58ff58');
         spawnShockwave(s, dr.explosionAt.x, dr.explosionAt.y, 78, '#ffd84a');
         const fauxShip: Ship = {
@@ -4255,6 +4301,8 @@ export function updateGame(s: GameState): void {
     // arrives the instant the last one dies. Stretch the gap ~60% on these two
     // waves so each new type lands as an event, not a relentless harasser.
     if (s.wave === 10 || s.wave === 11) baseInterval *= 1.6;
+    const drift = driftProfile(s.wave, currentMode());
+    if (drift) baseInterval = Math.max(baseInterval, drift.ufoIntervalFloorMs);
     // 600bn flavour wants the $600B badge UFOs MUCH more frequent —
     // they're a marquee visual element of the cross-promo wave, not
     // a periodic harasser. ~4s respawn instead of ~17s.
@@ -4265,6 +4313,7 @@ export function updateGame(s: GameState): void {
   updateUfos(s, dt);
   // Set-piece per-frame tick — curtain respawns cruisers as they die.
   setPiece?.tick?.(s, dt);
+  if (s.phase === 'playing') s.bossOpeningMs = Math.max(0, s.bossOpeningMs - dt * 1000);
 
   // Vein-event swarm trigger. Two elites arrive from opposite edges a
   // beat after the vein appeared, so the player has time to read the
@@ -4400,7 +4449,10 @@ export function updateGame(s: GameState): void {
   // depth bands pass through everything. O(N²) is cheap at the typical
   // ~10-30 active rocks; only kicks in when same-depth circles overlap.
   // Gated: off restores classic 1979 pass-through (easy mode / override).
-  if (asteroidBounceEnabled()) runAsteroidCollisions(s);
+  // The graphics review explicitly demonstrates physical contacts, including
+  // on Easy or with a saved OFF preference. Both comparison looks use this
+  // same rule; ordinary campaign settings remain authoritative elsewhere.
+  if (asteroidBounceEnabled() || levelOneReview) runAsteroidCollisions(s);
 
   // ── Shield expiry ──
   for (const p of s.players) {
@@ -5002,6 +5054,7 @@ function runAsteroidCollisions(s: GameState): void {
   const list = s.asteroids;
   const n = list.length;
   const RESTITUTION = 0.86;  // <1 so collisions slowly bleed energy
+  const wrappedContacts = !arenaActive()&&!deathmatchActive();
   for (let i = 0; i < n; i++) {
     const a = list[i];
     if (!a.alive) continue;
@@ -5010,21 +5063,34 @@ function runAsteroidCollisions(s: GameState): void {
     for (let j = i + 1; j < n; j++) {
       const b = list[j];
       if (!b.alive || b.depth !== a.depth) continue;
-      const dx = b.pos.x - a.pos.x;
-      const dy = b.pos.y - a.pos.y;
+      let dx = b.pos.x - a.pos.x;
+      let dy = b.pos.y - a.pos.y;
+      if (wrappedContacts) {
+        // The displayed seam copies belong to the same wrapped playfield.
+        dx -= Math.round(dx / WORLD_W) * WORLD_W;
+        dy -= Math.round(dy / WORLD_H) * WORLD_H;
+      }
       const minDist = a.radius + b.radius;
       const distSq = dx * dx + dy * dy;
-      if (distSq >= minDist * minDist || distSq < 1) continue;
+      if (distSq >= minDist * minDist) continue;
       const dist = Math.sqrt(distSq);
-      const nx = dx / dist;
-      const ny = dy / dist;
       const rvx = b.vel.x - a.vel.x;
       const rvy = b.vel.y - a.vel.y;
+      const relativeSpeed = Math.hypot(rvx, rvy);
+      // Coincident split bodies still need a finite separating normal.
+      const nx = dist > .001 ? dx / dist : relativeSpeed > .001 ? -rvx / relativeSpeed : 1;
+      const ny = dist > .001 ? dy / dist : relativeSpeed > .001 ? -rvy / relativeSpeed : 0;
       const velAlongNormal = rvx * nx + rvy * ny;
       // Separating already — skip impulse, only correct overlap.
       if (velAlongNormal < 0) {
         const massA = asteroidMass(a);
         const massB = asteroidMass(b);
+        recordRockImpact(s, {
+          x: a.pos.x + nx * a.radius, y: a.pos.y + ny * a.radius,
+          vx: (a.vel.x * massA + b.vel.x * massB) / (massA + massB),
+          vy: (a.vel.y * massA + b.vel.y * massB) / (massA + massB),
+          nx, ny, speed: -velAlongNormal, type: a.type, otherType: b.type,
+        });
         const jImpulse = -(1 + RESTITUTION) * velAlongNormal / (1 / massA + 1 / massB);
         const ix = jImpulse * nx;
         const iy = jImpulse * ny;
@@ -5062,6 +5128,13 @@ function runAsteroidCollisions(s: GameState): void {
  */
 function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; isWrap?: boolean; bulletVel?: Vec2; bulletPos?: Vec2; p?: PlayerState }): void {
   const p = opts?.p ?? s.players[0];
+  if (opts?.bulletVel && !a.stationPart) {
+    const speed = Math.hypot(opts.bulletVel.x, opts.bulletVel.y);
+    const nx = -opts.bulletVel.x / (speed || 1), ny = -opts.bulletVel.y / (speed || 1);
+    recordRockImpact(s, { x: opts.bulletPos?.x ?? a.pos.x + nx * a.radius,
+      y: opts.bulletPos?.y ?? a.pos.y + ny * a.radius,
+      vx: a.vel.x, vy: a.vel.y, nx, ny, speed: speed * .12, type: a.type });
+  }
   if (a.terrain) {
     a.hitFlash = 0.55;
     const px = opts?.bulletPos?.x ?? a.pos.x, py = opts?.bulletPos?.y ?? a.pos.y;
@@ -5072,7 +5145,9 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
       spawnParticles(s, px, py, 4, '#ffffff', 300, 160);
     } else {
       const cfg = ASTEROID_TYPE_CONFIG[a.type];
+      const particleStart = s.particles.length;
       spawnParticles(s, px, py, 5, cfg.glow, 90, 260);
+      if (!a.stationPart) markRockDustParticles(s, particleStart);
     }
     audio.hit();
     return;
@@ -5165,9 +5240,11 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
       spawnParticles(s, rimX, rimY, 6, '#eaffc0', 320, 360, { dir: out, spread: Math.PI * 1.0 });
       spawnParticles(s, rimX, rimY, 4, '#ffffff', 280, 240, { dir: out, spread: Math.PI * 0.7 });
     } else {
+      const particleStart = s.particles.length;
       spawnParticles(s, rimX, rimY, 12, '#ffd84a', 250, 520, { dir: out, spread: Math.PI * 0.85 });
       spawnParticles(s, rimX, rimY, 5, '#fff5d8', 320, 360, { dir: out, spread: Math.PI * 1.0 });
       spawnParticles(s, rimX, rimY, 4, '#9be15d', 200, 460, { dir: out, spread: Math.PI * 0.75 });
+      markRockDustParticles(s, particleStart);
     }
     bumpTrauma(s, 0.05);
     const hitsLanded = a.hpMax - a.hp;
@@ -5210,7 +5287,9 @@ function damageAsteroid(s: GameState, a: Asteroid, opts?: { isCarom?: boolean; i
   }
   const cfg = ASTEROID_TYPE_CONFIG[a.type];
   audio.hit();
+  const particleStart = s.particles.length;
   spawnParticles(s, a.pos.x, a.pos.y, 5, cfg.glow, 110, 280);
+  markRockDustParticles(s, particleStart);
 }
 
 /** Volatile asteroid detonation — a shockwave that shoves every nearby
@@ -5344,6 +5423,10 @@ function stationEmitterDestroyed(s: GameState, em: Asteroid, p: PlayerState): vo
 
 function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boolean; isCarom?: boolean; isWrap?: boolean; bulletVel?: Vec2; p?: PlayerState }): void {
   const p = opts?.p ?? s.players[0];
+  if (!a.stationPart && !a.isVein) {
+    recordRockImpact(s, { x: a.pos.x, y: a.pos.y, vx: a.vel.x, vy: a.vel.y,
+      nx: 0, ny: 0, speed: 90, type: a.type, kind: 'break', radius: a.radius });
+  }
   // Two shrink-rather-than-fragment cases:
   //   - Council members on the gameplay plane (chip a sculpture down).
   //   - Decoratives on non-gameplay depth bands (the player's bullet
@@ -5380,8 +5463,10 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
     if (a.councilMember) audio.councilHit();
     else                 audio.hit();
     const colour = a.councilMember ? '#ffd84a' : (ASTEROID_TYPE_CONFIG[a.type]?.glow ?? '#fff5d8');
+    const particleStart = s.particles.length;
     spawnParticles(s, a.pos.x, a.pos.y, 16, colour, 200, 460);
     spawnParticles(s, a.pos.x, a.pos.y, 6, '#fff5d8', 220, 380);
+    markRockDustParticles(s, particleStart);
     bumpTrauma(s, a.councilMember ? 0.15 : 0.08);
     return;
   }
@@ -5391,19 +5476,23 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
   if (isDecorativeBand && !a.councilMember && !a.isVein) {
     a.alive = false;
     const cfg = ASTEROID_TYPE_CONFIG[a.type];
+    const particleStart = s.particles.length;
     spawnParticles(s, a.pos.x, a.pos.y, 12, cfg.glow, 200, 420);
     spawnParticles(s, a.pos.x, a.pos.y, 5, '#fff5d8', 240, 360);
+    markRockDustParticles(s, particleStart);
     audio.hit();
     return;
   }
   a.alive = false;
   // EAGLE STATION core down — the whole rig detonates and scatters loot.
   if (a.stationPart === 'core') {
+    recordMechanicalBurst(s,a.pos,a.vel,1.3,true);
     stationCoreFinale(s, a, p);
     return;
   }
   // Emitter pod knocked out — it explodes (and stops placing rocks).
   if (a.stationPart === 'emitter') {
+    recordMechanicalBurst(s,a.pos,a.vel,.65);
     stationEmitterDestroyed(s, a, p);
     return;
   }
@@ -5463,7 +5552,9 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
   }
 
   // Particles tinted to the type's accent
+  const particleStart = s.particles.length;
   spawnParticles(s, a.pos.x, a.pos.y, a.size === 'large' ? 18 : a.size === 'medium' ? 12 : 8, cfg.glow, 140, 700);
+  markRockDustParticles(s, particleStart);
 
   // Coins drop — suppressed for NOVA so it can't be farmed for sats. Pallasite
   // asteroids always drop sats; other types roll for sat-vs-dust.
@@ -5685,6 +5776,7 @@ function killShip(s: GameState, p: PlayerState, attacker?: PlayerState | null): 
   if (!deathmatch) pushReplayImpactFrame(s);
 
   const deathPos: Vec2 = { x: p.ship.pos.x, y: p.ship.pos.y };
+  recordPlayerBurst(s,deathPos,p.ship.vel,p.ship.rot,p.lives<=1);
   if (deathmatch) recordDeathmatchDeath(s, p, attacker);
   p.ship.alive = false;
   resetCombo(s, p);
@@ -5696,20 +5788,18 @@ function killShip(s: GameState, p: PlayerState, attacker?: PlayerState | null): 
   if (!deathmatch) hitStop(s, 140);
   audio.pulseDuck(deathmatch ? 0.65 : 0.35, deathmatch ? 140 : 360);
   haptic('rumble');
-  // Layered explosion: ship-green burst + yellow flash + white sparks +
-  // line-segment debris. Bigger and more cinematic than the old 30-particle
-  // single-colour puff. When the ship style is MESH and the WebGL overlay
-  // is ready, shatter into 3D chunk meshes instead of the 2D line fan —
-  // the chunks live in the overlay scene and tumble themselves.
+  // Keep the classic particle paths and four debris bodies authoritative.
+  // Ultra presents those same paths as cooling metal and Blender fragments.
+  const particleStart=s.particles.length;
   spawnParticles(s, deathPos.x, deathPos.y, deathmatch ? 16 : 42, '#58ff58', 280, 1100);
   spawnParticles(s, deathPos.x, deathPos.y, deathmatch ? 8 : 22, '#ffd84a', 200,  700);
   spawnParticles(s, deathPos.x, deathPos.y, deathmatch ? 6 : 18, '#ffffff', 380,  450);
+  markPlayerBurstParticles(s,particleStart);
   if (!deathmatch || !p.ai) {
-    if (getVisualStyle('ship') === 'mesh' && isWebGLOverlayReady()) {
-      callWebGLShipExplosion(deathPos, p.ship.vel, p.ship.rot);
-    } else {
-      spawnShipDebris(s, p.ship);
-    }
+    // Every presentation uses the same four authoritative debris bodies.
+    // Ultra supplies Blender hull fragments without changing the RNG path
+    // between peers playing with different graphics budgets.
+    spawnShipDebris(s, p.ship);
   }
   p.lives -= 1;
   p.runStats.livesLost += 1;
@@ -5743,15 +5833,9 @@ function killShip(s: GameState, p: PlayerState, attacker?: PlayerState | null): 
           },
           explosionSpawned: false,
         };
-        // Clear the live particle/debris pools so the killShip burst doesn't
-        // visibly haunt the replay's prelude — the replay re-spawns identical
-        // particles+debris when it reaches the impact frame.
-        s.particles = [];
-        s.debris = [];
-        // Drop any WebGL ship-explosion chunks left over from the live death
-        // too — the replay re-fires the mesh explosion at its impact frame.
-        callWebGLClearShipChunks();
-        startDeathReplay(s);
+        // Show the live Ultra impact before rewinding; startDeathReplay
+        // clears it at the playback boundary so it cannot haunt the prelude.
+        startDeathReplay(s,true);
       } else {
         s.phase = 'gameover';
         s.phaseStart = s.elapsed;

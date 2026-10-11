@@ -419,7 +419,7 @@ function paintCouncilCoinBase(ctx: CanvasRenderingContext2D, gold: boolean): voi
   ctx.stroke();
 }
 
-function getCouncilFrontTexture(member: NonNullable<Asteroid['councilMember']>): THREE.CanvasTexture {
+export function getCouncilFrontTexture(member: NonNullable<Asteroid['councilMember']>): THREE.CanvasTexture {
   const cached = COUNCIL_FRONT_TEX.get(member.name);
   if (cached) return cached;
   const c = document.createElement('canvas');
@@ -477,7 +477,7 @@ function ensureCouncilFrontPortrait(member: NonNullable<Asteroid['councilMember'
   COUNCIL_FRONT_PORTRAIT_DRAWN.add(member.name);
 }
 
-function getCouncilBackTexture(member: NonNullable<Asteroid['councilMember']>): THREE.CanvasTexture {
+export function getCouncilBackTexture(member: NonNullable<Asteroid['councilMember']>): THREE.CanvasTexture {
   const cached = COUNCIL_BACK_TEX.get(member.name);
   if (cached) return cached;
   const c = document.createElement('canvas');
