@@ -504,7 +504,7 @@ export async function postHeartbeat(
 
 export type SoloScoreResult =
   | { ok: true; id: string; published: { ok: number; total: number } }
-  | { ok: false; error: string; detail?: string };
+  | { ok: false; error: string; detail?: string; status?: number };
 
 export interface SoloScoreInput {
   score: number;
@@ -557,24 +557,32 @@ export async function submitSoloScore(
     return { ok: false, error: 'sign_failed', detail: err instanceof Error ? err.message : String(err) };
   }
   if (signedAuth.pubkey !== session.pubkey) return { ok: false, error: 'wrong_signer' };
-  let res: Response;
+  const controller = new AbortController();
+  const httpTimeout = setTimeout(() => controller.abort(), 15_000);
   try {
-    res = await fetch(`${API_BASE}/score`, {
-      method: 'POST',
-      headers: {
-        authorization: `Nostr ${utf8Base64(JSON.stringify(signedAuth))}`,
-        'content-type': 'application/json',
-      },
-      body: bodyJson,
-    });
-  } catch (err) {
-    return { ok: false, error: 'network_error', detail: err instanceof Error ? err.message : String(err) };
-  }
-  if (res.status === 404) return { ok: false, error: 'not_deployed' };
-  let data: unknown;
-  try { data = await res.json(); } catch { return { ok: false, error: 'bad_response', detail: `HTTP ${res.status}` }; }
-  if (typeof data !== 'object' || data === null) return { ok: false, error: 'bad_response' };
-  return data as SoloScoreResult;
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE}/score`, {
+        method: 'POST',
+        headers: {
+          authorization: `Nostr ${utf8Base64(JSON.stringify(signedAuth))}`,
+          'content-type': 'application/json',
+        },
+        body: bodyJson,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      return { ok: false, error: 'network_error', detail: err instanceof Error ? err.message : String(err) };
+    }
+    if (res.status === 404) return { ok: false, error: 'not_deployed' };
+    let data: unknown;
+    try { data = await res.json(); } catch { return { ok: false, error: 'bad_response', detail: `HTTP ${res.status}` }; }
+    if (typeof data !== 'object' || data === null) return { ok: false, error: 'bad_response' };
+    const result = data as SoloScoreResult;
+    if (!res.ok && result.ok === false) return { ...result, status: res.status };
+    if (!res.ok) return { ok: false, error: 'bad_response', status: res.status };
+    return result;
+  } finally { clearTimeout(httpTimeout); }
 }
 
 export type CoopScoreResult =
