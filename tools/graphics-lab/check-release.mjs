@@ -18,8 +18,10 @@ files.push('backgrounds/drift-lagoon.webp','backgrounds/drift-rings.webp','backg
 const verified=[];
 for(let start=0;start<files.length;start+=8)await Promise.all(files.slice(start,start+8).map(async path=>{
   const local=await readFile(new URL(`../../public/${path}`,import.meta.url)),response=await network(`/${path}`),remote=Buffer.from(await response.arrayBuffer());
+  const mime=response.headers.get('content-type')??'';
+  assert.doesNotMatch(mime,/text\/html/,`${path} must be an asset, not the SPA fallback`);
   assert.equal(hash(remote),hash(local),`${path} deployed bytes`);
-  verified.push({path,bytes:remote.length,sha256:hash(remote)});
+  verified.push({path,mime,bytes:remote.length,sha256:hash(remote)});
 }));
 const html=await(await network('/?menu=1')).text();const bundle=html.match(/src="(\/assets\/index-[^"]+\.js)"/);assert.ok(bundle,'deployed entry bundle');
 const main=await network(bundle[1]);assert.match(main.headers.get('content-type')??'',/javascript/);const js=await main.text();assert.ok(js.includes(expected.slice(0,7)),'bundle has the deployed build identity');
