@@ -4,7 +4,7 @@ import { getCouncil, getMemberImage } from './sanctum-avatars.js';
 import { getFlavour } from './flavour.js';
 import { isSanctumMode } from './mode.js';
 
-export const SANCTUM_ART_REVISION = 'relic-1';
+export const SANCTUM_ART_REVISION = 'relic-2';
 export const RELIC_FRAMES = 16;
 export const RELIC_MATERIALS = {
   pallasite: { metal: '#c9a565', dark: '#433222', accent: '#bdce7b', roughness: .32 },
@@ -103,14 +103,15 @@ export function signalRelicFaces(bitcoin=false):RelicFaces {
   }
   return f;
 }
-/** Sixteen bounded lighting/tilt plates per identity. Portraits remain readable. */
+/** Full front/edge/back revolution, bounded to sixteen plates per identity.
+ * In-plane rotation is applied continuously by the caller. */
 export function relicPlate(member:CouncilMemberRef|null, frame:number, bitcoin=false):HTMLCanvasElement {
   frame=((Math.floor(frame)%RELIC_FRAMES)+RELIC_FRAMES)%RELIC_FRAMES;
   const f=member?councilRelicFaces(member):signalRelicFaces(bitcoin),key=`${member?memberKey(member):bitcoin?'bitcoin':'signal'}:${frame}`;
   let p=plates.get(key);if(p)return p;
   p=document.createElement('canvas');p.width=p.height=128;const c=p.getContext('2d')!,phase=frame*Math.PI*2/RELIC_FRAMES;
-  const yaw=member?Math.sin(phase)*.65:phase;
-  const squeeze=Math.max(.08,Math.abs(Math.cos(yaw))),tilt=member?Math.sin(phase)*.12:.08;
+  const yaw=phase;
+  const squeeze=Math.max(.08,Math.abs(Math.cos(yaw))),tilt=member?0:.08;
   c.translate(64,64);c.rotate(tilt);c.scale(squeeze,1);
   const m=relicMaterial(member??undefined),g=c.createLinearGradient(-58,-58,58,58);
   g.addColorStop(0,m.metal);g.addColorStop(.5,m.dark);g.addColorStop(1,m.metal);
@@ -120,4 +121,4 @@ export function relicPlate(member:CouncilMemberRef|null, frame:number, bitcoin=f
   c.fillStyle=light;c.beginPath();c.arc(0,0,57,0,Math.PI*2);c.fill();
   plates.set(key,p);return p;
 }
-export function sanctumArtDiagnostics(){return {revision:SANCTUM_ART_REVISION,identities:faces.size,plates:plates.size,maxPlates:14*RELIC_FRAMES,portraits:portraits.size};}
+export function sanctumArtDiagnostics(){return {revision:SANCTUM_ART_REVISION,identities:faces.size,plates:plates.size,maxPlates:(getCouncil().length+3)*RELIC_FRAMES,portraits:portraits.size};}

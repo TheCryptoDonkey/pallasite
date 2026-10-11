@@ -64,11 +64,11 @@ for(const mode of modes) {
     await page.addStyleTag({content:'#ui-root{visibility:hidden!important} #game,#game3d{filter:none!important;opacity:1!important}'});
     const fixture=await page.evaluate(async m=>{
       const s=window.__pallasiteState,g=await import(m.game),a=await import(m['sanctum-avatars']);await a.loadCouncil();
-      s.asteroids=a.getCouncil().map((member,i)=>g.spawnAsteroid('large',1,{x:260+(i%4)*250,y:165+Math.floor(i/4)*160},{x:0,y:0},member.asteroidType,{councilMember:{name:member.name,role:member.role,archetype:member.archetype,img:member.img,pubkey:member.pubkey,asteroidType:member.asteroidType}}));
+      s.asteroids=a.getCouncil().map((member,i)=>g.spawnAsteroid('large',1,{x:140+(i%6)*195,y:105+Math.floor(i/6)*100},{x:0,y:0},member.asteroidType,{councilMember:{name:member.name,role:member.role,archetype:member.archetype,img:member.img,pubkey:member.pubkey,asteroidType:member.asteroidType}}));
       s.players[0].ship.pos={x:640,y:610};s.players[0].ship.vel={x:0,y:0};s.particles=[];s.bullets=[];
       // Spawn through the game, preserving real UFO construction/timing fields.
       s.nextUfoSpawn=0;s.phase='playing';g.updateGame(s);s.phase='paused';
-      s.ufos=s.ufos.slice(0,1);if(s.ufos[0]){s.ufos[0].pos={x:1125,y:505};s.ufos[0].vel={x:0,y:0};}
+      s.ufos=s.ufos.slice(0,1);if(s.ufos[0]){s.ufos[0].pos={x:1170,y:600};s.ufos[0].vel={x:0,y:0};}
       s.coins=Array.from({length:6},(_,i)=>({pos:{x:420+i*65,y:590},vel:{x:0,y:0},radius:7,alive:true,collected:false,ttl:6500,value:i%2?2:0,kind:i%2?'sat':'dust',sourceType:'iron'}));
       return {roster:a.getCouncil().map(a=>a.name),ufo:s.ufos.length};
     },modules);
@@ -77,10 +77,12 @@ for(const mode of modes) {
     const first=await inspect();
     assert.ok(first.background.includes('sanctum-space'),'Sanctum backdrop survives Ultra override');
     if(mode==='ultra'){
-      assert.equal(first.diagnostics.councilRelics.length,11);assert.equal(first.diagnostics.signalRelics,1);assert.equal(first.diagnostics.visibleCollectables,6);
+      assert.equal(first.diagnostics.councilRelics.length,fixture.roster.length);assert.equal(first.diagnostics.signalRelics,1);assert.equal(first.diagnostics.visibleCollectables,6);
       assert.deepEqual(first.diagnostics.collectableShardTypes,[],'themed dust retains Bitcoin identity');
     }
-    assert.equal(first.art.portraits,mode==='missing'?0:11);
+    assert.ok(first.art.portraits <= fixture.roster.length);
+    if(mode==='missing')assert.equal(first.art.portraits,0);
+    assert.equal(await page.evaluate(async m=>(await import(m['sanctum-avatars'])).getCouncil().filter(a=>a.ready).length,modules),mode==='missing'?0:fixture.roster.length);
     await page.screenshot({path:new URL(`sanctum-${mode}.png`,out).pathname});
     const invariant=await page.evaluate(async m=>{
       const s=window.__pallasiteState,r=await import(m.render),seed=await import(m.seed),a=await import(m['sanctum-art']);
@@ -88,15 +90,16 @@ for(const mode of modes) {
       const before=JSON.stringify(s),rng=seed.getRngState();
       const c=document.createElement('canvas');c.width=1280;c.height=720;
       for(let i=0;i<8;i++)r.render(c,s,10000+i*120);
-      // Exercise every plate frame/material without allocating by entity or time.
-      for(let i=0;i<1000;i++){a.relicPlate(roster[i%11],i);a.relicPlate(null,i);a.relicPlate(null,i,true);}
+      // Exercise every identity/frame without allocating by entity or time.
+      for(const member of roster)for(let f=0;f<a.RELIC_FRAMES;f++)a.relicPlate(member,f);
+      for(let i=0;i<1000;i++){a.relicPlate(roster[i%roster.length],i);a.relicPlate(null,i);a.relicPlate(null,i,true);}
       const old=JSON.parse(before);return {state:JSON.stringify(s)===before,changed:Object.keys(s).filter(k=>JSON.stringify(s[k])!==JSON.stringify(old[k])),rng:seed.getRngState()===rng,art:a.sanctumArtDiagnostics()};
     },modules);
     assert.equal(invariant.state,true,JSON.stringify(invariant));assert.equal(invariant.rng,true);assert.ok(invariant.art.plates<=invariant.art.maxPlates);
     let overflow;
     if(mode==='ultra') {
       await page.evaluate(()=>{const s=window.__pallasiteState;window.__sanctumSaved={asteroids:s.asteroids,coins:s.coins};
-        s.asteroids=Array.from({length:72},(_,i)=>({...structuredClone(s.asteroids[i%11]),id:200000+i,radius:18,pos:{x:140+i%12*85,y:120+Math.floor(i/12)*80}}));
+        s.asteroids=Array.from({length:72},(_,i)=>({...structuredClone(s.asteroids[i%s.asteroids.length]),id:200000+i,radius:18,pos:{x:140+i%12*85,y:120+Math.floor(i/12)*80}}));
         s.coins=Array.from({length:300},(_,i)=>({...structuredClone(s.coins[i%6]),pos:{x:150+i%30*30,y:130+Math.floor(i/30)*45}}));
       });await page.waitForTimeout(200);
       overflow=await inspect();assert.equal(overflow.diagnostics.visibleRocks,48);assert.equal(overflow.diagnostics.visibleCollectables,256);
@@ -111,6 +114,22 @@ for(const mode of modes) {
     const paused=await page.evaluate(()=>JSON.stringify({rocks:window.__pallasiteState.asteroids,coins:window.__pallasiteState.coins}));await page.waitForTimeout(200);assert.equal(await page.evaluate(()=>JSON.stringify({rocks:window.__pallasiteState.asteroids,coins:window.__pallasiteState.coins})),paused);
     await page.evaluate(async m=>(await import(m.a11y)).setReducedMotionPref('on'),modules);await page.waitForTimeout(150);
     await page.screenshot({path:new URL(`sanctum-${mode}-reduced.png`,out).pathname});
+    // The actual composed render must change through front/edge/back poses,
+    // then become independent of asteroid spin under reduced motion.
+    await page.evaluate(async m=>(await import(m.a11y)).setReducedMotionPref('off'),modules);
+    const tumble=await page.evaluate(async m=>{
+      const s=window.__pallasiteState,r=await import(m.render),art=await import(m['sanctum-art']);
+      const c=document.createElement('canvas');c.width=1280;c.height=720;
+      const saved=s.asteroids.map(a=>a.rot);
+      const capture=angle=>{s.asteroids.forEach(a=>a.rot=angle);r.render(c,s,10000);return c.toDataURL();};
+      const front=capture(0),edge=capture(Math.PI/2),back=capture(Math.PI);
+      const facesDiffer=art.relicPlate(s.asteroids[0].councilMember,0).toDataURL()!==art.relicPlate(s.asteroids[0].councilMember,8).toDataURL();
+      (await import(m.a11y)).setReducedMotionPref('on');
+      const quiet=capture(0)===capture(Math.PI);
+      s.asteroids.forEach((a,i)=>a.rot=saved[i]);
+      return {frontEdge:front!==edge,frontBack:front!==back,facesDiffer,quiet};
+    },modules);
+    assert.deepEqual(tumble,{frontEdge:true,frontBack:true,facesDiffer:true,quiet:true});
     // A real fatal asteroid hit must preserve themed children and collectible rewards.
     const combat=await page.evaluate(async m=>{
       const s=window.__pallasiteState,g=await import(m.game),a=s.asteroids[0];a.hp=1;
@@ -128,7 +147,25 @@ for(const mode of modes) {
       return {destroyed,score:s.players[0].score-score,collected:drops.filter(c=>c.collected||!c.alive).length};
     },modules);
     assert.ok(combat.destroyed);assert.ok(combat.score>0);assert.ok(combat.collected>0);
-    rows.push({mode,fixture,flight,first,invariant,overflow,combat});console.log(`${mode}: passed`);
+    let cycle;
+    if(mode==='ultra'){
+      cycle=await page.evaluate(async m=>{
+        const s=window.__pallasiteState,g=await import(m.game),roster=(await import(m['sanctum-avatars'])).getCouncil();
+        g.startGame(s,0x600b);s.cheatedThisRun=true;s.phase='playing';
+        const seen=new Set();let peak=0;
+        // Accelerate ordinary simulation steps, clearing the practice field
+        // between spawns so the normal entity cap cannot stall the roster.
+        for(let step=0;step<20000&&seen.size<roster.length;step++){
+          s.players[0].ship.invulnerableUntil=1e9;s.players[0].ship.alive=true;
+          s.asteroids=[];s.ufos=[];s.bullets=[];s.coins=[];s.particles=[];s.hitStopSteps=0;
+          g.updateGame(s);peak=Math.max(peak,s.asteroids.length);
+          for(const a of s.asteroids)if(a.councilMember)seen.add(a.councilMember.name);
+        }
+        return {members:[...seen].sort(),total:g.getSanctumStats().councilTotal,peak};
+      },modules);
+      assert.deepEqual(cycle.members,[...fixture.roster].sort());assert.equal(cycle.total,fixture.roster.length);assert.ok(cycle.peak<=24);
+    }
+    rows.push({mode,fixture,flight,first,invariant,overflow,tumble,combat,cycle});console.log(`${mode}: passed`);
     await page.close();
   }finally{await browser.close();}
 }

@@ -1,0 +1,312 @@
+{
+  "source": "https://600.wtf/members.json",
+  "updated": "2026-10-11",
+  "members": [
+    {
+      "name": "dni",
+      "role": "CEO",
+      "archetype": "The Signal Bearer",
+      "img": "/600bn/img/current-dni.webp",
+      "pubkey": "1c94c0b44577edf41509d473a92d9f7b6bc04e3ae07f705e709c2999b1d3e074",
+      "asteroidType": "pallasite",
+      "nostr": "dni@600.wtf"
+    },
+    {
+      "name": "nind",
+      "role": "CCS",
+      "archetype": "The Architect",
+      "img": "/600bn/img/current-nind.webp",
+      "pubkey": "cb33c1d6d3381b3117059cc292b5a8cc868a01ddf84f0c630318042a7b58454a",
+      "asteroidType": "iron",
+      "nostr": "n@600.wtf"
+    },
+    {
+      "name": "michael1011",
+      "role": "CTO",
+      "archetype": "The Machine Whisperer",
+      "img": "/600bn/img/current-michi.webp",
+      "pubkey": "3dcc157a0304ec26ea131a0f4e576e2da67ff5c66980949c55bd7f0bb1b5efa1",
+      "asteroidType": "iron",
+      "nostr": "m@bol.tz"
+    },
+    {
+      "name": "sat",
+      "role": "CMO",
+      "archetype": "The Signal Amplifier",
+      "img": "/600bn/img/current-sat.webp",
+      "pubkey": "67aa1421e1d47146e4a91212a12c63752da7279202e0d6393fdfd05b2db4226f",
+      "asteroidType": "pallasite",
+      "nostr": "sat@600.wtf"
+    },
+    {
+      "name": "flx",
+      "role": "CWO",
+      "archetype": "The Chaos Engineer",
+      "img": "/600bn/img/current-flx.webp",
+      "pubkey": "872b60fdd8ec73ce1323d9798057384fb9836500d9b7201594c71ae3fce2b680",
+      "asteroidType": "chondrite",
+      "nostr": "flx@600.wtf"
+    },
+    {
+      "name": "shillie",
+      "role": "CDO",
+      "archetype": "The Wave Rider",
+      "img": "/600bn/img/current-shillie.webp",
+      "pubkey": "6c2d68ba016c291417fd18ea7c06b737ec143f7d56d78fdd44a5b248846525ec",
+      "asteroidType": "stony",
+      "nostr": "quillie@600.wtf"
+    },
+    {
+      "name": "arbadacarba",
+      "role": "CMO",
+      "archetype": "The Strategist",
+      "img": "/600bn/img/current-arbadacarba.webp",
+      "pubkey": "9a83779e75080556c656d4d418d02a4d7edbe288a2f9e6dd2b48799ec935184c",
+      "asteroidType": "iron",
+      "nostr": "arbadacarba@600.wtf"
+    },
+    {
+      "name": "benarc",
+      "role": "CVO",
+      "archetype": "Vision Crafter",
+      "img": "/600bn/img/current-benarc.webp",
+      "pubkey": "e9e4276490374a0daf7759fd5f475deff6ffb9b0fc5fa98c902b5f4b2fe3bba2",
+      "asteroidType": "pallasite",
+      "nostr": "ben@nostr.com"
+    },
+    {
+      "name": "tobo",
+      "role": "CDO",
+      "archetype": "The Connector",
+      "img": "/600bn/img/current-tobo.webp",
+      "pubkey": "1cf75683d02b4ec0aa4d2127ff45d335fe2ef5a884b5794775d608bace006a16",
+      "asteroidType": "stony",
+      "nostr": "tobo@600.wtf"
+    },
+    {
+      "name": "BlackCoffee",
+      "role": "CHO",
+      "archetype": "The Shadow Operator",
+      "img": "/600bn/img/current-blackcoffee.webp",
+      "pubkey": "683211bd155c7b764e4b99ba263a151d81209be7a566a2bb1971dc1bbd3b715e",
+      "asteroidType": "iron",
+      "nostr": "bc@600.wtf"
+    },
+    {
+      "name": "darren",
+      "role": "CIO",
+      "archetype": "The Pathfinder",
+      "img": "/600bn/img/current-darren.webp",
+      "pubkey": "da19f1cd34beca44be74da4b306d9d1dd86b6343cef94ce22c49c6f59816e5bd",
+      "asteroidType": "pallasite",
+      "nostr": "darren@600.wtf"
+    },
+    {
+      "name": "leon",
+      "role": "CHO",
+      "archetype": "600 Council",
+      "img": "/600bn/img/current-leon.webp",
+      "pubkey": "08b83dfa66881e7396aefeb9de2c6401690b7292b890e94870b39bd4e1c6cdb8",
+      "asteroidType": "stony",
+      "nostr": "leon@600.wtf"
+    },
+    {
+      "name": "madmunky",
+      "role": "CDJ",
+      "archetype": "600 Council",
+      "img": "/600bn/img/current-madmunky.webp",
+      "pubkey": "3eacaa768326d7dce80f6ee17ada199bebe7eb3c1a60b39b14e0a58bbac66fe4",
+      "asteroidType": "stony",
+      "nostr": "madmunky@600.wtf"
+    },
+    {
+      "name": "rootzoll",
+      "role": "CDJ",
+      "archetype": "600 Council",
+      "img": "/600bn/img/current-rootzoll.webp",
+      "pubkey": "d164d78c0b58edeb22d54942ccf2f8155befa45dc0e3717cc1f81d0f113451bf",
+      "asteroidType": "stony",
+      "nostr": "rootzoll@600.wtf"
+    },
+    {
+      "name": "nc",
+      "role": "CCC",
+      "archetype": "600 Council",
+      "img": "/600bn/img/current-nc.webp",
+      "pubkey": "83cdde02b4b847fb37f2425b3f7a014aa33fbf761d36ef81a666f51c0c4436f9",
+      "asteroidType": "stony",
+      "nostr": "nc@600.wtf"
+    },
+    {
+      "name": "longy",
+      "role": "CSO",
+      "archetype": "600 Council",
+      "img": "/600bn/img/current-longy.webp",
+      "pubkey": "2842e34860c59dfacd5df48ba7a65065e6760d08c35f779553d83c2c2310b493",
+      "asteroidType": "stony",
+      "nostr": "longy@600.wtf"
+    },
+    {
+      "name": "essex",
+      "role": "CPO",
+      "archetype": "aaron of essex",
+      "img": "/600bn/img/current-essex.webp",
+      "pubkey": "c44ab6eeeb3a0e5d5c8d8ae82afad0e397bdfbc9200d7d8fc3ee14a69e9f740c",
+      "asteroidType": "stony",
+      "nostr": "essex@600.wtf"
+    },
+    {
+      "name": "jedai",
+      "role": "CIAO",
+      "archetype": "600 Council",
+      "img": "/600bn/img/current-jedai.webp",
+      "pubkey": "fe6104d291746db0132f54974e6d4331ced86f43fc00a75f592c1d20e1d22b8c",
+      "asteroidType": "stony",
+      "nostr": "jedai@600.wtf"
+    },
+    {
+      "name": "p",
+      "role": "CBDC",
+      "archetype": "protom",
+      "img": "/600bn/img/current-p.webp",
+      "pubkey": "1a5ffc51a12303fd022d481f37ed60c3f7d375f66e6f891678a1cf548b89e08c",
+      "asteroidType": "stony",
+      "nostr": "p@600.wtf"
+    },
+    {
+      "name": "aj",
+      "role": "COL",
+      "archetype": "600 Council",
+      "img": "/600bn/img/current-aj.webp",
+      "pubkey": "3252715543f6e43be086465129b030d47d76cf8cead4798e48864563c3375083",
+      "asteroidType": "stony",
+      "nostr": "aj@600.wtf"
+    },
+    {
+      "name": "bam",
+      "role": "CMO",
+      "archetype": "jose bam",
+      "img": "/600bn/img/current-bam.webp",
+      "pubkey": "d3f94b353542a632962062f3c914638d0deeba64af1f980d93907ee1b3e0d4f9",
+      "asteroidType": "stony",
+      "nostr": "bam@600.wtf"
+    },
+    {
+      "name": "mhb",
+      "role": "CRO",
+      "archetype": "mrs. honeybadger",
+      "img": "/600bn/img/current-mhb.webp",
+      "pubkey": "9985c5c4b7241341afd715d4e2610543a03e6c4934ab6a7e90d15173c0d950ee",
+      "asteroidType": "stony",
+      "nostr": "mhb@600.wtf"
+    },
+    {
+      "name": "snick",
+      "role": "CWO",
+      "archetype": "600 Council",
+      "img": "/600bn/img/current-snick.webp",
+      "pubkey": "149e07e619eedd32e47568d3197e36e270f4b5b048c6f652bf56fe90667dbf89",
+      "asteroidType": "stony",
+      "nostr": "snick@600.wtf"
+    },
+    {
+      "name": "tal",
+      "role": "CNO",
+      "archetype": "600 Council",
+      "img": "/600bn/img/current-tal.webp",
+      "pubkey": "8f69ac99b96f7c4ad58b98cc38fe5d35ce02daefae7d1609c797ce3b4f92f5fd",
+      "asteroidType": "stony",
+      "nostr": "tal@600.wtf"
+    },
+    {
+      "name": "bk",
+      "role": "CUO",
+      "archetype": "bitkarrot",
+      "img": "/600bn/img/current-bk.webp",
+      "pubkey": "3878d95db7b854c3a0d3b2d6b7bf9bf28b36162be64326f5521ba71cf3b45a69",
+      "asteroidType": "stony",
+      "nostr": "Bk@600.wtf"
+    },
+    {
+      "name": "GDJ",
+      "role": "CKO",
+      "archetype": "gadaj",
+      "img": "/600bn/img/current-gadaj.webp",
+      "pubkey": "688ee92aaf4d585f3bafb838fea89502f9d4378e526028b0a9a4d52a3ca32a8a",
+      "asteroidType": "stony",
+      "nostr": "gdj@600.wtf"
+    },
+    {
+      "name": "mtoshi",
+      "role": "CHR",
+      "archetype": "600 Council",
+      "img": "/600bn/img/current-mtoshi.webp",
+      "pubkey": "9d9b4562e26cf492e4ddc5cef6c468001da9e1049030659d51b8f4f5016051c5",
+      "asteroidType": "stony",
+      "nostr": "mtoshi@600.wtf"
+    },
+    {
+      "name": "morgs",
+      "role": "CFR",
+      "archetype": "600 Council",
+      "img": "/600bn/img/current-morgs.webp",
+      "pubkey": "85d3208b506353157943606179b79a1ef88aede0e925bbecabd35ef4cb98d01f",
+      "asteroidType": "stony",
+      "nostr": "morgs@600.wtf"
+    },
+    {
+      "name": "cuddy",
+      "role": "CLO",
+      "archetype": "600 Council",
+      "img": "/600bn/img/current-cuddy.webp",
+      "pubkey": "668ac389d67f4f4be637f7e567c9054392c080db7c0b257264701ab4048166ff",
+      "asteroidType": "stony",
+      "nostr": "cuddy@600.wtf"
+    },
+    {
+      "name": "Toni China",
+      "role": "CCN",
+      "archetype": "600 Council",
+      "img": "/600bn/img/current-tonichina.webp",
+      "pubkey": "aff3bb24c52be9d92a681fa69504642f03fcf0ecfef3f10bbdf80a35778a2ccf",
+      "asteroidType": "stony",
+      "nostr": "tonychina@600.wtf"
+    }
+  ],
+  "extended_canon": [
+    {
+      "name": "derPeter21",
+      "role": "CSI",
+      "archetype": "Guardian of Systems",
+      "pubkey": "4de885d84269127f1473baff1e0627ff614684bcefd8d370e4fafc8407f7d6e2"
+    },
+    {
+      "name": "janine",
+      "role": "CMO",
+      "archetype": "Flame of Momentum",
+      "pubkey": "72cc166031dc1d8649f6b5db462b61ca32b0ee7a195a14d2ab0e1841a3c986d7"
+    },
+    {
+      "name": "r0cks1",
+      "role": "CAO",
+      "archetype": "Reality Bridge",
+      "pubkey": "9ee709a6724dbc3062ed12f89cbc5320e8056c43d8034cb3be200ef9a1a62658"
+    },
+    {
+      "name": "lightrider",
+      "role": "COO",
+      "archetype": "The Energy Core",
+      "pubkey": "02947b1c59e66d5637faa15aa8adec4f86cb121f7265166a180244bcdd7abc22"
+    },
+    {
+      "name": "prophet",
+      "role": null,
+      "archetype": null,
+      "pubkey": "d3df7b474995b774bfd3e89b2553fb6fbc5e42e63f8218aa4ab9886aa391b1d7",
+      "relays": [
+        "wss://nostr.600.wtf"
+      ]
+    }
+  ],
+  "_note": "Current 600.wtf roster and roles, local optimized portraits. Existing mineral assignments retained; new members use baseline stony. Keys verified against published NIP-05 names or the existing roster. Legacy archetypes retained; other backs use the published nickname or 600 Council."
+}

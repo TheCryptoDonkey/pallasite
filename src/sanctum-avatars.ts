@@ -2,7 +2,7 @@
  * 600bn Sanctum — member avatar texture loader.
  *
  * Council roster is BAKED INTO THE BUNDLE (not async-fetched) so the
- * 11 members are available synchronously the moment the page boots.
+ * members are available synchronously the moment the page boots.
  * Previously this fetched /600bn/council.json on first call, which
  * meant fast IGNITE clicks saw an empty roster and the spawn helper
  * fell back to standard asteroids. Inline manifest = always populated.
@@ -14,6 +14,7 @@
  */
 
 import { getFlavour } from './flavour.js';
+import councilManifest from './sanctum-roster.json';
 
 /** Asteroid type a council member is themed to — each archetype maps
  *  to one of the four canonical Pallasite mineral types, giving the
@@ -45,34 +46,17 @@ interface LoadedMember extends CouncilMember {
   ready: boolean;
 }
 
-/** Pre-bake size for council member portraits. 128×128 is enough for
+/** Pre-bake size for council member portraits. 256×256 provides detail for
  *  the largest asteroid radius (38px * 2 = 76px) plus DPI headroom,
  *  and is fast to draw at any smaller size. */
 const TEXTURE_SIZE = 256;
 
 export type ReadonlyMember = Readonly<LoadedMember>;
 
-/** Canonical 11-member council roster + portrait paths + hex pubkeys.
- *  Mirrors public/600bn/council.json — that file stays in place so
- *  external tooling can still hit it, but the runtime is driven by
- *  this inline copy so spawn-time has zero async dependency. */
-const COUNCIL_ROSTER: CouncilMember[] = [
-  // Pallasite (jackpot) — signal-carrying archetypes
-  { name: 'dni',           role: 'CEO', archetype: 'The Signal Bearer',     asteroidType: 'pallasite', img: '/600bn/img/dni2.jpg',             pubkey: '1c94c0b44577edf41509d473a92d9f7b6bc04e3ae07f705e709c2999b1d3e074' },
-  { name: 'sat',           role: 'CMO', archetype: 'The Signal Amplifier',  asteroidType: 'pallasite', img: '/600bn/img/sat2.jpg',             pubkey: '67aa1421e1d47146e4a91212a12c63752da7279202e0d6393fdfd05b2db4226f' },
-  { name: 'benarc',        role: 'CVO', archetype: 'Vision Crafter',        asteroidType: 'pallasite', img: '/600bn/img/benarc.jpg',           pubkey: 'e9e4276490374a0daf7759fd5f475deff6ffb9b0fc5fa98c902b5f4b2fe3bba2' },
-  { name: 'TheCryptoDonkey', role: 'CIO', archetype: 'The Pathfinder',      asteroidType: 'pallasite', img: '/600bn/img/thecryptodonkey.png',  pubkey: 'da19f1cd34beca44be74da4b306d9d1dd86b6343cef94ce22c49c6f59816e5bd' },
-  // Iron (2 HP, armoured) — structural / machine / shadow archetypes
-  { name: 'nind',          role: 'CCS', archetype: 'The Architect',         asteroidType: 'iron',      img: '/600bn/img/nind.jpg',             pubkey: 'cb33c1d6d3381b3117059cc292b5a8cc868a01ddf84f0c630318042a7b58454a' },
-  { name: 'michael1011',   role: 'CTO', archetype: 'The Machine Whisperer', asteroidType: 'iron',      img: '/600bn/img/m2.png',               pubkey: '3dcc157a0304ec26ea131a0f4e576e2da67ff5c66980949c55bd7f0bb1b5efa1' },
-  { name: 'arbadacarba',   role: 'CMO', archetype: 'The Strategist',        asteroidType: 'iron',      img: '/600bn/img/arbadacarba.jpg',      pubkey: '9a83779e75080556c656d4d418d02a4d7edbe288a2f9e6dd2b48799ec935184c' },
-  { name: 'BlackCoffee',   role: 'CHO', archetype: 'The Shadow Operator',   asteroidType: 'iron',      img: '/600bn/img/blackcoffee600bn.jpg', pubkey: '683211bd155c7b764e4b99ba263a151d81209be7a566a2bb1971dc1bbd3b715e' },
-  // Chondrite (fragile, breaks into 3) — chaos archetype
-  { name: 'flx',           role: 'CWO', archetype: 'The Chaos Engineer',    asteroidType: 'chondrite', img: '/600bn/img/flx.jpg',              pubkey: '872b60fdd8ec73ce1323d9798057384fb9836500d9b7201594c71ae3fce2b680' },
-  // Stony (baseline, breaks into 2) — wave-rider / connector
-  { name: 'shillie',       role: 'CDO', archetype: 'The Wave Rider',        asteroidType: 'stony',     img: '/600bn/img/quillie2.jpg',         pubkey: '547d0c9e272e5b379a386812722b56661e46688e7f738191f77473aad969a354' },
-  { name: 'tobo',          role: 'CDO', archetype: 'The Connector',         asteroidType: 'stony',     img: '/600bn/img/tobo.jpg',             pubkey: '1cf75683d02b4ec0aa4d2127ff45d335fe2ef5a884b5794775d608bace006a16' },
-];
+/** Bundled manifest: available synchronously, shared with external tooling. */
+const COUNCIL_ROSTER: CouncilMember[] = councilManifest.members.map(m => ({
+  ...m, asteroidType: m.asteroidType as CouncilAsteroidType,
+}));
 
 /** Pre-populated roster — every member present synchronously at module
  *  load. Images get filled in lazily by loadImage() as they decode. */
@@ -137,7 +121,7 @@ function loadImage(m: LoadedMember): void {
   img.src = m.img;
 }
 
-/** Snapshot of the council roster. Always returns the 11 members
+/** Snapshot of the council roster. Always returns the current members
  *  synchronously — images may not be loaded yet, in which case
  *  getMemberImage returns null and the renderer draws the polygon
  *  with the standard rock fill. */
