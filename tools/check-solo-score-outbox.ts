@@ -20,7 +20,7 @@ let calls = 0;
 const success = async (_session: SignetSession, run: SoloScoreInput): Promise<SoloScoreResult> => {
   calls++; assert.equal(_session.pubkey, accountA); assert.equal(run.score, 125);
   assert.equal(run.run_id, '123456789'); assert.equal(run.nip05, 'pilot@example.com');
-  return { ok: true, id: 'fixture-event', published: { ok: 1, total: 1 } };
+  return { ok: true, id: 'c'.repeat(64), published: { ok: 1, total: 1 } };
 };
 assert.equal((await outbox.retry(receipt, session(accountB), success)).ok, false);
 const mismatched = session(accountA); mismatched.signer = session(accountB).signer;
@@ -41,6 +41,8 @@ console.log('PASS signer failure and reload preserve the earned snapshot and acc
 
 await restored.retry(saved, session(accountA), async () => ({ ok: true, id: 'unpublished', published: { ok: 0, total: 2 } }));
 await restored.retry(saved, session(accountA), async () => ({ ok: true } as SoloScoreResult));
+await restored.retry(saved, session(accountA), async () => ({ ok: true, id: 'invalid-id', published: { ok: 1, total: 1 } }));
+await restored.retry(saved, session(accountA), async () => ({ ok: true, id: 'c'.repeat(64), published: { ok: 2, total: 1 } }));
 assert.equal(restored.pending(accountA).length, 1);
 console.log('PASS an unconfirmed relay publication remains available for retry');
 
@@ -155,7 +157,7 @@ try {
     assert.equal((await timed.retry(timedReceipt, authenticated, submitSoloScore)).ok, false);
     assert(Date.now() - start >= 14_000 && Date.now() - start < 20_000);
     assert.equal(timed.pending(accountA).length, 1);
-    globalThis.fetch = async () => new Response(JSON.stringify({ ok: true, id: 'retry-confirmed', published: { ok: 1, total: 1 } }));
+    globalThis.fetch = async () => new Response(JSON.stringify({ ok: true, id: 'd'.repeat(64), published: { ok: 1, total: 1 } }));
     assert.equal((await timed.retry(timedReceipt, authenticated, submitSoloScore)).ok, true);
     assert.equal(timed.pending(accountA).length, 0);
   } finally { clearTimeout(watchdog); }

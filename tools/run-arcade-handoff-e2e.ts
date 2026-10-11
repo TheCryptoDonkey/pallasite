@@ -195,7 +195,7 @@ try {
     assert(schnorr.verify(hexToBytes(auth.sig), hash, hexToBytes(pubkey)));
     assert(auth.tags.some((t: string[]) => t[0] === 'payload' && t[1] === bytesToHex(sha256(new TextEncoder().encode(body)))));
     posts++;
-    await route.fulfill({ json: { ok: true, id: 'private-fixture-event', published: { ok: 1, total: 1 } } });
+    await route.fulfill({ json: { ok: true, id: 'e'.repeat(64), published: { ok: 1, total: 1 } } });
   });
   const failedScore = await launch(recovery);
   await failedScore.getByRole('button', { name: 'RETRY SCORE', exact: true }).focus();

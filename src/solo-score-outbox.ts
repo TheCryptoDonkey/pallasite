@@ -104,7 +104,7 @@ export class SoloScoreOutbox {
       .catch((): SoloScoreResult => ({ ok: false, error: 'submission-failed' }))
       .then((result): SoloScoreResult => {
         if (!result || typeof result.ok !== 'boolean' || !result.ok && (typeof result.error !== 'string' || !result.error)) result = { ok: false, error: 'bad-response' };
-        if (result.ok && Number.isInteger(result.published?.ok) && result.published.ok > 0 && typeof result.id === 'string' && result.id.length > 0) {
+        if (result.ok && Number.isInteger(result.published?.ok) && result.published.ok > 0 && Number.isInteger(result.published.total) && result.published.total >= result.published.ok && typeof result.id === 'string' && /^[0-9a-f]{64}$/.test(result.id)) {
           this.records.delete(key);
           this.persist();
         } else {
