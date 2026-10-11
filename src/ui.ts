@@ -62,6 +62,7 @@ import { renderLegalFooter, openTermsModal } from './legal.js';
 import { shouldAskV4v, markV4vPaid, markV4vDeclined, v4vNudge, V4V_LIGHTNING_ADDRESS, V4V_GEYSER_URL, V4V_KOFI_URL, V4V_REWARD_LINE } from './v4v.js';
 import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow, getSanctumStats } from './game.js';
 import * as audio from './audio.js';
+import { signalRelicFaces } from './sanctum-art.js';
 import { listTracks, currentTrackId, musicPreviewPlay, musicForceRefresh, musicStop, musicNotifyClaimSuccess, musicWarmUpAll, musicResetElements, getMusicDebugSnapshot, listAlbums, getActiveAlbumId, setActiveAlbum, musicSetFreeplay } from './music.js';
 import { getMusicAnalyser } from './audio.js';
 import { fetchProfile, getCachedProfile, bestName, type NostrProfile } from './profile.js';
@@ -12024,7 +12025,10 @@ function renderSanctumAttract(state: GameState): void {
   // 4-line sacred number wordmark — same canon as game-over card.
   const number = el('div', { parent: overlay });
   number.style.cssText = 'font:bold 56px ui-monospace,monospace;color:#ffd84a;letter-spacing:0.18em;line-height:1.05;text-align:center;text-shadow:0 0 24px rgba(255,138,58,0.65);margin-top:20px;';
-  number.innerHTML = '600<br>000<br>000<br>000';
+  const sigil=el('canvas',{parent:number}) as HTMLCanvasElement;
+  sigil.width=sigil.height=256;sigil.style.cssText='width:176px;height:176px;max-width:30vh;max-height:30vh;filter:drop-shadow(0 8px 18px rgba(0,0,0,.65));';
+  sigil.setAttribute('role','img');sigil.setAttribute('aria-label','600 billion · The Signal');
+  sigil.getContext('2d')!.drawImage(signalRelicFaces().front,0,0);
 
   const banner = el('div', { parent: overlay, text: 'THE SANCTUM' });
   banner.style.cssText = 'font:bold 22px ui-monospace,monospace;color:#fff5d8;letter-spacing:0.28em;margin-top:24px;text-shadow:0 0 12px rgba(255,138,58,0.5);';
@@ -12101,7 +12105,10 @@ function renderSixHundredBnCard(overlay: HTMLElement): void {
   // 4-line sacred number wordmark — canon-formatted.
   const number = el('div', { parent: card });
   number.style.cssText = 'font:bold 18px ui-monospace,monospace;color:#ffd84a;letter-spacing:0.16em;line-height:1.1;text-align:center;text-shadow:0 0 10px rgba(255,138,58,0.5);';
-  number.innerHTML = '600<br>000<br>000<br>000';
+  const sigil=el('canvas',{parent:number}) as HTMLCanvasElement;
+  sigil.width=sigil.height=256;sigil.style.cssText='width:92px;height:92px;';
+  sigil.setAttribute('role','img');sigil.setAttribute('aria-label','600 billion · The Signal');
+  sigil.getContext('2d')!.drawImage(signalRelicFaces().front,0,0);
 
   const banner = el('div', { parent: card, text: '600BN · THE SANCTUM' });
   banner.style.cssText = 'font:bold 13px ui-monospace,monospace;color:#fff5d8;letter-spacing:0.22em;margin-top:6px;';

@@ -5,8 +5,7 @@ import { getQualityLevel, getVisualStyle, mobileRuntimeActive } from './visual-s
 import { drawRockDust } from './rock-dust.js';
 import { livePlayerBursts } from './level-one-death.js';
 import { ULTRA_UFOS } from './ultra-materials.js';
-import { getFlavour } from './flavour.js';
-import { isSanctumMode } from './mode.js';
+import { sanctumThemed, relicPlate } from './sanctum-art.js';
 
 const root = '/graphics/level-one/';
 let enabled = true;
@@ -18,6 +17,7 @@ let active = false;
 let liveFrame = false;
 let shadows = true;
 let backgroundWave=0;
+let relicTime=0,relicLastElapsed:number|undefined;
 function image(name: string): HTMLImageElement | null {
   if(name.startsWith('pickup-'))name+=`?art=${PICKUP_ART_REVISION}`;
   let img = images.get(name);
@@ -35,7 +35,8 @@ export function levelOneShipSprite(): HTMLImageElement | null {
 export function refreshedShip(): boolean { return ultraCategory('ship') && (liveFrame || !!levelOneShipSprite()); }
 export function levelOneShipLive(ship:GameState['players'][number]['ship']):boolean{return liveFrame&&!!live?.hasShip(ship);}
 export function refreshedUfo(u?:Ufo): boolean {
-  if(!ultraCategory('ship')||getFlavour()==='600bn'||isSanctumMode())return false;
+  if(!ultraCategory('ship'))return false;
+  if(sanctumThemed())return true;
   if(!u)return true;
   const variant=u.type==='cruiser'?'ufo':ULTRA_UFOS[u.type].asset;
   return levelOneUfoLive(u)||!!image(`${variant}-${getQualityLevel()==='low'?128:256}.webp`);
@@ -53,6 +54,13 @@ export function levelOneDeathAtlas():HTMLImageElement|null{return active?image(d
 export function drawLevelOneUfo(ctx:CanvasRenderingContext2D,u:Ufo):boolean {
   if(!refreshedUfo(u))return false;
   if(!u.alive||levelOneUfoLive(u))return true;
+  if(sanctumThemed()) {
+    const frame=shouldReduceMotion()?0:Math.floor(relicTime*.00035/Math.PI*8);
+    ctx.save();ctx.translate(u.pos.x,u.pos.y);const width=u.radius*3.45;
+    ctx.drawImage(relicPlate(null,frame),-width/2,-width/2,width,width);
+    if(u.hitFlash>0){ctx.globalCompositeOperation='lighter';ctx.globalAlpha=Math.min(1,u.hitFlash*.35);ctx.drawImage(relicPlate(null,frame),-width/2,-width/2,width,width);}
+    ctx.restore();return true;
+  }
   const variant=u.type==='cruiser'?'ufo':ULTRA_UFOS[u.type].asset;
   const sprite=image(`${variant}-${getQualityLevel()==='low'?128:256}.webp`)??image(`${variant}-128.webp`);
   if(!sprite)return false;
@@ -69,6 +77,9 @@ export function levelOneStatus(): string {
 }
 export function prepareLevelOne(s: GameState): void {
   backgroundWave=s.phase==='title'?0:s.wave;
+  if(relicLastElapsed===undefined||s.elapsed<relicLastElapsed)relicTime=s.elapsed;
+  else if(s.phase!=='paused')relicTime+=s.elapsed-relicLastElapsed;
+  relicLastElapsed=s.elapsed;
   active = enabled && ['asteroid','ship','bullet','particle'].some(c=>getVisualStyle(c as 'asteroid'|'ship'|'bullet'|'particle')!=='vector');
   liveFrame = false;
   if (!active) return;
@@ -86,7 +97,7 @@ export function prepareLevelOne(s: GameState): void {
   if (getQualityLevel() !== 'low') image('ufo-256.webp');
   if (getQualityLevel() !== 'low')for(const type of PICKUP_KINDS)image(`pickup-${type}-256.webp`);
   if (getQualityLevel() !== 'low') image(deathPlate(256));
-  if(s.wave===1&&s.phase!=='title')image(getQualityLevel() === 'low' ? 'background-960.webp' : 'background-native.webp');
+  if(s.wave===1&&s.phase!=='title'&&!sanctumThemed())image(getQualityLevel() === 'low' ? 'background-960.webp' : 'background-native.webp');
   if (getQualityLevel() === 'high' && !mobileRuntimeActive() && !live && !loading && !failed) {
     loading = true;
     void import('./webgl/level-one.js').then(m => m.createLevelOneRenderer())
@@ -95,17 +106,32 @@ export function prepareLevelOne(s: GameState): void {
   }
 }
 export function levelOneBackground(wave=backgroundWave): HTMLImageElement | null {
+  if(sanctumThemed())return null;
   return active && wave===1 ? image(getQualityLevel() === 'low' ? 'background-960.webp' : 'background-native.webp') : null;
 }
 export function refreshedRock(a: Asteroid): boolean {
-  if(a.councilMember)return ultraCategory('asteroid')&&liveFrame&&!!live?.hasRock(a);
+  if(a.councilMember)return ultraCategory('asteroid')&&(a.depth??3)===3;
   return ultraCategory('asteroid')
     && ((liveFrame&&!!live?.hasRock(a)) || !!image(a.stationPart?`${stationArt(a,backgroundWave)}-${getQualityLevel()==='low'?128:256}.webp`:`rock-${a.type}-${getQualityLevel()==='low'?64:128}.webp`));
 }
 export function drawLevelOneRock(ctx: CanvasRenderingContext2D, a: Asteroid): boolean {
   if (!refreshedRock(a)) return false;
+  if(a.councilMember) {
+    ctx.save();ctx.translate(a.pos.x,a.pos.y);ctx.shadowBlur=0;
+    if(a.radius>=20){ctx.font='bold 9px system-ui';ctx.textAlign='center';ctx.textBaseline='top';ctx.lineWidth=3;ctx.strokeStyle='#090e16';ctx.fillStyle='#e9d5b6';
+      const label=`${a.councilMember.name} · ${a.councilMember.role}`;ctx.strokeText(label,0,a.radius*1.28);ctx.fillText(label,0,a.radius*1.28);}
+    if(a.hpMax>1){ctx.strokeStyle='#d88c79';ctx.lineWidth=1.2;ctx.beginPath();ctx.arc(0,0,a.radius*1.14,-Math.PI/2,-Math.PI/2+Math.PI*2*Math.max(0,a.hp/a.hpMax));ctx.stroke();}
+    ctx.restore();
+  }
   if(a.isVein){ctx.save();ctx.translate(a.pos.x,a.pos.y);ctx.strokeStyle='#ffd782';ctx.globalAlpha=.65;ctx.lineWidth=1.4;ctx.beginPath();ctx.arc(0,0,a.radius*1.2,0,Math.PI*2*Math.max(0,a.hp/a.hpMax));ctx.stroke();ctx.restore();}
   if (liveFrame && live?.hasRock(a)) return true;
+  if(a.councilMember) {
+    const frame=shouldReduceMotion()?0:Math.floor((relicTime*.00045+(a.id??0)) / (Math.PI*2)*16);
+    const plate=relicPlate(a.councilMember,frame),width=a.radius*2.16;
+    ctx.save();ctx.translate(a.pos.x,a.pos.y);ctx.drawImage(plate,-width/2,-width/2,width,width);
+    if(a.hitFlash>0){ctx.globalCompositeOperation='lighter';ctx.globalAlpha=Math.min(1,a.hitFlash*.3);ctx.drawImage(plate,-width/2,-width/2,width,width);}
+    ctx.restore();return true;
+  }
   if(a.stationPart){const sprite=image(`${stationArt(a,backgroundWave)}-${getQualityLevel()==='low'?128:256}.webp`)??image(`${stationArt(a,backgroundWave)}-128.webp`);if(!sprite)return false;
     const width=a.stationPart==='arm'?114:a.radius*2.7;
     ctx.save();ctx.translate(a.pos.x,a.pos.y);ctx.rotate(a.stationPart==='core'?0:a.rot);ctx.drawImage(sprite,-width/2,-width/2,width,width);ctx.restore();return true;}

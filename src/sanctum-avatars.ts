@@ -48,7 +48,7 @@ interface LoadedMember extends CouncilMember {
 /** Pre-bake size for council member portraits. 128×128 is enough for
  *  the largest asteroid radius (38px * 2 = 76px) plus DPI headroom,
  *  and is fast to draw at any smaller size. */
-const TEXTURE_SIZE = 128;
+const TEXTURE_SIZE = 256;
 
 export type ReadonlyMember = Readonly<LoadedMember>;
 
@@ -125,7 +125,9 @@ function loadImage(m: LoadedMember): void {
       canvas.height = TEXTURE_SIZE;
       const tctx = canvas.getContext('2d');
       if (tctx) {
-        tctx.drawImage(img, 0, 0, TEXTURE_SIZE, TEXTURE_SIZE);
+        // Centre crop rather than stretching non-square faces across a relic.
+        const side=Math.min(img.naturalWidth,img.naturalHeight);
+        tctx.drawImage(img,(img.naturalWidth-side)/2,(img.naturalHeight-side)/2,side,side,0,0,TEXTURE_SIZE,TEXTURE_SIZE);
         m.texture = canvas;
       }
     } catch { /* ignore — m.image fallback still works */ }

@@ -7,6 +7,43 @@ existing cached URLs and art tooling continue to work. The standalone
 
 ## Playing and comparing
 
+### Sanctum relics
+
+The 600B name secret, `?flavour=600bn`, the 600b hostname and the SANCTUM
+mode share the enhanced presentation. All eleven council portraits are inset
+into beveled mineral-metal medallions with engraved names/roles, matching
+reverse faces and restrained tilt that keeps members recognizable. Identity
+labels and remaining-health arcs survive loading, Low, mobile and WebGL failure.
+Portrait crops are square and cached at 256px; late images update already
+visible mesh clones and plates. Missing images show member initials.
+
+`src/sanctum-art.ts` is the editable procedural texture/plate master;
+`src/webgl/sanctum-relic.ts` is its live geometry/material master. Canvas
+masters are shared by the live renderer, fallback plates, entrance emblem
+and end-of-run card. The signal UFO has a milled rim, warm drive light and
+the canonical four-line number, with its 04:20 clock reverse. The shared
+scene supplies lighting/shadows; there is no per-member renderer or light.
+The sixteen 128px fallback poses are cached by roster identity, never body
+ID or time (at most fourteen identities, including an unknown-member fallback).
+
+The Sanctum's warm space background takes precedence over the campaign's
+first-wave Ultra backdrop. Its dust and sat drops both keep the Bitcoin coin
+art; their original score/collection rules are preserved. Live drops reuse
+the existing instanced coin batches, with baked overflow after the 256-copy
+budget. Saved Classic categories keep their prior art. Cosmetic clocks stop
+on pause; reduced motion holds a readable face and retains health/hit cues.
+
+Run `node tools/graphics-lab/check-sanctum.mjs` against the local Vite server
+(default `http://127.0.0.1:5181`, override with `PALLASITE_REVIEW_URL`). It
+enters the real game and checks movement/fire, all eleven members, the
+signal UFO, Bitcoin drops, real shrink/destruction/collection, render state
+and RNG invariance, bounded caches, pause and reduced motion. Desktop, Low,
+phone, short landscape, WebGL failure, missing/late portraits and WebKit
+captures/results go to the ignored `tools/record-out/graphics-refresh/`.
+It also starts the stored SANCTUM mode on the main flavour and checks Classic
+switching plus 72-member/300-drop overflow in a controlled unranked scene.
+Viewport checks are not physical-device performance certification.
+
 Use the normal game at `http://127.0.0.1:5180/?menu=1`, or open
 `http://127.0.0.1:5180/?graphicsReview=1` for unranked fixed-seed practice.
 The latter starts level 1, offers a selector for all 25 campaign levels and Drift waves 26–31,

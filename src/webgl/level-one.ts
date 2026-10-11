@@ -7,6 +7,8 @@ import { SHIP_BLENDER_SCALE, PICKUP_ART_SCALE, PICKUP_KINDS, DEBRIS_KINDS, debri
 import { livePlayerBursts, playerShard, playerBurstDuration, type PlayerBurst } from '../level-one-death.js';
 import { ULTRA_ROCKS, ULTRA_UFOS, ULTRA_PILOT_COLOURS } from '../ultra-materials.js';
 import { MINERAL_SHARDS, DEFAULT_SHARD_TYPE, SHARD_VERTICES, SHARD_FACES, shardAccentFace } from '../mineral-shards.js';
+import { sanctumThemed } from '../sanctum-art.js';
+import { createSanctumRelic, updateSanctumRelic, disposeSanctumRelic } from './sanctum-relic.js';
 
 /** Critically damped presentation, with a bounded angular speed. */
 function easeAngle(model:THREE.Group,key:string,target:number,dt:number):number {
@@ -121,24 +123,16 @@ export async function createLevelOneRenderer() {
   // Later classes/hardware load on first encounter, sharing this scene,
   // environment and shadow map. Failed additions retain their baked art.
   const extraSources=new Map<string,THREE.Group>(),extraPending=new Set<string>();
-  let councilArt:typeof import('./overlay.js')|undefined,councilLoading=false;
   const councilSources=new Map<string,THREE.Group>();
-  function council(member:NonNullable<Asteroid['councilMember']>):THREE.Group|undefined {
-    if(!councilArt){if(!councilLoading){councilLoading=true;void import('./overlay.js').then(m=>{councilArt=m;});}return;}
+  let signalSource:THREE.Group|undefined;
+  function council(member:NonNullable<Asteroid['councilMember']>):THREE.Group {
     const id=`${member.pubkey??member.name}:${member.img}`;
     let model=councilSources.get(id);
     if(!model){
-      const rim=new THREE.MeshStandardMaterial({color:0xe5ad52,metalness:.88,roughness:.25,envMapIntensity:1});
-      const face=new THREE.MeshStandardMaterial({map:councilArt.getCouncilFrontTexture(member),metalness:.2,roughness:.42});
-      const back=new THREE.MeshStandardMaterial({map:councilArt.getCouncilBackTexture(member),metalness:.3,roughness:.38});
-      const disc=new THREE.CylinderGeometry(1,1,.25,64);disc.rotateX(Math.PI/2);
-      model=new THREE.Group();model.add(new THREE.Mesh(disc,[rim,face,back]));
-      const ring=new THREE.TorusGeometry(.98,.025,6,64);
-      for(const z of [-.135,.135]){const bead=new THREE.Mesh(ring,rim);bead.position.z=z;model.add(bead);}
-      model.traverse(o=>{if(o instanceof THREE.Mesh){o.castShadow=o.receiveShadow=true;}});
+      model=createSanctumRelic(member);
       councilSources.set(id,model);
     }
-    return model;
+    updateSanctumRelic(model);return model;
   }
   let disposed=false;
   function extra(name:string):THREE.Group|undefined {
@@ -211,7 +205,7 @@ export async function createLevelOneRenderer() {
     ctx.fillStyle=g;ctx.fillRect(0,0,64,64);
     const texture=new THREE.CanvasTexture(c);texture.colorSpace=THREE.SRGBColorSpace;return texture;
   }
-  const underglowTextures=[driveGlow('#7952ee'),driveGlow('#326fff')];
+  const underglowTextures=[driveGlow('#7952ee'),driveGlow('#326fff'),driveGlow('#f69b43'),driveGlow('#ffd38a')];
   const underglowMaterials=underglowTextures.map((map,i)=>new THREE.MeshBasicMaterial({map,transparent:true,opacity:i?.65:.55,
     blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide,forceSinglePass:true}));
   const driveCentre=new THREE.Vector3();
@@ -279,7 +273,7 @@ export async function createLevelOneRenderer() {
         // Pods sit above the radial beams, so their lenses and armour remain
         // visible where the rig joins instead of disappearing into the beam.
         model.position.set(x,720-y,a.stationPart==='emitter'?18:0);
-        if(a.councilMember){model.scale.setScalar(a.radius);model.rotation.set(reducedMotion?.12:Math.sin(animationTime*.0003)*.2,reducedMotion?0:animationTime*.0005+rockId,0);}
+        if(a.councilMember){model.scale.setScalar(a.radius);model.rotation.set(reducedMotion?.12:Math.sin(animationTime*.0003)*.12,reducedMotion?0:Math.sin(animationTime*.00045+rockId)*.65,0);}
         else if(a.stationPart){model.scale.setScalar(a.stationPart==='arm'?42:a.radius);
           model.rotation.set(a.stationPart==='core'?(reducedMotion?.2:.2+Math.sin(animationTime*.0006)*.12):0,0,a.stationPart==='core'?(reducedMotion?0:animationTime*.00012):-a.rot);
         }else {model.scale.set(a.radius/1.06*profile.stretch[0],a.radius/1.06*profile.stretch[1],a.radius/1.06*profile.stretch[2]);
@@ -303,22 +297,25 @@ export async function createLevelOneRenderer() {
     // UFOs enter from a world edge and never wrap. X seam copies are needed
     // only by the narrow follow camera, just as in the existing entity pass.
     const follow=(camera.right-camera.left)<1280;
+    const themed=sanctumThemed();
+    ufoLight.color.setHex(themed?0xffbd65:0x666bff);
+    if(themed&&!signalSource)signalSource=createSanctumRelic();
     for(const u of s.ufos)if(u.alive) {
-      const ufoClass=ULTRA_UFOS[u.type],alienSource=u.type==='cruiser'?ufoSource:extra(ufoClass.asset);
+      const ufoClass=ULTRA_UFOS[u.type],alienSource=themed?signalSource:u.type==='cruiser'?ufoSource:extra(ufoClass.asset);
       const offsets=follow?xs:[0];let copies=0;
       for(const dx of offsets){const x=u.pos.x+dx,y=720-u.pos.y,r=u.radius*1.3;if(x+r>=camera.left&&x-r<=camera.right&&y+r>=camera.bottom&&y-r<=camera.top)copies++;}
       if(!alienSource||seenUfos.size+copies>ufoCapacity)continue;
       for(const dx of offsets) {
       const x=u.pos.x+dx,y=u.pos.y;
       if(x+u.radius*1.3<camera.left||x-u.radius*1.3>camera.right||720-y+u.radius*1.3<camera.bottom||720-y-u.radius*1.3>camera.top)continue;
-      const id=`${u.id??s.ufos.indexOf(u)}:${u.type}:${dx}`;seenUfos.add(id);shownUfos.add(u);
+      const id=`${u.id??s.ufos.indexOf(u)}:${themed?'signal':u.type}:${dx}`;seenUfos.add(id);shownUfos.add(u);
       let model=ufos.get(id);
       if(!model){model=new THREE.Group();model.add(alienSource.clone(true));
         model.traverse(o=>{if(o instanceof THREE.Mesh){const mat=(o.material as THREE.MeshStandardMaterial).clone();
           mat.userData.baseEmission=mat.emissive.clone();mat.userData.baseStrength=mat.emissiveIntensity;o.material=mat;
         }});model.userData.rotor=model.getObjectByName('Upper_Rotor')??model.getObjectByName('Upper Rotor');
         const thrust=new THREE.Group();
-        for(const material of underglowMaterials)thrust.add(new THREE.Mesh(underglowGeometry,material));
+        for(const material of underglowMaterials.slice(themed?2:0,themed?4:2))thrust.add(new THREE.Mesh(underglowGeometry,material));
         model.userData.thrust=thrust;scene.add(thrust);
         ufos.set(id,model);scene.add(model);
       }
@@ -337,6 +334,7 @@ export async function createLevelOneRenderer() {
       if(model.userData.pitch===undefined)model.userData.pitch=-.48;
       model.userData.pitch=easeAngle(model,'pitch',pitchTarget,dt);
       model.rotation.set(model.userData.pitch,reducedMotion?0:model.userData.bank,reducedMotion?0:Math.sin(animationTime*.0005)*.06);
+      if(themed){model.scale.setScalar(u.radius*1.6);model.rotation.set(reducedMotion?.12:.12+Math.sin(animationTime*.0003)*.08,reducedMotion?0:animationTime*.00035,0);}
       const rotor=model.userData.rotor as THREE.Object3D|undefined;
       if(rotor)rotor.rotation.y=reducedMotion?0:animationTime*.00085;
       const thrust=model.userData.thrust as THREE.Group,speed=Math.hypot(u.vel.x,u.vel.y),power=Math.min(1,speed/100);
@@ -382,7 +380,7 @@ export async function createLevelOneRenderer() {
     for(let kind=0;kind<COLLECTABLE_KINDS.length;kind++) {
       let count=0;
       for(const c of s.coins) {
-        if(!c.alive||c.collected||c.kind!==COLLECTABLE_KINDS[kind])continue;
+        if(!c.alive||c.collected||(themed?'sat':c.kind)!==COLLECTABLE_KINDS[kind])continue;
         const phase=collectablePhase(c),t=reducedMotion?0:animationTime*.0011+phase;
         if(count+xs.length*ys.length>collectableCapacity) {
           let copies=0;
@@ -397,11 +395,11 @@ export async function createLevelOneRenderer() {
           if(x+r<camera.left||x-r>camera.right||y+r<camera.bottom||y-r>camera.top||count>=collectableCapacity)continue;
           collectablePose.position.set(x,y,85);collectablePose.scale.setScalar(c.radius*COLLECTABLE_ART_SCALE);
           const type=c.sourceType??DEFAULT_SHARD_TYPE,mineral=MINERAL_SHARDS[type];
-          if(c.kind==='dust')collectablePose.scale.set(c.radius*COLLECTABLE_ART_SCALE*mineral.stretch[0],c.radius*COLLECTABLE_ART_SCALE*mineral.stretch[1],c.radius*COLLECTABLE_ART_SCALE*mineral.stretch[2]);
+          if(c.kind==='dust'&&!themed)collectablePose.scale.set(c.radius*COLLECTABLE_ART_SCALE*mineral.stretch[0],c.radius*COLLECTABLE_ART_SCALE*mineral.stretch[1],c.radius*COLLECTABLE_ART_SCALE*mineral.stretch[2]);
           collectablePose.rotation.set(.32+.18*Math.sin(t),t,c.kind==='sat'?.15:t*.5);collectablePose.updateMatrix();
           for(const {mesh,opacity,surface,accent} of collectableBatches[kind]) {
             mesh.setMatrixAt(count,collectablePose.matrix);opacity.setX(count,collectableAlpha(c.ttl));
-            if(c.kind==='dust') {
+            if(c.kind==='dust'&&!themed) {
               mesh.setColorAt(count,mineralColour.set(accent?mineral.accent:mineral.colour));
               surface.setXY(count,mineral.metal,mineral.rough);shownShardTypes.add(type);
             }
@@ -511,9 +509,9 @@ export async function createLevelOneRenderer() {
     for(const model of [...ships.values(),...mineModels.values()])model.traverse(o=>{if(o instanceof THREE.Mesh)(o.material as THREE.Material).dispose();});
     for(const shield of shields.values())(shield.material as THREE.Material).dispose();
     for (const model of objects.values()) model.traverse(o => { if (o instanceof THREE.Mesh) for(const m of Array.isArray(o.material)?o.material:[o.material])m.dispose(); });
-    // Portrait textures belong to the shared identity cache; dispose only the
-    // medallion geometry/material here, never another renderer's textures.
-    for(const model of councilSources.values()){const gs=new Set<THREE.BufferGeometry>(),ms=new Set<THREE.Material>();model.traverse(o=>{if(o instanceof THREE.Mesh){gs.add(o.geometry);for(const m of Array.isArray(o.material)?o.material:[o.material])ms.add(m);}});for(const g of gs)g.dispose();for(const m of ms)m.dispose();}
+    // Canvas masters are shared; GPU textures belong to this renderer.
+    for(const model of councilSources.values())disposeSanctumRelic(model);
+    if(signalSource)disposeSanctumRelic(signalSource);
     for(const model of ufos.values())model.traverse(o=>{if(o instanceof THREE.Mesh)(o.material as THREE.Material).dispose();});
     for(const model of [...pickups.values(),...debris.values()])model.traverse(o=>{if(o instanceof THREE.Mesh)(o.material as THREE.Material).dispose();});
     for(const model of [...pickupSources,...fragmentSources])disposeModel(model);
@@ -528,6 +526,7 @@ export async function createLevelOneRenderer() {
       visibleShips:[...ships.values()].filter(o=>o.visible).length,
       visibleUfos:ufos.size,stationAssets:[...extraSources.keys()].filter(n=>n.startsWith('station-')||n.startsWith('forge-')),shipScale:SHIP_BLENDER_SCALE,
       visibleRocks:shownRocks.size,rockCopies:objects.size,rockCapacity,rockTypes:[...new Set([...shownRocks].map(a=>a.stationPart??a.type))],
+      councilRelics:[...new Set([...shownRocks].flatMap(a=>a.councilMember?[a.councilMember.name]:[]))],signalRelics:sanctumThemed()?shownUfos.size:0,
       visibleMines:shownMines.size,loadedCampaignModels:[...extraSources.keys()],
       ufos:[...ufos.values()].map(o=>({scale:o.scale.x,pitch:o.rotation.x,bank:o.rotation.y,rotorAngle:(o.userData.rotor as THREE.Object3D|undefined)?.rotation.y,
         undersideGlow:(o.userData.thrust as THREE.Group).children.map(c=>({z:c.position.z,width:c.scale.x})),

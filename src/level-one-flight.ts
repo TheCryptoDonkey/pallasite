@@ -10,6 +10,7 @@ import { MINERAL_SHARDS, DEFAULT_SHARD_TYPE, mineralShardPlate } from './mineral
 import { levelOneProjectileSprite } from './level-one-refresh.js';
 import { drawUltraAperture } from './ultra-warp.js';
 import { drawRoundedPowerCell } from './powerup-art.js';
+import { sanctumThemed, relicPlate } from './sanctum-art.js';
 
 const TAU=Math.PI*2;
 const glows=new Map<string,HTMLCanvasElement>();
@@ -60,6 +61,14 @@ export function updateLevelOneFlight(s:GameState):void {
 
 export function drawLevelOneCollectable(ctx:CanvasRenderingContext2D,c:Coin):boolean {
   if(!ultraCategory('particle'))return false;
+  if(sanctumThemed()) {
+    if(!levelOneCollectableLive(c)) {
+      const phase=shouldReduceMotion()?0:collectableTime*.0011+collectablePhase(c),frame=Math.floor(phase/TAU*16);
+      const width=c.radius*2.5;ctx.save();ctx.translate(c.pos.x,c.pos.y);ctx.globalAlpha=collectableAlpha(c.ttl);
+      ctx.drawImage(relicPlate(null,frame,true),-width/2,-width/2,width,width);ctx.restore();
+    }
+    return true;
+  }
   const live=levelOneCollectableLive(c),atlas=live?null:levelOneCollectableAtlas(c.kind);
   if(c.kind==='sat'&&!live&&!atlas)return false;
   const type=c.sourceType??DEFAULT_SHARD_TYPE;
