@@ -2,7 +2,7 @@ import type { Asteroid, Coin, GameState, PowerUpType, Ufo } from './types.js';
 import { UFO_HP } from './types.js';
 import { UFO_PLATE_WIDTH, PICKUP_KINDS, COLLECTABLE_KINDS, stationArt, PICKUP_ART_REVISION } from './level-one-art.js';
 import { shouldReduceMotion } from './a11y.js';
-import { getQualityLevel, getVisualStyle, mobileRuntimeActive } from './visual-style.js';
+import { getQualityLevel, getVisualStyle, mobile3dRequested, mobileRuntimeActive, mobileShadowsRequested } from './visual-style.js';
 import { drawRockDust } from './rock-dust.js';
 import { livePlayerBursts } from './level-one-death.js';
 import { ULTRA_UFOS } from './ultra-materials.js';
@@ -19,6 +19,10 @@ let active = false;
 let liveFrame = false;
 let shadows = true;
 let backgroundWave=0;
+/** Live 3D needs high quality on desktop; phones only run it when opted in. */
+function liveAllowed(): boolean {
+  return mobileRuntimeActive() ? mobile3dRequested() && getQualityLevel() !== 'low' : getQualityLevel() === 'high';
+}
 let relicTime=0,relicLastElapsed:number|undefined;
 function image(name: string): HTMLImageElement | null {
   if(name.startsWith('pickup-'))name+=`?art=${PICKUP_ART_REVISION}`;
@@ -109,7 +113,7 @@ export function prepareLevelOne(s: GameState): void {
   if (getQualityLevel() !== 'low')for(const type of PICKUP_KINDS)image(`pickup-${type}-256.webp`);
   if (getQualityLevel() !== 'low') image(deathPlate(256));
   if(s.wave===1&&s.phase!=='title'&&!sanctumThemed())image(getQualityLevel() === 'low' ? 'background-960.webp' : 'background-native.webp');
-  if (getQualityLevel() === 'high' && !mobileRuntimeActive() && !live && !loading && !failed) {
+  if (liveAllowed() && !live && !loading && !failed) {
     loading = true;
     void import('./webgl/level-one.js').then(m => m.createLevelOneRenderer())
       .then(r => { live = r; }).catch(() => { failed = true; })
@@ -124,6 +128,46 @@ export function refreshedRock(a: Asteroid): boolean {
   if(a.councilMember)return ultraCategory('asteroid')&&(a.depth??3)===3;
   return ultraCategory('asteroid')
     && ((liveFrame&&!!live?.hasRock(a)) || !!image(a.stationPart?`${stationArt(a,backgroundWave)}-${getQualityLevel()==='low'?128:256}.webp`:`rock-${a.type}-${getQualityLevel()==='low'?64:128}.webp`));
+}
+// Baked rock atlases (the 2D path phones use) carry their own lighting, so a
+// plain rotate spins the highlight with the rock. Each atlas gets LIT_POSES
+// pre-rotated copies with a camera-fixed key light and terminator painted on,
+// built lazily the first time a pose is drawn.
+const LIT_POSES = 32, LIT_STEP = Math.PI * 2 / LIT_POSES, LIT_PAD = 1.15;
+const litPoses = new WeakMap<HTMLImageElement, HTMLCanvasElement[]>();
+function litRock(atlas: HTMLImageElement, pose: number): HTMLCanvasElement {
+  let poses = litPoses.get(atlas);
+  if (!poses) { poses = []; litPoses.set(atlas, poses); }
+  const cached = poses[pose];
+  if (cached) return cached;
+  const tile = atlas.width / 4, size = Math.ceil(tile * LIT_PAD), r = tile / 2.35;
+  const canvas = document.createElement('canvas'); canvas.width = canvas.height = size;
+  const c = canvas.getContext('2d')!;
+  // Atlas frames share one orientation, so any frame works; the counter-
+  // rotation picks the matching one so subtle per-frame lighting still reads.
+  const frame = ((Math.round(-pose * 16 / LIT_POSES) % 16) + 16) % 16;
+  c.translate(size / 2, size / 2); c.rotate(pose * LIT_STEP);
+  c.drawImage(atlas, (frame % 4) * tile, Math.floor(frame / 4) * tile, tile, tile, -tile / 2, -tile / 2, tile, tile);
+  c.setTransform(1, 0, 0, 1, size / 2, size / 2);
+  c.globalCompositeOperation = 'source-atop';
+  const light = c.createRadialGradient(-r * .4, -r * .45, r * .1, -r * .4, -r * .45, r * 1.15);
+  light.addColorStop(0, 'rgba(255,240,220,.28)'); light.addColorStop(.45, 'rgba(255,240,220,.09)'); light.addColorStop(1, 'rgba(255,240,220,0)');
+  c.fillStyle = light; c.fillRect(-size / 2, -size / 2, size, size);
+  const dark = c.createRadialGradient(r * .5, r * .55, r * .1, r * .5, r * .55, r * 1.4);
+  dark.addColorStop(0, 'rgba(0,0,0,.55)'); dark.addColorStop(.5, 'rgba(0,0,0,.25)'); dark.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = dark; c.fillRect(-size / 2, -size / 2, size, size);
+  poses[pose] = canvas;
+  return canvas;
+}
+let shadowSprite: HTMLCanvasElement | undefined;
+/** Soft contact shadow, offset down-right to match the upper-left key light. */
+function rockShadow(): HTMLCanvasElement {
+  if (shadowSprite) return shadowSprite;
+  shadowSprite = document.createElement('canvas'); shadowSprite.width = shadowSprite.height = 64;
+  const c = shadowSprite.getContext('2d')!, g = c.createRadialGradient(32, 32, 6, 32, 32, 32);
+  g.addColorStop(0, 'rgba(0,0,0,.42)'); g.addColorStop(.6, 'rgba(0,0,0,.2)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = g; c.fillRect(0, 0, 64, 64);
+  return shadowSprite;
 }
 export function drawLevelOneRock(ctx: CanvasRenderingContext2D, a: Asteroid): boolean {
   if (!refreshedRock(a)) return false;
@@ -149,31 +193,30 @@ export function drawLevelOneRock(ctx: CanvasRenderingContext2D, a: Asteroid): bo
     ctx.save();ctx.translate(a.pos.x,a.pos.y);ctx.rotate(a.stationPart==='core'?0:a.rot);ctx.drawImage(sprite,-width/2,-width/2,width,width);ctx.restore();return true;}
   const atlas = image(`rock-${a.type}-${getQualityLevel()==='low'?64:128}.webp`);
   if (!atlas) return false;
-  const step = Math.PI * 2 / 16;
-  const yaw = Math.round(-a.rot / step);
-  const frame = ((yaw % 16) + 16) % 16;
-  const size = atlas.width / 4;
-  // The shipped atlas frames share one orientation (only the lighting varies
-  // slightly), so apply the full spin. Rotating by only the residual from the
-  // nearest frame pinned each rock to a ±11° wobble that snapped back every
-  // 22.5° — the mobile "rocks don't tumble" glitch.
-  ctx.save(); ctx.translate(a.pos.x, a.pos.y); ctx.rotate(a.rot);
+  // Spin snaps to a cached pose and only the small residual rotates live, so
+  // the baked key light and drop shadow stay camera-fixed while the rock turns.
+  const pose = Math.round(a.rot / LIT_STEP);
+  const lit = litRock(atlas, ((pose % LIT_POSES) + LIT_POSES) % LIT_POSES);
+  ctx.save(); ctx.translate(a.pos.x, a.pos.y);
   const diameter = a.radius * 2.35;
-  ctx.drawImage(atlas, (frame % 4) * size, Math.floor(frame / 4) * size, size, size,
-    -diameter / 2, -diameter / 2, diameter, diameter);
+  const shade = rockShadow();
+  ctx.drawImage(shade, a.radius * .18 - a.radius * 1.1, a.radius * .24 - a.radius * 1.1, a.radius * 2.2, a.radius * 2.2);
+  ctx.rotate(a.rot - pose * LIT_STEP);
+  const drawn = diameter * LIT_PAD;
+  ctx.drawImage(lit, -drawn / 2, -drawn / 2, drawn, drawn);
   if (a.hitFlash > 0) { ctx.globalAlpha *= a.hitFlash * .35; ctx.fillStyle = '#ffe9c6'; ctx.beginPath(); ctx.arc(0,0,a.radius,0,Math.PI*2); ctx.fill(); }
   ctx.restore(); return true;
 }
 export function drawLevelOneMeshes(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement,
   s: GameState, xs: number[], ys: number[], now: number, effectsState=s): void {
-  if (!active || !live || getQualityLevel() !== 'high' || mobileRuntimeActive()) return;
+  if (!active || !live || !liveAllowed()) return;
   try {
     const transform = ctx.getTransform();
-    const mesh=(c:'asteroid'|'ship'|'particle')=>getVisualStyle(c)==='mesh';
+    const phone=mobileRuntimeActive(),mesh=(c:'asteroid'|'ship'|'particle')=>phone||getVisualStyle(c)==='mesh';
     const view={...s,asteroids:mesh('asteroid')?s.asteroids:[],ufos:mesh('ship')&&refreshedUfo()?s.ufos:[],
       players:mesh('ship')?s.players:[],powerups:mesh('particle')?s.powerups:[],coins:mesh('particle')?s.coins:[],
       debris:mesh('ship')?s.debris:[],mines:mesh('asteroid')?s.mines:[]};
-    live.render(view, canvas.width, canvas.height, transform, xs, ys, shadows, now, shouldReduceMotion(),ultraCategory('ship')?livePlayerBursts(effectsState):[]);
+    live.render(view, canvas.width, canvas.height, transform, xs, ys, shadows&&(!phone||mobileShadowsRequested()), now, shouldReduceMotion(),ultraCategory('ship')?livePlayerBursts(effectsState):[]);
     // The existing clip remains in force; identity avoids applying the world
     // transform twice. Rocks stay beneath bullets, ships, effects and HUD.
     ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.drawImage(live.canvas,0,0,canvas.width,canvas.height); ctx.restore();
