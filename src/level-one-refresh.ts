@@ -153,7 +153,11 @@ export function drawLevelOneRock(ctx: CanvasRenderingContext2D, a: Asteroid): bo
   const yaw = Math.round(-a.rot / step);
   const frame = ((yaw % 16) + 16) % 16;
   const size = atlas.width / 4;
-  ctx.save(); ctx.translate(a.pos.x, a.pos.y); ctx.rotate(a.rot + yaw * step);
+  // The shipped atlas frames share one orientation (only the lighting varies
+  // slightly), so apply the full spin. Rotating by only the residual from the
+  // nearest frame pinned each rock to a ±11° wobble that snapped back every
+  // 22.5° — the mobile "rocks don't tumble" glitch.
+  ctx.save(); ctx.translate(a.pos.x, a.pos.y); ctx.rotate(a.rot);
   const diameter = a.radius * 2.35;
   ctx.drawImage(atlas, (frame % 4) * size, Math.floor(frame / 4) * size, size, size,
     -diameter / 2, -diameter / 2, diameter, diameter);
