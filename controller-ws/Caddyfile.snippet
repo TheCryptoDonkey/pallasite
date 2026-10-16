@@ -4,7 +4,10 @@
 #
 # Drop this block into /etc/caddy/Caddyfile (alongside the existing
 # pallasite.app + watch.pallasite.app entries) and reload Caddy.
-controller.pallasite.app {
+controller.pallasite.app, controller.forgesworn.dev {
 	encode gzip
+	header Strict-Transport-Security "max-age=31536000"
+	@metrics path /metrics
+	respond @metrics 404
 	reverse_proxy 127.0.0.1:8788
 }

@@ -1,0 +1,16 @@
+{
+  "sourceRepository": "forgesworn/joystick",
+  "sourcePath": "packages/broker",
+  "sourceCommit": "3b48f3457d3548e89f8491f34eafe6ecce373929",
+  "files": {
+    "server.js": "3c806f8a16ef4a5968b68bbac0d63d3e8f20ffc633c1c1570afe2780f8cfaf30",
+    "controller-policy.js": "badadc26701b94bc2f7e3c1230ed9eb07d9bed1defb2fdd76a690fd4f28fab63",
+    "foregather.js": "0dff26ba4025b3f0b828d872e74473896a8310cff28866f6f9d8b9fda8073050",
+    "probe-peer.js": "879eccb3c33b4b37b8fd0c4ac086146ee9b135420576598d839a3185a3d2a62c",
+    "package.json": "7898a2ab78c1c0e0ba2439c790df84edd3b8c0a93f45667f8a3f3c95cd0a1bd6",
+    "package-lock.json": "1245818c75167c830911c6d75c7438f10087520494ec22624751ca9f71403510",
+    "README.md": "79cccaae7cbb680ddca1a05f01e22c8594607c14c58076ece7d825bee7df3892",
+    "Caddyfile.snippet": "d8d1dbbf7dfd5e6b683fe7f464b20e8bc4e5f7da10afcaed751978aabf1c7a4b",
+    "pallasite-controller-ws.service": "50b5338563978da6c666c542e352727fba8d0bb1419f05e6b6d0836a0d81664d"
+  }
+}
