@@ -118,6 +118,12 @@ export function mobile3dRequested(): boolean {
   return urlFlag('mobile3d') === '1';
 }
 
+/** `?mobileShadows=1` (with `?mobile3d=1`) also turns the shadow map on, so
+ *  UFOs and the ship shade the rocks beneath them as they do on desktop. */
+export function mobileShadowsRequested(): boolean {
+  return urlFlag('mobileShadows') === '1';
+}
+
 /** Phone-safe presentation guard. iOS Safari cannot reliably hold frame
  *  budget with the WebGL mesh overlay plus the game canvas in the general
  *  campaign, so phones use the shaded canvas path by default and skip

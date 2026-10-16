@@ -2,7 +2,7 @@ import type { Asteroid, Coin, GameState, PowerUpType, Ufo } from './types.js';
 import { UFO_HP } from './types.js';
 import { UFO_PLATE_WIDTH, PICKUP_KINDS, COLLECTABLE_KINDS, stationArt, PICKUP_ART_REVISION } from './level-one-art.js';
 import { shouldReduceMotion } from './a11y.js';
-import { getQualityLevel, getVisualStyle, mobile3dRequested, mobileRuntimeActive } from './visual-style.js';
+import { getQualityLevel, getVisualStyle, mobile3dRequested, mobileRuntimeActive, mobileShadowsRequested } from './visual-style.js';
 import { drawRockDust } from './rock-dust.js';
 import { livePlayerBursts } from './level-one-death.js';
 import { ULTRA_UFOS } from './ultra-materials.js';
@@ -216,7 +216,7 @@ export function drawLevelOneMeshes(ctx: CanvasRenderingContext2D, canvas: HTMLCa
     const view={...s,asteroids:mesh('asteroid')?s.asteroids:[],ufos:mesh('ship')&&refreshedUfo()?s.ufos:[],
       players:mesh('ship')?s.players:[],powerups:mesh('particle')?s.powerups:[],coins:mesh('particle')?s.coins:[],
       debris:mesh('ship')?s.debris:[],mines:mesh('asteroid')?s.mines:[]};
-    live.render(view, canvas.width, canvas.height, transform, xs, ys, shadows&&!phone, now, shouldReduceMotion(),ultraCategory('ship')?livePlayerBursts(effectsState):[]);
+    live.render(view, canvas.width, canvas.height, transform, xs, ys, shadows&&(!phone||mobileShadowsRequested()), now, shouldReduceMotion(),ultraCategory('ship')?livePlayerBursts(effectsState):[]);
     // The existing clip remains in force; identity avoids applying the world
     // transform twice. Rocks stay beneath bullets, ships, effects and HUD.
     ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.drawImage(live.canvas,0,0,canvas.width,canvas.height); ctx.restore();
