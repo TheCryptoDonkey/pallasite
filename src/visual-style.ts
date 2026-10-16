@@ -112,6 +112,12 @@ function fxOverrideForcesFull(): boolean {
   return urlFlag('fullfx') === '1' || urlFlag('highfx') === '1' || urlFlag('mobileLite') === '0';
 }
 
+/** `?mobile3d=1` opts a phone into the live 3D renderer (shadows off) so the
+ *  frame cost can be measured on a real device before it becomes a default. */
+export function mobile3dRequested(): boolean {
+  return urlFlag('mobile3d') === '1';
+}
+
 /** Phone-safe presentation guard. iOS Safari cannot reliably hold frame
  *  budget with the WebGL mesh overlay plus the game canvas in the general
  *  campaign, so phones use the shaded canvas path by default and skip
