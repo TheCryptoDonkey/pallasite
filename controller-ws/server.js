@@ -2,10 +2,10 @@
  * Pallasite controller WebSocket relay.
  *
  * Pairs phone controllers with big-screen game hosts by sessionId.
- * Once both sides connect, messages from either are forwarded to the
- * other verbatim. No signing, no event semantics, no per-message
- * validation, the sessionId in the QR code IS the auth (32-bit
- * random, exists for the brief pairing window only).
+ * V2 controller sessions authenticate host ownership with a private
+ * credential, filter endpoint roles and reserve lifecycle frames for the
+ * broker. Legacy controller, stream and peer roles remain available in a
+ * separate namespace. See README.md for protocol and runtime budgets.
  *
  * Wire:
  *   wss://controller.pallasite.app/?s=<sessionId>&r=<host|phone>          single-player
@@ -26,7 +26,7 @@
  * Single-player mode (default, backwards compat with Pallasite):
  *   - One host, one phone. New phone connection replaces the old.
  *   - peer-up / peer-down without p.
- *   - No frame mutation.
+ *   - No player slot is added; lifecycle frames remain broker-owned.
  *
  * Peer mode (shared-arena N-player lockstep, asteroid-sats M3):
  *   - 2..64 clients per session, each one a full game runtime.
@@ -39,7 +39,7 @@
  *   - When a peer binds, every other peer gets
  *     `{type:'peer-joined', slot:<joined>}`; the new peer gets one for
  *     every already-bound slot.
- *   - `{type:'frame'|'frames'|'hash', ...}` or the negotiated binary
+ *   - `{type:'frame'|'frame-set'|'frames'|'hash', ...}` or the negotiated binary
  *     equivalents from one peer are fanned to every OTHER peer (never
  *     echoed back). `frames` is a consecutive input window:
  *     `{type:'frames', slot, base, inputs}`. Every such message is ALSO
@@ -58,7 +58,7 @@
  *   - Add `binaryFrames=1` to the peerwatch URL to receive compact binary
  *     frame/hash payloads when the peer session has negotiated them. Legacy
  *     watchers get JSON downgraded by the broker.
- *   - Any number of watchers per session; orphan-sweep keeps the
+ *   - Bounded watchers per session; orphan-sweep keeps the
  *     session alive while watchers OR peers are connected.
  *   - On connect, broker immediately sends `{type:'peerwatch-ready', players}`
  *     plus `{type:'peer-joined', slot:<n>}` for each peer slot already
@@ -75,17 +75,66 @@
 import { WebSocketServer } from 'ws';
 import http from 'node:http';
 import { performance } from 'node:perf_hooks';
+import { randomBytes } from 'node:crypto';
+import { foregatherGateway } from './foregather.js';
+import { OWNER_TOKEN_RE, ownerDigest, ownsSession, controllerFrame, peerFrame } from './controller-policy.js';
 
 const PORT = parseInt(process.env.PORT ?? '8788', 10);
 const HOST = process.env.HOST ?? '127.0.0.1';
 
 /** Hard cap so a leaky client can't blow up memory. */
 const MAX_SESSIONS = 4096;
+function boundedOption(name, fallback, min, max) {
+  const value = Number(process.env[name] ?? fallback);
+  if (!Number.isSafeInteger(value) || value < min || value > max) throw Error(`Invalid ${name}`);
+  return value;
+}
+const MAX_CONNECTIONS = boundedOption('MAX_CONNECTIONS', 128, 2, 4096);
+const MAX_CONNECTIONS_PER_CLIENT = boundedOption('MAX_CONNECTIONS_PER_CLIENT', 64, 1, 1024);
+const CONNECTION_ATTEMPTS_PER_MINUTE = boundedOption('CONNECTION_ATTEMPTS_PER_MINUTE', 120, 1, 10000);
+const MAX_WATCHERS = boundedOption('MAX_WATCHERS', 32, 1, 256);
+const MAX_SUBSCRIBERS = boundedOption('MAX_SUBSCRIBERS', 32, 1, 256);
+const MAX_FRAME_BYTES = boundedOption('MAX_FRAME_BYTES', 1024 * 1024, 1024, 4 * 1024 * 1024);
+const CONTROLLER_FRAME_BYTES = boundedOption('CONTROLLER_FRAME_BYTES', 64 * 1024, 256, MAX_FRAME_BYTES);
+const FORWARD_BUFFER_BYTES = boundedOption('FORWARD_BUFFER_BYTES', 256 * 1024, 1024, 4 * 1024 * 1024);
+const MESSAGES_PER_SECOND = boundedOption('MESSAGES_PER_SECOND', 240, 10, 2000);
+/** Lockstep peers legitimately burst far above controller traffic: one frame per
+ *  owned slot per tick, plus the catch-up replay when a human takes over an
+ *  AI-filled slot mid-round. Still bounded, but separately from phones/hosts. */
+const PEER_MESSAGES_PER_SECOND = boundedOption('PEER_MESSAGES_PER_SECOND', 2000, 10, 20000);
+const HEARTBEAT_MS = boundedOption('HEARTBEAT_MS', 5000, 100, 30000);
+const CONTROLLER_LEASE_MS = boundedOption('CONTROLLER_LEASE_MS', 3000, 500, 10000);
+const OWNER_RETENTION_MS = boundedOption('OWNER_RETENTION_MS', 300000, 100, 900000);
+const PEER_REPLAY_BYTES = boundedOption('PEER_REPLAY_BYTES', 8 * 1024 * 1024, 1024, 64 * 1024 * 1024);
+const PEER_SESSION_REPLAY_BYTES = boundedOption('PEER_SESSION_REPLAY_BYTES', 1024 * 1024, 512, PEER_REPLAY_BYTES);
+let replayBytes = 0;
+const clients = new Map();
+function clientKey(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  const address = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress) && typeof forwarded === 'string'
+    ? forwarded.split(',').at(-1).trim() : req.socket.remoteAddress;
+  return ownerDigest(address ?? '');
+}
+function connectionAllowed(req) {
+  const now = Date.now(), key = clientKey(req).toString('hex');
+  for (const [id, state] of clients) if (!state.active && now - state.started > 60000) clients.delete(id);
+  let state = clients.get(key);
+  if (!state) {
+    if (clients.size >= 1024) return null;
+    state = { started: now, used: 0, active: 0 }; clients.set(key, state);
+  }
+  if (now - state.started >= 60000) { state.started = now; state.used = 0; }
+  state.used++;
+  if (state.used > CONNECTION_ATTEMPTS_PER_MINUTE || state.active >= MAX_CONNECTIONS_PER_CLIENT || wss.clients.size >= MAX_CONNECTIONS) return null;
+  return state;
+}
 /** A session that never gets its second peer is orphaned. Drop after
  *  5 minutes so QR codes that were never scanned don't leak the slot. */
 const ORPHAN_TIMEOUT_MS = 5 * 60 * 1000;
 /** Per multi-mode session, max number of phones that can pair. */
 const MAX_PHONES_PER_SESSION = parseInt(process.env.MAX_PHONES ?? '8', 10);
+const RECONNECT_GRACE_MS = Math.min(60_000, Math.max(100, Number(process.env.RECONNECT_GRACE_MS ?? 15_000)));
+const RESUME_TOKEN_RE = /^[a-f0-9]{64}$/;
 /** Per peer-mode session, drop a forwarded message if the receiver's send
  *  buffer is above this. Lockstep payloads are ~50 bytes; this only fires
  *  on a stuck or much-slower peer. */
@@ -108,34 +157,6 @@ const MAX_PEER_PLAYERS = parseInt(process.env.MAX_PEER_PLAYERS ?? '64', 10);
  *  inputs and start sending its own future frames before the existing peers
  *  require that slot in their lockstep input logs. */
 const PEER_LATE_TAKEOVER_DELAY_FRAMES = parseInt(process.env.PEER_LATE_TAKEOVER_DELAY_FRAMES ?? '90', 10);
-
-/** Adaptive lockstep input delay.
- *
- *  Delay-based lockstep applies every slot's input from the SAME delayed sim
- *  frame on every client, so the input-delay buffer is part of the determinism
- *  contract: all peers in a session must use one identical value. The broker is
- *  the single authority that can pick it, so it measures socket RTT to each
- *  peer (protocol ping/pong — transparent to the browser, no client change)
- *  and assigns ONE session-wide delay sized to the real link.
- *
- *  The broker folds its own forward-delay knobs into the estimate, so the soak
- *  (which injects PEER_FORWARD_DELAY/JITTER) still gets a delay that covers the
- *  injected latency. Production leaves both at zero, so the delay tracks the
- *  measured RTT alone. Clients clamp the value to their own static tier, so a
- *  session is never worse than the pre-adaptive default. */
-const ADAPT_FRAME_MS = 1000 / 60;
-const ADAPT_MEASURE_WINDOW_MS = Math.max(40, parseInt(process.env.ADAPT_MEASURE_WINDOW_MS ?? '160', 10) || 160);
-const ADAPT_PING_INTERVAL_MS = 45;
-const ADAPT_MIN_DELAY_FRAMES = 2;
-const ADAPT_MAX_DELAY_FRAMES = 60;
-/** Extra frames over the measured envelope to absorb RTT jitter the few probe
- *  samples didn't capture. The lockstep stall/resend net covers the rest. */
-const ADAPT_SAFETY_FRAMES = 3;
-/** One-way latency assumed for a peer that never returned a pong, so a silent
- *  measurement still yields a sane (slightly conservative) delay rather than
- *  collapsing to the floor. */
-const ADAPT_DEFAULT_ONE_WAY_MS = 30;
-
 const PEER_BINARY_MAGIC = 0x50; // 'P'
 const PEER_BINARY_VERSION = 1;
 const PEER_BINARY_FRAME = 1;
@@ -173,8 +194,10 @@ let lastCpuWallMs = performance.now();
 
 /** Map sessionId → SessionSlot. */
 const sessions = new Map();
+const pairingGateway = foregatherGateway();
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
+  if (await pairingGateway(req, res)) return;
   const url = new URL(req.url ?? '/', 'http://x');
   if (req.method === 'GET' && url.pathname === '/healthz') {
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
@@ -189,32 +212,94 @@ const server = http.createServer((req, res) => {
   res.writeHead(404, { 'content-type': 'text/plain' });
   res.end('controller relay, open a websocket\n');
 });
+server.headersTimeout = 10000;
+server.requestTimeout = 15000;
+server.timeout = 15000;
+server.maxConnections = MAX_CONNECTIONS * 2;
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
 
 server.on('upgrade', (req, socket, head) => {
-  const url = new URL(req.url ?? '/', 'http://x');
-  const session = url.searchParams.get('s');
+  let url;
+  try { url = new URL(req.url ?? '/', 'http://x'); } catch { socket.write('HTTP/1.1 400 Bad Request\r\n\r\n'); socket.destroy(); return; }
+  const code = url.searchParams.get('s');
   const role = url.searchParams.get('r');
+  const version = url.searchParams.get('v');
+  const protectedSession = version === '2';
+  const session = protectedSession ? `v2:${code}` : code;
   const wantsMulti = url.searchParams.get('multi') === '1';
   const wantsBinaryFrames = url.searchParams.get('binaryFrames') === '1' || url.searchParams.get('binary') === '1';
-  if (!session || !SESSION_RE.test(session) || !role || !ROLES.has(role)) {
+  if (!code || !SESSION_RE.test(code) || !role || !ROLES.has(role) || version !== null && version !== '2' || protectedSession && (code.length < 6 || !['host', 'phone'].includes(role))) {
     socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
     socket.destroy();
     return;
   }
+  if (protectedSession && role === 'phone' && !sessions.get(session)?.ownerHash) {
+    socket.write('HTTP/1.1 404 Not Found\r\n\r\n'); socket.destroy(); return;
+  }
+  const client = connectionAllowed(req);
+  if (!client) { socket.write('HTTP/1.1 429 Too Many Requests\r\n\r\n'); socket.destroy(); return; }
   if (sessions.size >= MAX_SESSIONS && !sessions.has(session)) {
     socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
     socket.destroy();
     return;
   }
   wss.handleUpgrade(req, socket, head, (ws) => {
-    attach(ws, session, role, wantsMulti, wantsBinaryFrames);
+    ws.on('error', () => {});
+    client.active++; ws.once('close', () => { client.active--; });
+    ws._alive = true; ws.on('pong', () => { ws._alive = true; });
+    ws._protected = protectedSession;
+    ws._controllerHeartbeat = role === 'phone' && (protectedSession || url.searchParams.get('heartbeat') === '1');
+    ws._controllerActivity = Date.now();
+    let windowStart = Date.now(), messages = 0;
+    ws.on('message', data => {
+      const now = Date.now();
+      if (now - windowStart >= 1000) { windowStart = now; messages = 0; }
+      if (++messages > (role === 'peer' ? PEER_MESSAGES_PER_SECOND : MESSAGES_PER_SECOND) || ['host', 'phone', 'peer'].includes(role) && data.length > CONTROLLER_FRAME_BYTES) {
+        ws._refused = true; ws.close(1008, 'message-budget');
+      }
+    });
+    if (protectedSession && role === 'host') {
+      const timer = setTimeout(() => ws.close(1008, 'join-timeout'), 3000);
+      ws.once('close', () => clearTimeout(timer));
+      ws.once('message', (data, binary) => {
+        clearTimeout(timer);
+        let join;
+        try { if (binary || data.length > 256 || ws._refused) throw Error(); join = JSON.parse(data.toString()); } catch { ws.close(1008, 'invalid-join'); return; }
+        if (join?.type !== 'host-join' || Object.keys(join).sort().join(',') !== 'hostToken,type' || typeof join.hostToken !== 'string' || !OWNER_TOKEN_RE.test(join.hostToken)) { ws.close(1008, 'invalid-join'); return; }
+        const existing = sessions.get(session);
+        if (existing?.ownerHash && !ownsSession(existing.ownerHash, join.hostToken)) {
+          ws.send(JSON.stringify({ type: 'error', code: 'host-ownership' })); ws.close(1008, 'host-ownership'); return;
+        }
+        ws.send(JSON.stringify({ type: 'host-ready', version: 2 }));
+        attach(ws, session, role, wantsMulti, wantsBinaryFrames, ownerDigest(join.hostToken));
+      });
+      return;
+    }
+    if (role !== 'phone' || !protectedSession && url.searchParams.get('recover') !== '1') {
+      attach(ws, session, role, wantsMulti, wantsBinaryFrames);
+      return;
+    }
+    // Recovery capabilities travel in a frame, never in a URL or log.
+    const timer = setTimeout(() => ws.close(1008, 'join-timeout'), 10_000);
+    ws.once('close', () => clearTimeout(timer));
+    ws.once('message', (data, binary) => {
+      clearTimeout(timer);
+      let join;
+      try { if (binary || data.length > 256 || ws._refused) throw Error(); join = JSON.parse(data.toString()); } catch { ws.close(1008, 'invalid-join'); return; }
+      if (join?.type !== 'controller-join' || join.resumeToken !== undefined && (typeof join.resumeToken !== 'string' || !RESUME_TOKEN_RE.test(join.resumeToken))) {
+        ws.close(1008, 'invalid-join'); return;
+      }
+      ws._resumeToken = join.resumeToken ?? randomBytes(32).toString('hex');
+      attach(ws, session, role, wantsMulti, wantsBinaryFrames);
+    });
   });
 });
 
-function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false) {
+function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false, ownerHash) {
   let slot = sessions.get(session);
+  if (ws._protected && role === 'phone' && !slot?.ownerHash) { ws.close(1008, 'host-unavailable'); return; }
+  if (ws._protected && role === 'host' && !ownerHash) { ws.close(1008, 'host-ownership'); return; }
   if (!slot) {
     slot = {
       host: undefined,
@@ -223,6 +308,7 @@ function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false) {
       // Multi-mode phone Map<playerSlot, ws>. Initialised when a host
       // connects with multi=1. Untouched in single mode.
       phones: undefined,
+      recovery: new Map(),
       multi: false,
       publish: undefined,
       subscribe: new Set(),
@@ -251,12 +337,14 @@ function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false) {
       recentFrames: [],
       recentFrameCount: 0,
       createdAt: Date.now(),
+      ownerHash,
     };
     sessions.set(session, slot);
     // Orphan sweep so unattached sessions don't leak the map slot.
     setTimeout(() => {
       const current = sessions.get(session);
-      if (!current) return;
+      if (!current || current !== slot) return;
+      if (current.ownerHash && current.host && current.host.readyState === current.host.OPEN) return;
       const hasPhones = current.multi
         ? (current.phones && current.phones.size > 0)
         : !!current.phone;
@@ -277,10 +365,14 @@ function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false) {
         for (const s of current.subscribe) try { s.close(); } catch {}
         for (const p of current.peers) if (p) try { p.close(); } catch {}
         if (current.peerWatchers) for (const w of current.peerWatchers) try { w.close(); } catch {}
-        sessions.delete(session);
+        if (!current.ownerHash) deleteSession(current, session);
+        else dropIfEmpty(current, session);
       }
     }, ORPHAN_TIMEOUT_MS);
   }
+  if (ownerHash && !slot.ownerHash) slot.ownerHash = ownerHash;
+  clearTimeout(slot.ownerExpiry);
+  slot.ownerExpiry = undefined;
 
   // Peer role has its own attach + message + close flow; the host/phone
   // grammar below doesn't apply. Bail out after wiring it up.
@@ -290,6 +382,7 @@ function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false) {
   }
   // Peerwatch role: subscribe-only spectator of a peer session.
   if (role === 'peerwatch') {
+    if (slot.peerWatchers.size >= MAX_WATCHERS) { ws.close(1013, 'watcher-limit'); return; }
     ws._peerBinaryFrames = wantsBinaryFrames === true;
     attachPeerWatcher(slot, session, ws);
     return;
@@ -322,12 +415,23 @@ function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false) {
         }
         slot.phones = undefined;
       }
+      for (const reservation of slot.recovery.values()) clearTimeout(reservation.timer);
+      slot.recovery.clear();
       slot.multi = false;
     }
   } else if (role === 'phone') {
     if (slot.multi) {
       if (!slot.phones) slot.phones = new Map();
-      const playerSlot = findNextSlot(slot.phones, MAX_PHONES_PER_SESSION);
+      let reservation = slot.recovery.get(ws._resumeToken);
+      if (reservation && !reservation.ws && reservation.until <= Date.now()) {
+        releaseReservation(slot, session, ws._resumeToken);
+        reservation = undefined;
+      }
+      if (reservation?.ws?.readyState === ws.OPEN) {
+        ws.send(JSON.stringify({ type: 'error', code: 'resume-in-use' }));
+        ws.close(1008, 'resume-in-use'); return;
+      }
+      const playerSlot = reservation?.p ?? findNextSlot(slot.phones, MAX_PHONES_PER_SESSION, slot.recovery);
       if (playerSlot === null) {
         try { ws.send(JSON.stringify({ type: 'error', code: 'session-full', message: 'too many players' })); } catch {}
         try { ws.close(1013, 'session-full'); } catch {}
@@ -335,13 +439,20 @@ function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false) {
       }
       slot.phones.set(playerSlot, ws);
       ws._playerSlot = playerSlot;
-      try { ws.send(JSON.stringify({ type: 'welcome', p: playerSlot })); } catch {}
+      ws._resumed = !!reservation;
+      if (ws._resumeToken) {
+        clearTimeout(reservation?.timer);
+        slot.recovery.set(ws._resumeToken, { p: playerSlot, ws });
+      }
+      try { ws.send(JSON.stringify({ type: 'welcome', p: playerSlot,
+        ...(ws._resumeToken ? { resumeToken: ws._resumeToken, resumed: ws._resumed } : {}) })); } catch {}
     } else {
       // Single-mode (current behaviour): singleton phone, new replaces old.
       if (slot.phone) try { slot.phone.close(1000, 'replaced'); } catch {}
       slot.phone = ws;
     }
   } else if (role === 'subscribe') {
+    if (slot.subscribe.size >= MAX_SUBSCRIBERS) { ws.close(1013, 'subscriber-limit'); return; }
     slot.subscribe.add(ws);
   } else {
     // publish (singleton)
@@ -352,29 +463,61 @@ function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false) {
   notifyPeerState(slot, role, ws, 'connect');
 
   ws.on('message', (data, isBinary) => {
+    if (ws._refused) return;
+    if (role === 'phone' && !isBinary && data.length < 128) {
+      try {
+        const type = JSON.parse(data.toString()).type;
+        if (type === 'controller-heartbeat') { ws._controllerActivity = Date.now(); return; }
+        if (type === 'controller-leave') {
+          ws._abandoned = true;
+          ws.close(1000, 'left-game');
+          return;
+        }
+      } catch { /* Ordinary input follows the existing routing path. */ }
+    }
+    if (role === 'phone') ws._controllerActivity = Date.now();
     forwardMessage(slot, role, ws, data, isBinary);
   });
 
+  let disconnected = false;
   const closeHandler = () => {
+    if (disconnected) return;
+    disconnected = true;
     if (role === 'subscribe') {
       slot.subscribe.delete(ws);
     } else if (role === 'phone') {
       if (slot.multi && slot.phones && ws._playerSlot !== undefined) {
         if (slot.phones.get(ws._playerSlot) === ws) {
           slot.phones.delete(ws._playerSlot);
+          const reservation = slot.recovery.get(ws._resumeToken);
+          if (reservation?.ws === ws) {
+            if (ws._abandoned) slot.recovery.delete(ws._resumeToken);
+            else {
+              reservation.ws = null;
+              reservation.until = Date.now() + RECONNECT_GRACE_MS;
+              ws._recoveringUntil = reservation.until;
+              reservation.timer = setTimeout(() => releaseReservation(slot, session, ws._resumeToken), RECONNECT_GRACE_MS);
+            }
+          }
+        } else {
+          return; // A stale socket cannot remove or suspend its replacement.
         }
       } else if (slot.phone === ws) {
         slot.phone = undefined;
+      } else {
+        return;
       }
     } else if (slot[role] === ws) {
       slot[role] = undefined;
+    } else {
+      return;
     }
     notifyPeerState(slot, role, ws, 'disconnect');
     const hasPhones = slot.multi ? (slot.phones && slot.phones.size > 0) : !!slot.phone;
     const hasPeers = peersPresent(slot);
     const hasPeerWatchers = slot.peerWatchers && slot.peerWatchers.size > 0;
     const empty = !slot.host && !hasPhones && !slot.publish && slot.subscribe.size === 0 && !hasPeers && !hasPeerWatchers;
-    if (empty) sessions.delete(session);
+    if (empty) dropIfEmpty(slot, session);
   };
   ws.on('close', closeHandler);
   ws.on('error', closeHandler);
@@ -439,6 +582,7 @@ function sessionCounts() {
     peers: 0,
     peerWatchers: 0,
     recentFramePayloads: 0,
+    recentFrameBytes: replayBytes,
   };
   for (const slot of sessions.values()) {
     if (slot.host) out.hosts++;
@@ -542,118 +686,24 @@ function peerJoinedPayload(slot, joinedSlot) {
   return JSON.stringify(msg);
 }
 
-// ── Adaptive input-delay measurement ────────────────────────────────────────
-
-/** Send one protocol ping carrying the send time. The browser auto-replies
- *  with a pong echoing the payload (RFC 6455), so the pong handler can read
- *  the round-trip without any client-side code. */
-function pingPeer(ws) {
-  if (!ws || ws.readyState !== ws.OPEN) return;
-  try { ws.ping(String(performance.now())); } catch { /* socket racing closed */ }
-}
-
-/** Record a pong's round-trip against the time we stamped into the ping. */
-function recordPeerPong(ws, data) {
-  const sent = Number(data && data.toString());
-  if (!Number.isFinite(sent)) return;
-  const rtt = performance.now() - sent;
-  if (rtt < 0 || rtt > 60000) return;
-  if (!ws._rttSamples) ws._rttSamples = [];
-  ws._rttSamples.push(rtt);
-}
-
-/** Conservative one-way estimate for a peer: half of its worst probed RTT, so
- *  a single jittery sample widens the delay rather than narrowing it. Falls
- *  back to a sane default when no pong came back. */
-function peerOneWayMs(ws) {
-  const s = ws && ws._rttSamples;
-  if (!s || s.length === 0) return ADAPT_DEFAULT_ONE_WAY_MS;
-  let worst = 0;
-  for (const v of s) if (v > worst) worst = v;
-  return worst / 2;
-}
-
-function peerRequiredPresent(slot) {
-  for (const i of peerRequiredSlots(slot)) {
-    const peer = slot.peers[i];
-    if (!peer || peer.readyState !== peer.OPEN) return false;
-  }
-  return true;
-}
-
-/** Pick one session-wide input delay (in sim frames) sized to the slowest
- *  human peer pair plus the broker's own forward delay, with a jitter margin.
- *  The path that matters is peer A → broker → peer B, whose one-way time is
- *  ~oneWay(A)+oneWay(B); we take the two slowest peers as the worst case. */
-function computeSessionInputDelay(slot) {
-  const oneWays = [];
-  for (const i of peerRequiredSlots(slot)) {
-    const peer = slot.peers[i];
-    if (peer) oneWays.push(peerOneWayMs(peer));
-  }
-  oneWays.sort((a, b) => b - a);
-  const slowest = oneWays[0] ?? ADAPT_DEFAULT_ONE_WAY_MS;
-  const secondSlowest = oneWays[1] ?? slowest;
-  const worstPairOneWayMs = slowest + secondSlowest;
-  const brokerForwardMs = PEER_FORWARD_DELAY_MS + PEER_FORWARD_JITTER_MS;
-  const frames = Math.ceil((worstPairOneWayMs + brokerForwardMs) / ADAPT_FRAME_MS) + ADAPT_SAFETY_FRAMES;
-  return Math.max(ADAPT_MIN_DELAY_FRAMES, Math.min(ADAPT_MAX_DELAY_FRAMES, frames));
-}
-
-/** Once every required human peer is bound, probe them across a short window
- *  and then lock in a single session delay, broadcasting it to peers and
- *  watchers via session-config. Runs once per session (guarded by
- *  `peerDelayScheduled`); late joiners inherit the already-fixed value. */
-function maybeNegotiateSessionDelay(slot, session) {
-  if (slot.peerDelayScheduled || slot.peerInputDelay !== undefined) return;
-  // AI-filled sessions keep the static tier. Their late-human takeover handoff
-  // (replay-from-zero + a broker-scheduled handoff frame) is co-tuned with the
-  // large static delay, and a session can gain a late human at any time, so we
-  // never adapt them. Plain human sessions (co-op, duel, full-roster
-  // deathmatch) are where the latency win lands.
-  if (slot.peerHumanSlots) return;
-  if (!peerRequiredPresent(slot)) return;
-  slot.peerDelayScheduled = true;
-  const probe = () => {
-    for (const i of peerRequiredSlots(slot)) pingPeer(slot.peers[i]);
-  };
-  probe();
-  setTimeout(probe, ADAPT_PING_INTERVAL_MS);
-  setTimeout(probe, ADAPT_PING_INTERVAL_MS * 2);
-  setTimeout(() => {
-    // The session may have torn down or a peer dropped during the window;
-    // recompute against whoever is still present (or skip if the pair broke).
-    if (!sessions.has(session) || slot.peerInputDelay !== undefined) return;
-    slot.peerInputDelay = computeSessionInputDelay(slot);
-    fanOutSessionConfig(slot);
-  }, ADAPT_MEASURE_WINDOW_MS);
-}
-
 function sessionConfigPayload(slot) {
-  const hasHumanSlots = !!slot.peerHumanSlots;
-  const hasInputDelay = Number.isFinite(slot.peerInputDelay);
-  // Nothing to announce yet: a plain session before its delay is negotiated
-  // stays silent, exactly as before adaptive delay existed.
-  if (!hasHumanSlots && !hasInputDelay) return null;
+  if (!slot.peerHumanSlots) return null;
+  const takeovers = [];
+  const source = slot.peerTakeovers || {};
+  for (const key of Object.keys(source)) {
+    const takeoverSlot = Math.floor(Number(key));
+    const frame = Math.floor(Number(source[key]));
+    if (Number.isFinite(takeoverSlot) && Number.isFinite(frame) && frame > 0) {
+      takeovers.push({ slot: takeoverSlot, frame });
+    }
+  }
   const msg = {
     type: 'session-config',
     players: slot.peerCount || 2,
+    aiFill: true,
+    humanSlots: slot.peerHumanSlots,
+    takeovers,
   };
-  if (hasInputDelay) msg.inputDelay = slot.peerInputDelay;
-  if (hasHumanSlots) {
-    const takeovers = [];
-    const source = slot.peerTakeovers || {};
-    for (const key of Object.keys(source)) {
-      const takeoverSlot = Math.floor(Number(key));
-      const frame = Math.floor(Number(source[key]));
-      if (Number.isFinite(takeoverSlot) && Number.isFinite(frame) && frame > 0) {
-        takeovers.push({ slot: takeoverSlot, frame });
-      }
-    }
-    msg.aiFill = true;
-    msg.humanSlots = slot.peerHumanSlots;
-    msg.takeovers = takeovers;
-  }
   if (peerBinaryReady(slot)) msg.binaryFrames = true;
   return JSON.stringify(msg);
 }
@@ -691,7 +741,7 @@ function replayRecentPeerFrames(target, slot) {
   try {
     for (const entry of slot.recentFrames) {
       const payload = typeof entry === 'string' ? entry : peerPayloadForTarget(target, entry.payload, entry.msg);
-      target.send(payload, { binary: Buffer.isBuffer(payload) });
+      if (!forwardBounded(target, payload, Buffer.isBuffer(payload))) break;
     }
   } catch { /* socket may already be closed */ }
 }
@@ -710,7 +760,6 @@ function attachPeerWatcher(slot, session, ws) {
       players: slot.peerCount || 2,
       aiFill: !!slot.peerHumanSlots,
       humanSlots: slot.peerHumanSlots,
-      inputDelay: Number.isFinite(slot.peerInputDelay) ? slot.peerInputDelay : undefined,
       binaryFrames: ws._peerBinaryFrames === true && peerBinaryReady(slot) ? true : undefined,
     }));
     sendSessionConfig(ws, slot);
@@ -736,7 +785,7 @@ function attachPeerWatcher(slot, session, ws) {
     const hasPeers = peersPresent(slot);
     const hasPeerWatchers = slot.peerWatchers && slot.peerWatchers.size > 0;
     const empty = !slot.host && !hasPhones && !slot.publish && slot.subscribe.size === 0 && !hasPeers && !hasPeerWatchers;
-    if (empty) sessions.delete(session);
+    if (empty) deleteSession(slot, session);
   };
   ws.on('close', closeHandler);
   ws.on('error', closeHandler);
@@ -774,9 +823,6 @@ function peerFrameLatestFrame(msg) {
   if (!msg) return -1;
   if (msg.type === 'frames' && Array.isArray(msg.inputs)) {
     return Math.max(-1, Math.floor(Number(msg.base)) + msg.inputs.length - 1);
-  }
-  if (msg.type === 'frame-set') {
-    return Number.isFinite(Number(msg.frame)) ? Math.floor(Number(msg.frame)) : -1;
   }
   return Number.isFinite(Number(msg.frame)) ? Math.floor(Number(msg.frame)) : -1;
 }
@@ -855,13 +901,17 @@ function peerPayloadForTarget(target, payload, msg) {
 function rememberPeerFramePayload(slot, payload, msg) {
   const count = peerFramePayloadCount(msg);
   if (count <= 0) return;
-  slot.recentFrames.push({ payload: Buffer.isBuffer(payload) ? Buffer.from(payload) : String(payload), msg, count });
-  slot.recentFrameCount = (slot.recentFrameCount || 0) + count;
+  const bytes = (Buffer.isBuffer(payload) ? payload.length : Buffer.byteLength(String(payload))) + Buffer.byteLength(JSON.stringify(msg));
   const frameBufferLimit = Math.max(1, (slot.peerCount || 2)) * PEER_FRAME_BUFFER_PER_PLAYER;
-  while (slot.recentFrameCount > frameBufferLimit && slot.recentFrames.length > 0) {
+  while (slot.recentFrames.length && (slot.recentFrameCount + count > frameBufferLimit || (slot.recentReplayBytes ?? 0) + bytes > PEER_SESSION_REPLAY_BYTES || replayBytes + bytes > PEER_REPLAY_BYTES)) {
     const dropped = slot.recentFrames.shift();
-    slot.recentFrameCount -= dropped && typeof dropped.count === 'number' ? dropped.count : 1;
+    slot.recentFrameCount -= dropped.count;
+    slot.recentReplayBytes -= dropped.bytes; replayBytes -= dropped.bytes;
   }
+  if (bytes > PEER_SESSION_REPLAY_BYTES || replayBytes + bytes > PEER_REPLAY_BYTES) return;
+  slot.recentFrames.push({ payload: Buffer.isBuffer(payload) ? Buffer.from(payload) : String(payload), msg, count, bytes });
+  slot.recentFrameCount += count;
+  slot.recentReplayBytes = (slot.recentReplayBytes ?? 0) + bytes; replayBytes += bytes;
 }
 
 function sendPeerPayload(target, payload, delayMs = 0) {
@@ -899,11 +949,8 @@ function attachPeer(slot, session, ws) {
   ws._peerSlot = -1;
   ws._peerBinaryFrames = false;
 
-  // Adaptive input-delay: the browser auto-pongs our pings, letting us measure
-  // socket RTT with no client cooperation. Samples feed computeSessionInputDelay.
-  ws.on('pong', (data) => recordPeerPong(ws, data));
-
   ws.on('message', (data, isBinary) => {
+    if (ws._refused) return;
     let msg;
     let payload;
     if (isBinary) {
@@ -918,12 +965,15 @@ function attachPeer(slot, session, ws) {
 
     if (msg.type === 'hello-peer') {
       if (isBinary) return;
-      handlePeerHello(slot, session, ws, msg);
+      handlePeerHello(slot, ws, msg);
       return;
     }
     if (ws._peerSlot < 0) return;
 
     if (msg.type === 'frame' || msg.type === 'frame-set' || msg.type === 'frames' || msg.type === 'hash') {
+      msg = peerFrame(msg, (ws._peerSlots ?? [ws._peerSlot]).filter(index => slot.peers[index] === ws));
+      if (!msg) return;
+      if (!isBinary) payload = JSON.stringify(msg);
       if (msg.type === 'frame' || msg.type === 'frame-set' || msg.type === 'frames') {
         const latest = peerFrameLatestFrame(msg);
         if (latest > (slot.peerLatestFrame ?? -1)) slot.peerLatestFrame = latest;
@@ -983,13 +1033,13 @@ function attachPeer(slot, session, ws) {
     const hasPeers = peersPresent(slot);
     const hasPeerWatchers = slot.peerWatchers && slot.peerWatchers.size > 0;
     const empty = !slot.host && !hasPhones && !slot.publish && slot.subscribe.size === 0 && !hasPeers && !hasPeerWatchers;
-    if (empty) sessions.delete(session);
+    if (empty) deleteSession(slot, session);
   };
   ws.on('close', closeHandler);
   ws.on('error', closeHandler);
 }
 
-function handlePeerHello(slot, session, ws, msg) {
+function handlePeerHello(slot, ws, msg) {
   // Already bound: a second hello-peer is a protocol error; ignore it
   // rather than re-arrange slots.
   if (ws._peerSlot >= 0) return;
@@ -1127,23 +1177,57 @@ function handlePeerHello(slot, session, ws, msg) {
     if (slot.peerHumanSlots && !slot.peerHumanSlots.includes(i)) continue;
     if (slot.peers[i] && slot.peers[i] !== ws) { try { ws.send(peerJoinedPayload(slot, i)); } catch {} }
   }
-  // Once the full human roster is present, measure RTT and lock in the
-  // session's adaptive lockstep input delay. One-shot per session; late
-  // joiners inherit the already-fixed value via sendSessionConfig above.
-  maybeNegotiateSessionDelay(slot, session);
-
   // If more peers are still absent, do nothing. Each arrival triggers this
   // same branch and all connected clients count joined slots locally.
 }
 
-function findNextSlot(phones, max) {
+function releaseReservation(slot, session, token) {
+  const reservation = slot.recovery.get(token);
+  if (!reservation || reservation.ws) return;
+  clearTimeout(reservation.timer);
+  slot.recovery.delete(token);
+  if (slot.host && slot.host.readyState === slot.host.OPEN) {
+    slot.host.send(JSON.stringify({ type: 'peer-down', p: reservation.p }));
+  }
+  dropIfEmpty(slot, session);
+}
+
+function dropIfEmpty(slot, session) {
+  if (sessions.get(session) !== slot || slot.host || slot.phone || slot.phones?.size || slot.publish || slot.subscribe.size || peersPresent(slot) || slot.peerWatchers.size || slot.recovery.size) return;
+  if (!slot.ownerHash) { deleteSession(slot, session); return; }
+  if (slot.ownerExpiry) return;
+  slot.ownerExpiry = setTimeout(() => {
+    slot.ownerExpiry = undefined;
+    if (sessions.get(session) === slot && !slot.host && !slot.phone && !slot.phones?.size && !slot.recovery.size) deleteSession(slot, session);
+  }, OWNER_RETENTION_MS);
+  slot.ownerExpiry.unref();
+}
+
+function deleteSession(slot, session) {
+  if (sessions.get(session) !== slot) return;
+  replayBytes -= slot.recentReplayBytes ?? 0;
+  slot.recentReplayBytes = 0; slot.recentFrameCount = 0; slot.recentFrames.length = 0;
+  clearTimeout(slot.ownerExpiry); sessions.delete(session);
+}
+
+function findNextSlot(phones, max, recovery = new Map()) {
+  const reserved = new Set([...recovery.values()].map(entry => entry.p));
   for (let i = 0; i < max; i++) {
-    if (!phones.has(i)) return i;
+    if (!phones.has(i) && !reserved.has(i)) return i;
   }
   return null;
 }
 
 function forwardMessage(slot, role, ws, data, isBinary) {
+  if (ws._refused) return;
+  if (role === 'host' && slot.host !== ws) return;
+  if (['host', 'phone'].includes(role)) {
+    if (isBinary) { if (ws._protected) return; }
+    else {
+      data = controllerFrame(data, role, ws._protected, slot.multi && role === 'phone' ? ws._playerSlot : undefined);
+      if (!data) return;
+    }
+  }
   if (role === 'host') {
     if (slot.multi && slot.phones) {
       // Try to parse JSON to look for a targeted p field.
@@ -1152,7 +1236,7 @@ function forwardMessage(slot, role, ws, data, isBinary) {
         if (targetP !== null) {
           const target = slot.phones.get(targetP);
           if (target && target.readyState === target.OPEN) {
-            try { target.send(data, { binary: false }); } catch {}
+            forwardBounded(target, data, false);
           }
           return;
         }
@@ -1160,27 +1244,48 @@ function forwardMessage(slot, role, ws, data, isBinary) {
       // No p field (or binary): broadcast to all paired phones.
       for (const phWs of slot.phones.values()) {
         if (phWs.readyState !== phWs.OPEN) continue;
-        try { phWs.send(data, { binary: isBinary }); } catch {}
+        forwardBounded(phWs, data, isBinary);
       }
     } else if (slot.phone && slot.phone.readyState === slot.phone.OPEN) {
-      try { slot.phone.send(data, { binary: isBinary }); } catch {}
+      forwardBounded(slot.phone, data, isBinary);
     }
   } else if (role === 'phone') {
+    if (slot.multi && slot.phones?.get(ws._playerSlot) !== ws || !slot.multi && slot.phone !== ws || ws._abandoned) return;
     if (!slot.host || slot.host.readyState !== slot.host.OPEN) return;
     if (slot.multi && !isBinary && ws._playerSlot !== undefined) {
       const stamped = injectP(data, ws._playerSlot);
-      try { slot.host.send(stamped, { binary: false }); } catch {}
+      forwardBounded(slot.host, stamped, false);
     } else {
-      try { slot.host.send(data, { binary: isBinary }); } catch {}
+      forwardBounded(slot.host, data, isBinary);
     }
   } else if (role === 'publish') {
     for (const sub of slot.subscribe) {
       if (sub.readyState !== sub.OPEN) continue;
-      try { sub.send(data, { binary: isBinary }); } catch {}
+      forwardBounded(sub, data, isBinary);
     }
   }
   // subscribe → ignored (uplink-only)
 }
+
+function forwardBounded(socket, data, binary) {
+  if (socket.readyState !== socket.OPEN) return false;
+  if (socket.bufferedAmount > FORWARD_BUFFER_BYTES) { socket.terminate(); return false; }
+  try { socket.send(data, { binary }); return true; } catch { socket.terminate(); return false; }
+}
+
+let lastPing = Date.now();
+const heartbeat = setInterval(() => {
+  const now = Date.now(), ping = now - lastPing >= HEARTBEAT_MS;
+  for (const ws of wss.clients) {
+    if (ws._controllerHeartbeat && now - ws._controllerActivity > CONTROLLER_LEASE_MS) { ws.terminate(); continue; }
+    if (ping) {
+      if (!ws._alive) { ws.terminate(); continue; }
+      ws._alive = false; try { ws.ping(); } catch { ws.terminate(); }
+    }
+  }
+  if (ping) lastPing = now;
+}, Math.min(500, HEARTBEAT_MS));
+heartbeat.unref();
 
 /** Read p field from a JSON frame. Returns integer player slot, null otherwise. */
 function peekP(data) {
@@ -1214,6 +1319,10 @@ function notifyPeerState(slot, changedRole, changedWs, eventType) {
       for (const phWs of slot.phones.values()) {
         if (phWs.readyState !== phWs.OPEN) continue;
         try { phWs.send(msg); } catch {}
+        if (up) try { slot.host.send(JSON.stringify({ type: 'peer-up', p: phWs._playerSlot, resumed: true })); } catch {}
+      }
+      if (up) for (const reservation of slot.recovery.values()) {
+        if (!reservation.ws) try { slot.host.send(JSON.stringify({ type: 'peer-suspended', p: reservation.p, graceMs: Math.max(0, reservation.until - Date.now()) })); } catch {}
       }
     } else {
       const bothUp = slot.host && slot.host.readyState === slot.host.OPEN
@@ -1230,7 +1339,8 @@ function notifyPeerState(slot, changedRole, changedWs, eventType) {
       const hostUp = slot.host && slot.host.readyState === slot.host.OPEN;
       if (hostUp && playerSlot !== undefined) {
         const up = eventType === 'connect';
-        const msg = JSON.stringify({ type: up ? 'peer-up' : 'peer-down', p: playerSlot });
+        const msg = JSON.stringify({ type: up ? 'peer-up' : changedWs._recoveringUntil ? 'peer-suspended' : 'peer-down', p: playerSlot,
+          ...(up ? { resumed: changedWs._resumed === true } : changedWs._recoveringUntil ? { graceMs: Math.max(0, changedWs._recoveringUntil - Date.now()) } : {}) });
         try { slot.host.send(msg); } catch {}
       }
       // Tell the new phone whether the host is alive. Symmetric to single
@@ -1259,12 +1369,14 @@ function notifyPeerState(slot, changedRole, changedWs, eventType) {
 }
 
 server.listen(PORT, HOST, () => {
-  console.log(`[controller-ws] listening on ${HOST}:${PORT}`);
+  console.log(`[controller-ws] listening on ${HOST}:${server.address().port}`);
 });
 
 process.on('SIGTERM', () => {
+  clearInterval(heartbeat);
   const latency = latencySummary();
   console.log(`[controller-ws] shutting down (peer-forwarded=${peerForwardSent} peer-dropped=${peerDropped} p95=${latency.p95}ms p99=${latency.p99}ms)`);
+  for (const ws of wss.clients) ws.terminate();
   wss.close();
   server.close(() => process.exit(0));
 });

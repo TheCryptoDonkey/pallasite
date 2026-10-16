@@ -49,7 +49,11 @@ if (variant.bundleBroker) {
   // Broker: source + prod deps only (ws is the sole runtime dep, pure JS).
   const brokerDst = path.join(resources, 'controller-ws');
   mkdirSync(brokerDst, { recursive: true });
-  cpSync(path.join(brokerSrc, 'server.js'), path.join(brokerDst, 'server.js'));
+  // controller-ws/ is a vendored joystick broker: server.js imports its sibling
+  // modules (controller-policy.js, foregather.js), so stage every top-level .js file.
+  for (const file of readdirSync(brokerSrc)) {
+    if (file.endsWith('.js')) cpSync(path.join(brokerSrc, file), path.join(brokerDst, file));
+  }
   cpSync(path.join(brokerSrc, 'package.json'), path.join(brokerDst, 'package.json'));
 
   // Copy each runtime dependency as REAL files. pnpm symlinks packages into its

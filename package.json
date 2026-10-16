@@ -10,6 +10,8 @@
     "build": "pnpm run sync-sdk && node tools/check-sanctum-roster.mjs && tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "check:broker": "node tools/sync-joystick-broker.mjs check",
+    "sync:broker": "node tools/sync-joystick-broker.mjs sync",
     "check:signet-login": "node tools/check-signet-login-bundle.mjs public/signet-login.iife.js",
     "test": "tsx tools/run-harnesses.ts",
     "test:e2e": "tsx tools/run-e2e.ts",

@@ -1,115 +1,80 @@
-# Pallasite controller WebSocket relay
+# Controller broker
 
-> **Note:** The canonical broker source lives in `joystick/packages/broker/`
-> and is what deploys to controller.pallasite.app. This directory is a
-> committed test fixture: tools/run-e2e.ts, run-lobby-e2e.ts,
-> run-desync-hunter.ts, run-spectate-latejoin-e2e.ts all spin up a fresh
-> broker per run from server.js here so they don't depend on the joystick
-> sibling being checked out. **Production edits go to joystick;** any
-> change made here must also be ported there (and vice versa — the two
-> server.js files should stay byte-identical).
+Node/WebSocket service for the Joystick hosted pilot at
+`wss://controller.pallasite.app/`. It assigns controller slots, emits lifecycle
+frames and routes bounded game messages. TLS ends at the reverse proxy; the
+broker can read traffic and optional identity announcements.
 
-Tiny Node service that pairs phone controllers with the big-screen
-game host. Bypasses the higher-latency Nostr publish/subscribe path
-used in v1 of the phone-as-controller MVP.
+## Controller protocol v2
 
-## Wire shape
+Hosts connect with `?s=<code>&r=host&v=2` and optionally `&multi=1`. The first
+frame is `{"type":"host-join","hostToken":"<64 lowercase hex>"}`. Generate
+that credential from 32 CSPRNG bytes; never include it in a QR, URL or invitation.
+The broker stores a purpose-bound hash and responds with
+`{"type":"host-ready","version":2}` before pairing. An existing session
+requires the same credential. Empty sessions retain ownership for five minutes
+by default; broker restart loses this in-memory state.
 
-```
-wss://controller.pallasite.app/?s=<sessionId>&r=<host|phone>
-```
+Phones use `?s=<code>&r=phone&v=2&recover=1`, then send
+`{"type":"controller-join"}` or include their private `resumeToken`. A phone
+cannot create a v2 session before its host establishes ownership. The default
+SDK code has six letters; codes permit controller admission, not host ownership
+or named identity proof. V2 session IDs require 6–128 characters.
 
-- `s` — 4-32 char alphanumeric session id (same value the QR code
-  carries; effectively a shared secret between the paired devices).
-- `r` — `host` (big screen) or `phone` (controller).
+Only the broker emits welcome/host/peer lifecycle frames. Phones send bounded
+input and signer/context responses; hosts send controller specs, signing
+requests, haptics, scores and spectator views. The broker stamps phone player
+slots and rejects endpoint-supplied lifecycle frames. A phone heartbeat every
+500 ms keeps its three-second application lease alive; native ping/pong handles
+network liveness separately. Multi-player recovery reserves a slot for fifteen
+seconds; explicit `controller-leave` releases it immediately.
 
-Once both sides are connected on the same session id, every message
-from one is forwarded verbatim to the other. The server also sends
-`{"type":"peer-up"}` / `{"type":"peer-down"}` JSON frames whenever
-the pair state changes, so clients can show a connection indicator.
+Versionless clients use a separate legacy namespace. They retain code-based
+host replacement and optional recovery/heartbeat. Stream publisher/subscriber
+and lockstep peer/peerwatch roles retain their existing protocol; they do not
+inherit v2 controller host authentication. Peer fan-out canonicalises the
+owned-slot frame schema and bounds replay history and receivers.
 
-Shared-arena peer sessions keep lobby/session control messages as JSON.
-Clients can add `binaryFrames:true` to `hello-peer`; once all required human
-peers support it, the broker marks `peer-joined` / `session-config` with
-`binaryFrames:true` and accepts compact binary `frame`, `frames`, and `hash`
-payloads on the hot path. Peerwatch clients can request the same hot path with
-`binaryFrames=1` in the URL; otherwise the broker downgrades frame payloads
-back to JSON for compatibility.
+## Default budgets
 
-There is no auth beyond the session id. Discoverability is the only
-defence — a 32-bit random id displayed via QR for ~30s gives any
-attacker a ~1-in-4-billion guess window. Brute force is infeasible
-and the payoff (driving someone's ship for a few seconds) is zero.
+| Setting | Default |
+| --- | --- |
+| `MAX_CONNECTIONS` / `MAX_CONNECTIONS_PER_CLIENT` | 128 / 64 |
+| `CONNECTION_ATTEMPTS_PER_MINUTE` | 120 per client |
+| `MAX_WATCHERS` / `MAX_SUBSCRIBERS` | 32 per session |
+| `MAX_FRAME_BYTES` | 1 MiB WebSocket payload |
+| `CONTROLLER_FRAME_BYTES` | 64 KiB for host, phone and peer |
+| `MESSAGES_PER_SECOND` | 240 per connection |
+| `PEER_MESSAGES_PER_SECOND` | 2000 per lockstep peer connection |
+| `FORWARD_BUFFER_BYTES` | 256 KiB; terminate a slow controller/subscriber |
+| `HEARTBEAT_MS` / `CONTROLLER_LEASE_MS` | 5 seconds / 3 seconds |
+| `OWNER_RETENTION_MS` / `RECONNECT_GRACE_MS` | 5 minutes / 15 seconds |
+| `PEER_REPLAY_BYTES` / `PEER_SESSION_REPLAY_BYTES` | 8 MiB total / 1 MiB per session |
 
-## Deploy (Caddy + systemd, first time)
+Gateway bodies have a three-second absolute deadline. Eight requests per client
+and eighty total may run concurrently. Requests, public lookups and allocations
+have separate per-minute budgets. Addresses are hashed in bounded transient
+memory; trust forwarded addresses only from the loopback reverse proxy. Keep the
+broker bound to loopback in production. These limits are regression-tested
+bounds; sustained-load qualification remains open.
 
-1. Copy the directory to the Hetzner box:
-   ```
-   rsync -av controller-ws/ deploy@<deploy-host>:<controller-ws-deploy-root>/
-   ```
-2. Install runtime deps (one-off):
-   ```
-   ssh deploy@<deploy-host> 'cd <controller-ws-deploy-root> && npm ci --omit=dev'
-   ```
-3. Install the systemd unit:
-   ```
-   ssh deploy@<deploy-host> 'sudo cp <controller-ws-deploy-root>/pallasite-controller-ws.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now pallasite-controller-ws'
-   ```
-4. Add the Caddy block:
-   ```
-   ssh deploy@<deploy-host> 'sudo tee -a /etc/caddy/Caddyfile < <controller-ws-deploy-root>/Caddyfile.snippet && sudo systemctl reload caddy'
-   ```
-5. DNS: A record `controller.pallasite.app → <deploy-host>` (same as
-   `pallasite.app`, `watch.pallasite.app`, `mobile.pallasite.app`).
-6. Verify:
-   ```
-   curl -i https://controller.pallasite.app/
-   # should respond with 404 'controller relay — open a websocket'
-   curl -s https://controller.pallasite.app/healthz
-   curl -s https://controller.pallasite.app/metrics
-   ```
+## Development and deployment
 
-`/metrics` returns aggregate process and relay counters only: RSS, recent CPU,
-socket/session counts, peer forward attempts/successes, bufferedAmount drops,
-and recent peer-forward p50/p95/p99 latency. It does not include session ids or
-message payloads.
-
-## Subsequent deploys
-
-The CI workflow rsyncs the directory + restarts the service. Hands-
-free unless `package.json` deps change (then ssh in and `npm ci`).
-
-## Why not Nostr?
-
-The phone-as-controller v1 used kind 22770 ephemeral events on
-relay.trotters.cc. Costs per input:
-
-- `schnorr.sign` on phone: 5-10ms
-- Relay round-trip: 30-80ms
-- Signature verify on host: 3-10ms
-
-Total ~40-100ms felt laggy on the joystick. The signing+verify is
-unavoidable on Nostr (relays reject unsigned events). The relay hop
-is also unavoidable on Nostr (no direct peer addressing).
-
-This service drops both. Pairing handshake still uses Nostr (one
-shot, latency doesn't matter); the high-rate input stream goes
-raw over WS.
-
-## Local dev
-
-```
-cd controller-ws
-npm install
-PORT=8788 npm start
+```sh
+pnpm install
+pnpm --filter pallasite-controller-ws start
+pnpm --filter pallasite-controller-ws test
 ```
 
-In another shell:
-```
-# host
-websocat 'ws://127.0.0.1:8788/?s=abc123&r=host'
-# phone
-websocat 'ws://127.0.0.1:8788/?s=abc123&r=phone'
-```
+The service defaults to `127.0.0.1:8788`. Production deployment is defined in
+`.github/workflows/deploy.yml`, targeting `deploy@62.238.98.53` at
+`/opt/pallasite-controller-ws/` with pinned SSH host keys and
+`pallasite-controller-ws.service`. Reuse the workflow's pinned trust. Its health
+check gates success.
 
-Anything typed into one shows up in the other.
+`deploy-foregather.sh` installs the checksum-pinned Rust relay v0.4.0, licences
+and its dedicated service. It listens on loopback; the operator token stays in
+a root-owned environment file and the private database persists. The public
+gateway is `/foregather/`; operator routes stay private. Browser package patch
+releases do not require changing this Rust service version. See the
+[hardening review](../../docs/hardening-review.md) for qualification gaps.
