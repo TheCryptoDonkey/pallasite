@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="description" content="It's raining donuts. Eat them all.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Donuts">
+<title>Donut Invaders</title>
+<meta name="theme-color" content="#0d0721">
+<style>
+@font-face { font-family: "Bungee"; font-weight: 400; font-display: swap; src: url(fonts/bungee.woff2) format("woff2"); }
+@font-face { font-family: "Bungee Shade"; font-weight: 400; font-display: swap; src: url(fonts/bungee-shade.woff2) format("woff2"); }
+@font-face { font-family: "Silkscreen"; font-weight: 400; font-display: swap; src: url(fonts/silkscreen-400.woff2) format("woff2"); }
+@font-face { font-family: "Silkscreen"; font-weight: 700; font-display: swap; src: url(fonts/silkscreen-700.woff2) format("woff2"); }
+/* Layout: one arcade screen at night outside a donut shop. Canvas letterboxed in the middle, DOM panels float over it. */
+:root {
+  --night: #0d0721;
+  --plum: #2a0f4a;
+  --icing: #ff5fa8;
+  --glaze: #ffc94a;
+  --glaze-deep: #c7861a;
+  --mint: #5ff5d0;
+  --cream: #fff4e3;
+  --display: "Bungee", "Arial Black", Impact, sans-serif;
+  --shade: "Bungee Shade", "Bungee", "Arial Black", Impact, sans-serif;
+  --pixel: "Silkscreen", "Courier New", ui-monospace, monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; margin: 0; background: var(--night); color: var(--cream); overflow: hidden;
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+body { font-family: var(--pixel); }
+#stage { position: fixed; top: env(safe-area-inset-top, 0px); bottom: env(safe-area-inset-bottom, 0px); left: 0; right: 0;
+  display: grid; place-items: center;
+  background: radial-gradient(120% 80% at 50% 100%, #3b1159 0%, var(--night) 60%); }
+canvas { display: block; }
+[hidden] { display: none !important; }
+#hudBtns { position: fixed; display: flex; gap: 8px; z-index: 5; }
+#hudBtns button { width: 38px; height: 38px; border-radius: 10px; border: 2px solid rgba(255,244,227,.35);
+  background: rgba(13,7,33,.55); color: var(--cream); font: 16px/1 var(--display); cursor: pointer; padding: 0;
+  display: grid; place-items: center; }
+#hudBtns button:focus-visible, .btn:focus-visible { outline: 3px solid var(--mint); outline-offset: 3px; }
+#hudBtns svg { width: 18px; height: 18px; fill: currentColor; }
+
+.screen { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; text-align: center; overflow-y: auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: calc(env(safe-area-inset-top, 0px) + 20px) calc(env(safe-area-inset-bottom, 0px) + 20px);
+  background: radial-gradient(90% 60% at 50% 40%, rgba(42,15,74,.55), rgba(13,7,33,.88)); touch-action: auto; }
+.screen h1 { margin: 0; font: 400 clamp(40px, 13vw, 66px)/.92 var(--shade); color: var(--icing); letter-spacing: 1px;
+  text-shadow: 0 0 18px rgba(255,95,168,.55); text-wrap: balance; }
+.screen h1 span { display: block; color: var(--glaze); text-shadow: 0 0 18px rgba(255,201,74,.5); }
+.tag { margin: 0; font: 700 14px/1.4 var(--pixel); color: var(--mint); letter-spacing: 2px; text-transform: uppercase; }
+.hero { width: 118px; height: 132px; filter: drop-shadow(0 0 16px rgba(255,201,74,.7)); animation: bob 1.6s ease-in-out infinite; }
+@keyframes bob { 50% { transform: translateY(-8px) rotate(-3deg); } }
+.legend { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; max-width: 380px; width: 100%; text-align: left; }
+.legend div { display: flex; gap: 8px; align-items: center; font-size: 12px; line-height: 1.3; min-width: 0; }
+.legend canvas { flex: none; width: 34px; height: 34px; }
+.controls { font-size: 12px; line-height: 1.6; color: rgba(255,244,227,.75); margin: 0; }
+.controls b { color: var(--glaze); font-weight: 700; }
+.btn { font: 400 22px/1 var(--display); padding: 16px 30px 14px; border: 0; border-radius: 14px; cursor: pointer;
+  background: linear-gradient(var(--glaze), #ffab2e); color: var(--night); box-shadow: 0 6px 0 var(--glaze-deep), 0 0 30px rgba(255,201,74,.35);
+  letter-spacing: 1px; }
+.btn:active { transform: translateY(4px); box-shadow: 0 2px 0 var(--glaze-deep); }
+.best { font-size: 12px; color: rgba(255,244,227,.7); margin: 0; letter-spacing: 1px; }
+.best b { color: var(--glaze); }
+.rank { font: 400 20px/1.2 var(--display); color: var(--mint); margin: 0; }
+.why { margin: 0; font-size: 13px; color: rgba(255,244,227,.8); }
+.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; max-width: 320px; }
+.stats div { background: rgba(255,244,227,.06); border: 1px solid rgba(255,244,227,.14); border-radius: 12px; padding: 10px 8px; }
+.stats dt { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: rgba(255,244,227,.6); }
+.stats dd { margin: 4px 0 0; font: 400 22px/1 var(--display); color: var(--cream); font-variant-numeric: tabular-nums; }
+.newbest { font: 400 16px/1 var(--display); color: var(--icing); margin: 0; animation: pulse .6s ease-in-out infinite alternate; }
+@keyframes pulse { to { transform: scale(1.12); } }
+@media (prefers-reduced-motion: reduce) { .hero, .newbest { animation: none; } }
+</style>
+
+</head>
+<body>
+<div id="stage"><canvas id="game"></canvas></div>
+<div id="hudBtns" hidden>
+  <button id="muteBtn" type="button" aria-label="Mute sound"><svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg></button>
+  <button id="pauseBtn" type="button" aria-label="Pause"><svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg></button>
+</div>
+
+<section id="menu" class="screen">
+  <h1>Donut <span>Invaders</span></h1>
+  <p class="tag">It's raining donuts. Eat them all.</p>
+  <img id="heroFace" class="hero" alt="">
+  <div class="legend">
+    <div><canvas data-icon="donut" width="68" height="68"></canvas><span>Slurp donuts loose, catch them in your mouth</span></div>
+    <div><canvas data-icon="broc" width="68" height="68"></canvas><span>Broccoli hurts. Dodge it or zap it</span></div>
+    <div><canvas data-icon="golden" width="68" height="68"></canvas><span>Golden donuts fill the Sugar Rush meter</span></div>
+    <div><canvas data-icon="power" width="68" height="68"></canvas><span>Grab power-ups from the donut delivery</span></div>
+  </div>
+  <p class="controls"><b>Phone</b> drag to move, hold to slurp<br><b>Keys</b> ← → move, Space slurp, P pause</p>
+  <button id="startBtn" class="btn" type="button">Start eating</button>
+  <p class="best">Best <b id="menuBest">0</b></p>
+</section>
+
+<section id="over" class="screen" hidden>
+  <h1>Food <span>Coma</span></h1>
+  <p class="rank" id="overRank">Light Snacker</p>
+  <p class="why" id="overWhy"></p>
+  <p class="newbest" id="overNew" hidden>New best!</p>
+  <dl class="stats">
+    <div><dt>Score</dt><dd id="stScore">0</dd></div>
+    <div><dt>Donuts eaten</dt><dd id="stEaten">0</dd></div>
+    <div><dt>Best combo</dt><dd id="stCombo">0</dd></div>
+    <div><dt>Wave</dt><dd id="stWave">1</dd></div>
+  </dl>
+  <button id="againBtn" class="btn" type="button">Eat again</button>
+  <p class="best">Best <b id="overBest">0</b></p>
+</section>
+
+<section id="pause" class="screen" hidden>
+  <h1>Paused</h1>
+  <p class="tag">Digesting…</p>
+  <button id="resumeBtn" class="btn" type="button">Keep eating</button>
+</section>
+
+<script src="game.js"></script>
+</body>
+</html>
