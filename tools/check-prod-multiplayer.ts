@@ -276,6 +276,22 @@ function coopUrl(session: string, slot: number): string {
   });
 }
 
+/** Linked booths: one browser owns several slots (`localSlots`), so it sends frame-set. */
+function linkedBoothUrl(session: string, slot: number, localSlots: string): string {
+  return appUrl({
+    peer: BROKER,
+    session,
+    slot,
+    localSlots,
+    players: 4,
+    mode: 'coop-campaign',
+    rollback: 1,
+    wiretrace: 1,
+    peerBatch: PEER_BATCH_OVERRIDE === '0' ? undefined : 1,
+    inputDelay: INPUT_DELAY_OVERRIDE ?? undefined,
+  });
+}
+
 function deathmatchPeerUrl(session: string, slot: number, players: number, opts: { aiFill?: boolean; humanSlots?: string } = {}): string {
   return appUrl({
     peer: BROKER,
@@ -450,6 +466,50 @@ async function runCoop2(browser: Browser): Promise<BrowserCaseResult> {
   }
 }
 
+/**
+ * Deterministic relay check for the frame types browsers hide behind their resend
+ * fallback: a booth owning slots 0,1 sends `frame-set`; another peer must receive it.
+ * A broker that ignores frame-set (7 Sep-16 Oct 2026) still "passes" the browser case
+ * above, but leans on ~170 resends in six seconds.
+ */
+async function runFrameSetRelayProbe(): Promise<void> {
+  const session = `fsprobe-${randomBytes(4).toString('hex')}`;
+  const open = (hello: Record<string, unknown>): Promise<{ ws: WebSocket; frames: any[] }> => new Promise((resolve, reject) => {
+    const ws = new WebSocket(`${BROKER}/?s=${encodeURIComponent(session)}&r=peer`);
+    const frames: any[] = [];
+    const timer = setTimeout(() => reject(new Error('frame-set probe: connect timeout')), 10_000);
+    ws.addEventListener('message', (event) => { try { frames.push(JSON.parse(String(event.data))); } catch { /* binary */ } });
+    ws.addEventListener('error', () => reject(new Error('frame-set probe: socket error')));
+    ws.addEventListener('open', () => { clearTimeout(timer); ws.send(JSON.stringify(hello)); resolve({ ws, frames }); });
+  });
+  const booth = await open({ type: 'hello-peer', slot: 0, version: 1, players: 4, ownedSlots: [0, 1] });
+  const other = await open({ type: 'hello-peer', slot: 2, version: 1, players: 4 });
+  try {
+    await wait(300);
+    booth.ws.send(JSON.stringify({ type: 'frame-set', frame: 5, entries: [[0, 7], [1, 9]] }));
+    await wait(700);
+    if (!other.frames.some((frame) => frame.type === 'frame-set')) throw new Error('frame-set probe: broker did not relay frame-set from a multi-slot booth');
+    process.stdout.write('[relay] frame-set from a two-slot booth reaches the other peer PASS\n');
+  } finally {
+    booth.ws.close(); other.ws.close();
+  }
+}
+
+async function runLinkedBooths4(browser: Browser): Promise<BrowserCaseResult> {
+  const session = `link-${randomBytes(4).toString('hex')}`;
+  const clients = [await newClient(browser, 'booth 1 (slots 0,1)'), await newClient(browser, 'booth 2 (slots 2,3)')];
+  try {
+    await Promise.all([
+      gotoClient(clients[0], linkedBoothUrl(session, 0, '0,1')),
+      gotoClient(clients[1], linkedBoothUrl(session, 2, '2,3')),
+    ]);
+    await Promise.all(clients.map((client) => waitPlaying(client, 4, 0)));
+    return await finishBrowserCase('4P linked booths (2 pilots each)', clients, 4, 0, [0, 1, 2, 3]);
+  } finally {
+    await closeClients(clients);
+  }
+}
+
 async function runDeathmatchPrejoined2(browser: Browser): Promise<BrowserCaseResult> {
   const session = `dmpre-${randomBytes(4).toString('hex')}`;
   const joiner = await newClient(browser, 'prejoined P2');
@@ -618,6 +678,7 @@ async function main(): Promise<void> {
   const browser = await chromium.launch();
   try {
     if (shouldRun('coop')) await runCoop2(browser);
+    if (shouldRun('linked')) { await runFrameSetRelayProbe(); await runLinkedBooths4(browser); }
     if (shouldRun('prejoined')) await runDeathmatchPrejoined2(browser);
     if (shouldRun('late')) await runDeathmatchLate2(browser);
     if (shouldRun('allhuman4')) await runDeathmatchAllHuman4(browser);
