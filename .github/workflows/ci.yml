@@ -45,7 +45,10 @@ jobs:
       - name: Install Playwright browser
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Check Signet Login bundle drift
+      # Warn-only here: a new signet-login release must not turn unrelated PRs red.
+      # deploy.yml, release-static.yml and desktop-release.yml still block on this check.
+      - name: Check Signet Login bundle drift (warn only)
+        continue-on-error: true
         run: pnpm run check:signet-login
 
       - name: Same-account score recovery
