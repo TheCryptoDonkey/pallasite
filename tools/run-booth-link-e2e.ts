@@ -43,6 +43,8 @@ try {
   const linkBoothsUrl = async (booth: 1 | 2, pilots?: string): Promise<URL | null> => {
     const page = await (await browser.newContext({ viewport: { width: 900, height: 560 } })).newPage();
     await page.goto(`${VITE}/?p${booth}&link=${link}${pilots ? `&pilots=${pilots}` : ''}`, { waitUntil: 'domcontentloaded' });
+    // The booth sits behind a TAP-TO-START audio-unlock gate (0988e8e) until tapped.
+    await page.locator('button', { hasText: /TAP TO START/i }).first().click({ timeout: 8000 }).catch(() => undefined);
     await page.waitForFunction(() => /WHO ARE YOU|BOOTH/i.test(document.body.innerText), { timeout: 15000 }).catch(() => undefined);
     // Complete guest if the login screen is up (arcade picker submits on its DONE button's pointerdown).
     if (/WHO ARE YOU/i.test(await page.evaluate(() => document.body.innerText))) {
