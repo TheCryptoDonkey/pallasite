@@ -21,14 +21,14 @@
  *   PALLASITE_KIOSK             "0" for a normal window  default kiosk/fullscreen
  */
 
-import { app, BrowserWindow, globalShortcut } from 'electron';
+import { app, BrowserWindow, globalShortcut, session } from 'electron';
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { startStaticServer } from './static-server.mjs';
-import { resolveVariant } from './variants.mjs';
+import { resolveVariant, PRODUCTION_BROKER, FAUCET_ORIGIN } from './variants.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -128,8 +128,24 @@ function stopBroker() {
   }
 }
 
+/** The hosted relay accepts game screens (the host role) only from the owner's own
+ *  sites, judged by the Origin header. This wrapper serves the game from
+ *  http://127.0.0.1, which is not one of them, yet it is the owner's own app, so
+ *  send the production site's origin on the relay's WebSocket and nothing else.
+ *  Booth builds talk to their own local relay and need nothing. */
+function presentProductionOrigin() {
+  if (!CONFIG.brokerUrl) return;
+  let relay;
+  try { relay = new URL(CONFIG.brokerUrl); } catch { return; }
+  if (relay.host !== new URL(PRODUCTION_BROKER).host) return;
+  session.defaultSession.webRequest.onBeforeSendHeaders({ urls: [`${relay.protocol}//${relay.host}/*`] }, (details, callback) => {
+    callback({ requestHeaders: { ...details.requestHeaders, Origin: FAUCET_ORIGIN } });
+  });
+}
+
 async function createWindow() {
   const { dist, brokerDir } = resourcePaths();
+  presentProductionOrigin();
 
   const started = await startStaticServer({
     root: dist,
