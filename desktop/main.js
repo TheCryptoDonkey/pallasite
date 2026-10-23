@@ -131,13 +131,13 @@ function stopBroker() {
 /** The hosted relay accepts game screens (the host role) only from the owner's own
  *  sites, judged by the Origin header. This wrapper serves the game from
  *  http://127.0.0.1, which is not one of them, yet it is the owner's own app, so
- *  send the production site's origin on the relay's WebSocket and nothing else.
- *  Booth builds talk to their own local relay and need nothing. */
+ *  send the production site's origin on WebSockets to the production relay and
+ *  nothing else. Both variants need it: the public build plays through the
+ *  production relay, and the booth's phone pairing also uses it (a phone cannot
+ *  reach the booth's own loopback relay). Linked-booth traffic goes to the local
+ *  relay, which has no such check. */
 function presentProductionOrigin() {
-  if (!CONFIG.brokerUrl) return;
-  let relay;
-  try { relay = new URL(CONFIG.brokerUrl); } catch { return; }
-  if (relay.host !== new URL(PRODUCTION_BROKER).host) return;
+  const relay = new URL(PRODUCTION_BROKER);
   session.defaultSession.webRequest.onBeforeSendHeaders({ urls: [`${relay.protocol}//${relay.host}/*`] }, (details, callback) => {
     callback({ requestHeaders: { ...details.requestHeaders, Origin: FAUCET_ORIGIN } });
   });
