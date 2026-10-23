@@ -320,11 +320,11 @@ export async function startStreamSession(
     created_at: Math.floor(Date.now() / 1000),
     content:
       `Playing Pallasite live — anonymous-jury-reviewed cosmic-arcade with ` +
-      `Lightning sat payouts and live Nostr telemetry. Spectators welcome.`,
+      `live Nostr telemetry. Spectators welcome.`,
     tags: [
       ['d', dTag],
       ['title', 'Playing Pallasite'],
-      ['summary', 'Cosmic arcade — Lightning payouts, anonymous jury cheat review, live game state on Nostr.'],
+      ['summary', 'Cosmic arcade — anonymous jury cheat review, live game state on Nostr.'],
       ['status', 'live'],
       ['starts', String(startsAtSec)],
       // Where viewers can actually watch — watch.pallasite.app filters

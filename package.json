@@ -1,7 +1,7 @@
 {
   "name": "@thecryptodonkey/pallasite",
   "version": "0.1.0",
-  "description": "Pallasite \u2014 Shoot rocks. Stack sats. Cosmic arcade Asteroids with Lightning payouts and Nostr leaderboards. Sign in with Nostr.",
+  "description": "Pallasite \u2014 Shoot rocks. Climb the board. Free cosmic arcade Asteroids with Nostr leaderboards. Sign in with Nostr.",
   "homepage": "https://pallasite.app/?p1",
   "type": "module",
   "packageManager": "pnpm@9.0.0",

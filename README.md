@@ -1,6 +1,6 @@
 # Pallasite
 
-Cosmic arcade Asteroids with Lightning sat payouts, Nostr leaderboards, replays, zaps, and kiosk-friendly controller flows.
+Free cosmic arcade Asteroids with Nostr leaderboards, replays, zaps, and kiosk-friendly controller flows.
 
 Default public screen: <https://pallasite.app/?p1>
 
@@ -52,6 +52,10 @@ Required GitHub secrets:
 - `HETZNER_PATH`
 
 Manual fallback deploy is `.github/workflows/release-static.yml`, which runs the same checks and rsync path.
+
+## Payouts ended
+
+Sats payouts ended on 23 October 2026. The faucet is switched off and its `/api` answers 410, so the game has no claim, withdraw or balance flow. The in-game sats counter and the x2 SATS pickup remain as score mechanics only and carry no cash value. Scores, waves and Nostr leaderboards are unchanged.
 
 ## Donations
 

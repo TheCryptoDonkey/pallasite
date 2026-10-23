@@ -1,16 +1,15 @@
 /**
- * Legal pages — terms of service + privacy notice.
+ * Legal pages — terms of use + privacy notice.
  *
  * Rendered as modal overlays above whatever screen the user is on
  * (no hash router in this codebase). Click the backdrop or press
  * Escape to dismiss.
  *
- * Wording is tuned for UK hobby scale: the game itself is open to
- * all ages; only the Lightning sats claim flow is gated to 18+ as
- * a self-attestation, sitting under Schedule 11 of the Gambling
- * Act 2005 (free prize competition — no purchase required, sats
- * are gifts). No solicitor review at this scale; iterate as the
- * project grows.
+ * Wording is tuned for UK hobby scale. Pallasite is a free arcade game open
+ * to all ages. Sats payouts ended on 23 October 2026 and no claims can be
+ * made, so there is no prize competition, eligibility or age gating text.
+ * Tips remain voluntary gifts that buy nothing. No solicitor review at this
+ * scale; iterate as the project grows.
  */
 
 import { DEV } from './credits.js';
@@ -156,41 +155,19 @@ export function renderLegalFooter(parent: HTMLElement): void {
 function termsHtml(): string {
   const npub = DEV.npub;
   return `
-    <p>Pallasite is a free arcade game, open to players of any age. Skill-based scores can also earn small Lightning sats payouts from a developer-funded faucet — that part of the game is restricted to adults. By claiming sats you agree to these terms.</p>
+    <p>Pallasite is a free arcade game, open to players of any age. Sats payouts ended on 23 October 2026. No claims can be made, and nothing in the game pays out real money or anything else of value.</p>
 
     <h3>Playing the game</h3>
-    <p>The game itself — flying the ship, surviving waves, posting high scores, sharing run cards — is free for everyone, including under-18s. No sign-in is required to play.</p>
-
-    <h3>Free prize competition</h3>
-    <p>Sats payouts are gifts under a free prize competition (Schedule 11, Gambling Act 2005). No purchase or payment is required to play, claim, or win. Payouts are funded by the developer.</p>
+    <p>Flying the ship, surviving waves, posting high scores and sharing run cards is free for everyone. No sign-in is required to play. The sats counter in the game is a score-style tally only. It has no cash value and cannot be withdrawn.</p>
 
     <h3>Tips</h3>
-    <p>Tips and donations are voluntary gifts. They buy nothing: no features, power-ups, perks, faster payouts or any other advantage are unlocked by tipping, and tipping does not affect your scores or eligibility. Tips are not refundable.</p>
-
-    <h3>Eligibility to claim sats</h3>
-    <p>To claim sats you must be 18 or older. You must not be a designated person under any UK or international sanctions regime, and you must not be located in a sanctioned jurisdiction. This is a self-attestation — we do not perform technical age or identity screening. If you are under 18, please keep playing for high scores and bragging rights, but do not attempt to claim payouts on your own behalf or on behalf of an adult.</p>
-
-    <h3>How claims work</h3>
-    <ul>
-      <li>Sign in with a Nostr signer (NIP-07 extension or NIP-46 bunker).</li>
-      <li>Provide a valid Lightning address (LUD-16) where sats are sent.</li>
-      <li>Each claim is recomputed server-side and clamped by the active per-claim, daily, and lifetime caps.</li>
-      <li>A cooldown applies between claims, and each claim must beat your personal best for the wave to qualify.</li>
-    </ul>
-
-    <h3>Caps and limits</h3>
-    <ul>
-      <li>Anonymous tier: 100 sats lifetime.</li>
-      <li>NIP-05 verified: 500 sats lifetime.</li>
-      <li>Signet verified: 2,000 sats lifetime.</li>
-      <li>A daily faucet cap, per-claim ceiling, and hourly burst limit apply across all players.</li>
-    </ul>
+    <p>Tips and donations are voluntary gifts. They buy nothing: no features, power-ups, perks or any other advantage are unlocked by tipping, and tipping does not affect your scores. Tips are not refundable.</p>
 
     <h3>No warranty</h3>
-    <p>The faucet is provided as-is. We may pause, modify, or discontinue payouts at any time. We are not liable for downstream Lightning Network failures, custodial wallet issues, or losses arising from your use of the game or the faucet.</p>
+    <p>The game is provided as-is. We may change, pause or discontinue any part of it at any time. We are not liable for losses arising from your use of the game.</p>
 
     <h3>Cheating</h3>
-    <p>Runs flagged as cheats by automated stat checks are not paid out. Repeated abuse may result in your pubkey being flagged on the server.</p>
+    <p>Runs flagged as cheats by automated checks may be hidden from leaderboards.</p>
 
     <h3>Contact</h3>
     <p>Reach the developer via Nostr at
@@ -201,41 +178,29 @@ function termsHtml(): string {
 
 function privacyHtml(): string {
   return `
-    <p>This notice covers what the pallasite-faucet stores and shares.</p>
+    <p>This notice covers what Pallasite stores and shares. Sats payouts ended on 23 October 2026, so the game no longer takes Lightning addresses or processes claims.</p>
 
-    <h3>What we store</h3>
+    <h3>On your device</h3>
     <ul>
-      <li>Your Nostr pubkey (hex), as the unique identifier of your claims.</li>
-      <li>The Lightning address you provide for each claim.</li>
-      <li>Per-claim metadata: score, wave, run duration, payment hash, and a small JSON blob of gameplay telemetry.</li>
-      <li>Your IP address transiently, only at rate-limit time. We do not retain persistent IP logs.</li>
+      <li>Settings, high scores, streaks, unlocks and a local guest identity (a Nostr key made in your browser) are kept in your browser's local storage. Clearing site data removes them.</li>
+      <li>No names, emails, billing details, analytics cookies or browser fingerprints are collected.</li>
     </ul>
 
-    <h3>What we do not store</h3>
-    <ul>
-      <li>Names, emails, billing details.</li>
-      <li>Browser fingerprints or analytics cookies.</li>
-      <li>Long-term IP logs.</li>
-    </ul>
+    <h3>Nostr relays</h3>
+    <p>Scores, ghosts, replays, skin unlocks and live-play events are published as signed Nostr events to public relays under your Nostr public key, and scores may appear on third-party leaderboards. Once published, events cannot be unpublished or recalled from relays.</p>
 
-    <h3>Retention</h3>
-    <ul>
-      <li>Claim records are kept indefinitely. The corresponding Nostr events are public on relays anyway.</li>
-      <li>The internal <code>baseline_log</code> telemetry table is purged once threshold tuning is complete (~4 weeks).</li>
-    </ul>
+    <h3>Past claims</h3>
+    <p>Records of past claims are held by the operator and will be deleted.</p>
+    <!-- [DECISION: delete the faucet claim records on the host, then change this sentence to say they were deleted on <date>.] -->
+
+    <h3>Game services</h3>
+    <p>The game's server API, which handled payouts, has been switched off and now answers every request with an error. Phone controllers and multiplayer connect through the game's controller service, which passes control messages between devices.</p>
 
     <h3>Tips</h3>
-    <p>Tips are voluntary gifts sent directly to the developer's public Lightning address, Geyser page or Ko-fi page. The game does not receive, check or store any record of a tip, and a tip unlocks nothing.</p>
-
-    <h3>Third parties</h3>
-    <ul>
-      <li>Phoenixd (the on-box Lightning node) handles outbound payments and keeps its own payment records.</li>
-      <li>Your Lightning wallet custodian receives the LNURL invoice request and may keep records of incoming payments.</li>
-      <li>Nostr relays publicly propagate kind 30762 score events; once published, events cannot be unpublished.</li>
-    </ul>
+    <p>Tips are voluntary gifts sent directly to the developer's public Lightning address, Geyser page or Ko-fi page. The game does not receive, check or store any record of a tip, and a tip unlocks nothing. Your wallet provider may keep its own records.</p>
 
     <h3>Your rights</h3>
-    <p>You may request deletion of your server-side records by contacting the developer. We can remove rows from our database but cannot retract events that have already propagated to relays.</p>
+    <p>You may ask the developer to delete any records the operator holds about you. We cannot retract events that have already propagated to relays.</p>
 
     <p>For UK data-protection complaints, see the Information Commissioner's Office:
       <a href="https://ico.org.uk" target="_blank" rel="noopener" style="color:var(--hud-yellow)">ico.org.uk</a>.

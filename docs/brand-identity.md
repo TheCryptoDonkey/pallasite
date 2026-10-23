@@ -4,7 +4,7 @@
 **Score:** 72 / 80 — Exceptional
 **Working title before this session:** Asteroid Sats
 
-A vector-arcade game with Lightning sat payouts and Nostr leaderboards, signed in with Signet. Pallasite trades the literal "asteroid + sats" mashup for a name with deeper roots and cleaner namespace.
+A free vector-arcade game with Nostr leaderboards (sat payouts ended on 23 October 2026), signed in with Signet. Pallasite trades the literal "asteroid + sats" mashup for a name with deeper roots and cleaner namespace.
 
 ---
 
@@ -58,11 +58,11 @@ Latin-Greek scientific term. No known pejorative meanings in Spanish, French, Ge
 
 ---
 
-## 2. Tagline — *Shoot rocks. Stack sats.*
+## 2. Tagline — *Shoot rocks. Climb the board.*
 
 The action and the promise in five words. Three-three rhythm. Tells a stranger exactly what happens.
 
-Pairs as: *Pallasite — Shoot rocks. Stack sats.*
+Pairs as: *Pallasite — Shoot rocks. Climb the board.*
 
 ### Runner-ups (held in reserve)
 
