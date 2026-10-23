@@ -1,7 +1,7 @@
 {
   "sourceRepository": "forgesworn/joystick",
   "sourcePath": "packages/broker",
-  "sourceCommit": "61e27b35579ae69ab48afc998868825e94ccda69",
+  "sourceCommit": "07eeb1cfc0bf0bc5777739a1235824e1eee1f0d0",
   "files": {
     "server.js": "33b2c8ec9725259f9f17246e749e4569d41620bc0932ffbcea975def6889d0c9",
     "controller-policy.js": "200718f8204fd46629591f162fb782b0002a6218f6fbe4bb13b999d477fba912",
