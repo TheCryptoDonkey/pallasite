@@ -65,7 +65,7 @@ export function renderShareCard(state: GameState): HTMLCanvasElement {
   ctx.shadowBlur = 0;
   ctx.fillStyle = 'rgba(255, 216, 74, 0.85)';
   ctx.font = '22px ui-monospace, "Courier New", monospace';
-  ctx.fillText('SHOOT ROCKS · STACK SATS', 68, 158);
+  ctx.fillText('SHOOT ROCKS · CLIMB THE BOARD', 68, 158);
 
   // ── Headline numbers ───────────────────────────────────────────────────
   const isComplete = state.wave >= 25 && state.bossDefeated;
@@ -124,9 +124,9 @@ function buildShareText(state: GameState): string {
   const t = formatRunTime(state.runTimeMs);
   const isComplete = state.wave >= 25 && state.bossDefeated;
   if (isComplete) {
-    return `Pallasite — completed all 24 specimens + Event Horizon in ${t}. Shoot rocks. Stack sats.`;
+    return `Pallasite — completed all 24 specimens + Event Horizon in ${t}. Shoot rocks. Climb the board.`;
   }
-  return `Pallasite — wave ${state.wave}, score ${state.players[0].score.toLocaleString()}, ${t}. Shoot rocks. Stack sats.`;
+  return `Pallasite — wave ${state.wave}, score ${state.players[0].score.toLocaleString()}, ${t}. Shoot rocks. Climb the board.`;
 }
 
 /**

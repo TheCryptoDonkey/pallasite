@@ -46,7 +46,7 @@ import { getHapticsEnabled, setHapticsEnabled, hapticsSupported } from './haptic
 import * as auth from './auth.js';
 import type { SignetSession } from 'signet-login';
 import { addLocalHighScore, getLocalHighScores, isHighScore, subscribeGlobalHighScores, clearLocalHighScores, publishCoopCampaignScore, type GlobalHighScore, type ScoreBoardId } from './score.js';
-import { submitClaim, submitCoopScore, submitSoloScore, submitWithdraw, submitCheckin, fetchPool, fetchPlayer, fetchFlagged, requestDeleteFlag, requestLnurlWithdraw, pollLnurlWithdrawStatus, fetchAdminState, setAdminCaps, setAdminPause, applyAdminPreset, saveAdminSettings, fetchAdminPlayer, setAdminPlayerFlag, adjustAdminPlayerBalance, setAdminPlayerTier, isAdminSession, type PlayerTier, type FlaggedEntry, type AdminStateResult, type AdminPlayer } from './faucet.js';
+import { submitCoopScore, submitSoloScore, fetchFlagged, requestDeleteFlag, fetchAdminState, setAdminCaps, setAdminPause, applyAdminPreset, saveAdminSettings, fetchAdminPlayer, setAdminPlayerFlag, adjustAdminPlayerBalance, setAdminPlayerTier, isAdminSession, type FlaggedEntry, type AdminStateResult, type AdminPlayer } from './faucet.js';
 import {
   fetchReviewCases,
   generateJuryIdentity,
@@ -60,12 +60,12 @@ import {
   type StoredJuryIdentity,
   type VoteSubmitResult,
 } from './jury.js';
-import { renderLegalFooter, openTermsModal } from './legal.js';
+import { renderLegalFooter } from './legal.js';
 import { shouldAskV4v, markV4vPaid, markV4vDeclined, v4vNudge, V4V_LIGHTNING_ADDRESS, V4V_GEYSER_URL, V4V_KOFI_URL, V4V_GIFT_LINE } from './v4v.js';
 import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow, getSanctumStats } from './game.js';
 import * as audio from './audio.js';
 import { signalRelicFaces } from './sanctum-art.js';
-import { listTracks, currentTrackId, musicPreviewPlay, musicForceRefresh, musicStop, musicNotifyClaimSuccess, musicWarmUpAll, musicResetElements, getMusicDebugSnapshot, listAlbums, getActiveAlbumId, setActiveAlbum, musicSetFreeplay } from './music.js';
+import { listTracks, currentTrackId, musicPreviewPlay, musicForceRefresh, musicStop, musicWarmUpAll, musicResetElements, getMusicDebugSnapshot, listAlbums, getActiveAlbumId, setActiveAlbum, musicSetFreeplay } from './music.js';
 import { getMusicAnalyser } from './audio.js';
 import { fetchProfile, getCachedProfile, bestName, type NostrProfile } from './profile.js';
 import { type Difficulty, getStoredDifficulty, setStoredDifficulty, lockInDifficulty } from './difficulty.js';
@@ -104,12 +104,11 @@ import { savePersonalGhost } from './personal-ghost.js';
 import { canCaptureClip, captureClip, shareClip, shareDailyStats } from './clip.js';
 import { REPLAY_TOTAL_WALL_MS, REPLAY_EXPLOSION_WALL_MS } from './types.js';
 import { getStreak, getBestStreak, markDailyCompleted, buildDailyShareText } from './streak.js';
-import { markAchievement, getRunAchievements } from './achievements.js';
-import { savePendingClaim, clearPendingClaim, getFreshPendingClaim, isTerminalClaimError } from './pending-claim.js';
+import { markAchievement } from './achievements.js';
 import { WORLD_W as PALL_WORLD_W, WORLD_H as PALL_WORLD_H } from './types.js';
 import {
   SKINS, getActiveSkinId, setActiveSkinId, isSkinUnlocked,
-  markSkinUnlocked, publishSkinUnlocks, syncSkinUnlocksFromNostr,
+  publishSkinUnlocks, syncSkinUnlocksFromNostr,
   type SkinDef,
 } from './skins.js';
 import {
@@ -505,15 +504,15 @@ function detectInputKind(): InputKind {
 const CONTROL_COPY: Record<InputKind, { drift: string; fire: string }> = {
   gamepad: {
     drift: 'Push the left stick to fly — the ship points where you push and drifts on. Squeeze the right trigger for an extra burst. There is no friction here; you keep moving until you turn.',
-    fire: 'Left trigger or A fires — or push the right stick to aim and auto-fire. Right bumper raises a shield; left bumper jumps to hyperspace when you are cornered. Quick consecutive kills chain a multiplier up to 5×. Hunt the gold rocks for sats.',
+    fire: 'Left trigger or A fires — or push the right stick to aim and auto-fire. Right bumper raises a shield; left bumper jumps to hyperspace when you are cornered. Quick consecutive kills chain a multiplier up to 5×. Hunt the gold rocks for the sats counter.',
   },
   touch: {
     drift: 'Drag the stick to fly — the ship points where you push, then drifts on. There is no friction here; you keep moving until you turn.',
-    fire: 'Tap FIRE to shoot. ⛨ raises a shield; ⚡ jumps to hyperspace when you are cornered. Quick consecutive kills chain a multiplier up to 5×. Hunt the gold rocks for sats.',
+    fire: 'Tap FIRE to shoot. ⛨ raises a shield; ⚡ jumps to hyperspace when you are cornered. Quick consecutive kills chain a multiplier up to 5×. Hunt the gold rocks for the sats counter.',
   },
   keyboard: {
     drift: 'Rotate ◀ ▶ to face. Thrust ▲ to drift. There is no friction here; mass keeps moving until you point the other way.',
-    fire: 'Space to fire. ▼ raises a shield; Shift jumps to hyperspace when you are cornered. Quick consecutive kills chain a multiplier up to 5×. Hunt the gold rocks for sats.',
+    fire: 'Space to fire. ▼ raises a shield; Shift jumps to hyperspace when you are cornered. Quick consecutive kills chain a multiplier up to 5×. Hunt the gold rocks for the sats counter.',
   },
 };
 
@@ -535,7 +534,7 @@ function buildOnboardingCards(): OnboardingCard[] {
     {
       step: '3 / 3',
       title: 'BANK',
-      body: 'Survive each wave to bank what you earned. Twenty-five waves to the horizon. Sign in with Nostr to bank real sats and stake your name on the leaderboard.',
+      body: 'Survive each wave to bank what you earned. Twenty-five waves to the horizon. Sign in with Nostr to stake your name on the leaderboard.',
     },
   ];
 }
@@ -1342,13 +1341,12 @@ export function renderTitle(state: GameState): void {
   (titleLogo as HTMLImageElement).decoding = 'async';
   // Easter egg: long-press the logo to open the secret music player.
   bindLogoLongPress(titleLogo, () => renderMusicPlayer(state, () => renderTitle(state)));
-  const tagline = el('p', { parent: overlay, text: 'SHOOT ROCKS · STACK SATS' });
+  const tagline = el('p', { parent: overlay, text: 'SHOOT ROCKS · CLIMB THE BOARD' });
   tagline.style.cssText = 'font-size:1.2rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin-top:-12px;';
-  el('p', { parent: overlay, text: 'Cosmic arcade · Lightning sats · Nostr leaderboards' });
+  el('p', { parent: overlay, text: 'Cosmic arcade · Nostr leaderboards' });
 
   const setup = el('div', { className: 'run-setup', parent: overlay });
   const launchRow = el('div', { className: 'menu-row launch-row', parent: setup });
-  renderPoolChip(overlay);
 
   const sessionPanel = el('div', { className: 'session-panel', parent: overlay });
   renderSessionPanel(sessionPanel, state);
@@ -1372,18 +1370,6 @@ export function renderTitle(state: GameState): void {
   // current daily seed so the title screen always has a visible "duel of
   // the day" hook. Empty state ("be the first") is itself motivating.
   renderDailyLeaderChip(overlay);
-
-  // Persistent-balance chip — shows accumulated sats banked from prior
-  // claims + a WITHDRAW button when balance crosses the threshold. Only
-  // renders for signed-in players (anon balances live server-side
-  // anyway, but the chip is a signed-in surface).
-  renderBalanceChip(overlay, state);
-
-  // Pending-claim recovery — if a previous run's claim failed (signer
-  // hiccup, network blip, idle-skip dumped to title before retry), the
-  // payload is still on localStorage within the server's 5-min replay
-  // window. Surface a one-tap retry banner so the sats aren't orphaned.
-  renderPendingClaimBanner(overlay, state);
 
   const row = el('div', { className: 'menu-row', parent: overlay });
   // IGNITE label and behaviour both pivot on the stored mode: DUEL routes to
@@ -2369,9 +2355,9 @@ export function renderAttract(state: GameState): void {
   (titleLogo as HTMLImageElement).decoding = 'async';
   bindLogoLongPress(titleLogo, () => renderMusicPlayer(state, () => renderAttract(state)));
 
-  const tagline = el('p', { parent: overlay, text: 'SHOOT ROCKS · STACK SATS' });
+  const tagline = el('p', { parent: overlay, text: 'SHOOT ROCKS · CLIMB THE BOARD' });
   tagline.style.cssText = 'font-size:1.2rem;color:var(--hud-yellow);letter-spacing:0.25em;text-shadow:0 0 8px rgba(255,216,74,0.5);margin-top:-12px;';
-  el('p', { parent: overlay, text: 'Cosmic arcade · Lightning sats · Nostr leaderboards' });
+  el('p', { parent: overlay, text: 'Cosmic arcade · Nostr leaderboards' });
 
   // Rotating attract panel — three contents cycle every few seconds:
   //   GLOBAL HIGH SCORES TOP 5   (8s)  — live-updating leaderboard
@@ -2793,90 +2779,6 @@ export function renderAuth(state: GameState, onDone: () => void, opts?: { onReso
   setTimeout(() => tryFocusVisible(signInBtn), 0);
 }
 
-/**
- * Faucet status chip. Shows a single live/paused signal plus the daily-cap
- * meter — never the absolute float or lifetime payout, since advertising
- * pot size is a honey-pot for abuse. Polled every 60s while the title is
- * visible.
- */
-function renderPoolChip(parent: HTMLElement): void {
-  const wrapper = el('div', { parent });
-  wrapper.style.cssText =
-    'display:flex;flex-direction:column;align-items:center;gap:4px;margin:6px 0 4px';
-
-  const lineStatus = el('p', { parent: wrapper });
-  lineStatus.style.cssText =
-    'font-size:0.78rem;color:rgba(255,216,74,0.65);letter-spacing:0.08em;margin:0';
-  lineStatus.textContent = 'Faucet: …';
-
-  // Daily-faucet meter: thin horizontal bar + spent/cap text. Hidden until
-  // the first /api/pool response with daily_cap_sats arrives.
-  const meterWrap = el('div', { parent: wrapper });
-  meterWrap.style.cssText =
-    'display:none;flex-direction:column;align-items:center;gap:2px;width:200px;margin-top:4px';
-
-  const meterBar = el('div', { parent: meterWrap });
-  meterBar.style.cssText =
-    'width:100%;height:4px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden';
-
-  const meterFill = el('div', { parent: meterBar });
-  meterFill.style.cssText =
-    'height:100%;width:0%;background:#58ff58;transition:width 600ms ease,background 400ms ease';
-
-  const meterLabel = el('p', { parent: meterWrap });
-  meterLabel.style.cssText =
-    'font-size:0.72rem;color:rgba(180,180,180,0.7);letter-spacing:0.08em;margin:0';
-
-  let intervalId: number | null = null;
-
-  const update = async (): Promise<void> => {
-    const pool = await fetchPool();
-    if (!wrapper.isConnected) {
-      if (intervalId !== null) clearInterval(intervalId);
-      return;
-    }
-    if (!pool) {
-      lineStatus.textContent = 'Faucet status unavailable';
-      lineStatus.style.color = 'rgba(180,180,180,0.6)';
-      meterWrap.style.display = 'none';
-      return;
-    }
-    if (pool.paused) {
-      lineStatus.textContent = 'Faucet paused';
-      lineStatus.style.color = '#ff8050';
-    } else {
-      lineStatus.textContent = 'Faucet active';
-      lineStatus.style.color = 'rgba(255,216,74,0.65)';
-    }
-
-    // Daily meter — green / amber / red as the cap fills.
-    if (typeof pool.daily_cap_sats === 'number' && pool.daily_cap_sats > 0) {
-      const spent = pool.daily_spent_sats ?? 0;
-      const pct = Math.min(100, Math.round((spent / pool.daily_cap_sats) * 100));
-      meterFill.style.width = `${pct}%`;
-      let colour = '#58ff58'; // green
-      if (pct >= 90) colour = '#ff5050';
-      else if (pct >= 60) colour = '#ffd84a';
-      meterFill.style.background = colour;
-      meterLabel.textContent =
-        pct >= 100
-          ? `Today's faucet drained — back tomorrow`
-          : `Today: ${spent.toLocaleString()} of ${pool.daily_cap_sats.toLocaleString()} sats`;
-      meterWrap.style.display = 'flex';
-    } else {
-      meterWrap.style.display = 'none';
-    }
-  };
-
-  void update();
-  intervalId = window.setInterval(() => {
-    if (!wrapper.isConnected) {
-      if (intervalId !== null) clearInterval(intervalId);
-      return;
-    }
-    void update();
-  }, 60_000);
-}
 
 /** Title/attract leaderboard read cap — see the deferral note in
  *  renderGlobalLeaderboard. Scores are replicated across every active relay
@@ -3201,504 +3103,10 @@ function renderDailyRow(parent: HTMLElement): void {
   void getActiveSeed;  // keep import bound for cross-references
 }
 
-/**
- * Today's daily-seed chase chip. Polls the ghost cache (warmed by
- * prefetchTopGhost in renderTitle) and updates when the relays answer.
- *
- * Framed as a chase target rather than a stat:
- *   - Empty state: "TODAY IS FRESH · SET THE BAR"
- *   - Filled state: "CHASING @name · 47,820"
- *
- * Display name resolves via the kind 0 cache + fetch path used by the
- * leaderboards. Falls back to a pubkey stub if the player has no
- * profile metadata yet, then upgrades in place when the fetch lands.
- *
- * Read-only -- the DAILY/FREE toggle directly above is the actual control.
- */
-/**
- * Streak chip — small horizontal chip surfacing the player's current
- * daily-completion streak and their best ever. Only renders when the
- * player has completed at least one daily run; before that there's
- * nothing to show. Streak number gets a yellow accent so the player
- * sees it as a thing they're protecting.
- */
-function renderPendingClaimBanner(parent: HTMLElement, state: GameState): void {
-  const session = state.session;
-  if (!session) return;
-  if (!session.signer.capabilities.canSignEvents) return;
-  const pending = getFreshPendingClaim(session.pubkey);
-  if (!pending) return;
 
-  const wrap = el('div', { parent });
-  wrap.style.cssText = [
-    'display:flex', 'flex-direction:column', 'gap:8px', 'align-items:stretch',
-    'margin:12px auto 4px', 'padding:10px 14px', 'max-width:340px',
-    'border-radius:8px', 'background:rgba(255,128,80,0.08)',
-    'border:1px solid rgba(255,128,80,0.45)',
-    'text-align:center',
-  ].join(';');
 
-  const head = el('p', { parent: wrap });
-  head.style.cssText = 'margin:0;font-size:0.82rem;color:#ffd84a;letter-spacing:0.08em';
-  head.textContent = `UNCLAIMED · ${pending.payload.sats_claimed} SATS`;
 
-  const sub = el('p', { parent: wrap });
-  sub.style.cssText = 'margin:0;font-size:0.74rem;color:#cccccc;line-height:1.4';
-  sub.textContent = `Wave ${pending.payload.wave} · ${pending.payload.score.toLocaleString()} score`;
 
-  const btn = el('button', { className: 'menu-btn', parent: wrap, text: 'RETRY CLAIM' }) as HTMLButtonElement;
-  btn.style.cssText = 'padding:6px 12px;font-size:0.85rem;cursor:pointer';
-
-  const status = el('p', { parent: wrap });
-  status.style.cssText = 'margin:0;min-height:1.1em;font-size:0.74rem;color:#888';
-
-  const dismissBtn = el('button', { className: 'menu-btn secondary', parent: wrap, text: 'DISMISS' }) as HTMLButtonElement;
-  dismissBtn.style.cssText = 'padding:4px 10px;font-size:0.72rem;cursor:pointer;opacity:0.7';
-  onTap(dismissBtn, () => {
-    clearPendingClaim();
-    wrap.remove();
-  });
-
-  onTap(btn, () => {
-    void (async () => {
-      btn.disabled = true;
-      dismissBtn.disabled = true;
-      status.style.color = '#5b9dff';
-      status.textContent = 'Validating…';
-      try {
-        const result = await submitClaim(session, pending.payload);
-        if (result.ok) {
-          clearPendingClaim();
-          status.style.color = '#58ff58';
-          status.textContent = `✓ Banked ${result.payout_sats} sats · balance: ${result.new_balance}`;
-          btn.remove();
-          dismissBtn.textContent = 'CLOSE';
-          dismissBtn.disabled = false;
-        } else {
-          if (isTerminalClaimError(result.error)) {
-            clearPendingClaim();
-            status.style.color = '#ff8050';
-            status.textContent = claimErrorMessage(result.error, result.detail, result.retry_after_ms);
-            btn.remove();
-            dismissBtn.textContent = 'CLOSE';
-            dismissBtn.disabled = false;
-          } else {
-            status.style.color = '#ff8050';
-            status.textContent = claimErrorMessage(result.error, result.detail, result.retry_after_ms);
-            btn.disabled = false;
-            dismissBtn.disabled = false;
-          }
-        }
-      } catch (err) {
-        status.style.color = '#ff8050';
-        status.textContent = err instanceof Error ? err.message : 'Retry failed.';
-        btn.disabled = false;
-        dismissBtn.disabled = false;
-      }
-    })();
-  });
-}
-
-/** Minimum balance before the WITHDRAW button activates. Sits just above the
- *  faucet's own withdraw floor (MIN_WITHDRAW_SATS / lnurl_min_sats = 10) so a
- *  single decent run can actually cash out — a 100-sat gate left small venue
- *  runs (e.g. 26 sats) with no way to get paid, only "bank to balance". 21 is
- *  high enough to dodge sub-10-sat LSP invoice minima and dust-fee waste while
- *  still letting most runs pay out. Gates both the title WITHDRAW button and the
- *  game-over direct-payout options (canDirectPayout). */
-const WITHDRAW_THRESHOLD_SATS = 21;
-
-function renderBalanceChip(parent: HTMLElement, state: GameState): void {
-  if (!state.session) return;
-  const wrap = el('div', { parent });
-  wrap.style.cssText = [
-    'display:flex', 'flex-direction:column', 'align-items:center', 'gap:6px',
-    'margin:10px auto 4px', 'padding:10px 14px', 'max-width:340px',
-    'border-radius:8px', 'background:rgba(91,157,255,0.05)',
-    'border:1px solid rgba(91,157,255,0.30)',
-    'text-align:center',
-    // Hidden until the actual balance lands -- the previous
-    // "BALANCE · loading…" placeholder sat directly above IGNITE
-    // and made first-time players wait, thinking the game itself
-    // was still loading. Better to surface nothing than an idle hint.
-    'display:none',
-  ].join(';');
-
-  const head = el('p', { parent: wrap });
-  head.style.cssText = 'margin:0;font-size:0.78rem;color:rgba(180,180,180,0.85);letter-spacing:0.08em';
-  head.textContent = '';
-
-  const sub = el('p', { parent: wrap });
-  sub.style.cssText = 'margin:0;font-size:0.72rem;color:#888;line-height:1.4';
-
-  const stipendLine = el('p', { parent: wrap });
-  stipendLine.style.cssText = 'margin:0;font-size:0.72rem;color:#ffd84a;line-height:1.4;min-height:0';
-  stipendLine.style.display = 'none';
-
-  const withdrawBtn = el('button', { className: 'menu-btn', parent: wrap, text: 'WITHDRAW' }) as HTMLButtonElement;
-  withdrawBtn.style.cssText = 'padding:6px 12px;font-size:0.85rem;cursor:pointer;display:none';
-
-  const session = state.session;
-
-  const renderBalance = (balance: number): void => {
-    // First successful resolve reveals the chip; subsequent calls (a
-    // check-in stipend updating the value) just rewrite the head text.
-    wrap.style.display = 'flex';
-    head.innerHTML = `BALANCE <span style="color:#5b9dff;font-weight:bold;">${balance}</span>`;
-    if (balance >= WITHDRAW_THRESHOLD_SATS) {
-      withdrawBtn.style.display = 'inline-block';
-      sub.textContent = `Ready to withdraw.`;
-    } else {
-      withdrawBtn.style.display = 'none';
-      sub.textContent = `Withdraw unlocks at ${WITHDRAW_THRESHOLD_SATS} sats.`;
-    }
-    onTap(withdrawBtn, () => openWithdrawDialog(state, balance));
-  };
-
-  // Daily check-in stipend: fire-and-forget on title mount. Idempotent
-  // per UTC day, so re-renders within the same day are no-ops. Lands a
-  // +1 sat credit and shows a brief yellow stipend line.
-  void submitCheckin(session).then((c) => {
-    if (!wrap.isConnected) return;
-    if (c.ok && c.credited > 0) {
-      stipendLine.style.display = 'block';
-      stipendLine.textContent = `+${c.credited} daily check-in`;
-      renderBalance(c.new_balance);
-      return c.new_balance;
-    } else if (c.ok && !c.already_checked_in_today) {
-      // ok with credited=0 means hit the lifetime tier cap silently
-    }
-    return null;
-  }).then((preBalance) => {
-    if (!wrap.isConnected) return;
-    if (preBalance !== null) return; // already rendered from checkin
-    void fetchPlayer(session.pubkey).then((p) => {
-      if (!wrap.isConnected) return;
-      if (!p) {
-        // Faucet unreachable -- leave the chip hidden rather than
-        // surfacing an "unavailable" label. The player can still
-        // ignite and play; the balance just isn't displayed.
-        return;
-      }
-      renderBalance(p.balance_sats);
-    });
-  });
-}
-
-function openWithdrawDialog(state: GameState, balanceSats: number): void {
-  const session = state.session;
-  if (!session) return;
-
-  // Same picker pattern as the game-over destination chooser — keeps
-  // the title and recap consistent so a returning player who saved up
-  // gets the same options as a one-and-done venue guest. Three paths:
-  //   ⚡ Send to lud16 (pre-fill from profile / stored, hidden if
-  //      no pre-fill AND no kb available)
-  //   📱 Scan with wallet (LNURL-w QR — the d-pad-native option)
-  //   ✕ Cancel
-  //
-  // Amount = full balance by default. Kb users can override; d-pad
-  // users get the full amount (no numeric input to fight).
-
-  const preFilledLud16 = state.profile?.lud16 ?? getStoredLnAddress() ?? '';
-  const coarsePointer = matchMedia('(pointer: coarse)').matches;
-  const controllerPaired = activeControllerHost?.paired === true;
-  const kbAvailable = !coarsePointer && !controllerPaired;
-  const offerAddress = preFilledLud16 !== '' || kbAvailable;
-
-  const backdrop = el('div', { className: 'overlay' });
-  backdrop.style.cssText = [
-    'position:fixed', 'inset:0', 'background:rgba(0,0,0,0.78)',
-    'display:flex', 'align-items:center', 'justify-content:center',
-    'z-index:9000', 'padding:20px',
-  ].join(';');
-  document.body.appendChild(backdrop);
-  // setupOverlayArrowNav scans for buttons under the overlay on every
-  // keydown, so d-pad nav reaches the picker + sub-flow buttons even
-  // though they're built lazily after a destination is picked.
-  setupOverlayArrowNav(backdrop);
-
-  const card = el('div', { parent: backdrop });
-  card.style.cssText = [
-    'background:#0a0a0a', 'border:1px solid #333', 'border-radius:10px',
-    'padding:18px 22px', 'max-width:420px', 'width:100%',
-    'display:flex', 'flex-direction:column', 'gap:10px',
-    'max-height:90vh', 'overflow-y:auto',
-  ].join(';');
-
-  const head = el('h3', { parent: card, text: 'WITHDRAW SATS' });
-  head.style.cssText = 'margin:0;font-size:1.1rem;color:#5b9dff;letter-spacing:0.12em';
-
-  const balLine = el('p', { parent: card });
-  balLine.style.cssText = 'margin:0;font-size:0.82rem;color:#cccccc';
-  balLine.textContent = `Balance: ${balanceSats} sats`;
-
-  const heading = el('p', { parent: card, text: 'WHERE TO SEND?' });
-  heading.style.cssText = 'margin:6px 0 0;font-size:0.72rem;letter-spacing:0.18em;color:rgba(255,216,74,0.85)';
-
-  const picker = el('div', { parent: card });
-  picker.style.cssText = 'display:flex;flex-direction:column;gap:8px';
-
-  const mkBtn = (label: string, sub: string, accent: string): HTMLButtonElement => {
-    const btn = el('button', { className: 'menu-btn', parent: picker }) as HTMLButtonElement;
-    btn.style.cssText = `display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 14px;border:1.5px solid ${accent};background:rgba(2,5,13,0.4);cursor:pointer;font-size:0.92rem;letter-spacing:0.1em;text-align:center`;
-    const top = el('div', { parent: btn, text: label });
-    top.style.cssText = 'font-weight:bold;';
-    const subEl = el('div', { parent: btn, text: sub });
-    subEl.style.cssText = 'font-size:0.68rem;color:rgba(220,210,255,0.65);font-weight:normal;letter-spacing:0.06em';
-    return btn;
-  };
-
-  const addressBtn = offerAddress
-    ? mkBtn(
-        '⚡ SEND TO LIGHTNING ADDRESS',
-        preFilledLud16
-          ? `Pay ${preFilledLud16.slice(0, 32)}${preFilledLud16.length > 32 ? '…' : ''}`
-          : 'Pay an address like donkey@strike.me',
-        'rgba(140,255,180,0.55)',
-      )
-    : null;
-  const qrBtn = mkBtn('📱 SCAN WITH WALLET', 'LNURL-w QR — your wallet pulls the sats', 'rgba(184,144,255,0.55)');
-
-  const flowSlot = el('div', { parent: card });
-  flowSlot.style.cssText = 'display:flex;flex-direction:column;gap:8px';
-
-  const status = el('p', { parent: card });
-  status.style.cssText = 'margin:4px 0 0;font-size:0.82rem;min-height:1.1em;color:#888';
-
-  const closeRow = el('div', { parent: card });
-  closeRow.style.cssText = 'display:flex;gap:8px;margin-top:6px';
-  const cancelBtn = el('button', { className: 'menu-btn secondary', parent: closeRow, text: 'CANCEL' }) as HTMLButtonElement;
-  cancelBtn.style.cssText = 'flex:1;padding:8px;font-size:0.85rem;cursor:pointer';
-
-  const close = (): void => { try { backdrop.remove(); } catch { /* ignore */ } };
-  onTap(cancelBtn, close);
-  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
-  const onKey = (e: KeyboardEvent): void => { if (e.code === 'Escape') close(); };
-  window.addEventListener('keydown', onKey, { once: true });
-
-  const allButtons: HTMLButtonElement[] = [];
-  if (addressBtn) allButtons.push(addressBtn);
-  allButtons.push(qrBtn);
-  const setEnabled = (on: boolean): void => {
-    for (const b of allButtons) {
-      b.disabled = !on;
-      b.style.opacity = on ? '1' : '0.55';
-    }
-  };
-  const lockPicker = (chosen: HTMLButtonElement): void => {
-    setEnabled(false);
-    chosen.style.borderColor = '#ffd84a';
-    chosen.style.background = 'rgba(255,216,74,0.10)';
-  };
-  const unlockPicker = (): void => {
-    flowSlot.replaceChildren();
-    setEnabled(true);
-    for (const b of allButtons) {
-      b.style.background = 'rgba(2,5,13,0.4)';
-    }
-    status.textContent = '';
-  };
-
-  // ── Lightning Address destination ─────────────────────────────────
-  if (addressBtn) {
-    onTap(addressBtn, () => {
-      lockPicker(addressBtn);
-      flowSlot.replaceChildren();
-      const sub = el('div', { parent: flowSlot });
-      sub.style.cssText = 'display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid rgba(140,255,180,0.3);border-radius:8px;background:rgba(60,200,140,0.05)';
-      const lblA = el('p', { parent: sub, text: 'LIGHTNING ADDRESS' });
-      lblA.style.cssText = 'margin:0;font-size:0.72rem;color:rgba(140,255,180,0.85);letter-spacing:0.14em';
-      const addrInput = document.createElement('input');
-      addrInput.type = 'text';
-      addrInput.placeholder = 'alice@yourwallet.com';
-      addrInput.spellcheck = false;
-      addrInput.autocapitalize = 'off';
-      addrInput.autocomplete = 'email';
-      addrInput.style.cssText = 'padding:10px 12px;font-family:inherit;font-size:0.95rem;background:#0a0a0a;color:#eee;border:1px solid #333;border-radius:4px';
-      addrInput.value = preFilledLud16;
-      sub.appendChild(addrInput);
-
-      // Amount: default = balance. Numeric input is only useful with a
-      // keyboard, so hide it on coarse-pointer / paired-pad surfaces —
-      // those players get the whole balance.
-      let amount = balanceSats;
-      if (kbAvailable) {
-        const lblB = el('p', { parent: sub, text: 'AMOUNT (sats)' });
-        lblB.style.cssText = 'margin:0;font-size:0.72rem;color:rgba(140,255,180,0.85);letter-spacing:0.14em';
-        const amountInput = document.createElement('input');
-        amountInput.type = 'number';
-        amountInput.min = String(10);
-        amountInput.max = String(balanceSats);
-        amountInput.value = String(balanceSats);
-        amountInput.style.cssText = 'padding:10px 12px;font-family:inherit;font-size:0.95rem;background:#0a0a0a;color:#eee;border:1px solid #333;border-radius:4px';
-        sub.appendChild(amountInput);
-        amountInput.addEventListener('input', () => {
-          const v = Math.floor(Number(amountInput.value));
-          if (Number.isFinite(v)) amount = v;
-        });
-      }
-
-      const sendBtn = el('button', { className: 'menu-btn', parent: sub }) as HTMLButtonElement;
-      sendBtn.style.cssText = 'padding:8px 14px;cursor:pointer;font-size:0.92rem';
-      sendBtn.textContent = `SEND ${balanceSats} SATS →`;
-      const backBtn = el('button', { className: 'menu-btn secondary', parent: sub, text: '← BACK' }) as HTMLButtonElement;
-      backBtn.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:0.78rem;align-self:flex-start';
-      onTap(backBtn, () => unlockPicker());
-
-      window.setTimeout(() => {
-        try {
-          if (preFilledLud16) tryFocusVisible(sendBtn);
-          else addrInput.focus();
-        } catch { /* ignore */ }
-      }, 50);
-
-      onTap(sendBtn, () => {
-        void (async () => {
-          const addr = addrInput.value.trim();
-          if (!LN_ADDRESS_RE.test(addr)) {
-            status.textContent = 'Invalid lightning address.';
-            status.style.color = '#ff5050';
-            return;
-          }
-          if (!Number.isFinite(amount) || amount < 10) {
-            status.textContent = 'Amount must be at least 10 sats.';
-            status.style.color = '#ff5050';
-            return;
-          }
-          if (amount > balanceSats) {
-            status.textContent = `Balance is only ${balanceSats} sats.`;
-            status.style.color = '#ff5050';
-            return;
-          }
-          setStoredLnAddress(addr);
-          sendBtn.disabled = true;
-          backBtn.disabled = true;
-          addrInput.disabled = true;
-          status.textContent = 'Paying…';
-          status.style.color = '#5b9dff';
-          try {
-            const result = await submitWithdraw(session, {
-              amount_sats: amount,
-              lightning_address: addr,
-            });
-            if (result.ok) {
-              status.textContent = `✓ Paid ${result.amount_sats} sats · balance: ${result.new_balance}`;
-              status.style.color = '#58ff58';
-              cancelBtn.textContent = 'CLOSE';
-            } else {
-              status.textContent = withdrawErrorMessage(result.error, result.detail);
-              status.style.color = '#ff8050';
-              sendBtn.disabled = false;
-              backBtn.disabled = false;
-              addrInput.disabled = false;
-            }
-          } catch (err) {
-            status.textContent = err instanceof Error ? err.message : 'Withdraw failed.';
-            status.style.color = '#ff8050';
-            sendBtn.disabled = false;
-            backBtn.disabled = false;
-            addrInput.disabled = false;
-          }
-        })();
-      });
-    });
-  }
-
-  // ── LNURL-w QR destination ────────────────────────────────────────
-  onTap(qrBtn, () => {
-    lockPicker(qrBtn);
-    flowSlot.replaceChildren();
-    const sub = el('div', { parent: flowSlot });
-    sub.style.cssText = 'display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid rgba(184,144,255,0.3);border-radius:8px;background:rgba(120,90,200,0.05);align-items:center';
-    const title = el('p', { parent: sub, text: 'SCAN WITH YOUR WALLET' });
-    title.style.cssText = 'margin:0;font-size:0.72rem;color:rgba(184,144,255,0.9);letter-spacing:0.14em';
-    const qrSlot = el('div', { parent: sub });
-    qrSlot.style.cssText = 'width:240px;height:240px;background:#fff;border-radius:8px;padding:10px;box-shadow:0 0 20px rgba(184,144,255,0.25)';
-    const note = el('p', { parent: sub });
-    note.style.cssText = 'margin:0;font-size:0.74rem;color:rgba(220,210,255,0.7);text-align:center;line-height:1.45';
-    note.textContent = 'Phoenix, Wallet of Satoshi, Mutiny, Zeus, Cash App — any wallet that supports LNURL withdraw.';
-    let claimFired = false;
-    const backBtn = el('button', { className: 'menu-btn secondary', parent: sub, text: '← BACK' }) as HTMLButtonElement;
-    backBtn.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:0.78rem;align-self:flex-start';
-    onTap(backBtn, () => {
-      if (claimFired) return;
-      unlockPicker();
-    });
-
-    void (async () => {
-      status.textContent = `Minting QR for ${balanceSats} sats…`;
-      status.style.color = '#5b9dff';
-      claimFired = true;
-      backBtn.disabled = true;
-      backBtn.style.opacity = '0.4';
-      try {
-        const mint = await requestLnurlWithdraw(session, { amount_sats: balanceSats });
-        if (!mint.ok) {
-          status.textContent = `QR mint failed: ${mint.error}`;
-          status.style.color = '#ff8050';
-          return;
-        }
-        void renderQRInto(qrSlot, mint.lnurl);
-        status.textContent = 'Waiting for your wallet to pull…';
-        status.style.color = 'rgba(184,144,255,0.9)';
-
-        let polling = true;
-        const tick = async (): Promise<void> => {
-          if (!polling) return;
-          const s = await pollLnurlWithdrawStatus(mint.k1);
-          if (!polling) return;
-          if (s.ok) {
-            if (s.status === 'paid' || s.consumed) {
-              status.textContent = `✓ Paid ${balanceSats} sats — your wallet has them`;
-              status.style.color = '#58ff58';
-              cancelBtn.textContent = 'CLOSE';
-              polling = false;
-              return;
-            }
-            if (s.status === 'expired' || s.expires_at <= Date.now()) {
-              status.textContent = 'QR expired — sats refunded to balance';
-              status.style.color = '#ff8050';
-              polling = false;
-              return;
-            }
-          }
-          window.setTimeout(() => void tick(), 2500);
-        };
-        void tick();
-      } catch (err) {
-        status.textContent = err instanceof Error ? err.message : 'Mint failed.';
-        status.style.color = '#ff8050';
-      }
-    })();
-  });
-}
-
-function withdrawErrorMessage(error: string, detail?: string): string {
-  switch (error) {
-    case 'insufficient_balance': return 'Not enough balance.';
-    case 'invalid_lightning_address': return 'Invalid lightning address.';
-    case 'invalid_payload': return 'Invalid request.';
-    case 'no_balance': return 'No balance to withdraw.';
-    case 'player_flagged': return 'Account flagged. Contact dev.';
-    case 'pool_empty': return 'Float low — try again later.';
-    case 'payment_unavailable': return 'Payment service unavailable. Try later.';
-    case 'ln_resolve_failed':
-    case 'ln_invoice_failed': return 'Could not get an invoice from your wallet.';
-    case 'payment_failed': return 'Payment failed. Try later.';
-    case 'invoice_mismatch': return 'Invoice did not match expected amount.';
-    case 'no_signer': return 'Identity-only sign-in cannot withdraw. Sign in with a browser extension or bunker.';
-    case 'sign_failed': {
-      if (!detail) return 'Could not sign request. Check your signer.';
-      if (/timeout|signer-timeout|queue-timeout/i.test(detail)) return 'Signer did not respond. Open your Nostr extension and unlock it.';
-      if (/reject|denied|cancel/i.test(detail)) return 'Signature rejected.';
-      return `Sign failed: ${detail.slice(0, 80)}`;
-    }
-    case 'network_error': return 'Network error. Check connection.';
-    default:
-      return `Withdraw failed: ${error}${detail ? ' — ' + detail.slice(0, 80) : ''}`;
-  }
-}
 
 function renderStreakChip(parent: HTMLElement): void {
   const current = getStreak();
@@ -8621,68 +8029,6 @@ function renderLeaderboardBlock(parent: HTMLElement, list: ReturnType<typeof get
   });
 }
 
-/**
- * Tier badge: small chip showing the player's WoT/NIP-05 tier, lifetime
- * progress against their cap, and an upgrade hint when they're below the
- * top. Lazy — fetches /api/player and renders into the same parent so the
- * session panel can call it once and forget.
- */
-function renderTierBadge(parent: HTMLElement, pubkey: string): void {
-  const wrap = el('div', { parent });
-  wrap.style.cssText =
-    'display:flex;flex-direction:column;align-items:center;gap:2px;margin:6px 0 0';
-
-  const chip = el('p', { parent: wrap, text: 'Loading tier…' });
-  chip.style.cssText =
-    'font-size:0.78rem;letter-spacing:0.08em;margin:0;color:rgba(180,180,180,0.7)';
-
-  const upgrade = el('p', { parent: wrap });
-  upgrade.style.cssText =
-    'font-size:0.72rem;color:rgba(180,180,180,0.55);margin:0;text-align:center;max-width:340px;line-height:1.4';
-
-  void fetchPlayer(pubkey).then((p) => {
-    if (!wrap.isConnected) return;
-    if (!p) {
-      chip.textContent = 'Tier unavailable';
-      upgrade.textContent = '';
-      return;
-    }
-    const colour: Record<PlayerTier, string> = {
-      anon: 'rgba(180,180,180,0.85)',
-      nip05: '#5b9dff',
-      close: '#b48cff',
-      verified: '#58ff58',
-    };
-    const label: Record<PlayerTier, string> = {
-      anon: 'ANON',
-      nip05: 'NIP-05',
-      close: 'CLOSE',
-      verified: 'VERIFIED',
-    };
-    const earned = p.lifetime_paid_sats.toLocaleString();
-    const cap = p.lifetime_cap_sats.toLocaleString();
-    chip.textContent = `${label[p.tier]} · ${earned}/${cap} sats`;
-    chip.style.color = colour[p.tier];
-
-    // Ironclad skin: unlocks once the player crosses the lifetime-sats
-    // threshold. Detection lives here because /api/player is the canonical
-    // source for that figure. markSkinUnlocked is idempotent so this is a
-    // no-op once the unlock has landed; the publish path below catches it.
-    if (p.lifetime_paid_sats >= 100_000) markSkinUnlocked('ironclad');
-
-    if (p.tier === 'anon') {
-      upgrade.textContent =
-        'Set NIP-05 in your profile to lift your cap to £5. Get followed by the dev for £20.';
-    } else if (p.tier === 'nip05') {
-      upgrade.textContent =
-        '2-hop in the dev’s WoT lifts to £10. Direct follow lifts to £20.';
-    } else if (p.tier === 'close') {
-      upgrade.textContent = 'A direct follow from the dev lifts to £20.';
-    } else {
-      upgrade.textContent = '';
-    }
-  });
-}
 
 /** Accessor for the live in-progress name in the title-screen arcade
  *  picker. Set by renderSessionPanel when the no-session branch mounts
@@ -8758,7 +8104,6 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
         () => { /* clipboard refused — silent, the user can find it again on the settings panel */ },
       );
     });
-    renderTierBadge(parent, session.pubkey);
     const row = el('div', { className: 'menu-row', parent });
     const upgrade = el('button', { className: 'menu-btn secondary', parent: row, text: 'UPGRADE TO NOSTR' }) as HTMLButtonElement;
     upgrade.style.cssText += 'font-size:0.72rem;padding:4px 12px;letter-spacing:0.14em;';
@@ -8898,7 +8243,6 @@ function renderSessionPanel(parent: HTMLElement, state: GameState): void {
         })();
       });
     }
-    renderTierBadge(parent, pubkey);
     const row = el('div', { className: 'menu-row', parent });
     // ADMIN button — only visible when the signed-in pubkey matches
     // the server's ADMIN_PUBKEY_HEX. Server still enforces the
@@ -9685,7 +9029,7 @@ export function renderHowToPlay(onBack: () => void): void {
     ['Waves 1-24', 'Each named after a real pallasite meteorite'],
     ['Wave 25', 'Event Horizon — the boss arena'],
     ['Dust shards', 'Tinted to the source rock · score reward', dustPreview('iron')],
-    ['Sat coins', '₿ — real sats when signed in', satCoinPreview()],
+    ['Sat coins', '₿ — adds to your in-game sats counter', satCoinPreview()],
     ['Lives', 'Lose all and the run ends · extra life every 10,000 score'],
   ]);
 
@@ -9709,7 +9053,7 @@ export function renderHowToPlay(onBack: () => void): void {
   ]);
 
   section('SIGN IN WITH NOSTR', [
-    ['Optional', 'Guests play for score only · sign in to earn real sats and publish to leaderboards'],
+    ['Optional', 'Guests play for score only · sign in to publish to leaderboards'],
     ['Daily run', 'Same seed for everyone today · clean leaderboard'],
   ]);
 
@@ -11438,74 +10782,8 @@ function renderDeathmatchGameOver(state: GameState): void {
   });
 }
 
-const LN_ADDRESS_KEY = 'pallasite:lightning_address';
-const LN_ADDRESS_RE = /^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+(?::[0-9]+)?$/;
 
-// Age-attestation helpers and the `pallasite:age_attested_18:<pubkey>` key
-// were removed when the 18+ checkbox was folded into the terms (the terms
-// already carry the eligibility clause, and the public release wanted a
-// friction-free claim path). Old localStorage entries can sit harmlessly.
 
-// Used by the withdraw flow on title — players type their LN address once
-// and we remember it for future withdraws on this device.
-export function getStoredLnAddress(): string | null {
-  try {
-    const v = localStorage.getItem(LN_ADDRESS_KEY);
-    return v && LN_ADDRESS_RE.test(v) ? v : null;
-  } catch {
-    return null;
-  }
-}
-
-export function setStoredLnAddress(v: string): void {
-  try {
-    if (LN_ADDRESS_RE.test(v)) localStorage.setItem(LN_ADDRESS_KEY, v);
-  } catch {
-    // localStorage unavailable
-  }
-}
-
-function claimErrorMessage(error: string, detail?: string, retryAfterMs?: number): string {
-  switch (error) {
-    case 'cooldown': {
-      const secs = Math.max(1, Math.ceil((retryAfterMs ?? 0) / 1000));
-      return `Claiming too fast — wait ${secs}s, then claim again.`;
-    }
-    case 'cap_reached': return 'Lifetime cap reached for this tier.';
-    case 'rate_limited': return 'Too many claims this hour. Try later.';
-    case 'daily_cap_reached': return 'Daily faucet cap hit. Try tomorrow.';
-    case 'pool_empty': return 'Float low — zap to refill the faucet.';
-    case 'pool_paused': return 'Faucet paused. Try later.';
-    case 'cheated_run': return 'Cheats used — no payout.';
-    case 'invalid_score':
-    case 'invalid_duration':
-    case 'invalid_run_clock':
-    case 'stale_run': return 'Run rejected (stat check).';
-    case 'invalid_lightning_address': return 'Invalid lightning address.';
-    case 'ln_resolve_failed':
-    case 'ln_invoice_failed': return 'Could not get an invoice from your wallet.';
-    case 'payment_failed': return 'Payment failed. Try later.';
-    case 'invoice_mismatch': return 'Invoice did not match expected amount.';
-    case 'signer_unavailable': return 'Game signer unreachable. Try later.';
-    case 'service_not_configured': return 'Faucet not configured yet.';
-    case 'no_signer': return 'Identity-only sign-in cannot claim. Sign in with a browser extension or bunker.';
-    case 'sign_failed': {
-      if (!detail) return 'Could not sign claim. Check your signer extension.';
-      if (/timeout|signer-timeout|queue-timeout/i.test(detail)) {
-        return 'Signer did not respond. Open your Nostr extension, unlock it, then click CLAIM again.';
-      }
-      if (/reject|denied|cancel/i.test(detail)) return 'Signature rejected.';
-      return `Could not sign claim: ${detail.slice(0, 80)}`;
-    }
-    case 'network_error': return 'Network error. Check connection.';
-    case 'invalid_payload':
-      return `Invalid payload${detail ? ': ' + detail.slice(0, 60) : ''}.`;
-    case 'player_flagged': return 'Account flagged. Contact dev.';
-    case 'replay_of_failed_claim': return 'A previous attempt for this run failed.';
-    default:
-      return `Claim failed: ${error}${detail ? ' — ' + detail.slice(0, 100) : ''}`;
-  }
-}
 
 async function maybePublishCoopCampaignScore(
   state: GameState,
@@ -11589,472 +10867,6 @@ async function maybePublishCoopCampaignScore(
   status.textContent = `Co-op publish failed: ${r1.error}${r1.detail ? ' — ' + r1.detail : ''}`;
 }
 
-async function maybePublishScore(
-  state: GameState,
-  parent: HTMLElement,
-  setIdlePaused?: (paused: boolean) => void,
-): Promise<void> {
-  if (isCoopCampaignMode()) {
-    await maybePublishCoopCampaignScore(state, parent);
-    return;
-  }
-  if (!state.session) {
-    const cta = el('p', { parent });
-    cta.style.cssText = 'font-size:0.85rem;color:#5b9dff;margin:8px 0 0 0';
-    cta.textContent = 'Sign in with Nostr next time to claim sats.';
-    return;
-  }
-  if (!state.session.signer.capabilities.canSignEvents) {
-    // Identity-only session (e.g. the Signet same-tab redirect, which proves
-    // who you are but hands back an EphemeralSigner). Rather than a dead-end
-    // note, offer a one-tap re-sign into a signing-capable session and then
-    // drop straight back into the claim flow.
-    const wrap = el('div', { parent });
-    wrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;align-items:center;margin:8px 0 0 0';
-    const note = el('p', { parent: wrap });
-    note.style.cssText = 'font-size:0.85rem;color:#999;margin:0;line-height:1.4;text-align:center';
-    note.textContent = 'This sign-in proves your identity but cannot sign a payout. Reconnect through My Signet to approve the claim now.';
-    const signInBtn = el('button', { className: 'menu-btn', parent: wrap, text: 'RECONNECT SIGNET' }) as HTMLButtonElement;
-    signInBtn.style.cssText = 'padding:6px 14px;font-size:0.85rem;cursor:pointer';
-    onTap(signInBtn, () => {
-      renderSignerRecovery(state, { onClose: () => renderGameOver(state) });
-    });
-    return;
-  }
-  if (state.cheatedThisRun) {
-    const note = el('p', { parent });
-    note.style.cssText = 'font-size:0.85rem;color:#ff8050;margin:8px 0 0 0';
-    note.textContent = 'Cheats were used — no payout.';
-    return;
-  }
-
-  const wrapper = el('div', { parent });
-  wrapper.style.cssText =
-    'display:flex;flex-direction:column;gap:6px;margin-top:12px;align-items:stretch';
-
-  // Recap claim flow: 18+ gate (Schedule 11 requirement) → CLAIM button →
-  // server credits the player's persistent balance. The LN-address-on-recap
-  // flow that lived here previously moved to the WITHDRAW screen on title;
-  // claim just banks the sats, withdraw cashes them out on the player's
-  // schedule (any time balance >= withdrawal threshold).
-
-  const compactView = el('div', { parent: wrapper });
-  compactView.style.cssText = 'display:flex;flex-direction:column;gap:4px;align-items:stretch';
-
-  // The 18+ self-attestation is now folded into the terms: by clicking
-  // CLAIM the player is taken to have read and accepted the terms,
-  // including the "must be 18 or older" eligibility clause. A subtle
-  // "By claiming you accept the terms" footer below the picker keeps
-  // the link discoverable without a friction-y checkbox in the path.
-
-  // ── Destination picker — replaces the single CLAIM button ──────────
-  // Event-kiosk flow: a walk-up guest scores well and wants the sats now.
-  // Three options, every time (no muscle-memory default):
-  //   • Send to Lightning Address  — paste a lud16, server pays it
-  //   • Scan with Wallet           — LNURL-w QR, wallet pulls the sats
-  //   • Add to Balance             — bank for later (legacy single-tap)
-  // Direct payouts are gated at ≥100 sats (invoice fees would eat
-  // smaller payouts); below the threshold only the balance path
-  // appears, with a one-liner explaining why.
-  const sats = state.players[0].sats;
-  const canDirectPayout = sats >= WITHDRAW_THRESHOLD_SATS;
-
-  const heading = el('p', { parent: compactView });
-  heading.style.cssText = 'margin:6px 0 4px;font-size:0.72rem;letter-spacing:0.18em;color:rgba(255,216,74,0.85);text-align:center';
-  heading.textContent = sats > 0 ? `CLAIM ${sats} SATS — WHERE?` : 'CLAIM';
-
-  const picker = el('div', { parent: compactView });
-  picker.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin-top:2px';
-
-  const mkBtn = (label: string, sub: string, accent: string): HTMLButtonElement => {
-    const btn = el('button', { className: 'menu-btn', parent: picker }) as HTMLButtonElement;
-    btn.style.cssText = `display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 14px;border:1.5px solid ${accent};background:rgba(2,5,13,0.4);cursor:pointer;font-size:0.92rem;letter-spacing:0.1em;text-align:center`;
-    const top = el('div', { parent: btn, text: label });
-    top.style.cssText = 'font-weight:bold;';
-    const subEl = el('div', { parent: btn, text: sub });
-    subEl.style.cssText = 'font-size:0.68rem;color:rgba(220,210,255,0.65);font-weight:normal;letter-spacing:0.06em';
-    return btn;
-  };
-
-  // D-pad / controller-only surfaces can't type, so the lud16 path
-  // only makes sense when we have a pre-fill (returning player) or
-  // a real keyboard is plausible. Hide it otherwise — the QR path
-  // is the venue-native option anyway, so a fresh kiosk guest
-  // is funnelled there instead of staring at an unusable input.
-  const preFilledLud16 = state.profile?.lud16 ?? getStoredLnAddress() ?? '';
-  const coarsePointer = matchMedia('(pointer: coarse)').matches;
-  const controllerPaired = activeControllerHost?.paired === true;
-  const kbAvailable = !coarsePointer && !controllerPaired;
-  const offerAddress = canDirectPayout && (preFilledLud16 !== '' || kbAvailable);
-
-  const addressBtn = offerAddress
-    ? mkBtn(
-        '⚡ SEND TO LIGHTNING ADDRESS',
-        preFilledLud16
-          ? `Pay ${preFilledLud16.slice(0, 28)}${preFilledLud16.length > 28 ? '…' : ''}`
-          : 'Pay an address like donkey@strike.me',
-        'rgba(140,255,180,0.55)',
-      )
-    : null;
-  const qrBtn = canDirectPayout
-    ? mkBtn('📱 SCAN WITH WALLET', 'LNURL-w QR — your wallet pulls the sats', 'rgba(184,144,255,0.55)')
-    : null;
-  const balanceBtn = mkBtn(
-    '💰 ADD TO BALANCE',
-    canDirectPayout ? 'Save up — withdraw later from the title screen' : `Direct payout unlocks at ${WITHDRAW_THRESHOLD_SATS} sats`,
-    'rgba(255,216,74,0.55)',
-  );
-
-  // Focus the primary destination button on render so a single Enter
-  // press (or controller-pad A) fires the claim without first hunting
-  // for it via d-pad. Priority order matches the picker layout:
-  // address (pre-fill or kb) → QR → balance. On a coarse-pointer
-  // surface with no pre-fill, address is null and QR becomes the
-  // default. Below-threshold runs only have balance, so it's the
-  // default there. Deferred via setTimeout to let the recap layout
-  // settle before grabbing focus.
-  const primaryBtn = addressBtn ?? qrBtn ?? balanceBtn;
-  if (primaryBtn) {
-    setTimeout(() => tryFocusVisible(primaryBtn), 0);
-  }
-
-  // Inline expansion slot — when a destination is picked, its own
-  // sub-form (lud16 input, QR canvas, etc.) renders here.
-  const flowSlot = el('div', { parent: compactView });
-  flowSlot.style.cssText = 'margin-top:8px;display:flex;flex-direction:column;gap:8px';
-
-  const allButtons = [addressBtn, qrBtn, balanceBtn].filter((b): b is HTMLButtonElement => b !== null);
-  const setEnabled = (on: boolean): void => {
-    for (const b of allButtons) {
-      b.disabled = !on;
-      b.style.opacity = on ? '1' : '0.55';
-    }
-  };
-
-  // Subtle terms-acceptance footer below the picker. Clicking a claim
-  // button is the action that accepts the terms (which include the 18+
-  // eligibility clause); the link keeps the terms one tap away.
-  const tcRow = el('p', { parent: compactView });
-  tcRow.style.cssText = 'margin:6px 0 0 0;font-size:0.7rem;color:#888;text-align:center;letter-spacing:0.02em';
-  tcRow.appendChild(document.createTextNode('By claiming you accept the '));
-  const tcLink = document.createElement('a');
-  tcLink.href = '#';
-  tcLink.textContent = 'terms';
-  tcLink.style.cssText = 'color:#5b9dff;text-decoration:underline';
-  tcLink.addEventListener('click', (e) => { e.preventDefault(); openTermsModal(); });
-  tcRow.appendChild(tcLink);
-  tcRow.appendChild(document.createTextNode('.'));
-
-  const status = el('p', { parent: wrapper, text: '' });
-  status.style.cssText = 'font-size:0.85rem;margin:4px 0 0 0;min-height:1.2em';
-  const setStatus = (msg: string, color: string): void => {
-    status.textContent = msg;
-    status.style.color = color;
-  };
-
-  const session = state.session;
-
-  // Build the run payload once. Identical to the old single-button
-  // flow — every destination starts with the same submitClaim.
-  const buildPayload = (): {
-    payload: Parameters<typeof submitClaim>[1];
-  } => {
-    const finishedAt = Date.now();
-    const duration = Math.max(0, Math.floor(state.runTimeMs));
-    const startedAt =
-      state.runStartedAt > 0 ? state.runStartedAt : finishedAt - duration;
-
-    const seed = getActiveSeed();
-    const runAchievements = getRunAchievements();
-    const stats = state.players[0].runStats;
-    const durationSec = Math.max(1, duration / 1000);
-    const totalKills =
-      stats.asteroidsBroken +
-      stats.ufoKills.cruiser + stats.ufoKills.elite + stats.ufoKills.tank +
-      stats.ufoKills.sniper + stats.ufoKills.boss +
-      stats.minesDestroyed;
-    const telemetry: Record<string, unknown> = {
-      asteroids_broken: stats.asteroidsBroken,
-      ufo_kills: stats.ufoKills,
-      mines_destroyed: stats.minesDestroyed,
-      veins_broken: stats.veinsBroken,
-      bullets_fired: stats.bulletsFired,
-      bullets_missed: stats.bulletsMissed,
-      hit_ratio: stats.bulletsFired > 0
-        ? Math.round(((stats.bulletsFired - stats.bulletsMissed) / stats.bulletsFired) * 1000) / 1000
-        : 0,
-      largest_combo: stats.largestCombo,
-      powerups_collected: stats.powerupsCollected,
-      hyperspaces_used: stats.hyperspacesUsed,
-      lives_lost: stats.livesLost,
-      kills_per_sec: Math.round((totalKills / durationSec) * 100) / 100,
-      score_per_kill: totalKills > 0
-        ? Math.round((state.players[0].score / totalKills) * 10) / 10
-        : 0,
-      score_per_sec: Math.round((state.players[0].score / durationSec) * 10) / 10,
-      ...(runAchievements.length > 0
-        ? { achievements_unlocked: runAchievements }
-        : {}),
-    };
-    return {
-      payload: {
-        score: state.players[0].score,
-        wave: state.wave,
-        duration_ms: duration,
-        started_at: startedAt,
-        finished_at: finishedAt,
-        sats_claimed: state.players[0].sats,
-        // Same per-run id /api/score used (String(state.runStartedAt)), so the
-        // claim's kind 30762 reuses that run's d-tag and REPLACES the 0-sat
-        // score placeholder rather than leaving a duplicate on the relays.
-        run_id: String(state.runStartedAt),
-        cheated: state.cheatedThisRun,
-        mode: currentMode(),
-        // Display name + NIP-05 so the claim's kind 30762 shows a name on
-        // Gamestr. Claims always sign as the real session, so the nip05
-        // verifies against the p-tag pubkey.
-        player_name: scoreboardNameFor(state),
-        ...(state.profile?.nip05 ? { nip05: state.profile.nip05 } : {}),
-        ...(seed ? { daily_seed: seed } : {}),
-        // Flag 600bn-flavour runs so the faucet enforces the
-        // daily_cap_600bn budget + appends the ['t','600bn'] tag on
-        // the kind 30762 score event.
-        ...(getFlavour() === '600bn' ? { room: '600bn' as const } : {}),
-        telemetry,
-      },
-    };
-  };
-
-  // Run submitClaim once. Returns the payout sats actually credited
-  // (the server may downgrade based on tier caps) so the chained
-  // payout step (lud16 / LNURL-w) knows how much to drain.
-  let claimRun = false;
-  let claimedAmount = 0;
-  const runClaim = async (): Promise<{ ok: true; amount: number } | { ok: false }> => {
-    if (claimRun) return { ok: true, amount: claimedAmount };
-    const { payload } = buildPayload();
-    if (state.players[0].sats > 0 && !state.cheatedThisRun) {
-      savePendingClaim(session.pubkey, payload);
-    }
-    const result = await submitClaim(session, payload);
-    if (!result.ok) {
-      if (isTerminalClaimError(result.error)) clearPendingClaim();
-      setStatus(claimErrorMessage(result.error, result.detail, result.retry_after_ms), '#ff8050');
-      setEnabled(true);
-      return { ok: false };
-    }
-    clearPendingClaim();
-    musicNotifyClaimSuccess();
-    claimRun = true;
-    claimedAmount = result.payout_sats;
-    return { ok: true, amount: claimedAmount };
-  };
-
-  const lockPicker = (chosen: HTMLButtonElement): void => {
-    setEnabled(false);
-    chosen.style.borderColor = '#ffd84a';
-    chosen.style.background = 'rgba(255,216,74,0.10)';
-  };
-
-  // Undo a lockPicker. Only useful before the destination's actual
-  // claim fires (e.g. the player tapped ADDRESS but realised they
-  // can't type and wants to back out to pick QR instead). After the
-  // claim runs there's no going back.
-  const unlockPicker = (): void => {
-    flowSlot.replaceChildren();
-    setEnabled(true);
-    for (const b of allButtons) {
-      b.style.borderColor = '';
-      b.style.background = 'rgba(2,5,13,0.4)';
-      // mkBtn's border was set from the accent colour; restoring the
-      // exact original needs the inline cssText. Re-applying the
-      // outline via the picker's setter would be tidier, but for the
-      // visual revert here we just clear the highlight.
-    }
-  };
-
-  // ── Destination: Add to balance ─────────────────────────────────────
-  onTap(balanceBtn, () => {
-    void (async () => {
-      lockPicker(balanceBtn);
-      setStatus('Crediting balance…', '#5b9dff');
-      setIdlePaused?.(true);
-      try {
-        const r = await runClaim();
-        if (r.ok) {
-          setStatus(`✓ Banked ${r.amount} sats · withdraw from the title screen`, '#58ff58');
-        }
-      } finally {
-        setIdlePaused?.(false);
-      }
-    })();
-  });
-
-  // ── Destination: Lightning Address ──────────────────────────────────
-  if (addressBtn) {
-    onTap(addressBtn, () => {
-      lockPicker(addressBtn);
-      flowSlot.replaceChildren();
-      const card = el('div', { parent: flowSlot });
-      card.style.cssText = 'display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid rgba(140,255,180,0.3);border-radius:8px;background:rgba(60,200,140,0.05)';
-      const label = el('p', { parent: card, text: 'LIGHTNING ADDRESS' });
-      label.style.cssText = 'margin:0;font-size:0.72rem;color:rgba(140,255,180,0.85);letter-spacing:0.14em';
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.spellcheck = false;
-      input.autocapitalize = 'off';
-      input.autocomplete = 'email';
-      input.placeholder = 'alice@yourwallet.com';
-      input.style.cssText = 'padding:10px 12px;font-family:inherit;font-size:0.95rem;background:#0a0a0a;color:#eee;border:1px solid #333;border-radius:4px';
-      input.value = preFilledLud16;
-      card.appendChild(input);
-      const sendBtn = el('button', { className: 'menu-btn', parent: card, text: `SEND ${sats} SATS →` }) as HTMLButtonElement;
-      sendBtn.style.cssText = 'padding:8px 14px;cursor:pointer;font-size:0.92rem';
-      // BACK button — gives a d-pad / mis-tap player a route back to
-      // the picker without having to wait for the auto-skip-to-title
-      // timer. Only effective until SEND is pressed (after that the
-      // claim is in flight). Stays visible inside the card so d-pad
-      // nav can reach it via the standard geometric search.
-      const backBtn = el('button', { className: 'menu-btn secondary', parent: card, text: '← BACK' }) as HTMLButtonElement;
-      backBtn.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:0.78rem;align-self:flex-start';
-      onTap(backBtn, () => unlockPicker());
-      const sendErr = el('p', { parent: card });
-      sendErr.style.cssText = 'margin:0;font-size:0.74rem;min-height:1em;color:#888';
-
-      // Focus strategy: pre-fill present → focus SEND so d-pad A
-      // activates immediately; pre-fill empty → focus the input so
-      // desktop kb / mobile OSK users start typing without an extra
-      // tap. setupOverlayArrowNav ignores INPUT focus, so a
-      // controller-pad user pressing arrows from inside the input
-      // sees nothing happen — which is why the address button is
-      // hidden upstream when no pre-fill and no kb is plausible.
-      window.setTimeout(() => {
-        try {
-          if (preFilledLud16) tryFocusVisible(sendBtn);
-          else input.focus();
-        } catch { /* ignore */ }
-      }, 50);
-      onTap(sendBtn, () => {
-        void (async () => {
-          const addr = input.value.trim();
-          if (!LN_ADDRESS_RE.test(addr)) {
-            sendErr.textContent = 'Invalid lightning address.';
-            sendErr.style.color = '#ff5050';
-            return;
-          }
-          setStoredLnAddress(addr);
-          sendBtn.disabled = true;
-          input.disabled = true;
-          sendErr.textContent = '';
-          setStatus('Crediting balance…', '#5b9dff');
-          setIdlePaused?.(true);
-          try {
-            const claim = await runClaim();
-            if (!claim.ok) {
-              sendBtn.disabled = false;
-              input.disabled = false;
-              return;
-            }
-            setStatus(`Paying ${claim.amount} sats to ${addr}…`, '#5b9dff');
-            const w = await submitWithdraw(session, { amount_sats: claim.amount, lightning_address: addr });
-            if (w.ok) {
-              setStatus(`✓ Paid ${w.amount_sats} sats to ${addr}`, '#58ff58');
-            } else {
-              setStatus(`Banked ${claim.amount} sats · payout failed: ${withdrawErrorMessage(w.error, w.detail)}`, '#ff8050');
-              sendErr.textContent = 'Sats sit safely on your balance — retry withdraw on the title screen.';
-              sendErr.style.color = 'rgba(255,216,74,0.85)';
-            }
-          } finally {
-            setIdlePaused?.(false);
-          }
-        })();
-      });
-    });
-  }
-
-  // ── Destination: LNURL-withdraw QR ──────────────────────────────────
-  if (qrBtn) {
-    onTap(qrBtn, () => {
-      lockPicker(qrBtn);
-      flowSlot.replaceChildren();
-      const card = el('div', { parent: flowSlot });
-      card.style.cssText = 'display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid rgba(184,144,255,0.3);border-radius:8px;background:rgba(120,90,200,0.05);align-items:center';
-      const title = el('p', { parent: card, text: 'SCAN WITH YOUR WALLET' });
-      title.style.cssText = 'margin:0;font-size:0.72rem;color:rgba(184,144,255,0.9);letter-spacing:0.14em';
-      const qrSlot = el('div', { parent: card });
-      qrSlot.style.cssText = 'width:240px;height:240px;background:#fff;border-radius:8px;padding:10px;box-shadow:0 0 20px rgba(184,144,255,0.25)';
-      const sub = el('p', { parent: card });
-      sub.style.cssText = 'margin:0;font-size:0.74rem;color:rgba(220,210,255,0.7);text-align:center;line-height:1.45';
-      sub.textContent = 'Phoenix, Wallet of Satoshi, Mutiny, Zeus, Cash App — any wallet that supports LNURL withdraw.';
-      // BACK button — d-pad / mis-tap recovery before the mint
-      // claim runs. Once claim resolves the sats are already on
-      // balance and the QR is the way to drain them; backing out
-      // after that is meaningless.
-      let claimFired = false;
-      const backBtn = el('button', { className: 'menu-btn secondary', parent: card, text: '← BACK' }) as HTMLButtonElement;
-      backBtn.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:0.78rem;align-self:flex-start';
-      onTap(backBtn, () => {
-        if (claimFired) return;
-        unlockPicker();
-      });
-
-      void (async () => {
-        setStatus('Crediting balance…', '#5b9dff');
-        setIdlePaused?.(true);
-        try {
-          claimFired = true;
-          backBtn.disabled = true;
-          backBtn.style.opacity = '0.4';
-          const claim = await runClaim();
-          if (!claim.ok) {
-            flowSlot.replaceChildren();
-            setEnabled(true);
-            return;
-          }
-          setStatus(`Minting QR for ${claim.amount} sats…`, '#5b9dff');
-          const mint = await requestLnurlWithdraw(session, { amount_sats: claim.amount });
-          if (!mint.ok) {
-            setStatus(`Banked ${claim.amount} sats · QR mint failed: ${mint.error}`, '#ff8050');
-            const note = el('p', { parent: card });
-            note.style.cssText = 'margin:0;color:#ff8050;font-size:0.78rem';
-            note.textContent = 'Sats sit safely on your balance — try the Lightning Address option, or withdraw on the title screen.';
-            return;
-          }
-          // Render the bech32 LNURL as a QR. Upper-case keeps the QR
-          // smaller (alphanumeric mode vs byte mode).
-          void renderQRInto(qrSlot, mint.lnurl);
-          setStatus('Waiting for your wallet to pull…', 'rgba(184,144,255,0.9)');
-
-          // Poll for consumed/paid status every 2.5s, time out at the
-          // server's TTL (15 min). Stop polling on success or failure.
-          let polling = true;
-          const stopPolling = (): void => { polling = false; };
-          const tick = async (): Promise<void> => {
-            if (!polling) return;
-            const s = await pollLnurlWithdrawStatus(mint.k1);
-            if (!polling) return;
-            if (s.ok) {
-              if (s.status === 'paid' || s.consumed) {
-                setStatus(`✓ Paid ${claim.amount} sats — your wallet has them`, '#58ff58');
-                stopPolling();
-                return;
-              }
-              if (s.status === 'expired' || s.expires_at <= Date.now()) {
-                setStatus(`Banked ${claim.amount} sats · QR expired (sats refunded to balance)`, '#ff8050');
-                stopPolling();
-                return;
-              }
-            }
-            window.setTimeout(() => void tick(), 2500);
-          };
-          void tick();
-        } finally {
-          setIdlePaused?.(false);
-        }
-      })();
-    });
-  }
-}
 
 // ── Completion screen (wave 25 cleared) ──────────────────────────────────────
 
@@ -12104,7 +10916,7 @@ function renderSanctumAttract(state: GameState): void {
   brief.style.cssText = 'display:flex;flex-direction:column;gap:4px;margin:16px 0;text-align:center;';
   const line1 = el('p', { parent: brief, text: 'ONE LIFE · 11 COUNCIL · ENDLESS CYCLE' });
   line1.style.cssText = 'font:bold 13px ui-monospace,monospace;color:#ffd84a;letter-spacing:0.2em;margin:0;';
-  const line2 = el('p', { parent: brief, text: 'Shatter pallasites for sats. The council always returns.' });
+  const line2 = el('p', { parent: brief, text: 'Shatter pallasites for score. The council always returns.' });
   line2.style.cssText = 'font:11px ui-monospace,monospace;color:rgba(255,245,216,0.75);letter-spacing:0.14em;margin:0;';
   const line3 = el('p', { parent: brief, text: '"600B was never just the price. It was the signal."' });
   line3.style.cssText = 'font:11px ui-monospace,monospace;color:rgba(255,245,216,0.55);letter-spacing:0.12em;margin:0;font-style:italic;';
@@ -12459,15 +11271,10 @@ function renderRunCredits(
   // Honours surface on completion runs only.
   if (opts.isCompletion) renderHonours(overlay, state, () => { /* no stagger */ });
 
-  // Score-publish / faucet status — only Nostr-mode runs trigger a claim.
-  // Returns immediately for guests / cheated runs / signers without sign
-  // capability with a one-line status of its own. We pass setIdlePaused
-  // through so the claim flow can hold the auto-skip-to-title timer while
-  // a long Lightning round-trip is in flight (binding defined further
-  // below; hoisted via let).
+  // Co-op campaign runs publish their own no-payout score here; solo scores
+  // are queued separately by publishSoloScoreForRun. There is no claim flow.
   const publishWrap = el('div', { parent: overlay });
   if (isCoopCampaignMode()) void maybePublishCoopCampaignScore(state, publishWrap);
-  else void maybePublishScore(state, publishWrap, (paused) => setIdlePaused(paused));
 
   // Best-effort kind 30763 ghost publish. Independent of the score claim so
   // sign-capable sessions leave a ghost trail even when they don't claim
@@ -12642,18 +11449,12 @@ function renderRunCredits(
   // Auto-skip timer — counts down to TITLE. Resets on any user input
   // (keydown OR pointerdown — mobile users tap, never fire keydown, so
   // a key-only listener kept ticking through their interaction). The
-  // claim flow can also hold the timer via setIdlePaused while a slow
-  // Lightning round-trip is mid-payment so the player isn't yanked back
-  // to title before the result lands. The SKIP TO TITLE button exits
-  // immediately.
+  // SKIP TO TITLE button exits immediately.
   let secondsLeft = idleSeconds;
-  let idlePaused = false;
   const skipBar = el('p', { parent: overlay });
   skipBar.style.cssText = 'font-size:0.85rem;letter-spacing:0.18em;color:#ffd84a;margin:6px 0 0;';
   const renderSkip = (): void => {
-    skipBar.textContent = idlePaused
-      ? 'CLAIM IN PROGRESS — HOLDING'
-      : `RETURNING TO TITLE IN ${secondsLeft}`;
+    skipBar.textContent = `RETURNING TO TITLE IN ${secondsLeft}`;
   };
   renderSkip();
 
@@ -12664,17 +11465,11 @@ function renderRunCredits(
     renderTitle(state);
   };
   const idleTick = window.setInterval(() => {
-    if (idlePaused) return;
     secondsLeft -= 1;
     renderSkip();
     if (secondsLeft <= 0) goToTitle();
   }, 1000);
   const resetIdle = (): void => { secondsLeft = idleSeconds; renderSkip(); };
-  const setIdlePaused = (paused: boolean): void => {
-    idlePaused = paused;
-    if (!paused) resetIdle();
-    else renderSkip();
-  };
   const onActivity = (): void => resetIdle();
   window.addEventListener('keydown', onActivity);
   // Pointerdown covers mouse, pen, AND touch — so a tap on mobile
@@ -13903,7 +12698,7 @@ function renderCreditsRoll(parent: HTMLElement, applyStage?: (e: HTMLElement) =>
     <p class="credits-divider">· · ·</p>
 
     <h3>forgesworn · 2026</h3>
-    <p class="name">SHOOT ROCKS · STACK SATS</p>
+    <p class="name">SHOOT ROCKS · CLIMB THE BOARD</p>
 
     <p class="credits-spacer"></p>
   `;
