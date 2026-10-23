@@ -164,6 +164,9 @@ function termsHtml(): string {
     <h3>Free prize competition</h3>
     <p>Sats payouts are gifts under a free prize competition (Schedule 11, Gambling Act 2005). No purchase or payment is required to play, claim, or win. Payouts are funded by the developer.</p>
 
+    <h3>Tips</h3>
+    <p>Tips and donations are voluntary gifts. They buy nothing: no features, power-ups, perks, faster payouts or any other advantage are unlocked by tipping, and tipping does not affect your scores or eligibility. Tips are not refundable.</p>
+
     <h3>Eligibility to claim sats</h3>
     <p>To claim sats you must be 18 or older. You must not be a designated person under any UK or international sanctions regime, and you must not be located in a sanctioned jurisdiction. This is a self-attestation — we do not perform technical age or identity screening. If you are under 18, please keep playing for high scores and bragging rights, but do not attempt to claim payouts on your own behalf or on behalf of an adult.</p>
 
@@ -220,6 +223,9 @@ function privacyHtml(): string {
       <li>Claim records are kept indefinitely. The corresponding Nostr events are public on relays anyway.</li>
       <li>The internal <code>baseline_log</code> telemetry table is purged once threshold tuning is complete (~4 weeks).</li>
     </ul>
+
+    <h3>Tips</h3>
+    <p>Tips are voluntary gifts sent directly to the developer's public Lightning address, Geyser page or Ko-fi page. The game does not receive, check or store any record of a tip, and a tip unlocks nothing.</p>
 
     <h3>Third parties</h3>
     <ul>

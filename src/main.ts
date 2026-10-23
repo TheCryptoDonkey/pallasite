@@ -15,7 +15,6 @@ import { lockInDifficulty, getStoredDifficulty, setStoredDifficulty } from './di
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadCriticalCampaignAssets, setRenderMode, getRenderModeKind, drawAsciiHud, setShowPlayerIdentity, type CriticalAssetReport } from './render.js';
 import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindPreRun, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderSignerRecovery, renderDuelLobby, renderDuelConnecting, renderEventLobby, renderGamepadTestPage, simulateStart, boothPilotSessionWasClaimed, refreshScoreRecovery } from './ui.js';
-import { isBlessed } from './v4v.js';
 import { postHeartbeat } from './faucet.js';
 import { currentMode, lockInMode, getStoredMode, isStoredDefenderMode, type RunMode } from './mode.js';
 import { deathmatchActive } from './deathmatch.js';
@@ -875,7 +874,7 @@ function syncDeathmatchAiSlotsForFrame(readFrame: number): void {
   }
 }
 
-function currentStartOptions(): { players: number; defender: boolean; aiOpponents: boolean; runMode?: RunMode; deathmatchRules?: Partial<DeathmatchRules>; aiSlots?: number[]; blessed: boolean } {
+function currentStartOptions(): { players: number; defender: boolean; aiOpponents: boolean; runMode?: RunMode; deathmatchRules?: Partial<DeathmatchRules>; aiSlots?: number[]} {
   const players = requestedStartPlayers();
   const peerSessionActive = !multiplayerUrlSessionSuppressed && !!(peer || spectator);
   return {
@@ -885,21 +884,7 @@ function currentStartOptions(): { players: number; defender: boolean; aiOpponent
     runMode: urlDeathmatchModeActive() ? 'deathmatch' : urlCoopCampaignModeActive() ? 'coop-campaign' : peerSessionActive ? 'campaign' : undefined,
     deathmatchRules: requestedDeathmatchRules(),
     aiSlots: currentDeathmatchAiSlots(players),
-    blessed: v4vBlessedRun(),
   };
-}
-
-/** V4V patron blessing — normal solo runs only. Duel/peer, spectate, couch,
- *  deathmatch/co-op routes and walk-up kiosks (?p1/?p2/?event share one
- *  device's localStorage between strangers) never inherit a blessing, and
- *  the 600bn Sanctum teaser keeps its scripted opening. */
-function v4vBlessedRun(): boolean {
-  if (peer || spectator || couchMode) return false;
-  const q = new URLSearchParams(window.location.search);
-  if (q.has('p1') || q.has('p2') || q.has('event')) return false;
-  if (urlDeathmatchModeActive() || urlCoopCampaignModeActive()) return false;
-  if (getFlavour() === '600bn') return false;
-  return isBlessed();
 }
 
 function peerDebugSnapshot(): {

@@ -62,6 +62,8 @@ Pallasite accepts Lightning and on-chain Bitcoin donations:
 - Silent payment (private on-chain, needs a wallet like Cake or BlueWallet): `sp1qq0s22v57t06499r29yfnwsf408uqzneufpzvy4ennd8dedfwdm08qqes6lwp8uzapmf2x2dhpsfcrhh6j70grs5dfyx7235ae6yl0jr3tcqfym4g`
 - Nostr: `npub1mgvlrnf5hm9yf0n5mf9nqmvarhvxkc6remu5ec3vf8r0txqkuk7su0e7q2`
 
+Donations are voluntary gifts and unlock nothing in the game.
+
 In-game donation QR codes use the same addresses — the booth DONATE screen offers zap, on-chain and silent-payment tabs.
 
 ## License
