@@ -49,6 +49,7 @@ import { REPLAY_EXPLOSION_MS, REPLAY_SLOW_MS, REPLAY_SLOW_RATE, SHIP_THRUST, SHI
 import { samplePlayerInput, applyPlayerInput, EMPTY_INPUT } from '/src/netcode.ts';
 import { currentMode } from '/src/mode.ts';
 import { setParallaxTier } from '/src/parallax.ts';
+import { markV4vPaid, v4vNudge } from '/src/v4v.ts';
 import { addLocalHighScore, clearLocalHighScores, getLocalHighScores, isHighScore } from '/src/score.ts';
 
 const RETRO_MODE = {
@@ -652,6 +653,25 @@ test('death replay explosion is visible at impact', () => {
     if (Math.max(r, g, b) > 150 && (g > 100 || r > 180)) bright++;
   }
   assert(bright > 80, `expected visible explosion pixels, got ${bright}`);
+});
+
+// A tip is a pure gift: paying (or a stale boost record from an older build)
+// must grant no launch shield and no sat boost, and the ask copy says so.
+test('a tip grants no boost', () => {
+  const plain = makeInitialState();
+  startGame(plain, 0x7119, { players: 1 });
+  localStorage.setItem('pallasite:v4v:v1', JSON.stringify({ declines: 0, paidAt: Date.now() }));
+  markV4vPaid();
+  localStorage.setItem('pallasite:v4v:v1', JSON.stringify({ declines: 0, paidAt: Date.now() }));
+  const tipped = makeInitialState();
+  startGame(tipped, 0x7119, { players: 1, blessed: true });
+  const a = plain.players[0], b = tipped.players[0];
+  assertEq(b.ship.shieldUp, a.ship.shieldUp, 'tipped launch shield matches untipped');
+  assertEq(b.ship.shieldUp, false, 'no launch shield');
+  assertEq(b.satboostExpiresAt, 0, 'no sat boost');
+  assertEq(b.ship.shieldExpiresAt, a.ship.shieldExpiresAt, 'shield expiry unchanged');
+  assert(/unlock nothing|buy nothing|same ship|never a purchase/i.test(v4vNudge()), 'nudge says a tip buys nothing');
+  localStorage.removeItem('pallasite:v4v:v1');
 });
 
 const out = document.getElementById('out');

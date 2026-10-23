@@ -61,7 +61,7 @@ import {
   type VoteSubmitResult,
 } from './jury.js';
 import { renderLegalFooter, openTermsModal } from './legal.js';
-import { shouldAskV4v, markV4vPaid, markV4vDeclined, v4vNudge, V4V_LIGHTNING_ADDRESS, V4V_GEYSER_URL, V4V_KOFI_URL, V4V_REWARD_LINE } from './v4v.js';
+import { shouldAskV4v, markV4vPaid, markV4vDeclined, v4vNudge, V4V_LIGHTNING_ADDRESS, V4V_GEYSER_URL, V4V_KOFI_URL, V4V_GIFT_LINE } from './v4v.js';
 import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow, getSanctumStats } from './game.js';
 import * as audio from './audio.js';
 import { signalRelicFaces } from './sanctum-art.js';
@@ -629,7 +629,7 @@ export function gateBehindOnboarding(onReady: () => void): void {
  * first (first-timers only), then the V4V tip ask — before EVERY run.
  * Kiosk/booth walk-ups (event lobby, ?p1/?p2 wizard) and the duel/lobby
  * routes stay on plain gateBehindOnboarding — a tip screen has no place
- * in a walk-up flow, and those paths never earn the blessing either.
+ * in a walk-up flow, and those paths never show it.
  * Retry/restart buttons call onStartCb directly and bypass this.
  */
 export function gateBehindPreRun(onReady: () => void): void {
@@ -640,7 +640,7 @@ export function gateBehindPreRun(onReady: () => void): void {
 }
 
 /** The ask: Lightning-first (QR + address), Geyser/Ko-Fi fallbacks, the
- *  reward line printed on the overlay, I PAID (arms the blessing) and
+ *  gift line printed on the overlay, I PAID (thanks only; unlocks nothing) and
  *  NEXT TIME (counts the decline, starts the run anyway). */
 function renderV4v(onStart: () => void): void {
   clearOverlay();
@@ -660,7 +660,7 @@ function renderV4v(onStart: () => void): void {
   box.setAttribute('aria-label', 'Lightning address QR code');
   try { void renderQRInto(box, `lightning:${V4V_LIGHTNING_ADDRESS}`); } catch { /* ignore */ }
 
-  const bless = el('p', { parent: overlay, text: V4V_REWARD_LINE });
+  const bless = el('p', { parent: overlay, text: V4V_GIFT_LINE });
   bless.style.cssText = 'font-size:0.82rem;letter-spacing:0.14em;color:#ffd84a;text-shadow:0 0 8px rgba(255,216,74,0.5);text-align:center;margin:0;';
 
   // Address button — copies AND offers the wallet deep link in one gesture.
@@ -703,7 +703,7 @@ function playV4vThanksVoice(): void {
   } catch { /* a lost clip costs a sound, never the flow */ }
 }
 
-/** Thank-you panel after I PAID — blessing armed, one button to launch. */
+/** Thank-you panel after I PAID. A thank-you only; one button to launch. */
 function renderV4vThanks(onStart: () => void): void {
   clearOverlay();
   const overlay = el('div', { className: 'overlay', parent: root });
@@ -718,7 +718,7 @@ function renderV4vThanks(onStart: () => void): void {
   meme.alt = 'THANKZ';
   meme.style.cssText = 'width:min(60vw,240px);height:auto;border-radius:12px;display:block;';
 
-  const bless = el('p', { parent: overlay, text: '🙏 BLESSING ARMED — LAUNCH SHIELD · ×2 SATS AT IGNITION · 24H' });
+  const bless = el('p', { parent: overlay, text: 'Thank you. Everyone flies the same ship.' });
   bless.style.cssText = 'font-size:0.82rem;letter-spacing:0.14em;color:#ffd84a;text-shadow:0 0 8px rgba(255,216,74,0.5);text-align:center;margin:0;';
 
   const row = el('div', { className: 'menu-row', parent: overlay });
