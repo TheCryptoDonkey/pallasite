@@ -9,5 +9,9 @@ controller.pallasite.app, controller.forgesworn.dev {
 	header Strict-Transport-Security "max-age=31536000"
 	@metrics path /metrics
 	respond @metrics 404
+	# The stream and spectator roles are gone from the broker too (it answers 410);
+	# refusing them here as well keeps the posture visible in the proxy config.
+	@removed query r=publish r=subscribe r=peerwatch
+	respond @removed 410
 	reverse_proxy 127.0.0.1:8788
 }

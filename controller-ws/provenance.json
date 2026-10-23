@@ -1,16 +1,18 @@
 {
   "sourceRepository": "forgesworn/joystick",
   "sourcePath": "packages/broker",
-  "sourceCommit": "3b48f3457d3548e89f8491f34eafe6ecce373929",
+  "sourceCommit": "8c2fc0449778ecf463f2e1ba3f2a37a8fcbfa917",
   "files": {
-    "server.js": "3c806f8a16ef4a5968b68bbac0d63d3e8f20ffc633c1c1570afe2780f8cfaf30",
-    "controller-policy.js": "badadc26701b94bc2f7e3c1230ed9eb07d9bed1defb2fdd76a690fd4f28fab63",
-    "foregather.js": "0dff26ba4025b3f0b828d872e74473896a8310cff28866f6f9d8b9fda8073050",
+    "server.js": "75fbfa779e2e26abe8e3cbc78c98cdaeac6ca56198ea4cb286961417d39c391a",
+    "controller-policy.js": "2d23e1e8c58afce8773248c2a591f6575d299862272080846fb113d5a57bfdd8",
+    "vocabulary.js": "758ae73763b9948964ce7875be3932f07ef8c485aa47f1bbddb7048cf6b81177",
+    "vocabulary.json": "7e452396f8aa641f7fd3dd37a60bf0d3ba30bbe75b6535d7c0c7c7b157278a39",
+    "foregather.js": "3ece597f4493f409efa89fb79c34d98b2593c8d6484f0140488ca0a325aed83b",
     "probe-peer.js": "879eccb3c33b4b37b8fd0c4ac086146ee9b135420576598d839a3185a3d2a62c",
-    "package.json": "7898a2ab78c1c0e0ba2439c790df84edd3b8c0a93f45667f8a3f3c95cd0a1bd6",
+    "package.json": "a53e2d91fffc1ec45865b452e372f35dc3cf4fcd628bf66da453155a8c46ab5d",
     "package-lock.json": "1245818c75167c830911c6d75c7438f10087520494ec22624751ca9f71403510",
-    "README.md": "79cccaae7cbb680ddca1a05f01e22c8594607c14c58076ece7d825bee7df3892",
-    "Caddyfile.snippet": "d8d1dbbf7dfd5e6b683fe7f464b20e8bc4e5f7da10afcaed751978aabf1c7a4b",
-    "pallasite-controller-ws.service": "50b5338563978da6c666c542e352727fba8d0bb1419f05e6b6d0836a0d81664d"
+    "README.md": "5ab18c9d48e4f7fb17436e820a3a13fc16dfd4aca0e6e8a92da52f3a655553c0",
+    "Caddyfile.snippet": "74a31c839591d75fa04d555369a81f6df18b89dc080096604106bfa90547bb24",
+    "pallasite-controller-ws.service": "276c5cdff6a9228b30b29b560e3637e663f2c2535a4f2333df758f7b2e790f46"
   }
 }

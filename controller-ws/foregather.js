@@ -45,7 +45,9 @@ function validRoom(room) {
 export function foregatherGateway(env = process.env) {
   let endpoint;
   const token = env.FOREGATHER_CREATE_TOKEN;
-  if (env.FOREGATHER_API_URL) {
+  // Off unless an operator explicitly turns it on: the hosted pilot stores opaque
+  // bodies that this relay cannot inspect, so it is not part of the inputs-only relay.
+  if (env.FOREGATHER_GATEWAY === '1' && env.FOREGATHER_API_URL) {
     endpoint = new URL(env.FOREGATHER_API_URL);
     if (endpoint.protocol !== 'http:' || !['127.0.0.1', '[::1]', 'localhost'].includes(endpoint.hostname) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== '/' || !capabilities.test(token ?? '')) throw Error('Invalid private Foregather configuration');
   }
@@ -85,6 +87,7 @@ export function foregatherGateway(env = process.env) {
     const origin = req.headers.origin;
     const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', Vary: 'Origin', ...(origin && originAllowed(origin) ? { 'Access-Control-Allow-Origin': origin } : {}) };
     const reply = (status, body) => { res.writeHead(status, headers); res.end(Buffer.isBuffer(body) ? body : JSON.stringify(body)); };
+    if (env.FOREGATHER_GATEWAY !== '1') { reply(410, { error: 'Pairing service switched off' }); return true; }
     if (!originAllowed(origin)) { reply(403, { error: 'Origin refused' }); return true; }
     if (req.method === 'OPTIONS') {
       res.writeHead(204, { ...headers, 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE', 'Access-Control-Allow-Headers': 'Authorization, Content-Type', 'Access-Control-Max-Age': '600' }); res.end(); return true;
