@@ -5492,14 +5492,6 @@ export function renderControllerHostPairing(state: GameState, onClose: () => voi
   status.style.cssText = 'margin:8px 0 4px;font-size:0.95rem;color:rgba(140,255,180,0.85);min-height:1.4em;letter-spacing:0.08em;';
   status.textContent = 'Generating session key…';
 
-  // Identity banner — populates when the phone announces a
-  // SignerAnnounceFrame on pair. Step 2 of phone-as-signer is
-  // cosmetic: the host still signs with its local session. Step 3
-  // swaps the host's session for a RemoteControllerSigner backed by
-  // this announce.
-  const signerLine = el('p', { parent: overlay });
-  signerLine.style.cssText = 'margin:2px 0 4px;font-size:0.85rem;color:rgba(184,144,255,0.9);min-height:1.2em;letter-spacing:0.1em;display:none;';
-
   const hint = el('p', { parent: overlay });
   hint.style.cssText = 'margin:6px 0 18px;font-size:0.8rem;color:rgba(180,140,255,0.7);max-width:520px;line-height:1.4em;';
   hint.textContent = '';
@@ -5518,16 +5510,9 @@ export function renderControllerHostPairing(state: GameState, onClose: () => voi
     // Reuse an existing host if one's already running — saves a key
     // re-roll and lets the user re-open the QR mid-session.
     if (!activeControllerHost) {
-      activeControllerHost = mod.startControllerHost(state);
-      // Phone-as-signer step 3: as soon as the host exists, wire it
-      // up so any signer-announce frame swaps state.session for a
-      // RemoteControllerSigner. attachRemoteSession is idempotent
-      // (won't double-swap on re-announce) and unwires itself when
-      // the host closes. Only attach for fresh hosts — re-opening
-      // the dialog mustn't double-subscribe.
-      void import('./remote-signer.js').then(({ attachRemoteSession }) => {
-        if (activeControllerHost) attachRemoteSession(state, activeControllerHost);
-      });
+      // The relay carries inputs only: the phone drives the ship and never
+      // signs for it, so the screen keeps its own session.
+      activeControllerHost = mod.startControllerHost(state, { ws: CONTROLLER_WS_ENDPOINT_DEFAULT });
     } else {
       // Already paired, jump to the paired view.
       paired = true;
@@ -5564,33 +5549,11 @@ export function renderControllerHostPairing(state: GameState, onClose: () => voi
           primaryBtn.textContent = 'CANCEL';
           secondaryBtn.style.display = 'none';
         }
-        signerLine.style.display = 'none';
       } else if (s.kind === 'closed') {
         status.textContent = 'Disconnected.';
         primaryBtn.textContent = 'BACK';
         secondaryBtn.style.display = 'none';
-        signerLine.style.display = 'none';
       }
-    });
-    host.onSigner((signer) => {
-      if (!signer) {
-        signerLine.style.display = 'none';
-        return;
-      }
-      // Shorten npub for the banner — full bech32 is 63 chars which
-      // wraps awkwardly in this dialog. First 12 + last 6 is the
-      // standard "npub1abc…xyz" form most clients use.
-      let npubShort: string;
-      if (signer.npub && signer.npub.length > 18) {
-        npubShort = `${signer.npub.slice(0, 12)}…${signer.npub.slice(-6)}`;
-      } else if (signer.npub) {
-        npubShort = signer.npub;
-      } else {
-        npubShort = `${signer.pubkey.slice(0, 8)}…${signer.pubkey.slice(-4)}`;
-      }
-      const displayName = signer.name ?? npubShort;
-      signerLine.textContent = `🔐 Phone signing as ${displayName}`;
-      signerLine.style.display = '';
     });
   };
   void startOrReuseHost();
@@ -5664,8 +5627,8 @@ function renderControllerIdentityCardInner(
     const guest = getGuestRecord();
     const isGuest = guest?.pubkey === session.pubkey;
     const profile = getCachedProfile(session.pubkey);
-    // Same precedence as buildAnnouncedSigner — prefer profile, then
-    // fall back to SignetSession.displayName before the 8-hex sentinel
+    // Prefer the profile, then fall back to SignetSession.displayName
+    // before the 8-hex sentinel
     // so a freshly-paired bunker session shows the bunker's display
     // name immediately instead of "ABCD1234".
     const profileName = bestName(profile, session.pubkey);
@@ -5840,56 +5803,6 @@ function renderControllerIdentityCardInner(
     sub.style.cssText = 'font-size:0.7rem;color:rgba(220,210,255,0.6);letter-spacing:0.06em;font-weight:normal;';
     btn.addEventListener('click', spec.onClick);
   }
-}
-
-/**
- * Build the AnnouncedSigner payload the controller PWA sends on pair.
- * Sources the pubkey from state.session, the name from the cached
- * profile or the guest record, the npub via bech32, and the method
- * from the wrapped signer (mapped to the protocol's enum).
- */
-function buildAnnouncedSigner(state: GameState): import('./controller-mobile.js').AnnouncedSigner | null {
-  const session = state.session;
-  if (!session) return null;
-  const guest = getGuestRecord();
-  const isGuest = guest?.pubkey === session.pubkey;
-  const profile = getCachedProfile(session.pubkey);
-  // Name precedence (so a bunker for "thecryptodonkey" shows up as
-  // "The Crypto Donkey" even before the kind 0 fetch lands on the
-  // pad):
-  //   1. guest record name (when this IS the guest identity)
-  //   2. cached kind 0 display_name / name
-  //   3. SignetSession.displayName — the SDK fills this in from the
-  //      bunker / amber / signet handshake metadata
-  //   4. 8-hex fallback (bestName's terminal case)
-  const profileName = bestName(profile, session.pubkey);
-  const profileLooksLikeFallback = /^[0-9A-F]{8}$/.test(profileName);
-  const rawName = isGuest && guest
-    ? guest.name
-    : (profileLooksLikeFallback && session.displayName ? session.displayName : profileName);
-  const name = rawName.length > 64 ? rawName.slice(0, 64) : rawName;
-  let npub: string | undefined;
-  try { npub = encodeNpub(session.pubkey); } catch { /* leave undefined */ }
-  const signerMethod = (session.signer as { method?: string } | null)?.method;
-  const method: import('./controller-mobile.js').AnnouncedSigner['method'] =
-    isGuest ? 'guest'
-    : signerMethod === 'nip07'    ? 'nip07'
-    : signerMethod === 'bunker'   ? 'bunker'
-    : signerMethod === 'nsec'     ? 'nsec'
-    : signerMethod === 'amber'    ? 'amber'
-    : signerMethod === 'redirect' || signerMethod === 'signet' ? 'redirect'
-    : 'unknown';
-  const caps = {
-    canSignEvents: true,
-    hasNip44: Boolean((session.signer as { nip44?: unknown } | null)?.nip44),
-  };
-  return {
-    pubkey: session.pubkey,
-    ...(npub ? { npub } : {}),
-    ...(name ? { name } : {}),
-    method,
-    caps,
-  };
 }
 
 /** Describe a SignetSession's signing method for the IDENTITY card. */
@@ -6665,45 +6578,6 @@ export function renderControllerPage(state: GameState): void {
     }
     statusChip.textContent = 'CONNECTING…';
     client = m.startControllerClient(token);
-    // Announce the local identity (if any) to the host on pair. The
-    // host's onSigner callback receives this and uses the announce to
-    // build a RemoteControllerSigner — every host signEvent then
-    // round-trips back here via onSignRequest.
-    if (state.session) {
-      client.announceSigner(buildAnnouncedSigner(state));
-      // The profile fetch is async, so the initial announce above can
-      // carry a placeholder name (8-hex stub or SDK displayName). Once
-      // kind 0 lands, re-announce so the host swaps its banner to the
-      // real name. Cheap idempotent re-send — the host's onSigner
-      // change-detection skips if the pubkey hasn't moved unless
-      // name/method changed (which they have now).
-      const sigPubkey = state.session.pubkey;
-      void fetchProfile(sigPubkey).then(p => {
-        if (!p) return;
-        if (state.session?.pubkey !== sigPubkey) return;
-        state.profile = p;
-        client?.announceSigner(buildAnnouncedSigner(state));
-      });
-    }
-    // Fulfil host sign-requests via the phone's local session signer.
-    // The phone's signer is already wrapped through the global sign-
-    // queue (auth.ts wrapSession) so concurrent requests from the host
-    // serialise here, not on the bunker / extension. signRequestHandler
-    // returns the signed event the host marshals as a sign-response.
-    // If state.session goes away (user signs out on the pad mid-pair),
-    // the handler resolves to a 'no-signer' error which the host
-    // surfaces as sign-failed.
-    client.onSignRequest(async (template) => {
-      const sess = state.session;
-      if (!sess) throw new Error('no-signer');
-      const signed = await sess.signer.signEvent({
-        kind: template.kind,
-        content: template.content,
-        ...(template.tags ? { tags: template.tags } : {}),
-        ...(template.created_at !== undefined ? { created_at: template.created_at } : {}),
-      });
-      return signed as unknown as import('./controller-types.js').RemoteSignedEvent;
-    });
     client.onStatus((s) => {
       switch (s.kind) {
         case 'connecting':    statusChip.textContent = 'CONNECTING…'; statusChip.style.color = 'rgba(255,216,74,0.85)'; break;
