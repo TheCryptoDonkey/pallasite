@@ -1,18 +1,18 @@
 {
   "sourceRepository": "forgesworn/joystick",
   "sourcePath": "packages/broker",
-  "sourceCommit": "8c2fc0449778ecf463f2e1ba3f2a37a8fcbfa917",
+  "sourceCommit": "61e27b35579ae69ab48afc998868825e94ccda69",
   "files": {
-    "server.js": "75fbfa779e2e26abe8e3cbc78c98cdaeac6ca56198ea4cb286961417d39c391a",
-    "controller-policy.js": "2d23e1e8c58afce8773248c2a591f6575d299862272080846fb113d5a57bfdd8",
-    "vocabulary.js": "758ae73763b9948964ce7875be3932f07ef8c485aa47f1bbddb7048cf6b81177",
-    "vocabulary.json": "7e452396f8aa641f7fd3dd37a60bf0d3ba30bbe75b6535d7c0c7c7b157278a39",
+    "server.js": "33b2c8ec9725259f9f17246e749e4569d41620bc0932ffbcea975def6889d0c9",
+    "controller-policy.js": "200718f8204fd46629591f162fb782b0002a6218f6fbe4bb13b999d477fba912",
+    "vocabulary.js": "d8bca2935e7c6cb60596ad8c0d800714c91e79235da6dd6873bf192831df0a33",
+    "vocabulary.json": "3b73aa0d116f291a97148297f9d1649378739390afbefda0de5e0483dc047160",
     "foregather.js": "3ece597f4493f409efa89fb79c34d98b2593c8d6484f0140488ca0a325aed83b",
     "probe-peer.js": "879eccb3c33b4b37b8fd0c4ac086146ee9b135420576598d839a3185a3d2a62c",
     "package.json": "a53e2d91fffc1ec45865b452e372f35dc3cf4fcd628bf66da453155a8c46ab5d",
     "package-lock.json": "1245818c75167c830911c6d75c7438f10087520494ec22624751ca9f71403510",
-    "README.md": "5ab18c9d48e4f7fb17436e820a3a13fc16dfd4aca0e6e8a92da52f3a655553c0",
+    "README.md": "43c59484923949bba84e5d02b3386995b54558ec35271b52e8f4da3fc8d554b7",
     "Caddyfile.snippet": "74a31c839591d75fa04d555369a81f6df18b89dc080096604106bfa90547bb24",
-    "pallasite-controller-ws.service": "276c5cdff6a9228b30b29b560e3637e663f2c2535a4f2333df758f7b2e790f46"
+    "pallasite-controller-ws.service": "8c11250200dc8a8d1985a4eaf89538977d59640189c71fa1a685205b3449e116"
   }
 }

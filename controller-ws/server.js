@@ -334,6 +334,9 @@ function attach(ws, session, role, wantsMulti, ownerHash) {
       // connects with multi=1. Untouched in single mode.
       phones: undefined,
       recovery: new Map(),
+      // Player slot -> the initials that slot's phone sent in phone-context this session.
+      // Host frames may repeat initials only if they match (see scrubInitials).
+      initials: new Map(),
       multi: false,
       // Peer-mode slots for shared-arena multiplayer. Index 0..peerCount-1, each
       // populated when the corresponding peer sends `hello-peer`.
@@ -421,6 +424,7 @@ function attach(ws, session, role, wantsMulti, ownerHash) {
       }
       for (const reservation of slot.recovery.values()) clearTimeout(reservation.timer);
       slot.recovery.clear();
+      slot.initials.clear();
       slot.multi = false;
     }
   } else if (role === 'phone') {
@@ -442,6 +446,7 @@ function attach(ws, session, role, wantsMulti, ownerHash) {
         return;
       }
       slot.phones.set(playerSlot, ws);
+      if (!reservation) slot.initials.delete(playerSlot);
       ws._playerSlot = playerSlot;
       ws._resumed = !!reservation;
       if (ws._resumeToken) {
@@ -454,6 +459,7 @@ function attach(ws, session, role, wantsMulti, ownerHash) {
       // Single-mode (current behaviour): singleton phone, new replaces old.
       if (slot.phone) try { slot.phone.close(1000, 'replaced'); } catch {}
       slot.phone = ws;
+      slot.initials.delete(0);
     }
   }
 
@@ -1146,8 +1152,12 @@ function forwardMessage(slot, role, ws, data, isBinary) {
   try { value = JSON.parse(data.toString()); } catch { return; }
   const frame = role === 'phone'
     ? phoneFrame(value, slot.multi ? ws._playerSlot : undefined)
-    : hostFrame(value, slot.multi, MAX_PHONES_PER_SESSION, vocabulary);
+    : hostFrame(value, slot.multi, MAX_PHONES_PER_SESSION, vocabulary, number => slot.initials.get(number));
   if (!frame) return;
+  if (role === 'phone' && frame.type === 'phone-context') {
+    const key = slot.multi ? ws._playerSlot : 0;
+    if (frame.name) slot.initials.set(key, frame.name); else slot.initials.delete(key);
+  }
   const payload = JSON.stringify(frame);
   if (role === 'host') {
     if (slot.multi && slot.phones) {

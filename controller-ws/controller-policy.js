@@ -30,7 +30,7 @@ const STICK_RANGES = Object.freeze({ '': [-6284, 6284], '-x': [-1000, 1000], '-y
  * Rebuild a phone frame from validated fields, or return null.
  *
  *   input          { k, v }   k is a slot (or stick slot plus one suffix), v a bounded integer string
- *   phone-context  { type, tournamentTotal, name? }   name is three capital letters (arcade initials)
+ *   phone-context  { type, tournamentTotal (capped at the score ceiling), name? }   name is three capital letters (arcade initials)
  *
  * `p` is never taken from the phone: the broker stamps `playerSlot` in multi mode.
  * Nothing else is forwarded: no other type, no extra fields, no free text.
@@ -51,7 +51,8 @@ export function phoneFrame(value, playerSlot) {
     out = { k: value.k, v: String(number) };
   } else if (value.type === 'phone-context') {
     if (!integer(value.tournamentTotal, 0, Number.MAX_SAFE_INTEGER)) return null;
-    out = { type: 'phone-context', tournamentTotal: value.tournamentTotal };
+    // A running total is a score, so it has the score ceiling: a phone cannot choose a larger number to show strangers.
+    out = { type: 'phone-context', tournamentTotal: Math.min(value.tournamentTotal, SCORE_MAX) };
     if (typeof value.name === 'string' && INITIALS_RE.test(value.name)) out.name = value.name;
   } else return null;
   if (playerSlot !== undefined) out.p = playerSlot;
@@ -61,17 +62,29 @@ export function phoneFrame(value, playerSlot) {
 const TONES = new Set(['neutral', 'success', 'error']);
 const HAPTIC_PRESETS = new Set(['tap', 'pulse', 'thud', 'win', 'fail']);
 
-function spectatorRows(value, compiled) {
+/**
+ * A host may name a player's initials only when that player's phone sent exactly
+ * those letters in this session (`initialsOf(slot)` is what the broker validated
+ * from the phone's phone-context). Any other three letters, apart from the host's
+ * own `BOT` marker, are dropped, so a scripted host cannot compose text from
+ * leaderboard rows. Without `initialsOf` nothing is checked (unit tests only).
+ */
+export function scrubInitials(text, initialsOf) {
+  if (typeof text !== 'string' || typeof initialsOf !== 'function') return text;
+  return text.replace(/P(\d{1,2}) · ([A-Z]{3})(?![A-Z])/g, (all, number, letters) => letters === 'BOT' || initialsOf(Number(number) - 1) === letters ? all : `P${number}`);
+}
+
+function spectatorRows(value, compiled, initialsOf) {
   if (!Array.isArray(value)) return [];
   const rows = [];
   for (const row of value.slice(0, 8)) {
     if (!isObject(row) || !integer(row.p, 0, 63) || !integer(row.score, -SCORE_MAX, SCORE_MAX)) continue;
     const out = {
       p: row.p,
-      label: compiled.rowLabel(row.label) ? row.label : `P${row.p + 1}`,
+      label: compiled.rowLabel(row.label) ? scrubInitials(row.label, initialsOf) : `P${row.p + 1}`,
       score: row.score,
     };
-    if (row.tournamentTotal !== undefined && integer(row.tournamentTotal, 0, Number.MAX_SAFE_INTEGER)) out.tournamentTotal = row.tournamentTotal;
+    if (row.tournamentTotal !== undefined && integer(row.tournamentTotal, 0, Number.MAX_SAFE_INTEGER)) out.tournamentTotal = Math.min(row.tournamentTotal, SCORE_MAX);
     out.colour = typeof row.colour === 'string' && COLOUR_RE.test(row.colour) ? row.colour : '#ffffff';
     rows.push(out);
   }
@@ -85,13 +98,13 @@ function spectatorRows(value, compiled) {
  *   controller-feedback  { type, message, selected?, locked?, tone? }
  *   haptic               { type, pattern }
  *   game-score           { type, score, label? }
- *   spectator-view       { type, title, leaderboard, highlight? }
+ *   spectator-view       { type, title, leaderboard, highlight? }   initials in rows and highlight only as the phone sent them
  *
  * `p` routes to one phone in multi mode (an integer below `maxPhones`, anything
  * else drops the frame so it is never broadcast by accident) and is removed in
  * single mode. `sign-request` and every other type are dropped.
  */
-export function hostFrame(value, multi, maxPhones, compiled) {
+export function hostFrame(value, multi, maxPhones, compiled, initialsOf) {
   if (!isObject(value) || typeof value.type !== 'string') return null;
   let out;
   switch (value.type) {
@@ -121,9 +134,9 @@ export function hostFrame(value, multi, maxPhones, compiled) {
       out = {
         type: value.type,
         title: compiled.title(value.title) ? value.title : 'SPECTATOR',
-        leaderboard: spectatorRows(value.leaderboard, compiled),
+        leaderboard: spectatorRows(value.leaderboard, compiled, initialsOf),
       };
-      if (compiled.highlight(value.highlight)) out.highlight = value.highlight;
+      if (compiled.highlight(value.highlight)) out.highlight = scrubInitials(value.highlight, initialsOf);
       break;
     default:
       return null;

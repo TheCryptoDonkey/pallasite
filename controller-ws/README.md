@@ -61,7 +61,7 @@ binary frame is dropped.
 | Frame | Accepted shape | Forwarded as |
 | --- | --- | --- |
 | input | `{k, v}` with no `type`. `k` is one of the 16 slots (`joyL joyR A B X Y L1 L2 R1 R2 start select dpadU dpadD dpadL dpadR`), or for `joyL`/`joyR` only, the slot plus `-x -y -thrust -power -end -tap`. `v` is a string matching `^-?\d{1,4}$` inside the range for its key | `{k, v}` (plus `p` in multi mode) |
-| `phone-context` | `tournamentTotal` a safe integer from 0; optional `name`, forwarded only if it is exactly three capital letters A to Z (arcade initials, `^[A-Z]{3}$`), otherwise omitted | `{type, tournamentTotal, name?}` |
+| `phone-context` | `tournamentTotal` an integer from 0, capped at 1000000 (the score ceiling); optional `name`, forwarded only if it is exactly three capital letters A to Z (arcade initials, `^[A-Z]{3}$`), otherwise omitted | `{type, tournamentTotal, name?}` |
 | `controller-join`, `controller-heartbeat`, `controller-leave` | as before | consumed by the broker, never forwarded |
 
 Input ranges: bare stick key (heading) -6284 to 6284 (the pad sends -3142 to
@@ -77,11 +77,11 @@ oversized third-party spec reaches the rebuild step instead of closing the host.
 
 | Frame | Rebuilt as |
 | --- | --- |
-| `controller-spec` | `version` 1. `name` must be a game name from the vocabulary (optionally ` · MENU`, ` · P<n>` or ` · SPECTATOR <n>`), else `GAME`. At most 16 known slots; per slot `mode` (`heading xy tilt`), `tapAction` (a slot), `label` and `icon` only if in the vocabulary, `colour` only if a valid hex or `rgba()` colour, `graphic` only if the SHA-256 of the exact PNG is listed. `theme` colours and `layout` geometry are kept if valid; a broken `layout` is dropped and the rest kept |
+| `controller-spec` | `version` 1. `name` must be a game name from the vocabulary (optionally ` · MENU`, ` · P<n>` or ` · SPECTATOR <n>`), else `GAME`. At most 16 known slots; per slot `mode` (`heading xy tilt`), `tapAction` (a slot), `label` and `icon` only if in the vocabulary, `colour` only if a valid hex or `rgba()` colour, `graphic` only if the SHA-256 of the exact PNG is listed and its base64 is the canonical encoding. `theme` colours and `layout` geometry are kept if valid (layout numbers rounded to three decimal places); a broken `layout` is dropped and the rest kept |
 | `controller-feedback` | `message` must match a vocabulary template (`{n}` is an integer 0 to 1000000, `{slot}` one of `A B X Y`), else an empty string; `selected`, `locked` and `tone` are checked |
 | `haptic` | `pattern` is `tap pulse thud win fail`, or 1 to 16 integers 0 to 5000 |
 | `game-score` | `score` integer 0 to 1000000; `label` only if it matches a score-label template |
-| `spectator-view` | `title` must be `<game> · <phase>`, else `SPECTATOR`; at most 8 leaderboard rows with `p` 0 to 63, `label` of the form `P3`, `P3 · BOT` or `P3 · ABC` (optionally `1. ` first), else `P<p+1>`, an integer `score`, optional `tournamentTotal` and a valid `colour`; `highlight` only if it matches a vocabulary highlight |
+| `spectator-view` | `title` must be `<game> · <phase>`, else `SPECTATOR`; at most 8 leaderboard rows with `p` 0 to 63, `label` of the form `P3`, `P3 · BOT` or `P3 · ABC` (optionally `1. ` first), else `P<p+1>`, an integer `score`, optional `tournamentTotal` and a valid `colour`; `highlight` only if it matches a vocabulary highlight. Initials in a row label or highlight (`P3 · ABC`) are kept only if the phone in that player slot sent exactly those letters in this session (`BOT` is the host's own marker); otherwise they are dropped to `P3`. `tournamentTotal` is capped at 1000000 |
 
 `sign-request`, binary frames and every other type are dropped. An unknown string
 becomes a placeholder (`GAME`, an empty string, `SPECTATOR`, `P<n>`) or the field

@@ -84,6 +84,12 @@ export function sha256Hex(bytes: Uint8Array): string {
   return Array.from(h, word => word.toString(16).padStart(8, '0')).join('');
 }
 
+function encodeBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return (globalThis as { btoa: (data: string) => string }).btoa(binary);
+}
+
 function decodeBase64(text: string): Uint8Array | null {
   try {
     const binary = (globalThis as { atob?: (data: string) => string }).atob?.(text);
@@ -131,7 +137,8 @@ export function compileVocabulary(vocabulary: Vocabulary = VOCABULARY): Compiled
     graphic: value => {
       if (typeof value !== 'string' || value.length > 12288 || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return false;
       const bytes = decodeBase64(value);
-      return !!bytes && graphics.has(sha256Hex(bytes));
+      // Only the canonical encoding passes, so stray padding bits cannot carry anything.
+      return !!bytes && encodeBase64(bytes) === value && graphics.has(sha256Hex(bytes));
     },
   };
 }
@@ -192,6 +199,9 @@ export function canonicaliseSpec(value: unknown, compiled: CompiledVocabulary = 
   return { spec, stripped };
 }
 
+/** Layout geometry carries three decimal places, plenty for a thumb and no spare precision for a side channel. */
+const round3 = (number: number): number => Math.round(number * 1000) / 1000;
+
 function canonicaliseLayout(value: unknown, keys: string[]): ControllerSpec['layout'] | null {
   if (!isObject(value) || value.version !== 1 || value.portrait === undefined && value.landscape === undefined) return null;
   const layout: NonNullable<ControllerSpec['layout']> = { version: 1 };
@@ -203,10 +213,11 @@ function canonicaliseLayout(value: unknown, keys: string[]): ControllerSpec['lay
     for (const key of keys) {
       const placement = map[key];
       if (!validPlacement(placement, key.startsWith('joy'))) return null;
+      const r = round3;
       rebuilt[key] = {
-        x: placement.x, y: placement.y, size: placement.size,
+        x: r(placement.x), y: r(placement.y), size: r(placement.size),
         ...(placement.shape !== undefined ? { shape: placement.shape } : {}),
-        ...(placement.zone !== undefined ? { zone: { x: placement.zone.x, y: placement.zone.y, width: placement.zone.width, height: placement.zone.height } } : {}),
+        ...(placement.zone !== undefined ? { zone: { x: r(placement.zone.x), y: r(placement.zone.y), width: r(placement.zone.width), height: r(placement.zone.height) } } : {}),
       };
     }
     layout[orientation] = rebuilt;

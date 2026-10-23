@@ -63,7 +63,9 @@ export function compileVocabulary(vocabulary = loadVocabulary()) {
     /** True when `png` is base64 of exactly one of the allowed PNG files. */
     graphic: value => {
       if (!string(value) || value.length > 12288 || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return false;
-      return graphics.has(createHash('sha256').update(Buffer.from(value, 'base64')).digest('hex'));
+      const bytes = Buffer.from(value, 'base64');
+      // Only the canonical encoding passes, so stray padding bits cannot carry anything.
+      return bytes.toString('base64') === value && graphics.has(createHash('sha256').update(bytes).digest('hex'));
     },
   };
 }
@@ -83,6 +85,9 @@ export function validPlacement(value, stick) {
   return true;
 }
 
+/** Layout geometry carries three decimal places, plenty for a thumb and no spare precision for a side channel. */
+const round3 = number => Math.round(number * 1000) / 1000;
+
 function canonicaliseLayout(value, keys) {
   if (!object(value) || value.version !== 1 || value.portrait === undefined && value.landscape === undefined) return null;
   const layout = { version: 1 };
@@ -94,10 +99,11 @@ function canonicaliseLayout(value, keys) {
     for (const key of keys) {
       const placement = map[key];
       if (!validPlacement(placement, key.startsWith('joy'))) return null;
+      const r = round3;
       rebuilt[key] = {
-        x: placement.x, y: placement.y, size: placement.size,
+        x: r(placement.x), y: r(placement.y), size: r(placement.size),
         ...(placement.shape !== undefined ? { shape: placement.shape } : {}),
-        ...(placement.zone !== undefined ? { zone: { x: placement.zone.x, y: placement.zone.y, width: placement.zone.width, height: placement.zone.height } } : {}),
+        ...(placement.zone !== undefined ? { zone: { x: r(placement.zone.x), y: r(placement.zone.y), width: r(placement.zone.width), height: r(placement.zone.height) } } : {}),
       };
     }
     layout[orientation] = rebuilt;
