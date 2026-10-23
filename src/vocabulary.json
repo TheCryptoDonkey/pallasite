@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "games": ["PALLASITE", "TANK", "TANK ROYALE", "QUIZ", "QUIZ BUZZ", "TILT", "TILT RACE", "Tank Royale", "Quiz Buzz", "Tilt Race", "GAME",
+            "Gamestr Arcade", "Gamestr game", "Hang On, Fren", "Pallasite", "Take Me To Your Ledger", "Neon Sentinel"],
+  "labels": ["", "FIRE", "SHIELD", "WARP", "PAUSE", "SELECT", "BACK", "CHEER", "TILT", "BOOST",
+             "OPT A", "OPT B", "OPT X", "OPT Y", "MOVE", "STEER", "JUMP", "ACTION", "START", "MENU",
+             "OK", "UP", "DOWN", "LEFT", "RIGHT", "BRAKE", "GO", "SHOOT", "USE", "DASH", "BLOCK", "SPECIAL",
+             "Browse", "Choose", "Back", "Move", "Aim", "Pause", "View", "Steer", "Brake / Begin", "Continue", "Aim / fly",
+             "Fire", "Shield", "Warp", "Thrust", "Fly", "Beam", "Special", "Pause / begin", "Burst"],
+  "icons": ["●", "⛨", "⚡", "⏸", "✓", "·", "↩", "▲", "▼", "◀", "▶", "⏩", "👏", "A", "B", "X", "Y",
+            "←", "◉", "ϟ", "↑", "Ⅱ", "↓"],
+  "phases": ["WAITING", "STARTING", "ROUND LIVE", "BETWEEN ROUNDS", "RACE LIVE", "BETWEEN RACES"],
+  "feedback": ["", "Press an answer button to start", "Get ready…", "Choose your answer",
+               "ANSWER {slot} LOCKED", "CORRECT · +{n} points", "INCORRECT", "NO ANSWER",
+               "GAME COMPLETE · {n} points", "GAME PAUSED", "GAME RESUMED"],
+  "scoreLabels": ["1st · {n} right", "{n} right", "tank round win", "1st!", "2nd", "3rd", "4th"],
+  "highlights": ["cheered!", "took the round"],
+  "graphics": [
+    { "name": "tank-fire", "sha256": "05f14b1dc820b0f0020899b310708abc6ed674cef9119a779328fac7d35e6b45" }
+  ]
+}

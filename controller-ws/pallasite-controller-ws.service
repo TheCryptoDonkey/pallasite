@@ -14,6 +14,12 @@ RestartSec=2s
 Environment=NODE_ENV=production
 Environment=PORT=8788
 Environment=HOST=127.0.0.1
+# Game screens (the host role) are accepted only from the owner's own sites. Phones and
+# lockstep peers are not restricted. The live unit (or a drop-in from `systemctl edit`)
+# must carry this line: the release activation restarts the unit but never rewrites it.
+# Self-hosters leave CONTROLLER_HOST_ORIGINS unset to accept any origin. Do not set
+# CONTROLLER_ALLOW_LOOPBACK on a public relay.
+Environment=CONTROLLER_HOST_ORIGINS=https://tank.forgesworn.dev,https://quiz.forgesworn.dev,https://tilt.forgesworn.dev,https://pad.forgesworn.dev,https://play.forgesworn.dev,https://pallasite.app,https://600b.pallasite.app,https://mobile.pallasite.app,https://watch.pallasite.app,https://arcade.600.wtf,https://gamestr.62-238-98-53.sslip.io
 
 # Light sandboxing — the relay needs almost nothing.
 NoNewPrivileges=true

@@ -14,25 +14,10 @@ import {
   CONTROLLER_WS_ENDPOINT_DEFAULT,
   type ControllerSpec,
   type PairingToken,
-  type RemoteEventTemplate,
-  type RemoteSignedEvent,
-  type SignerAnnounceFrame,
-  type SignRequestFrame,
 } from './controller-types.js';
 import type { GameState } from './types.js';
 import { localEdges, isPeerActive } from './netcode.js';
 import { tryHyperspace, tryActivateShield } from './game.js';
-
-/** Identity the host has been told the controller is carrying. Mirror
- *  of AnnouncedSigner from controller-mobile, re-declared here so the
- *  host side doesn't depend on the mobile module. */
-export interface AnnouncedSigner {
-  pubkey: string;
-  npub?: string;
-  name?: string;
-  method?: SignerAnnounceFrame['method'];
-  caps?: SignerAnnounceFrame['caps'];
-}
 
 /** Pallasite slot map — which standard slot maps to which game action.
  *  The host's spec advertises icons/labels for these slots; the PWA
@@ -100,25 +85,8 @@ export interface ControllerHost {
   pairingUrl: string;
   paired: boolean;
   lastInputAt: number;
-  /** Latest identity the phone has announced. null = no signer / revoked. */
-  signer: AnnouncedSigner | null;
-  /**
-   * Ask the phone to sign an event template. Returns the signed event
-   * or rejects on timeout / phone-side error / pair-down mid-request.
-   * Caller is responsible for matching kinds and validating the
-   * returned event's pubkey matches host.signer.pubkey if that matters.
-   * Throws 'no-pair' if the controller isn't paired, 'no-signer' if no
-   * identity has been announced, 'sign-timeout' if the phone doesn't
-   * respond in time, 'sign-failed: <msg>' on phone-side errors.
-   */
-  signEvent: (template: RemoteEventTemplate) => Promise<RemoteSignedEvent>;
   close: () => void;
   onStatus: (cb: (s: ControllerHostStatus) => void) => void;
-  /** Fires when the phone announces a signer (or revokes it via null).
-   *  Multi-subscriber: each call adds another listener. Returns a fn
-   *  to remove that listener. Late subscribers fire immediately with
-   *  the current signer if non-null. */
-  onSigner: (cb: (signer: AnnouncedSigner | null) => void) => () => void;
 }
 
 export type ControllerHostStatus =
@@ -126,45 +94,16 @@ export type ControllerHostStatus =
   | { kind: 'paired' }
   | { kind: 'closed' };
 
-export function startControllerHost(state: GameState, opts: { ws?: string } = {}): ControllerHost {
+export function startControllerHost(state: GameState, opts: { ws: string }): ControllerHost {
+  if (typeof opts?.ws !== 'string' || !opts.ws) throw new Error('startControllerHost needs `ws`, the wss:// URL of the controller relay');
   const sessionId = randomSessionId();
-  const wsUrl = opts.ws ?? CONTROLLER_WS_ENDPOINT_DEFAULT;
+  const wsUrl = opts.ws;
   const pairingUrl = encodePairingUrl({ sessionId, ws: wsUrl });
 
   let paired = false;
   let lastInputAt = 0;
-  let signer: AnnouncedSigner | null = null;
   let statusCb: ((s: ControllerHostStatus) => void) | null = null;
-  const signerCbs = new Set<(s: AnnouncedSigner | null) => void>();
   const fireStatus = (s: ControllerHostStatus): void => { try { statusCb?.(s); } catch { /* ignore */ } };
-  const fireSigner = (s: AnnouncedSigner | null): void => {
-    for (const cb of signerCbs) {
-      try { cb(s); } catch { /* ignore */ }
-    }
-  };
-
-  // Pending sign-requests waiting on the phone. Keyed by request id.
-  // Each entry resolves the corresponding signEvent promise when a
-  // sign-response arrives, or rejects on timeout / pair-down / close.
-  interface PendingSign {
-    resolve: (event: RemoteSignedEvent) => void;
-    reject: (err: Error) => void;
-    timer: number;
-  }
-  const pendingSigns = new Map<string, PendingSign>();
-  /** Per-request timeout. Generous because the phone may be on a cold
-   *  NIP-46 bunker connection — bunker handshakes can run 5-10s before
-   *  the first signEvent resolves. The phone is also subject to its
-   *  own sign-queue, so multiple inflight requests on the host stack
-   *  up serially on the phone. 30s tolerates both. */
-  const SIGN_TIMEOUT_MS = 30_000;
-  const rejectAllPending = (err: Error): void => {
-    for (const [id, p] of pendingSigns) {
-      window.clearTimeout(p.timer);
-      try { p.reject(err); } catch { /* ignore */ }
-      pendingSigns.delete(id);
-    }
-  };
 
   let ws: WebSocket | null = null;
   let closed = false;
@@ -179,11 +118,6 @@ export function startControllerHost(state: GameState, opts: { ws?: string } = {}
     state.players[0].keys[FIRE_CODE] = false;
     state.players[0].targetHeading = null;
     state.players[0].thrustOverride = false;
-    // Any in-flight signEvent calls die with the host. Reject them so
-    // callers (claim, replay, heartbeat) surface a clean error instead
-    // of hanging on a closed WS.
-    rejectAllPending(new Error('host-closed'));
-    if (signer) { signer = null; fireSigner(null); }
     fireStatus({ kind: 'closed' });
   };
 
@@ -238,58 +172,6 @@ export function startControllerHost(state: GameState, opts: { ws?: string } = {}
             state.players[0].targetHeading = null;
             state.players[0].thrustOverride = false;
             fireStatus({ kind: 'waiting' });
-            // Pair lost — drop the remote identity. The phone will
-            // re-announce on reconnect if it still has a session.
-            if (signer) {
-              signer = null;
-              fireSigner(null);
-            }
-            // Reject any in-flight sign-requests — the phone can't
-            // respond from a closed peer. Callers retry their own way
-            // (or surface 'phone disconnected' to the player).
-            rejectAllPending(new Error('peer-disconnected'));
-          }
-        } else if (obj.type === 'signer-announce') {
-          const pubkey = typeof obj.pubkey === 'string' ? obj.pubkey : '';
-          if (/^[0-9a-f]{64}$/i.test(pubkey)) {
-            const next: AnnouncedSigner = {
-              pubkey: pubkey.toLowerCase(),
-              ...(typeof obj.npub === 'string' ? { npub: obj.npub } : {}),
-              ...(typeof obj.name === 'string' ? { name: obj.name } : {}),
-              ...(typeof obj.method === 'string' ? { method: obj.method as AnnouncedSigner['method'] } : {}),
-              ...(obj.caps && typeof obj.caps === 'object'
-                ? { caps: obj.caps as AnnouncedSigner['caps'] }
-                : {}),
-            };
-            const changed = !signer || signer.pubkey !== next.pubkey
-              || signer.name !== next.name || signer.method !== next.method;
-            signer = next;
-            if (changed) fireSigner(next);
-          }
-        } else if (obj.type === 'signer-revoke') {
-          if (signer) {
-            signer = null;
-            fireSigner(null);
-          }
-        } else if (obj.type === 'sign-response') {
-          const id = typeof obj.id === 'string' ? obj.id : '';
-          const p = id ? pendingSigns.get(id) : undefined;
-          if (!p) return;  // stale / unknown id — drop silently
-          pendingSigns.delete(id);
-          window.clearTimeout(p.timer);
-          if (obj.ok === true && obj.event && typeof obj.event === 'object') {
-            // Trust the phone's event but sanity-check the shape so a
-            // malformed frame doesn't crash downstream verifiers.
-            const ev = obj.event as Record<string, unknown>;
-            const shapeOk = typeof ev.id === 'string' && typeof ev.pubkey === 'string'
-              && typeof ev.kind === 'number' && typeof ev.created_at === 'number'
-              && typeof ev.content === 'string' && typeof ev.sig === 'string'
-              && Array.isArray(ev.tags);
-            if (shapeOk) p.resolve(ev as unknown as RemoteSignedEvent);
-            else p.reject(new Error('sign-failed: malformed-response'));
-          } else {
-            const errMsg = typeof obj.error === 'string' ? obj.error : 'unknown-error';
-            p.reject(new Error(`sign-failed: ${errMsg}`));
           }
         }
         return;
@@ -316,46 +198,12 @@ export function startControllerHost(state: GameState, opts: { ws?: string } = {}
   };
   connect();
 
-  const signEvent = (template: RemoteEventTemplate): Promise<RemoteSignedEvent> => {
-    return new Promise<RemoteSignedEvent>((resolve, reject) => {
-      if (closed) { reject(new Error('host-closed')); return; }
-      if (!paired) { reject(new Error('no-pair')); return; }
-      if (!signer) { reject(new Error('no-signer')); return; }
-      if (!ws || ws.readyState !== WebSocket.OPEN) { reject(new Error('no-ws')); return; }
-      const id = crypto.randomUUID();
-      const frame: SignRequestFrame = { type: 'sign-request', id, template };
-      const timer = window.setTimeout(() => {
-        if (pendingSigns.delete(id)) reject(new Error('sign-timeout'));
-      }, SIGN_TIMEOUT_MS);
-      pendingSigns.set(id, { resolve, reject, timer });
-      try {
-        ws.send(JSON.stringify(frame));
-      } catch (err) {
-        pendingSigns.delete(id);
-        window.clearTimeout(timer);
-        reject(err instanceof Error ? err : new Error(String(err)));
-      }
-    });
-  };
-
   return {
     sessionId, ws: wsUrl, pairingUrl,
     get paired() { return paired; },
     get lastInputAt() { return lastInputAt; },
-    get signer() { return signer; },
-    signEvent,
     close: cleanup,
     onStatus: (cb) => { statusCb = cb; },
-    onSigner: (cb) => {
-      signerCbs.add(cb);
-      // Fire immediately with the current state — late subscribers
-      // (the pairing dialog mounts after the host starts) shouldn't
-      // miss an announce that already arrived.
-      if (signer) {
-        try { cb(signer); } catch { /* ignore */ }
-      }
-      return () => { signerCbs.delete(cb); };
-    },
   };
 }
 

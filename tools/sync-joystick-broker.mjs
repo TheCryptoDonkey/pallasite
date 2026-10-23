@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 const repo = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const dir = join(repo, 'controller-ws');
 const FILES = [
-  'server.js', 'controller-policy.js', 'foregather.js', 'probe-peer.js', 'package.json', 'package-lock.json',
+  'server.js', 'controller-policy.js', 'vocabulary.js', 'vocabulary.json', 'foregather.js', 'probe-peer.js', 'package.json', 'package-lock.json',
   'README.md', 'Caddyfile.snippet', 'pallasite-controller-ws.service',
 ];
 const REMOVED = ['pnpm-lock.yaml']; // pre-vendoring lockfile; joystick uses npm

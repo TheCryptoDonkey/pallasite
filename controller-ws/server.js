@@ -1,25 +1,37 @@
 /**
- * Pallasite controller WebSocket relay.
+ * Controller WebSocket relay: inputs only.
  *
- * Pairs phone controllers with big-screen game hosts by sessionId.
+ * Pairs phone controllers with big-screen game hosts by sessionId and carries
+ * controller inputs and game state between them, nothing else. Every frame an
+ * endpoint sends is parsed, checked field by field against a closed grammar
+ * (controller-policy.js, vocabulary.js) and REBUILT from the validated fields.
+ * Anything outside the grammar is dropped, never forwarded: free text, binary
+ * payloads and signing requests do not cross this relay. Strings that survive
+ * are members of the operator's vocabulary.json tables or templates whose only
+ * parameters are bounded integers; player names are three capital letters.
+ *
  * V2 controller sessions authenticate host ownership with a private
- * credential, filter endpoint roles and reserve lifecycle frames for the
- * broker. Legacy controller, stream and peer roles remain available in a
- * separate namespace. See README.md for protocol and runtime budgets.
+ * credential. Legacy (versionless) sessions keep a separate namespace with the
+ * same content rules. See README.md for protocol and runtime budgets.
  *
  * Wire:
- *   wss://controller.pallasite.app/?s=<sessionId>&r=<host|phone>          single-player
- *   wss://controller.pallasite.app/?s=<sessionId>&r=host&multi=1          multi-player host
- *   wss://controller.pallasite.app/?s=<sessionId>&r=phone                 phone in either mode
- *   wss://controller.pallasite.app/?s=<sessionId>&r=peer                  shared-arena multiplayer
- *   wss://controller.pallasite.app/?s=<sessionId>&r=peerwatch             spectate a peer session
+ *   wss://<host>/?s=<sessionId>&r=<host|phone>          single-player
+ *   wss://<host>/?s=<sessionId>&r=host&multi=1          multi-player host
+ *   wss://<host>/?s=<sessionId>&r=phone                 phone in either mode
+ *   wss://<host>/?s=<sessionId>&r=peer                  shared-arena multiplayer
+ *   The roles publish, subscribe and peerwatch are removed (HTTP 410).
+ *
+ * Hosts (game screens) may be restricted to the operator's own sites with
+ * CONTROLLER_HOST_ORIGINS (comma-separated origins; unset allows any origin,
+ * for self-hosters). CONTROLLER_ALLOW_LOOPBACK=1 additionally admits
+ * http://127.0.0.1 and http://localhost hosts when the list is set.
  *
  * Multi-player mode (host opts in via multi=1):
  *   - Up to MAX_PHONES_PER_SESSION (8 by default) phones may pair.
  *   - Each phone is assigned a player slot (0..MAX-1) on connect.
  *   - Broker sends the phone a welcome frame: {type:'welcome', p:<slot>}.
- *   - Phone-to-host JSON frames get p:<slot> injected by the broker.
- *   - Host-to-phone JSON frames may include p:<slot> to address one
+ *   - Phone-to-host frames get p:<slot> stamped by the broker.
+ *   - Host-to-phone frames may include p:<slot> to address one
  *     player; omit p to broadcast to all paired phones.
  *   - peer-up / peer-down to the host carry p:<slot>.
  *
@@ -42,8 +54,21 @@
  *   - `{type:'frame'|'frame-set'|'frames'|'hash', ...}` or the negotiated binary
  *     equivalents from one peer are fanned to every OTHER peer (never
  *     echoed back). `frames` is a consecutive input window:
- *     `{type:'frames', slot, base, inputs}`. Every such message is ALSO
- *     fanned out to every peerwatch socket on the session (see below).
+ *     `{type:'frames', slot, base, inputs}`.
+ *   - Peers may only exchange game inputs. Each message is parsed, checked and
+ *     rebuilt from validated fields; unknown fields are stripped and anything
+ *     else (other types, text, nested JSON, a slot the socket does not own,
+ *     out-of-range numbers, malformed binary) is dropped, never forwarded:
+ *       frame      {type, slot, frame, input}
+ *       frame-set  {type, frame, entries:[[slot, input], ...]}   1..64 entries
+ *       frames     {type, slot, base, inputs:[input, ...]}       1..32 inputs
+ *       hash       {type, slot, frame, hash}
+ *     slot is an integer the sender owns, frame/base/input are integers in
+ *     0..2^24-1 and hash is a uint32 (see PEER_LIMITS in controller-policy.js).
+ *     Binary frames are exact-length (12 / 12 / 9+4n bytes) and are re-encoded
+ *     from the same validated fields. `hello-peer` and `bye` are consumed by the
+ *     broker. A peer message over PEER_FRAME_BYTES closes the socket (1008).
+ *   - Recent frames are kept so a late-joining human peer can replay them.
  *   - On socket close, the surviving peers get
  *     `{type:'peer-left', slot:<departed>, reason}`.
  *   - Backpressure: if the receiving socket's send buffer exceeds
@@ -51,25 +76,9 @@
  *     bumps. Live lockstep tolerates frame loss; the desync canary will
  *     surface any divergence.
  *
- * Peerwatch mode (spectate a peer session, asteroid-sats M5):
- *   - Subscribe-only role. Watchers receive every frame/hash that
- *     either peer sends, plus peer-joined / peer-left notifications,
- *     but anything they send is silently dropped.
- *   - Add `binaryFrames=1` to the peerwatch URL to receive compact binary
- *     frame/hash payloads when the peer session has negotiated them. Legacy
- *     watchers get JSON downgraded by the broker.
- *   - Bounded watchers per session; orphan-sweep keeps the
- *     session alive while watchers OR peers are connected.
- *   - On connect, broker immediately sends `{type:'peerwatch-ready', players}`
- *     plus `{type:'peer-joined', slot:<n>}` for each peer slot already
- *     bound. The watcher uses this to know whether to await the
- *     pair-up or start spectating straight away.
- *   - Same backpressure rule as peer fan-out: drop forwards when the
- *     watcher's send buffer is over PEER_BACKPRESSURE_BYTES.
- *
- * Listens on 127.0.0.1:8788 by default. Caddy reverse-proxies the public
- * subdomain. Run under systemd; restart on crash. No state persistence,
- * a server restart drops every paired session.
+ * Listens on 127.0.0.1:8788 by default. Put a TLS-terminating reverse proxy in
+ * front. Run under systemd; restart on crash. No state persistence, a server
+ * restart drops every paired session.
  */
 
 import { WebSocketServer } from 'ws';
@@ -77,9 +86,13 @@ import http from 'node:http';
 import { performance } from 'node:perf_hooks';
 import { randomBytes } from 'node:crypto';
 import { foregatherGateway } from './foregather.js';
-import { OWNER_TOKEN_RE, ownerDigest, ownsSession, controllerFrame, peerFrame } from './controller-policy.js';
+import { OWNER_TOKEN_RE, ownerDigest, ownsSession, phoneFrame, hostFrame, hostOriginPolicy, peerFrame, compileVocabulary, loadVocabulary, PEER_FORWARD_TYPES, PHONE_FRAME_BYTES } from './controller-policy.js';
 
 const PORT = parseInt(process.env.PORT ?? '8788', 10);
+/** Closed lists for host-to-phone text; CONTROLLER_VOCABULARY lets a self-hoster supply their own file. */
+const vocabulary = compileVocabulary(loadVocabulary(process.env.CONTROLLER_VOCABULARY || undefined));
+/** Which sites may open a host (game screen) socket; see hostOriginPolicy. */
+const hostOriginAllowed = hostOriginPolicy(process.env);
 const HOST = process.env.HOST ?? '127.0.0.1';
 
 /** Hard cap so a leaky client can't blow up memory. */
@@ -92,10 +105,13 @@ function boundedOption(name, fallback, min, max) {
 const MAX_CONNECTIONS = boundedOption('MAX_CONNECTIONS', 128, 2, 4096);
 const MAX_CONNECTIONS_PER_CLIENT = boundedOption('MAX_CONNECTIONS_PER_CLIENT', 64, 1, 1024);
 const CONNECTION_ATTEMPTS_PER_MINUTE = boundedOption('CONNECTION_ATTEMPTS_PER_MINUTE', 120, 1, 10000);
-const MAX_WATCHERS = boundedOption('MAX_WATCHERS', 32, 1, 256);
-const MAX_SUBSCRIBERS = boundedOption('MAX_SUBSCRIBERS', 32, 1, 256);
 const MAX_FRAME_BYTES = boundedOption('MAX_FRAME_BYTES', 1024 * 1024, 1024, 4 * 1024 * 1024);
 const CONTROLLER_FRAME_BYTES = boundedOption('CONTROLLER_FRAME_BYTES', 64 * 1024, 256, MAX_FRAME_BYTES);
+/** Largest message a lockstep peer may send. The biggest legitimate one is a
+ *  `hello-peer` naming 64 human and 64 owned slots (about 0.7 KB) or a 64-entry
+ *  `frame-set` (about 1 KB); the binary hot path tops out at 1029 bytes. 2 KiB
+ *  leaves headroom without letting a peer push anything free-form through. */
+const PEER_FRAME_BYTES = boundedOption('PEER_FRAME_BYTES', Math.min(2048, MAX_FRAME_BYTES), 256, MAX_FRAME_BYTES);
 const FORWARD_BUFFER_BYTES = boundedOption('FORWARD_BUFFER_BYTES', 256 * 1024, 1024, 4 * 1024 * 1024);
 const MESSAGES_PER_SECOND = boundedOption('MESSAGES_PER_SECOND', 240, 10, 2000);
 /** Lockstep peers legitimately burst far above controller traffic: one frame per
@@ -168,11 +184,11 @@ const PEER_BINARY_HASH = 3;
 // 64 hex). Anything alphanumeric, 4-128 chars, is fine.
 const SESSION_RE = /^[a-z0-9_-]{4,128}$/i;
 
-/** Pair-role: phone↔host controller. Stream-role: 1-to-many
- *  publisher↔subscribers for live frame broadcast. Peer-role: two
- *  symmetric game runtimes for shared-arena lockstep. Peerwatch-role:
- *  read-only spectators of a peer session. */
-const ROLES = new Set(['host', 'phone', 'publish', 'subscribe', 'peer', 'peerwatch']);
+/** Pair-role: phone↔host controller. Peer-role: symmetric game runtimes for
+ *  shared-arena lockstep. The stream and spectator roles (publish, subscribe,
+ *  peerwatch) were removed: they forwarded content the relay could not check. */
+const ROLES = new Set(['host', 'phone', 'peer']);
+const REMOVED_ROLES = new Set(['publish', 'subscribe', 'peerwatch']);
 
 /** Counter for backpressure-dropped peer messages. Surfaced via the
  *  process log on shutdown; not exposed on the wire. */
@@ -182,6 +198,10 @@ let peerForwardSent = 0;
 let peerForwardUnavailable = 0;
 let peerForwardErrors = 0;
 let peerForwardBytes = 0;
+/** Peer messages refused by the input-only policy (malformed, unknown type,
+ *  wrong slot, out of range or oversize). A rise on a healthy deployment means
+ *  the game started sending something the relay does not know about. */
+let peerRejected = 0;
 let peerMaxBufferedAmountObserved = 0;
 
 const METRIC_SAMPLE_LIMIT = Math.max(256, parseInt(process.env.METRIC_SAMPLE_LIMIT ?? '8192', 10) || 8192);
@@ -228,11 +248,14 @@ server.on('upgrade', (req, socket, head) => {
   const protectedSession = version === '2';
   const session = protectedSession ? `v2:${code}` : code;
   const wantsMulti = url.searchParams.get('multi') === '1';
-  const wantsBinaryFrames = url.searchParams.get('binaryFrames') === '1' || url.searchParams.get('binary') === '1';
+  if (REMOVED_ROLES.has(role)) { socket.write('HTTP/1.1 410 Gone\r\n\r\n'); socket.destroy(); return; }
   if (!code || !SESSION_RE.test(code) || !role || !ROLES.has(role) || version !== null && version !== '2' || protectedSession && (code.length < 6 || !['host', 'phone'].includes(role))) {
     socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
     socket.destroy();
     return;
+  }
+  if (role === 'host' && !hostOriginAllowed(req.headers.origin)) {
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return;
   }
   if (protectedSession && role === 'phone' && !sessions.get(session)?.ownerHash) {
     socket.write('HTTP/1.1 404 Not Found\r\n\r\n'); socket.destroy(); return;
@@ -255,7 +278,9 @@ server.on('upgrade', (req, socket, head) => {
     ws.on('message', data => {
       const now = Date.now();
       if (now - windowStart >= 1000) { windowStart = now; messages = 0; }
-      if (++messages > (role === 'peer' ? PEER_MESSAGES_PER_SECOND : MESSAGES_PER_SECOND) || ['host', 'phone', 'peer'].includes(role) && data.length > CONTROLLER_FRAME_BYTES) {
+      const oversize = role === 'peer' ? data.length > PEER_FRAME_BYTES : ['host', 'phone'].includes(role) && data.length > CONTROLLER_FRAME_BYTES;
+      if (++messages > (role === 'peer' ? PEER_MESSAGES_PER_SECOND : MESSAGES_PER_SECOND) || oversize) {
+        if (oversize && role === 'peer') peerRejected++;
         ws._refused = true; ws.close(1008, 'message-budget');
       }
     });
@@ -272,12 +297,12 @@ server.on('upgrade', (req, socket, head) => {
           ws.send(JSON.stringify({ type: 'error', code: 'host-ownership' })); ws.close(1008, 'host-ownership'); return;
         }
         ws.send(JSON.stringify({ type: 'host-ready', version: 2 }));
-        attach(ws, session, role, wantsMulti, wantsBinaryFrames, ownerDigest(join.hostToken));
+        attach(ws, session, role, wantsMulti, ownerDigest(join.hostToken));
       });
       return;
     }
     if (role !== 'phone' || !protectedSession && url.searchParams.get('recover') !== '1') {
-      attach(ws, session, role, wantsMulti, wantsBinaryFrames);
+      attach(ws, session, role, wantsMulti);
       return;
     }
     // Recovery capabilities travel in a frame, never in a URL or log.
@@ -291,12 +316,12 @@ server.on('upgrade', (req, socket, head) => {
         ws.close(1008, 'invalid-join'); return;
       }
       ws._resumeToken = join.resumeToken ?? randomBytes(32).toString('hex');
-      attach(ws, session, role, wantsMulti, wantsBinaryFrames);
+      attach(ws, session, role, wantsMulti);
     });
   });
 });
 
-function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false, ownerHash) {
+function attach(ws, session, role, wantsMulti, ownerHash) {
   let slot = sessions.get(session);
   if (ws._protected && role === 'phone' && !slot?.ownerHash) { ws.close(1008, 'host-unavailable'); return; }
   if (ws._protected && role === 'host' && !ownerHash) { ws.close(1008, 'host-ownership'); return; }
@@ -309,9 +334,10 @@ function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false, ownerH
       // connects with multi=1. Untouched in single mode.
       phones: undefined,
       recovery: new Map(),
+      // Player slot -> the initials that slot's phone sent in phone-context this session.
+      // Host frames may repeat initials only if they match (see scrubInitials).
+      initials: new Map(),
       multi: false,
-      publish: undefined,
-      subscribe: new Set(),
       // Peer-mode slots for shared-arena multiplayer. Index 0..peerCount-1, each
       // populated when the corresponding peer sends `hello-peer`.
       peers: [],
@@ -323,12 +349,8 @@ function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false, ownerH
       // slot. Absent/0 means human from frame 0.
       peerTakeovers: {},
       peerLatestFrame: -1,
-      // Peerwatch-mode spectators of this peer session. Every frame/hash
-      // either peer sends is fanned out to every entry here. Watchers
-      // never speak; their `message` handler is a no-op.
-      peerWatchers: new Set(),
-      // Recent peer frame messages, kept so a late-joining peerwatcher
-      // can replay missed frames and pass its lockstep stall check at
+      // Recent peer frame messages, kept so a late-joining human peer can
+      // replay missed frames and pass its lockstep stall check at
       // state.frame=PEER_INPUT_DELAY (5). Sized for ~25 seconds of duel
       // at 60Hz (1500 frames × 2 slots = 3000 entries). The lockstep
       // sim cannot recover from missing the FIRST few frames, so the
@@ -349,22 +371,15 @@ function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false, ownerH
         ? (current.phones && current.phones.size > 0)
         : !!current.phone;
       const hasPeers = peersPresent(current);
-      const hasPeerWatchers = current.peerWatchers && current.peerWatchers.size > 0;
-      const empty = !current.host && !hasPhones && !current.publish && current.subscribe.size === 0 && !hasPeers && !hasPeerWatchers;
+      const empty = !current.host && !hasPhones && !hasPeers;
       const pairIncomplete = !current.host || !hasPhones;
-      const streamIncomplete = !current.publish && current.subscribe.size === 0;
-      // A peer session is "incomplete" only if neither slot is bound AND
-      // no watchers are present. A watcher-only session is allowed to
-      // exist briefly while the peers connect.
-      const peerIncomplete = !peersPresent(current) && !hasPeerWatchers;
-      if (empty || (pairIncomplete && streamIncomplete && peerIncomplete)) {
+      // A peer session is "incomplete" only if no slot is bound.
+      const peerIncomplete = !hasPeers;
+      if (empty || (pairIncomplete && peerIncomplete)) {
         if (current.host) try { current.host.close(); } catch {}
         if (current.phone) try { current.phone.close(); } catch {}
         if (current.phones) for (const phWs of current.phones.values()) try { phWs.close(); } catch {}
-        if (current.publish) try { current.publish.close(); } catch {}
-        for (const s of current.subscribe) try { s.close(); } catch {}
         for (const p of current.peers) if (p) try { p.close(); } catch {}
-        if (current.peerWatchers) for (const w of current.peerWatchers) try { w.close(); } catch {}
         if (!current.ownerHash) deleteSession(current, session);
         else dropIfEmpty(current, session);
       }
@@ -380,14 +395,6 @@ function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false, ownerH
     attachPeer(slot, session, ws);
     return;
   }
-  // Peerwatch role: subscribe-only spectator of a peer session.
-  if (role === 'peerwatch') {
-    if (slot.peerWatchers.size >= MAX_WATCHERS) { ws.close(1013, 'watcher-limit'); return; }
-    ws._peerBinaryFrames = wantsBinaryFrames === true;
-    attachPeerWatcher(slot, session, ws);
-    return;
-  }
-
   // Multi-mode is set by the FIRST host's connect param. Once on, phones
   // entering this session are placed in the phones Map. If the host
   // disconnects then a new host connects without multi=1, we honour
@@ -417,6 +424,7 @@ function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false, ownerH
       }
       for (const reservation of slot.recovery.values()) clearTimeout(reservation.timer);
       slot.recovery.clear();
+      slot.initials.clear();
       slot.multi = false;
     }
   } else if (role === 'phone') {
@@ -438,6 +446,7 @@ function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false, ownerH
         return;
       }
       slot.phones.set(playerSlot, ws);
+      if (!reservation) slot.initials.delete(playerSlot);
       ws._playerSlot = playerSlot;
       ws._resumed = !!reservation;
       if (ws._resumeToken) {
@@ -450,14 +459,8 @@ function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false, ownerH
       // Single-mode (current behaviour): singleton phone, new replaces old.
       if (slot.phone) try { slot.phone.close(1000, 'replaced'); } catch {}
       slot.phone = ws;
+      slot.initials.delete(0);
     }
-  } else if (role === 'subscribe') {
-    if (slot.subscribe.size >= MAX_SUBSCRIBERS) { ws.close(1013, 'subscriber-limit'); return; }
-    slot.subscribe.add(ws);
-  } else {
-    // publish (singleton)
-    if (slot[role]) try { slot[role].close(1000, 'replaced'); } catch {}
-    slot[role] = ws;
   }
 
   notifyPeerState(slot, role, ws, 'connect');
@@ -483,9 +486,7 @@ function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false, ownerH
   const closeHandler = () => {
     if (disconnected) return;
     disconnected = true;
-    if (role === 'subscribe') {
-      slot.subscribe.delete(ws);
-    } else if (role === 'phone') {
+    if (role === 'phone') {
       if (slot.multi && slot.phones && ws._playerSlot !== undefined) {
         if (slot.phones.get(ws._playerSlot) === ws) {
           slot.phones.delete(ws._playerSlot);
@@ -507,16 +508,15 @@ function attach(ws, session, role, wantsMulti, wantsBinaryFrames = false, ownerH
       } else {
         return;
       }
-    } else if (slot[role] === ws) {
-      slot[role] = undefined;
+    } else if (slot.host === ws) {
+      slot.host = undefined;
     } else {
       return;
     }
     notifyPeerState(slot, role, ws, 'disconnect');
     const hasPhones = slot.multi ? (slot.phones && slot.phones.size > 0) : !!slot.phone;
     const hasPeers = peersPresent(slot);
-    const hasPeerWatchers = slot.peerWatchers && slot.peerWatchers.size > 0;
-    const empty = !slot.host && !hasPhones && !slot.publish && slot.subscribe.size === 0 && !hasPeers && !hasPeerWatchers;
+    const empty = !slot.host && !hasPhones && !hasPeers;
     if (empty) dropIfEmpty(slot, session);
   };
   ws.on('close', closeHandler);
@@ -576,11 +576,8 @@ function sessionCounts() {
     hosts: 0,
     phones: 0,
     multiPhones: 0,
-    publishers: 0,
-    subscribers: 0,
     peerSessions: 0,
     peers: 0,
-    peerWatchers: 0,
     recentFramePayloads: 0,
     recentFrameBytes: replayBytes,
   };
@@ -588,11 +585,8 @@ function sessionCounts() {
     if (slot.host) out.hosts++;
     if (slot.phone) out.phones++;
     if (slot.phones) out.multiPhones += slot.phones.size;
-    if (slot.publish) out.publishers++;
-    if (slot.subscribe) out.subscribers += slot.subscribe.size;
     if (peersPresent(slot)) out.peerSessions++;
     if (Array.isArray(slot.peers)) out.peers += slot.peers.filter(Boolean).length;
-    if (slot.peerWatchers) out.peerWatchers += slot.peerWatchers.size;
     if (Array.isArray(slot.recentFrames)) out.recentFramePayloads += slot.recentFrames.length;
   }
   return out;
@@ -633,6 +627,7 @@ function metricsSnapshot() {
       forwarded: peerForwardSent,
       forwardUnavailable: peerForwardUnavailable,
       forwardErrors: peerForwardErrors,
+      rejected: peerRejected,
       droppedBufferedAmount: peerDropped,
       maxBufferedAmountObserved: peerMaxBufferedAmountObserved,
       forwardedBytes: peerForwardBytes,
@@ -722,7 +717,6 @@ function fanOutSessionConfig(slot) {
       try { p.send(payload); } catch {}
     }
   }
-  fanOutToWatchers(slot, payload);
 }
 
 function closeAiFilledPeerSlots(slot) {
@@ -744,62 +738,6 @@ function replayRecentPeerFrames(target, slot) {
       if (!forwardBounded(target, payload, Buffer.isBuffer(payload))) break;
     }
   } catch { /* socket may already be closed */ }
-}
-
-/** Subscribe-only fan-out target for a peer session. Receives every
- *  frame/hash from either peer, plus peer-joined/peer-left
- *  notifications. Anything the watcher sends is silently dropped —
- *  spectators do not speak. */
-function attachPeerWatcher(slot, session, ws) {
-  slot.peerWatchers.add(ws);
-  // Acknowledge + give the watcher the current peer-state so it can decide
-  // whether to wait for the pair-up or start spectating immediately.
-  try {
-    ws.send(JSON.stringify({
-      type: 'peerwatch-ready',
-      players: slot.peerCount || 2,
-      aiFill: !!slot.peerHumanSlots,
-      humanSlots: slot.peerHumanSlots,
-      binaryFrames: ws._peerBinaryFrames === true && peerBinaryReady(slot) ? true : undefined,
-    }));
-    sendSessionConfig(ws, slot);
-    for (let i = 0; i < (slot.peerCount || 2); i++) {
-      if (slot.peers[i]) ws.send(peerJoinedPayload(slot, i));
-    }
-    // Replay buffered frame history so the spectator can pass its
-    // lockstep stall check at frame 5. Without this, a peerwatch that
-    // attaches even one frame after either peer's first send loses
-    // those inputs forever and its sim stalls at PEER_INPUT_DELAY.
-    // Order preserved (buffer is a FIFO ring) so the deterministic
-    // ordering the spectator's lockstep depends on stays intact.
-    replayRecentPeerFrames(ws, slot);
-  } catch { /* socket may already be closed */ }
-
-  // Silently drop everything the watcher sends. No "they accidentally
-  // broadcast over the spectate channel" failure mode.
-  ws.on('message', () => { /* read-only */ });
-
-  const closeHandler = () => {
-    slot.peerWatchers.delete(ws);
-    const hasPhones = slot.multi ? (slot.phones && slot.phones.size > 0) : !!slot.phone;
-    const hasPeers = peersPresent(slot);
-    const hasPeerWatchers = slot.peerWatchers && slot.peerWatchers.size > 0;
-    const empty = !slot.host && !hasPhones && !slot.publish && slot.subscribe.size === 0 && !hasPeers && !hasPeerWatchers;
-    if (empty) deleteSession(slot, session);
-  };
-  ws.on('close', closeHandler);
-  ws.on('error', closeHandler);
-}
-
-/** Fan out a peer-originated message to every watcher of this session.
- *  Same backpressure rule as the peer-to-peer forward path. */
-function fanOutToWatchers(slot, payload, msg = null, fromSlot = -1) {
-  if (!slot.peerWatchers || slot.peerWatchers.size === 0) return;
-  let watcherIndex = 0;
-  for (const w of slot.peerWatchers) {
-    sendPeerPayload(w, msg ? peerPayloadForTarget(w, payload, msg) : payload, peerForwardDelayMs(msg, fromSlot, 97 + watcherIndex));
-    watcherIndex++;
-  }
 }
 
 function peerForwardDelayMs(msg, fromSlot, toSlot) {
@@ -951,29 +889,32 @@ function attachPeer(slot, session, ws) {
 
   ws.on('message', (data, isBinary) => {
     if (ws._refused) return;
+    // Peers may only exchange game inputs. Anything that is not a well-formed
+    // frame/frame-set/frames/hash for a slot this socket owns is dropped, and
+    // what is forwarded is rebuilt from the validated fields, never relayed.
     let msg;
     let payload;
     if (isBinary) {
       msg = decodePeerBinaryPayload(data);
-      if (!msg || ws._peerBinaryFrames !== true) return;
-      payload = Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data);
+      if (!msg || ws._peerBinaryFrames !== true) { peerRejected++; return; }
     } else {
-      try { msg = JSON.parse(data.toString()); } catch { return; }
-      payload = data.toString();
+      try { msg = JSON.parse(data.toString()); } catch { peerRejected++; return; }
     }
-    if (!msg || typeof msg.type !== 'string') return;
+    if (!msg || typeof msg.type !== 'string') { peerRejected++; return; }
 
     if (msg.type === 'hello-peer') {
-      if (isBinary) return;
+      // Consumed by the broker (slot binding); its contents are never relayed.
+      if (isBinary) { peerRejected++; return; }
       handlePeerHello(slot, ws, msg);
       return;
     }
-    if (ws._peerSlot < 0) return;
+    if (ws._peerSlot < 0) { peerRejected++; return; }
 
-    if (msg.type === 'frame' || msg.type === 'frame-set' || msg.type === 'frames' || msg.type === 'hash') {
+    if (PEER_FORWARD_TYPES.has(msg.type)) {
       msg = peerFrame(msg, (ws._peerSlots ?? [ws._peerSlot]).filter(index => slot.peers[index] === ws));
-      if (!msg) return;
-      if (!isBinary) payload = JSON.stringify(msg);
+      if (!msg) { peerRejected++; return; }
+      payload = isBinary ? encodePeerBinaryPayload(msg) : JSON.stringify(msg);
+      if (!payload) { peerRejected++; return; }
       if (msg.type === 'frame' || msg.type === 'frame-set' || msg.type === 'frames') {
         const latest = peerFrameLatestFrame(msg);
         if (latest > (slot.peerLatestFrame ?? -1)) slot.peerLatestFrame = latest;
@@ -987,20 +928,13 @@ function attachPeer(slot, session, ws) {
         forwarded.add(target);
         sendPeerPayload(target, peerPayloadForTarget(target, payload, msg), peerForwardDelayMs(msg, ws._peerSlot, i));
       }
-      // Buffer frames (only — not hashes) so a late-joining peerwatch
-      // can replay them on attach. Hashes are 1/60 the rate and a
-      // late spectator can resync from the next live one. Cap at
-      // PEER_FRAME_BUFFER entries; oldest dropped first. Spectators
-      // joining after the buffer has wrapped won't see frames 0..N,
-      // which means their lockstep sim is dead-on-arrival — same as
-      // pre-buffer behaviour, but with a generous grace window.
-      if (msg.type === 'frame' || msg.type === 'frame-set' || msg.type === 'frames') {
+      // Buffer frames (only — not hashes) so a late-joining human peer can
+      // replay them. Hashes are 1/60 the rate and a late peer can resync
+      // from the next live one. Cap at PEER_FRAME_BUFFER entries; oldest
+      // dropped first.
+      if (msg.type === 'frame' || msg.type === 'frames' || msg.type === 'frame-set') {
         rememberPeerFramePayload(slot, payload, msg);
       }
-      // Fan out the same payload to every peerwatch socket on this
-      // session. Spectators see what each peer sent in the order it
-      // was sent; deterministic lockstep depends on consistent ordering.
-      fanOutToWatchers(slot, payload, msg, ws._peerSlot);
       return;
     }
 
@@ -1008,6 +942,7 @@ function attachPeer(slot, session, ws) {
       try { ws.close(1000, 'bye'); } catch {}
       return;
     }
+    peerRejected++;
   });
 
   const closeHandler = () => {
@@ -1025,14 +960,10 @@ function attachPeer(slot, session, ws) {
         told.add(other);
         try { other.send(leftPayload); } catch {}
       }
-      // Watchers see peer-left too so the spectator UI can surface
-      // "OPPONENT LEFT" alongside the same gameover funnel.
-      fanOutToWatchers(slot, leftPayload);
     }
     const hasPhones = slot.multi ? (slot.phones && slot.phones.size > 0) : !!slot.phone;
     const hasPeers = peersPresent(slot);
-    const hasPeerWatchers = slot.peerWatchers && slot.peerWatchers.size > 0;
-    const empty = !slot.host && !hasPhones && !slot.publish && slot.subscribe.size === 0 && !hasPeers && !hasPeerWatchers;
+    const empty = !slot.host && !hasPhones && !hasPeers;
     if (empty) deleteSession(slot, session);
   };
   ws.on('close', closeHandler);
@@ -1051,15 +982,11 @@ function handlePeerHello(slot, ws, msg) {
     : (slot.peerCount || 2);
   const wantsAiFillConfig = msg.aiFill === true && Array.isArray(msg.humanSlots);
   if (!peersPresent(slot) && slot.recentFrames.length === 0) {
-    const peerCountChanged = desiredPeerCount !== (slot.peerCount || 2);
     slot.peerCount = desiredPeerCount;
     slot.peers.length = desiredPeerCount;
     slot.peerHumanSlots = undefined;
     slot.peerTakeovers = {};
     slot.peerLatestFrame = -1;
-    if (peerCountChanged) {
-      fanOutToWatchers(slot, JSON.stringify({ type: 'peerwatch-ready', players: slot.peerCount }));
-    }
   } else if (desiredPeerCount !== (slot.peerCount || 2)) {
     try { ws.send(JSON.stringify({ type: 'session-error', code: 'player-count-mismatch' })); } catch {}
     try { ws.close(1008, 'player-count-mismatch'); } catch {}
@@ -1155,12 +1082,6 @@ function handlePeerHello(slot, ws, msg) {
     replayRecentPeerFrames(ws, slot);
   }
 
-  // Watchers always see a peer-joined the moment a slot is bound, even
-  // if the other peer isn't there yet — they may have connected first
-  // and need to know when the game becomes startable.
-  for (const os of ownedSlots) {
-    fanOutToWatchers(slot, peerJoinedPayload(slot, os), { type: 'peer-joined', slot: os });
-  }
   // Tell every OTHER bound socket about each of our owned slots (dedup by
   // socket so a multi-slot owner is told once per joined slot), and tell us
   // about each already-bound slot we don't own.
@@ -1193,7 +1114,7 @@ function releaseReservation(slot, session, token) {
 }
 
 function dropIfEmpty(slot, session) {
-  if (sessions.get(session) !== slot || slot.host || slot.phone || slot.phones?.size || slot.publish || slot.subscribe.size || peersPresent(slot) || slot.peerWatchers.size || slot.recovery.size) return;
+  if (sessions.get(session) !== slot || slot.host || slot.phone || slot.phones?.size || peersPresent(slot) || slot.recovery.size) return;
   if (!slot.ownerHash) { deleteSession(slot, session); return; }
   if (slot.ownerExpiry) return;
   slot.ownerExpiry = setTimeout(() => {
@@ -1218,53 +1139,46 @@ function findNextSlot(phones, max, recovery = new Map()) {
   return null;
 }
 
+/**
+ * Host and phone frames cross the relay only as a rebuilt copy of validated
+ * fields (phoneFrame, hostFrame). Binary frames, oversized phone frames and
+ * anything outside the grammar are dropped; the socket stays open.
+ */
 function forwardMessage(slot, role, ws, data, isBinary) {
   if (ws._refused) return;
   if (role === 'host' && slot.host !== ws) return;
-  if (['host', 'phone'].includes(role)) {
-    if (isBinary) { if (ws._protected) return; }
-    else {
-      data = controllerFrame(data, role, ws._protected, slot.multi && role === 'phone' ? ws._playerSlot : undefined);
-      if (!data) return;
-    }
+  if (isBinary || role === 'phone' && data.length > PHONE_FRAME_BYTES) return;
+  let value;
+  try { value = JSON.parse(data.toString()); } catch { return; }
+  const frame = role === 'phone'
+    ? phoneFrame(value, slot.multi ? ws._playerSlot : undefined)
+    : hostFrame(value, slot.multi, MAX_PHONES_PER_SESSION, vocabulary, number => slot.initials.get(number));
+  if (!frame) return;
+  if (role === 'phone' && frame.type === 'phone-context') {
+    const key = slot.multi ? ws._playerSlot : 0;
+    if (frame.name) slot.initials.set(key, frame.name); else slot.initials.delete(key);
   }
+  const payload = JSON.stringify(frame);
   if (role === 'host') {
     if (slot.multi && slot.phones) {
-      // Try to parse JSON to look for a targeted p field.
-      if (!isBinary) {
-        const targetP = peekP(data);
-        if (targetP !== null) {
-          const target = slot.phones.get(targetP);
-          if (target && target.readyState === target.OPEN) {
-            forwardBounded(target, data, false);
-          }
-          return;
-        }
+      if (frame.p !== undefined) {
+        const target = slot.phones.get(frame.p);
+        if (target && target.readyState === target.OPEN) forwardBounded(target, payload, false);
+        return;
       }
-      // No p field (or binary): broadcast to all paired phones.
+      // No p field: broadcast to all paired phones.
       for (const phWs of slot.phones.values()) {
         if (phWs.readyState !== phWs.OPEN) continue;
-        forwardBounded(phWs, data, isBinary);
+        forwardBounded(phWs, payload, false);
       }
     } else if (slot.phone && slot.phone.readyState === slot.phone.OPEN) {
-      forwardBounded(slot.phone, data, isBinary);
+      forwardBounded(slot.phone, payload, false);
     }
   } else if (role === 'phone') {
     if (slot.multi && slot.phones?.get(ws._playerSlot) !== ws || !slot.multi && slot.phone !== ws || ws._abandoned) return;
     if (!slot.host || slot.host.readyState !== slot.host.OPEN) return;
-    if (slot.multi && !isBinary && ws._playerSlot !== undefined) {
-      const stamped = injectP(data, ws._playerSlot);
-      forwardBounded(slot.host, stamped, false);
-    } else {
-      forwardBounded(slot.host, data, isBinary);
-    }
-  } else if (role === 'publish') {
-    for (const sub of slot.subscribe) {
-      if (sub.readyState !== sub.OPEN) continue;
-      forwardBounded(sub, data, isBinary);
-    }
+    forwardBounded(slot.host, payload, false);
   }
-  // subscribe → ignored (uplink-only)
 }
 
 function forwardBounded(socket, data, binary) {
@@ -1286,30 +1200,6 @@ const heartbeat = setInterval(() => {
   if (ping) lastPing = now;
 }, Math.min(500, HEARTBEAT_MS));
 heartbeat.unref();
-
-/** Read p field from a JSON frame. Returns integer player slot, null otherwise. */
-function peekP(data) {
-  try {
-    const str = data.toString();
-    const obj = JSON.parse(str);
-    if (typeof obj.p === 'number' && Number.isInteger(obj.p)) return obj.p;
-  } catch {
-    // not JSON, no p
-  }
-  return null;
-}
-
-/** Stamp p into a JSON frame. Falls back to original data if parsing fails. */
-function injectP(data, playerSlot) {
-  try {
-    const str = data.toString();
-    const obj = JSON.parse(str);
-    obj.p = playerSlot;
-    return JSON.stringify(obj);
-  } catch {
-    return data;
-  }
-}
 
 function notifyPeerState(slot, changedRole, changedWs, eventType) {
   if (changedRole === 'host') {
@@ -1357,13 +1247,6 @@ function notifyPeerState(slot, changedRole, changedWs, eventType) {
         if (!ws || ws.readyState !== ws.OPEN) continue;
         try { ws.send(msg); } catch {}
       }
-    }
-  } else if (changedRole === 'publish' || changedRole === 'subscribe') {
-    const pubUp = slot.publish && slot.publish.readyState === slot.publish.OPEN;
-    const msg = JSON.stringify({ type: pubUp ? 'publisher-up' : 'publisher-down' });
-    for (const sub of slot.subscribe) {
-      if (sub.readyState !== sub.OPEN) continue;
-      try { sub.send(msg); } catch {}
     }
   }
 }

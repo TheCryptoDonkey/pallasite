@@ -8,10 +8,15 @@
  *   shoulders + start/select). The game it pairs with sends a
  *   ControllerSpec describing which slots it cares about and what
  *   icon/label/colour to put on each. Buttons not in the spec are
- *   hidden. Different game → different icons, same physical layout.
+ *   hidden. Games can supply declarative portrait and landscape layouts, theme colours
+ *   and bounded inline graphics; omitted layouts use the client defaults.
  *
- *   Transport: raw WebSocket pass-through at controller.pallasite.app.
- *   Pair by sessionId (a short random code in the QR, also shown as text).
+ *   Transport: role-filtered WebSocket routing through a controller relay.
+ *   Pair by sessionId and protocol version. V2 hosts prove ownership with
+ *   a separate private credential; the visible code admits controllers.
+ *   The relay carries controller inputs and game state only: every frame is
+ *   checked against a closed grammar and rebuilt (see vocabulary.ts), so
+ *   there is no free text, binary payload or signing request in transit.
  *
  * Wire shape:
  *
@@ -30,7 +35,28 @@
  *   Host dispatches by slot name into game-specific actions.
  */
 
+/** The owner's own hosted relay. Used by the owner's pad and Pallasite and to
+ *  shorten their pairing links. The SDKs never apply it implicitly: a host must
+ *  pass its own `ws`. Run your own broker (packages/broker) for your own game. */
 export const CONTROLLER_WS_ENDPOINT_DEFAULT = 'wss://controller.pallasite.app/';
+export * from './controller-profile.js';
+export * from './thumb-layout.js';
+export * from './nostr-profile.js';
+export * from './game-definition.js';
+export * from './game-listing.js';
+export * from './vocabulary.js';
+import type { InlineGraphic, ControllerLayout, ControllerTheme } from './controller-profile.js';
+
+/** Group human-facing six-character codes without changing wire identifiers. */
+export function formatPairingCode(code: string): string {
+  return /^[a-z0-9]{6}$/i.test(code) ? `${code.slice(0, 3)} ${code.slice(3)}` : code;
+}
+/** Only bare grouped codes are normalised; pairing URLs keep their exact IDs. */
+export function normalizePairingCode(input: string): string {
+  const value = input.trim();
+  return /^[a-z0-9]{3}[\s-]+[a-z0-9]{3}$/i.test(value) ? value.replace(/[\s-]/g, '').toUpperCase() : value.toUpperCase();
+}
+
 
 /** Standard gamepad slots. The PWA always reserves screen real estate
  *  for these; the spec controls which become visible + how they're
@@ -45,18 +71,21 @@ export type ControllerSlot =
 
 /** Per-slot configuration the host can ship to the PWA. */
 export interface SlotConfig {
-  /** For joystick slots only — how the analog input is interpreted.
-   *  'heading' sends an angle and a thrust flag (the only mode we
-   *  support today). 'xy' would send normalised x/y axes (future). */
-  mode?: 'heading' | 'xy';
+  /** Inline PNG. The broker forwards only PNGs whose SHA-256 is listed in
+   *  vocabulary.json; any other graphic is removed. */
+  graphic?: InlineGraphic;
+  /** Heading/tilt emit angle × 1000 and thrust/power. XY emits
+   *  `<slot>-x`/`<slot>-y` axes in [-1000, 1000], with down-positive Y.
+   *  Every mode neutralises on release, cancellation and backgrounding. */
+  mode?: 'heading' | 'xy' | 'tilt';
   /** For joystick slots: which face-button slot is "tap-fired" when
    *  the joystick gets a short press with no drag. Set to e.g. 'A' to
    *  match a quick-fire feel — the PWA emits a `joyL-tap` event the
    *  host maps to the A button's game action. */
   tapAction?: ControllerSlot;
-  /** Glyph or short emoji shown on the button. */
+  /** Glyph or short emoji shown on the button. Must be in the vocabulary. */
   icon?: string;
-  /** One-line label under the icon. Short — fits the button. */
+  /** One-line label under the icon. Short — fits the button. Must be in the vocabulary. */
   label?: string;
   /** CSS colour for the button glow + border tint. */
   colour?: string;
@@ -64,7 +93,10 @@ export interface SlotConfig {
 
 /** Controller spec — host → PWA on pair. */
 export interface ControllerSpec {
-  /** Human-readable game name. Shown on the PWA's status bar. */
+  layout?: ControllerLayout;
+  theme?: ControllerTheme;
+  /** Game name shown on the PWA's status bar. Must match the vocabulary's name
+   *  grammar, otherwise the broker shows `GAME`. */
   name: string;
   /** Spec protocol version. Bump on breaking changes. */
   version: 1;
@@ -84,10 +116,22 @@ export interface ControllerInputFrame {
   p?: number;
 }
 
+/** Host-owned answer/status feedback. Lock suppresses new input while
+ * releases still pass through. It grants no execution authority. */
+export interface ControllerFeedbackFrame {
+  type: 'controller-feedback';
+  /** Must match a vocabulary feedback template, otherwise the broker sends an empty message. */
+  message: string;
+  selected?: ControllerSlot | null;
+  locked?: boolean;
+  tone?: 'neutral' | 'success' | 'error';
+  p?: number;
+}
+
 /**
  * Multi-player wire additions. The broker opts a session into multi-player
  * mode when the host connects with the ?multi=1 URL param. In single-player
- * mode (default) the broker forwards frames verbatim and peer-up / peer-down
+ * mode (default) peer-up / peer-down
  * carry no `p` field. In multi-player mode:
  *
  *   - Each phone is assigned a player slot 0..N-1 on connect.
@@ -103,80 +147,10 @@ export interface WelcomeFrame {
   type: 'welcome';
   /** Player slot assigned by the broker for this phone. */
   p: number;
+  /** Private capability for this session's reconnect reservation. Never put in a URL. */
+  resumeToken?: string;
+  resumed?: boolean;
 }
-
-/**
- * Paired Companion Protocol — identity layer.
- *
- * The controller PWA can carry its own Nostr identity (NIP-46 bunker,
- * NIP-07 extension, Amber, Signet, pasted nsec, or a local guest
- * keypair). On pair, the phone tells the host who it is so the host
- * can show a banner ("signing as @name") and, later, route signEvent
- * requests through the phone instead of the host's local signer.
- *
- * Step 2 ships announce + revoke only. Step 3 adds sign-request /
- * sign-response frames that turn this into a full remote signer.
- *
- * Caps describe what the signer can do (NIP-44 encrypt/decrypt, age
- * verification, etc.) so the host doesn't have to probe.
- */
-export interface SignerCaps {
-  canSignEvents: boolean;
-  hasNip44?: boolean;
-  hasAgeVerify?: boolean;
-}
-
-export interface SignerAnnounceFrame {
-  type: 'signer-announce';
-  /** 64-char hex secp256k1 public key. */
-  pubkey: string;
-  /** Optional NIP-19 npub — host can derive from pubkey if absent. */
-  npub?: string;
-  /** Optional display name pulled from kind 0 / guest record. */
-  name?: string;
-  /** Which signing method the phone is using. */
-  method?: 'nip07' | 'redirect' | 'bunker' | 'nsec' | 'amber' | 'guest' | 'unknown';
-  /** Signer capabilities. */
-  caps?: SignerCaps;
-}
-
-export interface SignerRevokeFrame {
-  type: 'signer-revoke';
-}
-
-/** Unsigned event template the host wants the phone to sign. Minimal
- *  Nostr event shape — kind + content + tags + optional created_at. */
-export interface RemoteEventTemplate {
-  kind: number;
-  content: string;
-  tags?: string[][];
-  created_at?: number;
-}
-
-/** Signed Nostr event the phone sends back in response. */
-export interface RemoteSignedEvent {
-  id: string;
-  pubkey: string;
-  kind: number;
-  created_at: number;
-  tags: string[][];
-  content: string;
-  sig: string;
-}
-
-/** Host → phone: please sign this template. */
-export interface SignRequestFrame {
-  type: 'sign-request';
-  /** Correlation id — phone echoes back in sign-response so the host
-   *  can match concurrent requests. UUID or 8+ hex chars. */
-  id: string;
-  template: RemoteEventTemplate;
-}
-
-/** Phone → host: result of a sign-request. */
-export type SignResponseFrame =
-  | { type: 'sign-response'; id: string; ok: true; event: RemoteSignedEvent }
-  | { type: 'sign-response'; id: string; ok: false; error: string };
 
 /**
  * Haptic feedback — host → phone.
@@ -215,6 +189,9 @@ export interface HapticFrame {
  * total so the game host can show "P3 entered with 17 pts" in its
  * lobby and treat the score as a tournament-wide leaderboard.
  *
+ * Phones also send their arcade initials (three letters A to Z, entered on
+ * the controller). No other text leaves a phone.
+ *
  * Optional. Phones that don't keep a tournament score simply skip
  * sending the frame and games carry on as before.
  */
@@ -222,7 +199,8 @@ export interface PhoneContextFrame {
   type: 'phone-context';
   /** Running tournament total this phone has accumulated. */
   tournamentTotal: number;
-  /** Optional short display name set by the pad's tournament UI. */
+  /** Optional arcade initials chosen on the controller: exactly three letters
+   *  A to Z. The broker drops any other value. */
   name?: string;
 }
 
@@ -238,7 +216,7 @@ export interface GameScoreFrame {
   type: 'game-score';
   /** Points to add to the phone's running tournament total. */
   score: number;
-  /** Short label for the toast the phone shows (e.g. '1st!', 'right answer'). */
+  /** Toast label. Must match a vocabulary score-label template. */
   label?: string;
   /** Player slot in multi-player mode. */
   p?: number;
@@ -260,7 +238,7 @@ export interface GameScoreFrame {
 export interface SpectatorRow {
   /** Player slot the row represents. */
   p: number;
-  /** Short label (e.g. "P2 · ANNA"). */
+  /** Row label: `P2`, `P2 · BOT` or `P2 · ABC` (initials), optionally `1. ` first. */
   label: string;
   /** Primary numeric score for this game / round. */
   score: number;
@@ -272,11 +250,11 @@ export interface SpectatorRow {
 
 export interface SpectatorViewFrame {
   type: 'spectator-view';
-  /** Headline (e.g. "TANK ROYALE · ROUND 4"). */
+  /** Headline: `<game> · <phase>`, e.g. "TANK ROYALE · ROUND LIVE". */
   title: string;
   /** Current standings — caller orders by relevance. */
   leaderboard: SpectatorRow[];
-  /** Optional one-line highlight ("P2 just won the round!"). */
+  /** Optional one-line highlight: `P2 · ABC cheered!` or `P2 · ABC took the round`. */
   highlight?: string;
   /** Player slot to target. Must be set in multi-player mode. */
   p?: number;
@@ -286,6 +264,8 @@ export interface SpectatorViewFrame {
 export interface PairingToken {
   sessionId: string;
   ws: string;
+  /** Authenticated host ownership. Omitted only for legacy controller sessions. */
+  version?: 2;
 }
 
 /** Backwards-compat re-export for any callers still importing the
