@@ -190,8 +190,7 @@ function privacyHtml(): string {
     <p>Scores, ghosts, replays, skin unlocks and live-play events are published as signed Nostr events to public relays under your Nostr public key, and scores may appear on third-party leaderboards. Once published, events cannot be unpublished or recalled from relays.</p>
 
     <h3>Past claims</h3>
-    <p>Records of past claims are held by the operator and will be deleted.</p>
-    <!-- [DECISION: delete the faucet claim records on the host, then change this sentence to say they were deleted on <date>.] -->
+    <p>Records of past claims were deleted on 24 October 2026.</p>
 
     <h3>Game services</h3>
     <p>The game's server API, which handled payouts, has been switched off and now answers every request with an error. Phone controllers and multiplayer connect through the game's controller service, which passes control messages between devices.</p>
