@@ -115,7 +115,7 @@ import {
   asteroidPreview, minePreview, sniperPreview, powerupPreview,
   dustPreview, satCoinPreview,
 } from './previews.js';
-import QRCode from 'qrcode';
+import { renderQrCanvas, renderQrSvg } from './qr';
 import { getFlavour } from './flavour.js';
 import { CONTROLLER_WS_ENDPOINT_DEFAULT } from './controller-types.js';
 
@@ -10878,11 +10878,9 @@ function renderSixHundredBnCard(overlay: HTMLElement): void {
 
   const qrCanvas = el('canvas', { parent: link }) as HTMLCanvasElement;
   qrCanvas.style.cssText = 'background:#fff5d8;padding:6px;border-radius:4px;';
-  void QRCode.toCanvas(qrCanvas, 'https://600000000000.com', {
-    width: 140,
-    margin: 0,
-    color: { dark: '#0a0418', light: '#fff5d8' },
-  }).catch(() => undefined);
+  try {
+    renderQrCanvas(qrCanvas, 'https://600000000000.com', { width: 140, margin: 0, dark: '#0a0418', light: '#fff5d8' });
+  } catch { /* the link under the code still works */ }
 
   const url = el('div', { parent: link, text: 'OPEN 600BN' });
   url.style.cssText = 'font:bold 12px ui-monospace,monospace;color:#ffd84a;letter-spacing:0.2em;margin-top:4px;';
@@ -12078,8 +12076,7 @@ function failPopover(pop: HTMLElement, message: string): void {
 
 async function renderQRInto(target: HTMLElement, text: string): Promise<void> {
   try {
-    const svg = await QRCode.toString(text, {
-      type: 'svg',
+    const svg = renderQrSvg(text, {
       // Explicit quiet zone — 2 modules of white border baked into the
       // SVG. Was margin: 0 previously, which relied on CSS padding for
       // the quiet zone. Most camera scanners examine the rendered
@@ -12087,13 +12084,13 @@ async function renderQRInto(target: HTMLElement, text: string): Promise<void> {
       // CSS padding around an external div is not always enough on a
       // motion-blurred mobile capture.
       margin: 2,
-      width: 256,
       // 'M' instead of 'L' — same Version 2 (25 modules) for our ~40
       // char pairing URL, but ~15% error correction so a partial
       // occlusion / motion blur / camera glare doesn't kill the
       // decode. Cheap insurance.
-      errorCorrectionLevel: 'M',
-      color: { dark: '#000000', light: '#ffffff' },
+      ecc: 'M',
+      dark: '#000000',
+      light: '#ffffff',
     });
     target.innerHTML = svg;
     const svgEl = target.querySelector('svg');
@@ -13337,8 +13334,9 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby
     qrCanvas.title = playerCount > 2 ? `P${qrInviteSlot + 1} invite QR` : 'P2 invite QR';
     qrLabel.textContent = playerCount > 2 ? `QR · P${qrInviteSlot + 1}` : 'QR · P2';
     for (const [slot, btn] of slotButtons) btn.className = `menu-btn${slot === qrInviteSlot ? '' : ' secondary'}`;
-    void QRCode.toCanvas(qrCanvas, inviteUrlForSlot(qrInviteSlot), { width: 220, margin: 1 })
-      .catch((err: unknown) => { console.warn('[duel] QR render failed:', err); });
+    try {
+      renderQrCanvas(qrCanvas, inviteUrlForSlot(qrInviteSlot), { width: 220, margin: 1 });
+    } catch (err: unknown) { console.warn('[duel] QR render failed:', err); }
   };
   const updateInviteViews = (): void => {
     const isDeathmatch = matchKind() === 'deathmatch';

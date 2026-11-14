@@ -44,7 +44,7 @@ import {
 import { loadCouncil } from './sanctum-avatars.js';
 import * as audio from './audio.js';
 import { crossfadeTo, musicStop } from './music.js';
-import QRCode from 'qrcode';
+import { renderQrCanvas } from './qr';
 
 // ── Ship + bullet types ──────────────────────────────────────────────
 
@@ -541,11 +541,9 @@ function renderGameOverOverlay(state: SanctumState, victory: boolean, onReplay: 
   const qrCanvas = document.createElement('canvas');
   qrCanvas.style.cssText = 'background:#fff5d8;padding:6px;border-radius:4px;';
   link.appendChild(qrCanvas);
-  void QRCode.toCanvas(qrCanvas, 'https://600.wtf', {
-    width: 140,
-    margin: 0,
-    color: { dark: '#0a0418', light: '#fff5d8' },
-  }).catch(() => undefined);
+  try {
+    renderQrCanvas(qrCanvas, 'https://600.wtf', { width: 140, margin: 0, dark: '#0a0418', light: '#fff5d8' });
+  } catch { /* the link under the code still works */ }
 
   const url = document.createElement('div');
   url.textContent = '600.wtf · TAP';
