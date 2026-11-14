@@ -45,18 +45,18 @@
     "test:presentation": "tsx tools/check-presentation.ts",
     "test:menus": "node tools/check-menus.mjs",
     "test:sign-queue": "tsx tools/check-sign-queue.ts",
-    "test:score-recovery": "tsx tools/check-solo-score-outbox.ts"
+    "test:score-recovery": "tsx tools/check-solo-score-outbox.ts",
+    "test:qr": "tsx tools/check-qr.ts"
   },
   "dependencies": {
+    "@forgesworn/qr": "^0.1.0",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
     "jsqr": "^1.4.0",
     "nostr-veil": "^0.8.4",
-    "qrcode": "^1.5.4",
     "three": "^0.184.0"
   },
   "devDependencies": {
-    "@types/qrcode": "^1.5.6",
     "@types/three": "^0.184.1",
     "playwright": "^1.48.0",
     "sharp": "^0.34.5",
