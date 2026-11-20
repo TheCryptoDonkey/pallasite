@@ -24,10 +24,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Booth runs Linux — only the AppImage is needed for now. macOS/Windows
-        # are paused; restore the full cross-platform set with the line below:
+        # Gamestr Arcade installs the Linux AppImage and the Windows setup
+        # (desktop-games.ts pins both). macOS stays paused; restore it with:
         #   os: [macos-latest, windows-latest, ubuntu-latest]
-        os: [ubuntu-latest]
+        os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
