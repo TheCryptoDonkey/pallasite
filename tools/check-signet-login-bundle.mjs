@@ -19,6 +19,9 @@ function sha256(path) {
 const expectedBundle = process.env.SIGNET_LOGIN_EXPECTED_BUNDLE;
 
 const tmp = mkdtempSync(join(tmpdir(), 'signet-login-bundle-'));
+// npm is npm.cmd on Windows, which Node only runs through a shell. The
+// arguments carry no paths (pack writes to its cwd), so shell joining is safe.
+const npm = (args, options) => execFileSync('npm', args, { ...options, shell: process.platform === 'win32' });
 const failures = [];
 let latest = '';
 
@@ -26,12 +29,13 @@ try {
   let expectedPath = expectedBundle ? resolve(root, expectedBundle) : '';
   let expectedLabel = expectedBundle ? 'the Signet Login candidate bundle' : '';
   if (!expectedBundle) {
-    latest = execFileSync('npm', ['view', 'signet-login', 'version'], {
+    latest = npm(['view', 'signet-login', 'version'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
 
-    const tarballName = execFileSync('npm', ['pack', `signet-login@${latest}`, '--pack-destination', tmp], {
+    const tarballName = npm(['pack', `signet-login@${latest}`], {
+      cwd: tmp,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     }).trim().split('\n').pop();
