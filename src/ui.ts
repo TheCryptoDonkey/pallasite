@@ -2403,13 +2403,17 @@ export function renderAttract(state: GameState): void {
       wrap.style.cssText = 'width:100%;max-width:560px;text-align:center;display:flex;flex-direction:column;gap:8px;align-items:center;';
       const head = el('p', { parent: wrap, text: '⚡ TOP RUN HIGHLIGHTS' });
       head.style.cssText = 'font-size:0.95rem;color:#ffd84a;letter-spacing:0.18em;margin:0;';
-      const body = el('p', { parent: wrap, text: 'Autoplay coming soon — open the WATCH page to see live runs and replay-worthy clips from across the relay set.' });
+      // The watch page lists faucet-signed runs, so it has nothing to show
+      // once the faucet has closed: keep the panel, drop the invitation.
+      const watchOpen = !isFaucetClosed();
+      const body = el('p', { parent: wrap, text: watchOpen ? 'Autoplay coming soon — open the WATCH page to see live runs and replay-worthy clips from across the relay set.' : 'Autoplay coming soon.' });
       body.style.cssText = 'font-size:0.82rem;color:rgba(220,210,255,0.65);max-width:480px;line-height:1.5;margin:0;';
       const watchBtn = el('a', { parent: wrap, text: 'OPEN WATCH PAGE ▶' }) as HTMLAnchorElement;
       watchBtn.href = 'https://watch.pallasite.app/';
       watchBtn.target = '_blank';
       watchBtn.rel = 'noopener';
       watchBtn.style.cssText = 'font-size:0.78rem;letter-spacing:0.16em;color:#8cffb4;text-decoration:none;border:1px solid rgba(140,255,180,0.55);padding:4px 14px;border-radius:3px;background:rgba(140,255,180,0.06);margin-top:4px;';
+      if (!watchOpen) watchBtn.remove();
     } else {
       // Credits — minimal. Names + zap pointer; sources from
       // existing credits.ts module if there's more later, but for
@@ -7289,6 +7293,11 @@ export function renderWatchPage(state: GameState): void {
         // Only mutate copy while the grid is still empty — once cards land,
         // the entry-count line above takes precedence.
         if (cardByPubkey.size > 0) return;
+        if (isFaucetClosed()) {
+          // Every run listed here was signed by the faucet.
+          status.textContent = 'The watch page ended when the Pallasite faucet closed on 23 October 2026. No runs are listed.';
+          return;
+        }
         if (s.relaysAttempted === 0) {
           status.textContent = 'Connecting to relays…';
         } else if (s.relaysSettled === 0) {
@@ -11231,7 +11240,11 @@ function renderRunCredits(
     // sub-2-frame runs are skipped (publishReplay validates internally).
     // Decoupled from the score claim — sign-capable sessions leave a
     // replay even when they don't claim, same policy as the ghost.
-    if (state.cheatedThisRun) {
+    if (isFaucetClosed()) {
+      // Replay blobs were stored by the faucet; do not gzip, sign or offer a
+      // retry that cannot succeed.
+      replayStatus.remove();
+    } else if (state.cheatedThisRun) {
       console.warn('[replay] skipping kind 30764 — run was cheated');
       setReplayBadge('skip', '⚠ REPLAY SKIPPED · cheated this run (sat-void on first cheat)');
     } else {
@@ -11306,7 +11319,8 @@ function renderRunCredits(
     }
   } else {
     console.warn('[replay] no kind 30763/30764 published — guest run (state.session is null). Sign in to enable replays.');
-    setReplayBadge('skip', '— REPLAY OFF · guest mode (sign in to publish replays)');
+    if (isFaucetClosed()) replayStatus.remove();
+    else setReplayBadge('skip', '— REPLAY OFF · guest mode (sign in to publish replays)');
   }
 
   // Prominent zap CTA — the entire reason this stage exists per the user
