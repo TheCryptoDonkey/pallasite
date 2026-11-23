@@ -14,7 +14,7 @@ import { getFlavour } from './flavour.js';
 import { lockInDifficulty, getStoredDifficulty, setStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadCriticalCampaignAssets, setRenderMode, getRenderModeKind, drawAsciiHud, setShowPlayerIdentity, type CriticalAssetReport } from './render.js';
-import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindPreRun, renderEndedPage, renderWatchPage, renderControllerPage, renderSignerRecovery, renderDuelLobby, renderDuelConnecting, renderEventLobby, renderGamepadTestPage, simulateStart, boothPilotSessionWasClaimed, refreshScoreRecovery } from './ui.js';
+import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindPreRun, renderEndedPage, renderControllerPage, renderSignerRecovery, renderDuelLobby, renderDuelConnecting, renderEventLobby, renderGamepadTestPage, simulateStart, boothPilotSessionWasClaimed, refreshScoreRecovery } from './ui.js';
 import { postHeartbeat } from './faucet.js';
 import { currentMode, lockInMode, getStoredMode, isStoredDefenderMode, type RunMode } from './mode.js';
 import { deathmatchActive } from './deathmatch.js';
@@ -3477,7 +3477,7 @@ async function boot(): Promise<void> {
     // who's live + a one-tap path into the full theatre, so auto-open
     // costs sound for no real ergonomic win.
     document.body.dataset.surface = 'watch';
-    renderWatchPage(state);
+    renderEndedPage('PALLASITE · WATCH', 'The watch page ended when the Pallasite faucet closed on 23 October 2026. Runs are no longer listed here.');
   } else if (window.location.hostname.startsWith('mobile.')) {
     // mobile.pallasite.app — bookmarkable controller. Same render as
     // /controller but lives on its own subdomain so it can install as
