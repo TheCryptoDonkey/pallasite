@@ -14,7 +14,7 @@ import { getFlavour } from './flavour.js';
 import { lockInDifficulty, getStoredDifficulty, setStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadCriticalCampaignAssets, setRenderMode, getRenderModeKind, drawAsciiHud, setShowPlayerIdentity, type CriticalAssetReport } from './render.js';
-import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindPreRun, renderAdminPanel, renderAdminV2Panel, renderJuryPage, renderWatchPage, renderControllerPage, renderSignerRecovery, renderDuelLobby, renderDuelConnecting, renderEventLobby, renderGamepadTestPage, simulateStart, boothPilotSessionWasClaimed, refreshScoreRecovery } from './ui.js';
+import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindPreRun, renderAdminPanel, renderAdminV2Panel, renderEndedPage, renderWatchPage, renderControllerPage, renderSignerRecovery, renderDuelLobby, renderDuelConnecting, renderEventLobby, renderGamepadTestPage, simulateStart, boothPilotSessionWasClaimed, refreshScoreRecovery } from './ui.js';
 import { postHeartbeat } from './faucet.js';
 import { currentMode, lockInMode, getStoredMode, isStoredDefenderMode, type RunMode } from './mode.js';
 import { deathmatchActive } from './deathmatch.js';
@@ -3503,7 +3503,7 @@ async function boot(): Promise<void> {
     const path = window.location.pathname.replace(/\/+$/, '');
     if (path === '/jury') {
       document.body.dataset.surface = 'jury';
-      renderJuryPage(state);
+      renderEndedPage('PALLASITE · JURY', 'Cheat review ended when the Pallasite faucet closed on 23 October 2026. No cases are open.');
     } else if (path === '/gamepad-test' || path === '/gamepad-test.html') {
       document.body.dataset.surface = 'gamepad-test';
       renderGamepadTestPage();

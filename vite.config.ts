@@ -41,21 +41,6 @@ export default defineConfig({
   build: {
     target: 'es2020',
     sourcemap: true,
-    rollupOptions: {
-      output: {
-        // Split nostr-veil into its own chunk so future deploys that
-        // don't touch the veil cache independently. signet-login is
-        // intentionally NOT listed here — the SDK is loaded via the
-        // /signet-login.iife.js script tag at runtime, our imports are
-        // types-only, and Rollup would fail to resolve it as a chunk
-        // entry on CI where the sibling repo isn't present. @noble/*
-        // was also tree-shaken to ~50 bytes per chunk so wasn't worth
-        // splitting.
-        manualChunks: {
-          'veil': ['nostr-veil'],
-        },
-      },
-    },
   },
   plugins: [{
     name: 'pallasite-version-json',

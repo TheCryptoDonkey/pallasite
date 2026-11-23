@@ -341,7 +341,6 @@ export async function startStreamSession(
       ['t', 'gaming'],
       ['t', 'pallasite'],
       ['t', 'pallasite-stream'],
-      ['t', 'nostr-veil'],
     ],
   };
 
@@ -631,7 +630,6 @@ export async function publishStreamEnded(
       ['t', 'gaming'],
       ['t', 'pallasite'],
       ['t', 'pallasite-stream'],
-      ['t', 'nostr-veil'],
     ],
   };
   let signed: NostrEvent;

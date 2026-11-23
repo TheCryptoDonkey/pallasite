@@ -20,9 +20,6 @@ importers:
       jsqr:
         specifier: ^1.4.0
         version: 1.4.0
-      nostr-veil:
-        specifier: ^0.34.0
-        version: 0.34.0
       three:
         specifier: ^0.184.0
         version: 0.184.0
@@ -370,9 +367,6 @@ packages:
     resolution: {integrity: sha512-uBBuRo+mkEmEtAy6vVkkdqtV/L3tR8oi7Ju5RJYZ08ql94NgdSX3eXnHwFy4Y/2r/U4t3G6Q6i3/HIe8Serf9A==}
     engines: {node: '>=22.13'}
 
-  '@forgesworn/ring-sig@3.0.0':
-    resolution: {integrity: sha512-LZ2fwwQ79U4BbHpggdeCZJDBwW2J/c/Zm2mIeKVO7BjOJLkZ/1nCOnlSZKPvCjRht5nMYyRaE+u/sz0pNvkYOg==}
-
   '@img/colour@1.1.0':
     resolution: {integrity: sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ==}
     engines: {node: '>=18'}
@@ -711,11 +705,6 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
-  nostr-veil@0.34.0:
-    resolution: {integrity: sha512-FK367U5NoXrRMBcLc3bjSK4d0HTMaH4YDZyDINggk/aUCHSP43a3oN3azxmFdbMMIaPgWeqrJLMqxYi/iQPILA==}
-    engines: {node: '>=20'}
-    hasBin: true
-
   picocolors@1.1.1:
     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
 
@@ -987,11 +976,6 @@ snapshots:
     optional: true
 
   '@forgesworn/qr@0.1.0': {}
-
-  '@forgesworn/ring-sig@3.0.0':
-    dependencies:
-      '@noble/curves': 2.2.0
-      '@noble/hashes': 2.2.0
 
   '@img/colour@1.1.0': {}
 
@@ -1273,12 +1257,6 @@ snapshots:
   meshoptimizer@1.1.1: {}
 
   nanoid@3.3.12: {}
-
-  nostr-veil@0.34.0:
-    dependencies:
-      '@forgesworn/ring-sig': 3.0.0
-      '@noble/curves': 2.2.0
-      '@noble/hashes': 2.2.0
 
   picocolors@1.1.1: {}
 
