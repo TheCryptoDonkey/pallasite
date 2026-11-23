@@ -36,7 +36,6 @@ import { createTrustCircle, contributeAssertion, type Contribution } from 'nostr
 import { signEvent } from 'nostr-veil';
 import type { SignetSession, NostrEvent } from 'signet-login';
 import { getActiveRelays } from './relays.js';
-import { EXPERIMENTAL_RELAYS } from './credits.js';
 import { fetchGameInfo } from './faucet.js';
 
 export const REVIEW_CASE_KIND = 31764;
@@ -141,6 +140,10 @@ function parseClosesAt(raw: string | null): number | null {
  * relay (a fake case event would have to forge a signature from the game
  * pubkey, which requires its private key).
  *
+ * Reads from the player's active (public) relays, where the faucet
+ * publishes cases. A private relay would need the juror to sign in, which
+ * tells the relay who is looking at which case.
+ *
  * Returns up to `limit` cases sorted newest-first. Resolves the empty
  * array on relay failure rather than throwing.
  */
@@ -149,7 +152,7 @@ export async function fetchReviewCases(
 ): Promise<ReviewCase[]> {
   const info = await fetchGameInfo();
   if (!info) return [];
-  const relays = opts.relays ?? EXPERIMENTAL_RELAYS;
+  const relays = opts.relays ?? getActiveRelays();
   if (relays.length === 0) return [];
   const limit = opts.limit ?? 50;
   const filter = {
@@ -325,8 +328,8 @@ function publishToRelay(url: string, event: NostrEvent, timeoutMs = PUBLISH_TIME
  * event template names `juryPubkey` in a p-tag; the master never
  * exposes its privkey.
  *
- * The faucet's JuryDelegationWatcher picks the event up from the
- * configured relays and writes it to `jury_delegations`, after which
+ * Published to the player's active (public) relays. The faucet's
+ * JuryDelegationWatcher picks the event up from the same public set and writes it to `jury_delegations`, after which
  * the master becomes a candidate juror for any case whose eligibility
  * criteria (≥3 badges) it also meets.
  */
@@ -335,7 +338,7 @@ export async function publishDelegation(
   juryPubkey: string,
   opts: { relays?: readonly string[] } = {},
 ): Promise<DelegationPublishResult> {
-  const relays = opts.relays ?? EXPERIMENTAL_RELAYS;
+  const relays = opts.relays ?? getActiveRelays();
   if (relays.length === 0) {
     return { ok: false, publishedTo: [], failed: [], error: 'no_relays' };
   }
