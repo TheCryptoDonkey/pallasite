@@ -319,12 +319,12 @@ export async function startStreamSession(
     kind: NIP53_LIVE_EVENT_KIND,
     created_at: Math.floor(Date.now() / 1000),
     content:
-      `Playing Pallasite live — anonymous-jury-reviewed cosmic-arcade with ` +
+      `Playing Pallasite live — cosmic arcade with ` +
       `live Nostr telemetry. Spectators welcome.`,
     tags: [
       ['d', dTag],
       ['title', 'Playing Pallasite'],
-      ['summary', 'Cosmic arcade — anonymous jury cheat review, live game state on Nostr.'],
+      ['summary', 'Cosmic arcade — live game state on Nostr.'],
       ['status', 'live'],
       ['starts', String(startsAtSec)],
       // Where viewers can actually watch — watch.pallasite.app filters

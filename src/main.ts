@@ -14,7 +14,7 @@ import { getFlavour } from './flavour.js';
 import { lockInDifficulty, getStoredDifficulty, setStoredDifficulty } from './difficulty.js';
 import { setDailySeed, todayUTC, getStoredDailyPref, getActiveSeed } from './seed.js';
 import { render, preloadCriticalCampaignAssets, setRenderMode, getRenderModeKind, drawAsciiHud, setShowPlayerIdentity, type CriticalAssetReport } from './render.js';
-import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindPreRun, renderAdminPanel, renderAdminV2Panel, renderEndedPage, renderWatchPage, renderControllerPage, renderSignerRecovery, renderDuelLobby, renderDuelConnecting, renderEventLobby, renderGamepadTestPage, simulateStart, boothPilotSessionWasClaimed, refreshScoreRecovery } from './ui.js';
+import { bindActions, renderTitle, renderAttract, renderPause, renderGameOver, renderCompletion, renderToast, clearOverlay, showUpdateBanner, gateBehindPreRun, renderEndedPage, renderWatchPage, renderControllerPage, renderSignerRecovery, renderDuelLobby, renderDuelConnecting, renderEventLobby, renderGamepadTestPage, simulateStart, boothPilotSessionWasClaimed, refreshScoreRecovery } from './ui.js';
 import { postHeartbeat } from './faucet.js';
 import { currentMode, lockInMode, getStoredMode, isStoredDefenderMode, type RunMode } from './mode.js';
 import { deathmatchActive } from './deathmatch.js';
@@ -2972,9 +2972,8 @@ async function boot(): Promise<void> {
   if (!isControllerSurface()) {
     void import('./faucet.js').then(({ fetchGameConfig, fetchGameInfo }) => {
       void fetchGameConfig();
-      // Also prime GameInfo so the ADMIN button on the title's
-      // session panel knows whether to render. isAdminSession reads
-      // cachedGameInfo.admin_pubkey, which lands here.
+      // Also ask for GameInfo: its answer is how the game learns whether
+      // the faucet is closed before the first game-over.
       // A 410 here marks the faucet closed; redraw so a score-retry banner
       // painted before the answer arrived is withdrawn.
       void fetchGameInfo().then(() => refreshScoreRecovery(state));
@@ -3469,7 +3468,7 @@ async function boot(): Promise<void> {
   const isAdmin = new URLSearchParams(window.location.search).has('admin');
   if (isAdmin) {
     document.body.dataset.surface = 'admin';
-    renderAdminPanel();
+    renderEndedPage('PALLASITE · ADMIN', 'The operator panel ended when the Pallasite faucet closed on 23 October 2026.');
   } else if (window.location.hostname.startsWith('watch.')) {
     // Auto-open used to fire here when exactly one player was live;
     // dropped because the path bypassed every user gesture and iOS
@@ -3511,12 +3510,8 @@ async function boot(): Promise<void> {
       document.body.dataset.surface = 'controller';
       renderControllerPage(state);
     } else if (path === '/admin') {
-      // NIP-98 + pubkey-allowlist admin panel. Server enforces the
-      // allowlist on every action; the client just renders whatever
-      // the GET /api/admin/v2/state response is. Non-admin lands on
-      // a "not authorised" message and a back link.
       document.body.dataset.surface = 'admin';
-      renderAdminV2Panel(state);
+      renderEndedPage('PALLASITE · ADMIN', 'The operator panel ended when the Pallasite faucet closed on 23 October 2026.');
     } else if (path === '/duel') {
       // Duel lobby: HOST flow (generate session + invite URL + QR) and
       // JOIN flow (paste an invite URL). Once a partner navigates to the
