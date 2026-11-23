@@ -46,7 +46,7 @@ import { getHapticsEnabled, setHapticsEnabled, hapticsSupported } from './haptic
 import * as auth from './auth.js';
 import type { SignetSession } from 'signet-login';
 import { addLocalHighScore, getLocalHighScores, isHighScore, subscribeGlobalHighScores, clearLocalHighScores, publishCoopCampaignScore, type GlobalHighScore, type ScoreBoardId } from './score.js';
-import { submitCoopScore, submitSoloScore, fetchFlagged, requestDeleteFlag, fetchAdminState, setAdminCaps, setAdminPause, applyAdminPreset, saveAdminSettings, fetchAdminPlayer, setAdminPlayerFlag, adjustAdminPlayerBalance, setAdminPlayerTier, isAdminSession, type FlaggedEntry, type AdminStateResult, type AdminPlayer } from './faucet.js';
+import { submitCoopScore, submitSoloScore, isFaucetClosed, fetchFlagged, requestDeleteFlag, fetchAdminState, setAdminCaps, setAdminPause, applyAdminPreset, saveAdminSettings, fetchAdminPlayer, setAdminPlayerFlag, adjustAdminPlayerBalance, setAdminPlayerTier, isAdminSession, type FlaggedEntry, type AdminStateResult, type AdminPlayer } from './faucet.js';
 import {
   fetchReviewCases,
   generateJuryIdentity,
@@ -6416,6 +6416,15 @@ export function renderJuryPage(state: GameState): void {
 
   void (async () => {
     const cases = await fetchReviewCases();
+    if (isFaucetClosed()) {
+      // Only the faucet opened cases and counted ballots, so there is nothing
+      // to review and no reason to set up a jury identity.
+      setupSection.remove();
+      refreshBtn.remove();
+      intro.textContent = 'The faucet flagged suspicious runs and opened a public case for each, which jurors reviewed anonymously.';
+      status.textContent = 'Cheat review ended when the Pallasite faucet closed on 23 October 2026. No cases are open.';
+      return;
+    }
     if (cases.length === 0) {
       status.textContent = 'No open cases on relays right now. Either the heuristics have not tripped, or the relay set is unreachable.';
       return;
@@ -10226,6 +10235,9 @@ export function refreshScoreRecovery(state: GameState): void {
   const previous = document.getElementById('pal-score-recovery');
   const hadFocus = !!previous?.contains(document.activeElement);
   previous?.remove();
+  // Nothing can be retried against a closed faucet. Saved receipts stay on
+  // the device; only the prompt is withheld.
+  if (isFaucetClosed()) return;
   const session = state.session;
   if (!session) return;
   if (!['title', 'gameover', 'completed', 'paused'].includes(state.phase)) return;
@@ -10298,6 +10310,9 @@ function publishSoloScoreForRun(state: GameState): void {
   const soloMode = currentMode();
   if (!GAMESTR_SOLO_MODES.has(soloMode)) return;
   if (state.players[0].score <= 0 || state.runStartedAt <= 0) return;
+  // The faucet game-signed these scores. Once it has answered 410 there is
+  // nowhere to send the run, so do not queue it or ask for a signature.
+  if (isFaucetClosed()) return;
   const runId = String(state.runStartedAt);
   if (runId === lastSoloScoreQueuedRun) return;
   lastSoloScoreQueuedRun = runId;

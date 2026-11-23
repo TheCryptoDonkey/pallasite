@@ -45,7 +45,7 @@
     "test:presentation": "tsx tools/check-presentation.ts",
     "test:menus": "node tools/check-menus.mjs",
     "test:sign-queue": "tsx tools/check-sign-queue.ts",
-    "test:score-recovery": "tsx tools/check-solo-score-outbox.ts",
+    "test:score-recovery": "tsx tools/check-solo-score-outbox.ts && tsx tools/check-faucet-closed.ts",
     "test:qr": "tsx tools/check-qr.ts"
   },
   "dependencies": {

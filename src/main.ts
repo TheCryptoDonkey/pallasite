@@ -2975,7 +2975,9 @@ async function boot(): Promise<void> {
       // Also prime GameInfo so the ADMIN button on the title's
       // session panel knows whether to render. isAdminSession reads
       // cachedGameInfo.admin_pubkey, which lands here.
-      void fetchGameInfo();
+      // A 410 here marks the faucet closed; redraw so a score-retry banner
+      // painted before the answer arrived is withdrawn.
+      void fetchGameInfo().then(() => refreshScoreRecovery(state));
     });
   }
 

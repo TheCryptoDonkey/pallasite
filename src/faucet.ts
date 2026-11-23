@@ -28,6 +28,15 @@ function apiOrigin(): string {
   return typeof override === 'string' && override ? override.replace(/\/+$/, '') : location.origin;
 }
 
+/** Set by the first 410 from the faucet. A closed faucet stays closed for the
+ *  page's lifetime, so later calls return before asking the player to sign. */
+let faucetClosed = false;
+export function isFaucetClosed(): boolean { return faucetClosed; }
+function noteStatus(res: Response): Response {
+  if (res.status === 410) faucetClosed = true;
+  return res;
+}
+
 export interface GameInfo {
   pubkey: string;
   npub: string | null;
@@ -98,7 +107,7 @@ export function getGameConfig(): GameConfig {
 
 export async function fetchGameConfig(): Promise<GameConfig> {
   try {
-    const res = await fetch(`${API_BASE}/game-config`, { cache: 'no-cache' });
+    const res = noteStatus(await fetch(`${API_BASE}/game-config`, { cache: 'no-cache' }));
     if (!res.ok) return cachedGameConfig;
     const data = (await res.json()) as { ok?: boolean; config?: Record<string, unknown> };
     if (!data.ok || !data.config) return cachedGameConfig;
@@ -141,7 +150,7 @@ export function isGameConfigReady(): boolean {
 export async function fetchGameInfo(): Promise<GameInfo | null> {
   if (cachedGameInfo) return cachedGameInfo;
   try {
-    const res = await fetch(`${API_BASE}/game-pubkey`, { cache: 'no-cache' });
+    const res = noteStatus(await fetch(`${API_BASE}/game-pubkey`, { cache: 'no-cache' }));
     if (!res.ok) return null;
     const data = (await res.json()) as {
       ok?: boolean;
@@ -208,6 +217,7 @@ export async function postHeartbeat(
   session: SignetSession,
   body: { score: number; wave: number; started_at: number; run_id: string; mode?: RunMode },
 ): Promise<boolean> {
+  if (faucetClosed) return false;
   if (!session.signer.capabilities.canSignEvents) return false;
   const url = `${apiOrigin()}${API_BASE}/heartbeat`;
   const bodyJson = JSON.stringify(body);
@@ -242,7 +252,7 @@ export async function postHeartbeat(
       },
       body: bodyJson,
     });
-    return res.ok;
+    return noteStatus(res).ok;
   } catch {
     return false;
   }
@@ -283,6 +293,7 @@ export async function submitSoloScore(
   session: SignetSession,
   input: SoloScoreInput,
 ): Promise<SoloScoreResult> {
+  if (faucetClosed) return { ok: false, error: 'faucet_closed', status: 410 };
   if (!session.signer.capabilities.canSignEvents) return { ok: false, error: 'no_signer' };
   const url = `${apiOrigin()}${API_BASE}/score`;
   const bodyJson = JSON.stringify(input);
@@ -321,6 +332,7 @@ export async function submitSoloScore(
       return { ok: false, error: 'network_error', detail: err instanceof Error ? err.message : String(err) };
     }
     if (res.status === 404) return { ok: false, error: 'not_deployed' };
+    if (noteStatus(res).status === 410) return { ok: false, error: 'faucet_closed', status: 410 };
     let data: unknown;
     try { data = await res.json(); } catch { return { ok: false, error: 'bad_response', detail: `HTTP ${res.status}` }; }
     if (typeof data !== 'object' || data === null) return { ok: false, error: 'bad_response' };
@@ -359,6 +371,9 @@ export async function submitCoopScore(
   session: SignetSession,
   input: CoopScoreInput,
 ): Promise<CoopScoreResult> {
+  // A closed faucet reads as `not_deployed`, which the co-op recap already
+  // answers with the player-signed publish.
+  if (faucetClosed) return { ok: false, error: 'not_deployed' };
   if (!session.signer.capabilities.canSignEvents) return { ok: false, error: 'no_signer' };
   const url = `${apiOrigin()}${API_BASE}/coop-score`;
   const bodyJson = JSON.stringify(input);
@@ -391,7 +406,7 @@ export async function submitCoopScore(
   } catch (err) {
     return { ok: false, error: 'network_error', detail: err instanceof Error ? err.message : String(err) };
   }
-  if (res.status === 404) return { ok: false, error: 'not_deployed' };
+  if (res.status === 404 || noteStatus(res).status === 410) return { ok: false, error: 'not_deployed' };
   let data: unknown;
   try { data = await res.json(); } catch { return { ok: false, error: 'bad_response', detail: `HTTP ${res.status}` }; }
   if (typeof data !== 'object' || data === null) return { ok: false, error: 'bad_response' };
@@ -546,6 +561,7 @@ export async function uploadReplay(
   session: SignetSession,
   gzippedBytes: Uint8Array,
 ): Promise<ReplayUploadResult | ReplayUploadError> {
+  if (faucetClosed) return { ok: false, error: 'server_error', status: 410, detail: 'faucet_closed' };
   if (!session.signer.capabilities.canSignEvents) {
     return { ok: false, error: 'no_signer' };
   }
@@ -595,7 +611,7 @@ export async function uploadReplay(
   } catch (err) {
     return { ok: false, error: 'network_error', detail: err instanceof Error ? err.message : String(err) };
   }
-  if (!res.ok) {
+  if (!noteStatus(res).ok) {
     let detail: string | undefined;
     try { detail = (await res.json() as { error?: string }).error; } catch { /* ignore */ }
     return { ok: false, error: 'server_error', status: res.status, detail };
