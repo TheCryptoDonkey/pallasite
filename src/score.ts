@@ -3,15 +3,15 @@
  *
  * Local: top-10 in localStorage.
  * Nostr: `fetchGlobalHighScores` pulls kind 30762 events from relays.
- *        Sats-paying solo publishes happen server-side via the faucet's
- *        /api/claim flow (see src/faucet.ts). Co-op campaign publishes a
- *        player-signed no-payout score event here because it deliberately
- *        does not touch the faucet.
+ *        The faucet game-signed scores until it closed on 23 October 2026;
+ *        solo and co-op scores are now signed by the player and published
+ *        from here.
  */
 
 import type { SignetSession, NostrEvent } from 'signet-login';
 import { GAME_ID, sessionCanSign } from './auth.js';
 import { getActiveRelays } from './relays.js';
+import type { SoloScoreInput, SoloScoreResult } from './faucet.js';
 
 const HIGHSCORE_KEY = 'pallasite:highscores';
 const COOP_HIGHSCORE_KEY = 'pallasite:highscores:coop-campaign';
@@ -415,6 +415,62 @@ function publishToRelay(url: string, event: NostrEvent, timeoutMs = 5000): Promi
   });
 }
 
+/**
+ * Sign and publish a solo score as the player. The faucet used to game-sign
+ * these; it closed on 23 October 2026, so the player's own key now vouches
+ * for the run. Same tags and per-run `d` address the faucet used, so a retry
+ * replaces itself instead of adding a duplicate.
+ */
+export async function publishSoloScore(
+  session: SignetSession,
+  input: SoloScoreInput,
+  opts: { relays?: readonly string[]; publish?: (url: string, event: NostrEvent) => Promise<void> } = {},
+): Promise<SoloScoreResult> {
+  if (!sessionCanSign(session)) return { ok: false, error: 'no_signer' };
+  // The leaderboard drops cheated runs, so never ask anyone to sign one.
+  if (input.cheated) return { ok: false, error: 'cheated_run', status: 400 };
+  const score = Math.floor(input.score);
+  if (!Number.isFinite(score) || score <= 0) return { ok: false, error: 'invalid_score', status: 400 };
+  // Saved receipts carry Unix seconds or milliseconds, depending on their age.
+  const seconds = (v: number | undefined): number | undefined => v === undefined ? undefined : v >= 100_000_000_000 ? Math.floor(v / 1000) : v;
+  const startedAt = seconds(input.started_at), finishedAt = seconds(input.finished_at);
+  const wave = Math.max(0, Math.floor(input.wave));
+  const tags: string[][] = [
+    ['d', `${GAME_ID}:${session.pubkey}:wave-${wave}:daily-${input.run_id}`],
+    ['game', GAME_ID],
+    ['score', String(score)],
+    ['p', session.pubkey],
+    ['sats', '0'],
+    ['state', 'final'],
+    ['wave', String(wave)],
+    ['duration', String(Math.round(Math.max(0, input.duration_ms) / 1000))],
+    ...(input.player_name ? [['playerName', input.player_name]] : []),
+    ...(input.nip05 ? [['nip05', input.nip05]] : []),
+    ['t', 'pallasite'],
+    ['t', 'arcade'],
+    ['t', 'asteroids'],
+    ...(input.room === '600bn' ? [['t', '600bn']] : []),
+    ...(input.mode && input.mode !== 'campaign' ? [['t', input.mode]] : []),
+    ...(startedAt !== undefined ? [['run_started_at', String(startedAt)]] : []),
+    ...(finishedAt !== undefined ? [['run_finished_at', String(finishedAt)]] : []),
+  ];
+  let signed: NostrEvent;
+  try {
+    signed = await Promise.race([
+      session.signer.signEvent({ kind: 30762, created_at: finishedAt ?? Math.floor(Date.now() / 1000), content: '', tags }),
+      new Promise<never>((_, reject) => { setTimeout(() => reject(new Error('signer-timeout')), 30_000); }),
+    ]);
+  } catch (err) {
+    return { ok: false, error: 'sign_failed', detail: err instanceof Error ? err.message : String(err) };
+  }
+  if (signed.pubkey !== session.pubkey) return { ok: false, error: 'wrong_signer' };
+  const relays = opts.relays ?? getActiveRelays();
+  const publish = opts.publish ?? publishToRelay;
+  const accepted = (await Promise.all(relays.map(url => publish(url, signed).then(() => true, () => false)))).filter(Boolean).length;
+  if (accepted === 0) return { ok: false, error: 'relays_rejected' };
+  return { ok: true, id: signed.id, published: { ok: accepted, total: relays.length } };
+}
+
 export async function publishCoopCampaignScore(
   session: SignetSession,
   input: CoopCampaignScoreInput,
@@ -430,6 +486,9 @@ export async function publishCoopCampaignScore(
   const duration = Math.max(0, Math.floor(input.durationMs));
   const players = Math.max(2, Math.floor(input.players));
   const tags: string[][] = [
+    // Kind 30762 is addressable: without a `d` tag every score a player
+    // signs replaces their last one, solo or co-op. Same shape the faucet used.
+    ['d', `${GAME_ID}:${session.pubkey}:coop:wave-${wave}`],
     ['t', 'pallasite'],
     ['t', 'coop-campaign'],
     ['game', GAME_ID],
