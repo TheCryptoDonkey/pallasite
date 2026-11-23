@@ -126,6 +126,8 @@ Posture: the NIP-85 assertion is the *index* (cheap to read, tells you a claim e
 
 ## 7. Reputation web — Mark, NIP-85, jury, veil
 
+> **Superseded, 23 November 2026.** The jury and veil ballots depended on the faucet, which closed on 23 October 2026. `src/jury.ts` and the `nostr-veil` dependency were removed in `54a6758`; items 4 and 5 below, and the phase 2c row in section 10, no longer describe the game. The Mark and its NIP-85 assertion are unaffected.
+
 The Mark is not a trophy that sits in isolation. It is the entry point to a reputation web that already exists in the codebase. The arc's narrative loop closes when the player joins the community of judges.
 
 ```
