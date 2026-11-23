@@ -20,7 +20,6 @@ import { GAME_ID } from './auth.js';
 import { WORLD_W, WORLD_H, type GhostSample, type GhostPoseSample } from './types.js';
 import { getActiveRelays } from './relays.js';
 import { EXPERIMENTAL_RELAYS } from './credits.js';
-import { uploadReplay } from './faucet.js';
 
 /** Publish + fetch share the same relay set so a watcher always queries
  *  the same URLs the player published to. Without this union, the
@@ -263,54 +262,6 @@ export async function publishGhost(input: PublishGhostInput): Promise<NostrEvent
 
 import type { ReplayFrameRaw } from './stream-session.js';
 
-export interface PublishReplayInput {
-  session: SignetSession;
-  /** Optional kind 30762 score event id. When supplied, the kind 30764
-   *  carries an `e` tag pointing at it so watchers can fetch the
-   *  replay by score id (same pattern as kind 30763 ghosts). When not
-   *  supplied (player hasn't claimed yet, or claim raced this call),
-   *  the replay still publishes with a timestamp-based d-tag and is
-   *  findable via author + since. */
-  scoreEventId?: string;
-  finalScore: number;
-  finalWave: number;
-  durationMs: number;
-  frames: ReadonlyArray<ReplayFrameRaw>;
-  relays?: readonly string[];
-  /** Optional pre-gzipped frames bytes. When the caller is retrying a
-   *  previously-built replay (signer hiccup, RETRY button), reusing
-   *  the gzipped bytes skips re-compressing 14k frames on each click
-   *  — gzip a 3MB replay is ~500ms of CPU on a phone. The caller is
-   *  responsible for ensuring these bytes are gzip(JSON.stringify(
-   *  frames)) for the same frame array. */
-  gzippedFrames?: Uint8Array;
-}
-
-/** Gzip a frame array and return the bytes. Exported so the game-over
- *  retry UI can compress once at run end and cache the result for
- *  subsequent retries without recompressing every click. Returns null
- *  on CompressionStream failure (very rare — graceful fallback path
- *  is to skip the replay entirely). */
-export async function gzipReplayFrames(frames: ReadonlyArray<ReplayFrameRaw>): Promise<Uint8Array | null> {
-  return gzipFrames(frames);
-}
-
-/** Gzip a JSON-serialisable frame array to raw bytes. The Blossom-style
- *  upload path PUTs these bytes directly to /api/replay/{sha256} — no
- *  base64 envelope, no chunking. */
-async function gzipFrames(frames: ReadonlyArray<ReplayFrameRaw>): Promise<Uint8Array | null> {
-  try {
-    const json = JSON.stringify(frames);
-    const blob = new Blob([json]);
-    const cs = new (window as unknown as { CompressionStream: new (fmt: string) => GenericTransformStream }).CompressionStream('gzip');
-    const compressed = await new Response(blob.stream().pipeThrough(cs)).blob();
-    const buf = await compressed.arrayBuffer();
-    return new Uint8Array(buf);
-  } catch {
-    return null;
-  }
-}
-
 /** Reverse of gzipFrames — gunzip a Uint8Array back into ReplayFrameRaw[]. */
 async function gunzipFrames(bytes: Uint8Array): Promise<ReplayFrameRaw[] | null> {
   try {
@@ -325,96 +276,6 @@ async function gunzipFrames(bytes: Uint8Array): Promise<ReplayFrameRaw[] | null>
   } catch {
     return null;
   }
-}
-
-/** Publish a full-run replay: gzip every frame into a single blob,
- *  upload to /api/replay/{sha256} via NIP-98, then sign ONE kind 30764
- *  pointer event tagging the URL + hash. Replaces the previous per-wave
- *  chunked publish path — that pattern required 25+ sequential signs
- *  per run and was the proximate cause of bark-extension overload
- *  blocking claims and ghost publishes.
- *
- *  Returns the pointer event on success. Null on upload failure,
- *  signer failure, or relay-publish failure. The pointer event's id
- *  is the shareable replay link.
- *
- *  Sign count for the entire replay flow: 2 (the NIP-98 auth for the
- *  upload + the pointer event). Prior path: 1 + N waves. */
-export async function publishReplay(input: PublishReplayInput): Promise<NostrEvent | null> {
-  const { session, scoreEventId, finalScore, finalWave, durationMs, frames, gzippedFrames } = input;
-  if (!session.signer.capabilities.canSignEvents) {
-    console.warn('[replay] skip publish — signer cannot sign events');
-    return null;
-  }
-  if (frames.length < 2) {
-    console.warn(`[replay] skip publish — only ${frames.length} frame(s) buffered (need >=2)`);
-    return null;
-  }
-
-  // Reuse pre-gzipped bytes when the caller provided them (RETRY path)
-  // to avoid re-compressing 14k frames on every click. First-time
-  // publish path still re-gzips inline.
-  const gzipped = gzippedFrames ?? await gzipFrames(frames);
-  if (!gzipped) {
-    console.error('[replay] gzip failed');
-    return null;
-  }
-  if (!gzippedFrames) {
-    console.log(`[replay] gzipped ${frames.length} frames → ${gzipped.byteLength}B`);
-  }
-
-  const uploaded = await uploadReplay(session, gzipped);
-  if (!uploaded.ok) {
-    const detail = 'detail' in uploaded ? uploaded.detail ?? '' : '';
-    console.error(`[replay] upload failed: ${uploaded.error}${detail ? ` (${detail})` : ''}`);
-    return null;
-  }
-  console.log(`[replay] uploaded ${uploaded.size}B blob, sha256=${uploaded.sha256.slice(0, 8)}…`);
-
-  const runId = `${session.pubkey.slice(0, 16)}:${Date.now()}`;
-  const relays = ghostRelaySet(input.relays);
-
-  // Pointer event — content stays empty; the bytes live at the URL.
-  // `enc=replay-blob-v1` tells the watcher to follow `url` rather than
-  // try to decode content directly. `x` carries the sha256 so the
-  // watcher can verify the bytes after fetching (defence against
-  // server compromise or transit corruption).
-  const tags: string[][] = [
-    ['d', `${GAME_ID}:replay:${runId}`],
-    ['t', 'pallasite'],
-    ['game', GAME_ID],
-    ['enc', 'replay-blob-v1'],
-    ['url', uploaded.url],
-    ['x', uploaded.sha256],
-    ['size', String(uploaded.size)],
-    ['score', finalScore.toString()],
-    ['wave', finalWave.toString()],
-    ['duration', durationMs.toString()],
-    ['frames', String(frames.length)],
-    ['runid', runId],
-  ];
-  if (scoreEventId) tags.push(['e', scoreEventId, '', 'score']);
-
-  let signed: NostrEvent;
-  try {
-    signed = await session.signer.signEvent({
-      kind: REPLAY_KIND,
-      content: '',
-      tags,
-    });
-  } catch (err) {
-    console.error(`[replay] pointer-event sign failed: ${err instanceof Error ? err.message : String(err)}`);
-    return null;
-  }
-  const results = await Promise.allSettled(relays.map((u) => publishToRelay(u, signed)));
-  const ok = results.filter((r) => r.status === 'fulfilled').length;
-  for (let i = 0; i < relays.length; i++) {
-    const r = results[i];
-    if (r.status === 'fulfilled') console.log(`[replay]   ✓ ${relays[i]}`);
-    else console.warn(`[replay]   ✗ ${relays[i]} — ${(r.reason as Error)?.message ?? 'error'}`);
-  }
-  console.log(`[replay] pointer ${signed.id.slice(0, 8)}… published to ${ok}/${relays.length} relays`);
-  return signed;
 }
 
 /** Fetch + verify + decompress the blob at the pointer event's `url`.

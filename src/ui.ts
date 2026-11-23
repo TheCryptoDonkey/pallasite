@@ -81,8 +81,8 @@ import { subscribeRecentRuns, timeAgo, dismissWatchEntry, getDismissedWatchEntri
 import { decodeNpub, encodeNpub, encodeNsec } from './bech32.js';
 import { subscribeZapTotals, type ZapTotalsByPubkey } from './zaps.js';
 import { isGuestSession, setGuestName, clearGuestIdentity, getGuestPrivkeyHex, getGuestRecord, loadOrCreateGuest } from './guest.js';
-import { getReplayBuffer, type ReplayFrameRaw } from './stream-session.js';
-import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, publishReplay, gzipReplayFrames, findReplayByAuthor, fetchReplayByScoreEventId, fetchReplayByEventId, type GhostRun } from './ghost.js';
+import { type ReplayFrameRaw } from './stream-session.js';
+import { publishGhost, prefetchTopGhost, getCachedGhost, fetchGhostByScoreEventId, findScoreIdForLatestGhost, ghostPoseAt, ghostScoreAt, findReplayByAuthor, fetchReplayByScoreEventId, fetchReplayByEventId, type GhostRun } from './ghost.js';
 import { publishPallasiteMark } from './mark.js';
 import { preloadBackground, render, setRenderMode, setHudHidden, PLAYER_COLOURS, type RenderModeInfo } from './render.js';
 import { createTheatreState, populateTheatreState } from './theatre-adapter.js';
@@ -10599,26 +10599,6 @@ function renderRunCredits(
     if (s >= 30) markAchievement(state, 'streak-30');
     if (s >= 5)  markAchievement(state, 'streak-5');
   }
-  // Replay-publish status badge — visible to the player on the
-  // game-over screen so they don't need to open dev tools. Inserted
-  // after the score/sats summary; replaced once publishReplay's
-  // promise resolves.
-  const replayStatus = el('div', { parent: overlay });
-  replayStatus.style.cssText = 'margin:8px auto;padding:6px 12px;border-radius:6px;font-family:monospace;font-size:0.78rem;letter-spacing:0.08em;max-width:520px;text-align:center;';
-  const setReplayBadge = (kind: 'pending' | 'ok' | 'skip' | 'fail', text: string): void => {
-    const COLOURS: Record<typeof kind, [string, string]> = {
-      pending: ['rgba(255,216,74,0.85)', 'rgba(255,216,74,0.18)'],
-      ok:      ['#8cffb4',              'rgba(140,255,180,0.18)'],
-      skip:    ['rgba(220,210,255,0.7)', 'rgba(180,140,255,0.10)'],
-      fail:    ['rgba(255,120,120,0.95)', 'rgba(255,120,120,0.15)'],
-    };
-    const [fg, bg] = COLOURS[kind];
-    replayStatus.style.color = fg;
-    replayStatus.style.background = bg;
-    replayStatus.style.border = `1px solid ${fg}55`;
-    replayStatus.textContent = text;
-  };
-
   if (state.session) {
     console.log(`[replay] game-over · session=${state.session.pubkey.slice(0, 8)}… cheated=${state.cheatedThisRun} score=${state.players[0].score} wave=${state.wave}`);
     void publishGhost({
@@ -10631,92 +10611,6 @@ function renderRunCredits(
       seed: getActiveSeed(),
       cheated: state.cheatedThisRun,
     });
-    // Full-world replay (kind 30764) — built from the buffered wire
-    // frames we shipped at 30 Hz during the run. Cheated runs and
-    // sub-2-frame runs are skipped (publishReplay validates internally).
-    // Decoupled from the score claim — sign-capable sessions leave a
-    // replay even when they don't claim, same policy as the ghost.
-    if (isFaucetClosed()) {
-      // Replay blobs were stored by the faucet; do not gzip, sign or offer a
-      // retry that cannot succeed.
-      replayStatus.remove();
-    } else if (state.cheatedThisRun) {
-      console.warn('[replay] skipping kind 30764 — run was cheated');
-      setReplayBadge('skip', '⚠ REPLAY SKIPPED · cheated this run (sat-void on first cheat)');
-    } else {
-      // Blossom-style single-blob publish: gzip the whole run → PUT to
-      // faucet's content-addressed store → sign ONE kind 30764 pointer
-      // event tagging the URL + hash. Two signs total for the replay
-      // (NIP-98 auth + pointer event). Replaces the previous per-wave
-      // chunking pipeline that signed 25+ events sequentially and
-      // wedged bunker-backed signers under sustained load.
-      const remainingBuffer = getReplayBuffer();
-      console.log(`[replay] game-over · ${remainingBuffer.length} frame(s) in buffer`);
-      if (remainingBuffer.length < 2) {
-        setReplayBadge('fail', `✗ REPLAY EMPTY · only ${remainingBuffer.length} frame(s) buffered`);
-      } else {
-        const session = state.session;
-        const score = state.players[0].score;
-        const finalWave = state.wave;
-        const durationMs = Math.max(0, Math.floor(state.runTimeMs));
-        // Cache the gzipped frames across retries. First click gzips
-        // (~500ms for a 14k-frame run on a phone); subsequent RETRY
-        // clicks reuse the same bytes. Caller-side caching keeps
-        // publishReplay's interface clean — it doesn't need to know
-        // about retry semantics.
-        let cachedGzip: Uint8Array | null = null;
-        // Tells the player WHAT to do, not just THAT it failed. Most
-        // common failure mode: bark's service worker fell asleep mid-
-        // session and the signEvent times out. The remedy is opening
-        // the extension to wake it.
-        const signerHint = 'Your Nostr signer didn\'t respond. Open your extension (bark / nsec.app / your bunker), make sure it\'s unlocked, then click RETRY.';
-        const renderRetryBadge = (msg: string, hint: string): void => {
-          replayStatus.innerHTML = '';
-          replayStatus.style.color = 'rgba(255,120,120,0.95)';
-          replayStatus.style.background = 'rgba(255,120,120,0.15)';
-          replayStatus.style.border = '1px solid rgba(255,120,120,0.55)';
-          const line = el('span', { parent: replayStatus, text: msg + ' · ' });
-          void line;
-          const retry = el('button', { parent: replayStatus, text: 'RETRY' });
-          retry.style.cssText = 'background:rgba(255,255,255,0.08);border:1px solid rgba(255,120,120,0.7);color:#fff;padding:2px 10px;border-radius:4px;font-family:monospace;font-size:0.78rem;letter-spacing:0.1em;cursor:pointer;margin-left:6px;';
-          retry.addEventListener('click', tryPublish);
-          const hintEl = el('div', { parent: replayStatus, text: hint });
-          hintEl.style.cssText = 'font-size:0.72rem;margin-top:4px;color:rgba(220,210,255,0.75);letter-spacing:0.04em;line-height:1.4;';
-        };
-        const tryPublish = (): void => {
-          setReplayBadge('pending', `📼 REPLAY · ${cachedGzip ? 'retrying' : 'uploading'} ${remainingBuffer.length} frames…`);
-          void (async () => {
-            try {
-              if (!cachedGzip) {
-                cachedGzip = await gzipReplayFrames(remainingBuffer);
-                if (!cachedGzip) {
-                  renderRetryBadge('✗ REPLAY FAILED · gzip error', 'Compression failed on your device. Try again, or play a shorter run.');
-                  return;
-                }
-                console.log(`[replay] gzipped ${remainingBuffer.length} frames → ${cachedGzip.byteLength}B (cached for retries)`);
-              }
-              const signed = await publishReplay({
-                session,
-                finalScore: score,
-                finalWave,
-                durationMs,
-                frames: remainingBuffer,
-                gzippedFrames: cachedGzip,
-              });
-              if (signed) setReplayBadge('ok', `✓ REPLAY PUBLISHED · ${signed.id.slice(0, 8)}…`);
-              else renderRetryBadge('✗ REPLAY FAILED', signerHint);
-            } catch (err) {
-              renderRetryBadge(`✗ REPLAY THREW · ${err instanceof Error ? err.message : String(err)}`, signerHint);
-            }
-          })();
-        };
-        tryPublish();
-      }
-    }
-  } else {
-    console.warn('[replay] no kind 30763/30764 published — guest run (state.session is null). Sign in to enable replays.');
-    if (isFaucetClosed()) replayStatus.remove();
-    else setReplayBadge('skip', '— REPLAY OFF · guest mode (sign in to publish replays)');
   }
 
   // Prominent zap CTA — the entire reason this stage exists per the user

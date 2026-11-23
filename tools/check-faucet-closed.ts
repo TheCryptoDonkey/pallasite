@@ -1,7 +1,7 @@
 /** Once the faucet has answered 410, nothing asks the player to sign for it again. */
 import assert from 'node:assert/strict';
 import type { SignetSession } from 'signet-login';
-import { fetchGameInfo, isFaucetClosed, postHeartbeat, submitCoopScore, submitSoloScore, uploadReplay } from '../src/faucet.js';
+import { fetchGameInfo, isFaucetClosed, postHeartbeat, submitCoopScore, submitSoloScore } from '../src/faucet.js';
 
 const pubkey = 'a'.repeat(64);
 let signs = 0;
@@ -25,10 +25,9 @@ try {
   // `not_deployed` is the result the co-op recap already answers with a player-signed publish.
   assert.deepEqual(await submitCoopScore(session, { score: 10, wave: 1, duration_ms: 1000 }), { ok: false, error: 'not_deployed' });
   assert.equal(await postHeartbeat(session, { score: 1, wave: 1, started_at: 1, run_id: '1' }), false);
-  assert.deepEqual(await uploadReplay(session, new Uint8Array([1, 2, 3])), { ok: false, error: 'server_error', status: 410, detail: 'faucet_closed' });
   assert.equal(signs, 0);
   assert.equal(requests, 0);
-  console.log('PASS score, co-op score, heartbeat and replay calls neither sign nor send once the faucet is closed');
+  console.log('PASS score, co-op score and heartbeat calls neither sign nor send once the faucet is closed');
 } finally { globalThis.fetch = beforeHttp; }
 
 // ── Player-signed solo scores ────────────────────────────────────────────────
