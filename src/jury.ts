@@ -70,6 +70,13 @@ export interface ReviewCase {
   createdAt: number;
   /** Case event id (kind 31764). */
   eventId: string;
+  /** nostr-veil scope ballots must be signed under (`veil_scope` tag), which
+   *  binds a ballot to this one case. Null on cases published before the
+   *  faucet started scoping them; those cannot be tallied. */
+  scope: string | null;
+  /** Unix seconds after which the faucet stops counting ballots
+   *  (`voting_closes` tag). Null when the case does not say. */
+  closesAt: number | null;
 }
 
 function readTag(tags: string[][], name: string): string | null {
@@ -117,7 +124,14 @@ function parseCase(event: NostrEvent): ReviewCase | null {
     underQuorum: underQuorumRaw === '1',
     createdAt: event.created_at,
     eventId: event.id,
+    scope: readTag(event.tags, 'veil_scope'),
+    closesAt: parseClosesAt(readTag(event.tags, 'voting_closes')),
   };
+}
+
+function parseClosesAt(raw: string | null): number | null {
+  if (raw === null || !/^\d{1,12}$/.test(raw)) return null;
+  return parseInt(raw, 10);
 }
 
 /**
@@ -428,9 +442,9 @@ function markVotedOnCase(caseEventId: string, keyImage: string): void {
  * and must not leak identity. The ephemeral key is discarded as soon as
  * the event is published.
  *
- * The contribution's key image is deterministic per (case, jury key),
- * so re-submission is detected by the aggregator and rejected at
- * verdict time. We also dissuade re-submission locally via
+ * The contribution's key image is deterministic per (case scope, flagged
+ * player, jury key), so the faucet keeps only a juror's first ballot on
+ * a case. We also dissuade re-submission locally via
  * `hasVotedOnCase`.
  */
 export async function submitVote(
@@ -453,9 +467,18 @@ export async function submitVote(
   if (reviewCase.circleMembers.length < 2) {
     return { ok: false, publishedTo: [], failed: [], error: 'circle_too_small' };
   }
+  if (reviewCase.closesAt !== null && Date.now() / 1000 > reviewCase.closesAt) {
+    return { ok: false, publishedTo: [], failed: [], error: 'voting_closed' };
+  }
   let circle;
   try {
-    circle = createTrustCircle(reviewCase.circleMembers);
+    // Sign under the case's scope so the ballot (and its key image) belongs
+    // to this case alone and cannot be replayed onto a later case against
+    // the same player. The faucet rejects a ballot signed under any other.
+    circle = createTrustCircle(
+      reviewCase.circleMembers,
+      reviewCase.scope !== null ? { scope: reviewCase.scope } : undefined,
+    );
   } catch (err) {
     return {
       ok: false,

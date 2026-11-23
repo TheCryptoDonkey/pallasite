@@ -21,8 +21,8 @@ importers:
         specifier: ^1.4.0
         version: 1.4.0
       nostr-veil:
-        specifier: ^0.8.4
-        version: 0.8.4
+        specifier: ^0.34.0
+        version: 0.34.0
       three:
         specifier: ^0.184.0
         version: 0.184.0
@@ -711,8 +711,8 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
-  nostr-veil@0.8.4:
-    resolution: {integrity: sha512-NUE1YhALeyP8u5kotFgfTNIti7emL8LafYBm3m4lzGa4Btd3KPY6OJJ/Kl6kTFZ+X5gYjKntxNjyUlr7Gm61LA==}
+  nostr-veil@0.34.0:
+    resolution: {integrity: sha512-FK367U5NoXrRMBcLc3bjSK4d0HTMaH4YDZyDINggk/aUCHSP43a3oN3azxmFdbMMIaPgWeqrJLMqxYi/iQPILA==}
     engines: {node: '>=20'}
     hasBin: true
 
@@ -1274,7 +1274,7 @@ snapshots:
 
   nanoid@3.3.12: {}
 
-  nostr-veil@0.8.4:
+  nostr-veil@0.34.0:
     dependencies:
       '@forgesworn/ring-sig': 3.0.0
       '@noble/curves': 2.2.0
