@@ -1,6 +1,29 @@
 /** Public run receipts only. Signing keys and credentials never enter storage. */
 import type { SignetSession } from 'signet-login';
-import type { SoloScoreInput, SoloScoreResult } from './faucet.js';
+import type { RunMode } from './mode.js';
+
+export type SoloScoreResult =
+  | { ok: true; id: string; published: { ok: number; total: number } }
+  | { ok: false; error: string; detail?: string; status?: number };
+
+export interface SoloScoreInput {
+  score: number;
+  wave: number;
+  duration_ms: number;
+  /** Unique per-run id (e.g. String(runStartedAt)) — widens the kind 30762
+   *  d-tag so each run persists as its own addressable event. */
+  run_id: string;
+  started_at?: number;
+  finished_at?: number;
+  mode?: RunMode;
+  room?: 'main' | '600bn';
+  /** Display name + NIP-05 (gamestr-spec) — the faucet stamps these as
+   *  `playerName` / `nip05` tags so the score shows a name, not a raw pubkey. */
+  player_name?: string;
+  nip05?: string;
+  cheated?: boolean;
+}
+
 
 export const SOLO_SCORE_OUTBOX_KEY = 'pallasite.pending-solo-scores.v1';
 export interface PendingSoloScore { pubkey: string; input: SoloScoreInput; lastError?: string; rejected?: boolean; }

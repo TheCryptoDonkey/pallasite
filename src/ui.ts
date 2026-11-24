@@ -7,7 +7,7 @@
 
 import type { DeathmatchRules, GameState } from './types.js';
 import { ARCADE_ORIGIN, isArcadeHandoffSession, isArcadeSignerSession } from './arcade-handoff.js';
-import { SoloScoreOutbox } from './solo-score-outbox.js';
+import { SoloScoreOutbox, type SoloScoreInput } from './solo-score-outbox.js';
 import { WAVE_LORE, gameOverArcLine } from './types.js';
 import { getActiveRelays, getKnownRelays, isRelayEnabled, isDefaultRelay, setRelayEnabled, addRelay, removeRelay, resetRelays } from './relays.js';
 import { getTouchMode, setTouchMode, type TouchInputMode } from './touch.js';
@@ -44,7 +44,6 @@ import { getHapticsEnabled, setHapticsEnabled, hapticsSupported } from './haptic
 import * as auth from './auth.js';
 import type { SignetSession } from 'signet-login';
 import { addLocalHighScore, getLocalHighScores, isHighScore, subscribeGlobalHighScores, clearLocalHighScores, publishCoopCampaignScore, publishSoloScore, type GlobalHighScore, type ScoreBoardId } from './score.js';
-import { submitCoopScore, submitSoloScore, isFaucetClosed, type SoloScoreInput, type SoloScoreResult } from './faucet.js';
 import { renderLegalFooter } from './legal.js';
 import { shouldAskV4v, markV4vPaid, markV4vDeclined, v4vNudge, V4V_LIGHTNING_ADDRESS, V4V_GEYSER_URL, V4V_KOFI_URL, V4V_GIFT_LINE } from './v4v.js';
 import { startGame, startDeathReplay, clearEntitiesForTitle, toastNow, getSanctumStats } from './game.js';
@@ -7034,20 +7033,10 @@ function shortRelay(url: string): string {
 
 /** Solo arcade modes that publish a Gamestr score on game-over. Co-op has its
  *  own path (maybePublishCoopCampaignScore); deathmatch/duel are PvP; sanctum/
- *  defender are special surfaces. Matches the faucet's /api/score mode enum. */
+ *  defender are special surfaces. */
 const GAMESTR_SOLO_MODES = new Set<RunMode>(['campaign', 'drift', 'bossrush', 'arena']);
 /** Re-entering the recap must not enqueue the same run twice. */
 let lastSoloScoreQueuedRun = '';
-/** The faucet game-signed solo scores until it closed; after that the player
- *  signs and publishes the run directly. One submitter serves new runs and
- *  retries, so receipts saved while the faucet was failing publish too. */
-async function submitOrPublishSoloScore(session: SignetSession, input: SoloScoreInput): Promise<SoloScoreResult> {
-  if (!isFaucetClosed()) {
-    const result = await submitSoloScore(session, input);
-    if (result.ok || result.error !== 'faucet_closed') return result;
-  }
-  return publishSoloScore(session, input);
-}
 let soloScoreOutbox: SoloScoreOutbox | null = null;
 const scoreOutbox = (): SoloScoreOutbox => soloScoreOutbox ??= new SoloScoreOutbox();
 
@@ -7111,7 +7100,7 @@ export function refreshScoreRecovery(state: GameState): void {
       remove.disabled = true;
       status.textContent = 'PUBLISHING YOUR SCORE…';
       // Recheck the owner and signer, using this selected original run snapshot.
-      void outbox.retry(receipt, state.session, submitOrPublishSoloScore).finally(() => refreshScoreRecovery(state));
+      void outbox.retry(receipt, state.session, publishSoloScore).finally(() => refreshScoreRecovery(state));
     });
   }
   if (isArcadeSignerSession(session)) {
@@ -7128,15 +7117,15 @@ function publishSoloScoreForRun(state: GameState): void {
   const soloMode = currentMode();
   if (!GAMESTR_SOLO_MODES.has(soloMode)) return;
   if (state.players[0].score <= 0 || state.runStartedAt <= 0) return;
-  // With the faucet closed the player signs the score, and a cheated run
+  // The player signs the score, and a cheated run
   // would be dropped by the leaderboard: do not queue it or ask for a signature.
-  if (isFaucetClosed() && state.cheatedThisRun) return;
+  if (state.cheatedThisRun) return;
   const runId = String(state.runStartedAt);
   if (runId === lastSoloScoreQueuedRun) return;
   lastSoloScoreQueuedRun = runId;
   const owner = state.runScorePubkey === undefined ? state.session?.pubkey : state.runScorePubkey;
   const sameAccount = !!owner && state.session?.pubkey === owner;
-  const input: import('./faucet.js').SoloScoreInput = {
+  const input: SoloScoreInput = {
     score: state.players[0].score,
     wave: state.wave,
     duration_ms: Math.max(0, Math.floor(state.runTimeMs)),
@@ -7163,7 +7152,7 @@ function publishSoloScoreForRun(state: GameState): void {
     if (!pubkey) return;
     const outbox = scoreOutbox();
     const receipt = outbox.enqueue(pubkey, input);
-    const result = await outbox.retry(receipt, session, submitOrPublishSoloScore);
+    const result = await outbox.retry(receipt, session, publishSoloScore);
     console.log('[solo-score] result=' + JSON.stringify(result) + ' pk=' + pubkey.slice(0, 12));
     refreshScoreRecovery(state);
   })().catch(() => { refreshScoreRecovery(state); });
@@ -7520,58 +7509,25 @@ async function maybePublishCoopCampaignScore(
   status.textContent = 'Banking co-op scores…';
 
   const durationMs = Math.max(0, Math.floor(state.runTimeMs));
-  const seed = getActiveSeed() || undefined;
-  const common = { wave: state.wave, duration_ms: durationMs, daily_seed: seed, cheated: state.cheatedThisRun };
-  const p2 = state.coopIdentity2;
-  const members = p2?.pubkey ? [state.session.pubkey, p2.pubkey] : [state.session.pubkey];
-  const p1Individual = state.players[0]?.score ?? 0;
-  const p2Individual = state.players[1]?.score ?? 0;
-
-  // Game-signed path: P1 NIP-98 auths → the faucet game-signs their own score
-  // AND the combined team event; P2 auths → the faucet game-signs their own.
-  // The players' signers only ever prove identity, never sign the score.
-  const r1 = await submitCoopScore(state.session, { ...common, score: p1Individual, team: { score, members } });
-
-  if (r1.ok) {
-    status.style.color = '#58ff58';
-    status.textContent = '✓ Team score + your score game-signed to the leaderboard · no sats payout';
-    if (p2?.session && p2Individual > 0 && p2.session.signer.capabilities.canSignEvents) {
-      const line = el('p', { parent });
-      line.style.cssText = 'font-size:0.78rem;margin:4px 0 0;color:rgba(180,200,255,0.72);letter-spacing:0.04em;text-align:center;';
-      line.textContent = "Banking Player 2's score to their npub…";
-      const r2 = await submitCoopScore(p2.session, { ...common, score: p2Individual });
-      line.style.color = r2.ok ? '#58ff58' : '#ff8050';
-      line.textContent = r2.ok ? "✓ Player 2's score game-signed under their own npub." : "Player 2's score couldn't publish.";
+  // The faucet used to game-sign co-op scores; the first player now signs
+  // the combined score and publishes it.
+  try {
+    const result = await publishCoopCampaignScore(state.session, {
+      score, wave: state.wave, durationMs, players: state.players.length, seed: getActiveSeed(), cheated: state.cheatedThisRun,
+    });
+    if (!result) {
+      status.style.color = '#ffd84a';
+      status.textContent = 'Co-op score saved locally · sign in with a live signer (extension/bunker) to publish it.';
+    } else {
+      status.style.color = result.publishedTo.length > 0 ? '#58ff58' : '#ff8050';
+      status.textContent = result.publishedTo.length > 0
+        ? `✓ Co-op score published to ${result.publishedTo.length} relays`
+        : 'Co-op score saved locally; relays rejected the publish.';
     }
-    return;
+  } catch (err) {
+    status.style.color = '#ff8050';
+    status.textContent = `Co-op publish failed: ${err instanceof Error ? err.message : String(err)}`;
   }
-
-  // Endpoint not deployed yet (or a transient network failure) → fall back to
-  // the legacy frontend-signed combined publish so co-op scoring still works
-  // during the roll-out. (Other errors surface as-is.)
-  if (r1.error === 'not_deployed' || r1.error === 'network_error') {
-    try {
-      const result = await publishCoopCampaignScore(state.session, {
-        score, wave: state.wave, durationMs, players: state.players.length, seed: getActiveSeed(), cheated: state.cheatedThisRun,
-      });
-      if (!result) {
-        status.style.color = '#ffd84a';
-        status.textContent = 'Co-op score saved locally · sign in with a live signer (extension/bunker) to publish it.';
-      } else {
-        status.style.color = result.publishedTo.length > 0 ? '#58ff58' : '#ff8050';
-        status.textContent = result.publishedTo.length > 0
-          ? `✓ Co-op score published to ${result.publishedTo.length} relays · no sats payout`
-          : 'Co-op score saved locally; relays rejected the publish.';
-      }
-    } catch (err) {
-      status.style.color = '#ff8050';
-      status.textContent = `Co-op publish failed: ${err instanceof Error ? err.message : String(err)}`;
-    }
-    return;
-  }
-
-  status.style.color = '#ff8050';
-  status.textContent = `Co-op publish failed: ${r1.error}${r1.detail ? ' — ' + r1.detail : ''}`;
 }
 
 

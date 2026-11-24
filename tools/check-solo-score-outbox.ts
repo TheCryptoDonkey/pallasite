@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
 import type { SignetSession } from 'signet-login';
-import type { SoloScoreInput, SoloScoreResult } from '../src/faucet.js';
-import { SoloScoreOutbox, SOLO_SCORE_OUTBOX_KEY } from '../src/solo-score-outbox.js';
-import { submitSoloScore } from '../src/faucet.js';
+import { SoloScoreOutbox, SOLO_SCORE_OUTBOX_KEY, type SoloScoreInput, type SoloScoreResult } from '../src/solo-score-outbox.js';
 
 const accountA = 'a'.repeat(64), accountB = 'b'.repeat(64);
 function session(pubkey: string, canSignEvents = true): SignetSession {
@@ -70,20 +68,6 @@ assert.equal(guarded.pending(accountA).length, 0);
 assert.equal(guarded.pending(accountB).length, 1);
 console.log('PASS malformed persisted receipts are rejected without losing another account receipt');
 
-// A provider can change its account after advertising the selected pubkey.
-// The HTTP client must reject that returned signature before submitting it.
-Object.assign(globalThis, { window: { setTimeout: () => 0 }, location: { origin: 'https://private-fixture.invalid' } });
-const changed = session(accountA);
-changed.signer.signEvent = async template => ({ ...template, pubkey: accountB, id: '', sig: '', created_at: 1, tags: template.tags ?? [] });
-let requests = 0;
-const originalFetch = globalThis.fetch;
-globalThis.fetch = async () => { requests++; throw new Error('unexpected fixture HTTP request'); };
-try {
-  assert.deepEqual(await submitSoloScore(changed, saved.input), { ok: false, error: 'wrong_signer' });
-  assert.equal(requests, 0);
-} finally { globalThis.fetch = originalFetch; }
-console.log('PASS a provider returning another account signature cannot reach the score endpoint');
-
 // Rejection status and timestamps remain with the original earned receipt.
 data.clear();
 const review = new SoloScoreOutbox(storage);
@@ -132,34 +116,3 @@ assert.equal(unstable.remove(removable, accountA), false);
 assert.equal(unstable.pending(accountA).length, 1);
 assert.equal(JSON.parse(failureData.get(SOLO_SCORE_OUTBOX_KEY)!).length, 1);
 console.log('PASS a failed removal write retains the original receipt');
-
-const authenticated = session(accountA);
-authenticated.signer.signEvent = async template => ({ ...template, pubkey: accountA, id: '', sig: '', created_at: 1, tags: template.tags ?? [] });
-const beforeHttp = globalThis.fetch;
-try {
-  globalThis.fetch = async () => new Response(JSON.stringify({ ok: false, error: 'invalid_score' }), { status: 422 });
-  assert.deepEqual(await submitSoloScore(authenticated, saved.input), { ok: false, error: 'invalid_score', status: 422 });
-  globalThis.fetch = async () => new Response(JSON.stringify({ ok: true, id: 'misleading', published: { ok: 1, total: 1 } }), { status: 500 });
-  assert.deepEqual(await submitSoloScore(authenticated, saved.input), { ok: false, error: 'bad_response', status: 500 });
-  console.log('PASS HTTP rejection status is retained and an error-status success body cannot confirm publication');
-
-  const timeoutData = new Map<string, string>();
-  const timed = new SoloScoreOutbox(() => ({ getItem: key => timeoutData.get(key) ?? null, setItem: (key, value) => { timeoutData.set(key, value); } }));
-  const timedReceipt = timed.enqueue(accountA, { ...input, run_id: '106' });
-  globalThis.fetch = async (_url, options) => {
-    assert(options?.signal);
-    return new Promise((_resolve, reject) => options.signal!.addEventListener('abort', () => reject(options.signal!.reason), { once: true }));
-  };
-  // Keep Node alive while its real AbortSignal deadline proves retry release.
-  const watchdog = setTimeout(() => { throw new Error('HTTP deadline did not release'); }, 20_000);
-  try {
-    const start = Date.now();
-    assert.equal((await timed.retry(timedReceipt, authenticated, submitSoloScore)).ok, false);
-    assert(Date.now() - start >= 14_000 && Date.now() - start < 20_000);
-    assert.equal(timed.pending(accountA).length, 1);
-    globalThis.fetch = async () => new Response(JSON.stringify({ ok: true, id: 'd'.repeat(64), published: { ok: 1, total: 1 } }));
-    assert.equal((await timed.retry(timedReceipt, authenticated, submitSoloScore)).ok, true);
-    assert.equal(timed.pending(accountA).length, 0);
-  } finally { clearTimeout(watchdog); }
-  console.log('PASS a stalled HTTP submission times out, retains its receipt and releases a successful retry');
-} finally { globalThis.fetch = beforeHttp; }

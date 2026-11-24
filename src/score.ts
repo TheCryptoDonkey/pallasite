@@ -11,7 +11,7 @@
 import type { SignetSession, NostrEvent } from 'signet-login';
 import { GAME_ID, sessionCanSign } from './auth.js';
 import { getActiveRelays } from './relays.js';
-import type { SoloScoreInput, SoloScoreResult } from './faucet.js';
+import type { SoloScoreInput, SoloScoreResult } from './solo-score-outbox.js';
 
 const HIGHSCORE_KEY = 'pallasite:highscores';
 const COOP_HIGHSCORE_KEY = 'pallasite:highscores:coop-campaign';
