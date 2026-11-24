@@ -176,7 +176,7 @@ try {
   const scoreInput = { score: 125, wave: 2, duration_ms: 9000, run_id: '123456789', mode: 'campaign', player_name: 'Fixture pilot' };
   const other = 'b'.repeat(64);
   await recovery.exposeFunction('__fixtureSign', async (template: any) => {
-    if (template.kind !== 27235 || !template.tags.some((t: string[]) => t[0] === 'u' && t[1] === `${gameOrigin}/api/score`)) throw new Error('Outside fixture score scope');
+    if (template.kind !== 30762 || !template.tags.some((t: string[]) => t[0] === 'd' && t[1] === `pallasite:${pubkey}:wave-2:daily-123456789`)) throw new Error('Outside fixture score scope');
     if (++signAttempts === 1) throw new Error('Fixture user declined signing');
     const hash = sha256(new TextEncoder().encode(JSON.stringify([0, pubkey, template.created_at, template.kind, template.tags, template.content])));
     return { ...template, pubkey, id: bytesToHex(hash), sig: bytesToHex(schnorr.sign(hash, privateKey)) };
@@ -184,18 +184,25 @@ try {
   await recovery.addInitScript(({ origin, key, receipts }) => {
     if (location.origin === origin && !localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify(receipts));
   }, { origin: gameOrigin, key: SOLO_SCORE_OUTBOX_KEY, receipts: [{ pubkey, input: scoreInput }, { pubkey: other, input: { ...scoreInput, run_id: '987654321' } }] });
-  await recovery.route(`${gameOrigin}/api/score`, async route => {
-    assert.equal(route.request().method(), 'POST');
-    const body = route.request().postData()!;
-    assert.deepEqual(JSON.parse(body), scoreInput);
-    const auth = JSON.parse(Buffer.from(route.request().headers().authorization.slice(6), 'base64').toString());
-    assert.equal(auth.pubkey, pubkey);
-    const hash = sha256(new TextEncoder().encode(JSON.stringify([0, pubkey, auth.created_at, auth.kind, auth.tags, auth.content])));
-    assert.equal(auth.id, bytesToHex(hash));
-    assert(schnorr.verify(hexToBytes(auth.sig), hash, hexToBytes(pubkey)));
-    assert(auth.tags.some((t: string[]) => t[0] === 'payload' && t[1] === bytesToHex(sha256(new TextEncoder().encode(body)))));
-    posts++;
-    await route.fulfill({ json: { ok: true, id: 'e'.repeat(64), published: { ok: 1, total: 1 } } });
+  // The player signs the score and sends it straight to relays; count each
+  // distinct event once, however many relays receive it.
+  const publishedIds = new Set<string>();
+  await recovery.routeWebSocket(/wss:\/\//, socket => {
+    socket.onMessage(message => {
+      const msg = JSON.parse(String(message));
+      if (msg[0] === 'REQ') { socket.send(JSON.stringify(['EOSE', msg[1]])); return; }
+      if (msg[0] !== 'EVENT' || msg[1].kind !== 30762) return;
+      const event = msg[1];
+      assert.equal(event.pubkey, pubkey);
+      const hash = sha256(new TextEncoder().encode(JSON.stringify([0, pubkey, event.created_at, event.kind, event.tags, event.content])));
+      assert.equal(event.id, bytesToHex(hash));
+      assert(schnorr.verify(hexToBytes(event.sig), hash, hexToBytes(pubkey)));
+      assert(event.tags.some((t: string[]) => t[0] === 'score' && t[1] === String(scoreInput.score)));
+      assert(event.tags.some((t: string[]) => t[0] === 'p' && t[1] === pubkey));
+      publishedIds.add(event.id);
+      posts = publishedIds.size;
+      socket.send(JSON.stringify(['OK', event.id, true, '']));
+    });
   });
   const failedScore = await launch(recovery);
   await failedScore.getByRole('button', { name: 'RETRY SCORE', exact: true }).focus();
