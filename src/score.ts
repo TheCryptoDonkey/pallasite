@@ -83,10 +83,8 @@ export function clearLocalHighScores(board: ScoreBoardId = 'solo'): void {
  * A score event we read off the wire. Same shape as NostrEvent but pinned to
  * kind 30762 so the global-leaderboard code doesn't have to keep re-asserting.
  *
- * Note: sats-paying solo scores publish through the faucet's /api/claim flow
- * and are game-signed there. The only frontend score publish left here is the
- * no-payout co-op campaign board. Existing legacy player-signed events still
- * surface in the leaderboard during the migration window.
+ * Events from before 23 October 2026 are signed by the faucet's game key and
+ * name the player in a `p` tag; later ones are signed by the player.
  */
 interface ScoreEvent {
   id: string;

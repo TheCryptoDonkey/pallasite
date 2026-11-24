@@ -2686,15 +2686,10 @@ export function renderAuth(state: GameState, onDone: () => void, opts?: { onReso
     void (async () => {
       try {
         const name = raw.trim() || 'Anonymous';
-        // Read the opt-out checkbox state at submit time. Defaults
-        // to true (pre-checked) so a user who just types and submits
-        // gets the auto-follow.
-        const followCheckEl = overlay.querySelector<HTMLInputElement>('input[data-follow-pallasite]');
-        const followPallasite = followCheckEl?.checked ?? true;
         // Booth / kiosk: each walk-up is a different person, so mint a fresh
-        // named identity (publishing their kind 0 + Pallasite follow) instead of
+        // named identity (publishing their kind 0) instead of
         // reusing the device's stored guest record from the previous player.
-        resolve(await auth.createGuestSession(name, { followPallasite, fresh: opts?.freshGuest }));
+        resolve(await auth.createGuestSession(name, { fresh: opts?.freshGuest }));
         onDone();
       } catch (err) {
         guestStatus.textContent = `Couldn't create local identity: ${err instanceof Error ? err.message : String(err)}`;
@@ -2706,18 +2701,6 @@ export function renderAuth(state: GameState, onDone: () => void, opts?: { onReso
       }
     })();
   };
-
-  // Opt-out follow checkbox. Pre-checked so the default path publishes
-  // a kind 3 contact list following the Pallasite game npub when the
-  // guest identity is first created — disclosure is the point.
-  const followRow = el('label', { parent: chooser });
-  followRow.style.cssText = 'display:flex;align-items:center;justify-content:center;gap:8px;font-size:0.78rem;color:rgba(220,210,255,0.7);margin:6px auto 0;cursor:pointer;letter-spacing:0.04em;max-width:480px;';
-  const followCheck = el('input', { parent: followRow }) as HTMLInputElement;
-  followCheck.type = 'checkbox';
-  followCheck.checked = true;
-  followCheck.dataset.followPallasite = '1';
-  followCheck.style.cssText = 'width:16px;height:16px;accent-color:#8cffb4;cursor:pointer;';
-  el('span', { parent: followRow, text: 'Follow Pallasite on Nostr for daily seeds + run highlights' });
 
   // Back to attract.
   const backRow = el('div', { className: 'menu-row', parent: chooser });
@@ -3790,14 +3773,6 @@ function startControllerGuestFlow(state: GameState, refresh: () => void): void {
   const status = el('div', { parent: inner });
   status.style.cssText = 'min-height:1.2em;font-size:0.78rem;color:rgba(220,210,255,0.7);text-align:center;';
 
-  let followPallasite = true;
-  const followRow = el('label', { parent: inner });
-  followRow.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:0.78rem;color:rgba(220,210,255,0.75);justify-content:center;cursor:pointer;';
-  const followBox = el('input', { parent: followRow, attrs: { type: 'checkbox' } }) as HTMLInputElement;
-  followBox.checked = true;
-  followBox.addEventListener('change', () => { followPallasite = followBox.checked; });
-  el('span', { parent: followRow, text: 'Follow Pallasite (kind 3) on signup' });
-
   let creating = false;
   const submit = async (name: string): Promise<void> => {
     if (creating) return;
@@ -3805,7 +3780,7 @@ function startControllerGuestFlow(state: GameState, refresh: () => void): void {
     status.textContent = 'Creating your identity…';
     status.style.color = 'rgba(180,140,255,0.85)';
     try {
-      const sess = await auth.createGuestSession(name.trim() || 'Anonymous', { followPallasite });
+      const sess = await auth.createGuestSession(name.trim() || 'Anonymous');
       state.session = sess;
       close();
       refresh();
@@ -7145,7 +7120,7 @@ function publishSoloScoreForRun(state: GameState): void {
     // A genuinely anonymous run can obtain a guest key. A selected account
     // with an unavailable signer must keep its own identity instead.
     if (!owner && !session) {
-      session = await loadOrCreateGuest({ name: input.player_name ?? 'Anonymous', followPallasite: false });
+      session = await loadOrCreateGuest({ name: input.player_name ?? 'Anonymous' });
       if (!state.session) state.session = session;
     }
     const pubkey = owner ?? session?.pubkey;

@@ -11,7 +11,7 @@ import type {
 } from './types.js';
 import { levelOneReview, recordRockImpact, resetRockImpacts, markRockDustParticles } from './level-one-impacts.js';
 import { recordPlayerBurst, recordMechanicalBurst, resetPlayerBursts, markPlayerBurstParticles } from './level-one-death.js';
-import { getGameConfig } from './faucet.js';
+import { getGameConfig } from './game-config.js';
 import { getFlavour } from './flavour.js';
 import { asteroidBounceEnabled } from './bounce.js';
 import { bulletKnockbackEnabled } from './knockback.js';
@@ -4898,7 +4898,7 @@ export function updateGame(s: GameState): void {
         }
       } else if (s.wave === 9 && gameRng() < getGameConfig().bonus_wave_chance) {
         // BONUS round divert — W9 → W10 hyper blitz + event-horizon
-        // prelude. Gated on bonus_wave_chance from /api/game-config;
+        // prelude. Gated on bonus_wave_chance from the game config;
         // uses gameRng so daily-seed runs stay deterministic.
         startBonus(s);
       } else {

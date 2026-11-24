@@ -2950,22 +2950,6 @@ async function boot(): Promise<void> {
   // Mobile waits in startRunFromAction instead, keeping the boot network quiet.
   if (!mobileRuntimeActive()) void warmCriticalCampaignAssets();
 
-  // Fetch server-driven gameplay config (bonus_wave_chance etc.) in
-  // the background. Fire-and-forget — the cached default (1.0) keeps
-  // pre-config behaviour intact if the request fails or arrives after
-  // the player's first run. Skip on the controller surface; the pad
-  // never consults game-config.
-  if (!isControllerSurface()) {
-    void import('./faucet.js').then(({ fetchGameConfig, fetchGameInfo }) => {
-      void fetchGameConfig();
-      // Also ask for GameInfo: its answer is how the game learns whether
-      // the faucet is closed before the first game-over.
-      // A 410 here marks the faucet closed; redraw so a score-retry banner
-      // painted before the answer arrived is withdrawn.
-      void fetchGameInfo().then(() => refreshScoreRecovery(state));
-    });
-  }
-
   // Optional diagnostic only. Real music priming happens inside the first
   // trusted gesture via musicWarmUpAll(); boot-time media preloads compete
   // with campaign art and browsers will not play them before activation.

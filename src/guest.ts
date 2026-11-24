@@ -32,7 +32,6 @@ import type {
   SignetSession,
   SignetSigner,
 } from 'signet-login';
-import { fetchGameInfo } from './faucet.js';
 
 const STORAGE_KEY = 'pallasite:guest:v1';
 
@@ -241,18 +240,12 @@ function publishToRelay(url: string, event: NostrEvent, timeoutMs = 5000): Promi
  *   - kind 0 metadata: name + "about" line marking them as a Pallasite
  *     guest + a custom `client` field so any Nostr client surfacing
  *     this profile can label them appropriately.
- *   - kind 3 contact list: optional, follows the Pallasite game npub.
- *     Resolved via /api/game-pubkey at publish time so we don't bake
- *     the pubkey into the bundle.
  *
  * Fire-and-forget: a failed publish doesn't tear down the session.
  * The keypair is already valid for local signing; profile fan-out
  * landing across relays is a nice-to-have, not a precondition.
- *
- * `followPallasite=false` skips the kind 3 publish entirely (user
- * unticked the opt-out checkbox on the auth screen).
  */
-async function publishGuestProfile(signer: GuestSigner, name: string, followPallasite: boolean): Promise<void> {
+async function publishGuestProfile(signer: GuestSigner, name: string): Promise<void> {
   // Profile metadata. NIP-01 only defines a handful of fields in the
   // JSON content; we add `client: 'pallasite-guest'` so any indexer
   // can group these identities, and an `about` line that's both
@@ -269,37 +262,12 @@ async function publishGuestProfile(signer: GuestSigner, name: string, followPall
     created_at: Math.floor(Date.now() / 1000),
   });
 
-  // Resolve the game pubkey + relay set from the faucet. If the
-  // endpoint is unreachable we still publish kind 0 to the default
-  // relay set we know about; the kind 3 just gets skipped.
-  const info = await fetchGameInfo().catch(() => null);
-  // Relay set: prefer what /api/game-pubkey advertises. Defaults to a
-  // small public set if the endpoint is down at signup time.
-  const relays: readonly string[] = info && info.relays.length > 0
-    ? info.relays
-    : ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band'];
+  const relays: readonly string[] = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band'];
 
   // Fire kind 0 to every relay in parallel. Don't await the promise
   // chain on the caller side — guest.ts's loadOrCreateGuest treats
   // this as fire-and-forget.
   await Promise.allSettled(relays.map((url) => publishToRelay(url, kind0)));
-
-  if (!followPallasite || !info?.pubkey) return;
-
-  // Kind 3 contact list — single p-tag for the Pallasite game pubkey
-  // with relay hint + petname. NIP-02 says clients should append to
-  // existing kind 3 rather than overwrite; for a freshly-created
-  // keypair there's nothing to append to, so we publish a one-entry
-  // list which becomes the player's initial follow list.
-  const kind3 = await signer.signEvent({
-    kind: 3,
-    content: '',
-    tags: [
-      ['p', info.pubkey, relays[0] ?? '', 'Pallasite'],
-    ],
-    created_at: Math.floor(Date.now() / 1000),
-  });
-  await Promise.allSettled(relays.map((url) => publishToRelay(url, kind3)));
 }
 
 /**
@@ -336,16 +304,14 @@ async function buildGuestAuthEvent(signer: GuestSigner): Promise<SignetAuthEvent
  * can update it via setGuestName later).
  *
  * On a FRESH creation (no stored record yet), kicks off a fire-and-
- * forget kind 0 + optional kind 3 publish so the player's npub becomes
+ * forget kind 0 publish so the player's npub becomes
  * a real, resolvable Nostr profile from other clients' perspective.
- * `followPallasite` toggles the kind 3 ("✓ Follow Pallasite" checkbox
- * on the auth screen — pre-checked, opt-out). Profile publish never
+ * Profile publish never
  * blocks the session return — caller gets the SignetSession back
  * immediately and the network round-trips happen behind it.
  */
 export async function loadOrCreateGuest(opts: {
   name: string;
-  followPallasite?: boolean;
   /** Shared-device (booth / kiosk) walk-up: always mint a NEW named identity
    *  rather than reading the device's stored guest record, and DON'T persist it.
    *  A booth screen is used by a fresh person each go — reusing the stored
@@ -385,7 +351,6 @@ export async function loadOrCreateGuest(opts: {
     void publishGuestProfile(
       signer,
       stored.name,
-      opts.followPallasite ?? true,
     ).catch((err) => console.warn('[guest] profile publish failed:', err));
   }
   return {
