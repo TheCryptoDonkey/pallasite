@@ -187,7 +187,7 @@ function privacyHtml(): string {
     </ul>
 
     <h3>Nostr relays</h3>
-    <p>Scores, ghosts, replays, skin unlocks and live-play events are published as signed Nostr events to public relays under your Nostr public key, and scores may appear on third-party leaderboards. Once published, events cannot be unpublished or recalled from relays.</p>
+    <p>Scores, ghosts and skin unlocks are published as signed Nostr events to public relays under your Nostr public key, and scores may appear on third-party leaderboards. Once published, events cannot be unpublished or recalled from relays.</p>
 
     <h3>Past claims</h3>
     <p>Records of past claims were deleted on 24 October 2026.</p>
