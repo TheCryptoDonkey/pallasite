@@ -9,7 +9,6 @@ import type {
   GameState, Ship, Asteroid, AsteroidSize, AsteroidType, Ufo, UfoType, Mine, Bullet, Vec2,
   SimTransition, SimTransitionKind, PlayerState, RunStats, DeathmatchRules, DeathmatchEndReason,
 } from './types.js';
-import { recordStreamEvent } from './stream-session.js';
 import { levelOneReview, recordRockImpact, resetRockImpacts, markRockDustParticles } from './level-one-impacts.js';
 import { recordPlayerBurst, recordMechanicalBurst, resetPlayerBursts, markPlayerBurstParticles } from './level-one-death.js';
 import { getGameConfig } from './faucet.js';
@@ -2987,7 +2986,6 @@ function destroyMine(s: GameState, m: Mine, p: PlayerState): void {
   const mul = recordCombo(s, s.elapsed, p);
   p.score += MINE_POINTS * mul;
   audio.explosion(0.7);
-  recordStreamEvent('md', m.pos.x, m.pos.y);
   spawnParticles(s, m.pos.x, m.pos.y, 14, '#ff5050', 200, 600);
   spawnCoins(s, m.pos.x, m.pos.y, MINE_SATS_DROP, 2);
   // Mines are anchored danger — clearing one should feel substantial.
@@ -3108,7 +3106,6 @@ function destroyUfo(s: GameState, u: Ufo, p: PlayerState): void {
   p.score += Math.round(UFO_POINTS[u.type] * mul * risk.mul);
   const explodeScale = u.type === 'tank' ? 1.3 : u.type === 'elite' ? 0.9 : 1.0;
   audio.explosion(explodeScale);
-  recordStreamEvent('uk', u.pos.x, u.pos.y);
   spawnParticles(s, u.pos.x, u.pos.y, u.type === 'tank' ? 36 : 26, '#ff5050', 220, 800);
   // Per-class shake + freeze. Boss is the climax — biggest of any kill bar
   // ship death. Tanks are hefty. Cruiser/elite/sniper get a small punch.
@@ -3403,7 +3400,6 @@ export function tryActivateShield(s: GameState, now: number, p: PlayerState): bo
   p.ship.shieldReadyAt = now + SHIELD_DURATION_MS + SHIELD_COOLDOWN_MS * mods.shieldCooldownMul * (driftProfile(s.wave, currentMode())?.defenceCooldownMul ?? 1);
   if (!p.ai) {
     audio.shieldUp();
-    recordStreamEvent('sb', p.ship.pos.x, p.ship.pos.y);
     // Small punch on activation — the shield ignite reads as a meaningful
     // event, not a button click.
     bumpTrauma(s, 0.18);
@@ -5359,7 +5355,6 @@ function stationCoreFinale(s: GameState, core: Asteroid, p: PlayerState): void {
   // so the clear-grace window always has goodies to scoop.
   if (s.session && !isCoopCampaignMode()) spawnCoins(s, core.pos.x, core.pos.y, VEIN_JACKPOT_SATS * 3, 6, 'sat');
   spawnCoins(s, core.pos.x, core.pos.y, 0, 11, 'dust');
-  recordStreamEvent('vc', core.pos.x, core.pos.y);
   // THE FORGE (wave 25) is the campaign finale — the core's fall is the run's
   // victory, so it carries what the old boss-UFO kill did. EAGLE STATION (W17)
   // keeps the lighter "STATION DOWN" beat.
@@ -5516,7 +5511,6 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
     spawnParticles(s, a.pos.x, a.pos.y, 18, '#fff5d8', 220, 700);
     spawnParticles(s, a.pos.x, a.pos.y, 14, '#ff8ad6', 280, 600);
     audio.explosion(1.2);
-    recordStreamEvent('vc', a.pos.x, a.pos.y);
     if (s.session && !isCoopCampaignMode()) toastNow(s, `VEIN COLLAPSED · +${VEIN_JACKPOT_SATS} sats`);
     else           toastNow(s, `VEIN COLLAPSED · +${VEIN_JACKPOT_SCORE}`);
     maybeExtraLife(s, p);
@@ -5574,7 +5568,6 @@ function breakAsteroid(s: GameState, a: Asteroid, opts?: { suppressCoins?: boole
   if (a.councilMember && a.size === 'small') {
     audio.councilBreak();
   }
-  recordStreamEvent('ak', a.pos.x, a.pos.y);
 
   // Spawn smaller children — same type carries over so a chondrite swarm stays a swarm
   if (a.size === 'large' || a.size === 'medium') {
@@ -5785,7 +5778,6 @@ function killShip(s: GameState, p: PlayerState, attacker?: PlayerState | null): 
   p.ship.alive = false;
   resetCombo(s, p);
   audio.explosion(1.4);
-  recordStreamEvent('sh', deathPos.x, deathPos.y);
   audio.thrustOff();
   // Maximum trauma + deepest duck + rumble — death is the loudest impact.
   bumpTrauma(s, deathmatch ? 0.22 : 1.0);

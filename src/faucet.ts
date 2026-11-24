@@ -12,23 +12,8 @@
  * unit on the same box. No CORS, no cross-origin cookies.
  */
 
-import type { SignetSession } from 'signet-login';
-import type { RunMode } from './mode.js';
 
 const API_BASE = '/api';
-
-/** Public origin the faucet sees, used ONLY for the NIP-98 `u`-tag we sign
- *  (the actual fetch stays same-origin `/api/...`). On a normal web deploy this
- *  is the page origin. On the booth AppImage the page is served from
- *  `http://127.0.0.1:8123` but `/api` is reverse-proxied to the public faucet,
- *  so a `u` tag signed for localhost fails the faucet's url check (401
- *  `url_mismatch`) — every score/claim/withdraw silently rejected. The booth's
- *  static server injects `window.__PALLASITE_API_ORIGIN__` = the public faucet
- *  origin so the auth is signed for the host the faucet actually reconstructs. */
-function apiOrigin(): string {
-  const override = (globalThis as { __PALLASITE_API_ORIGIN__?: unknown }).__PALLASITE_API_ORIGIN__;
-  return typeof override === 'string' && override ? override.replace(/\/+$/, '') : location.origin;
-}
 
 /** Set by the first 410 from the faucet. A closed faucet stays closed for the
  *  page's lifetime, so later calls return before asking the player to sign. */
@@ -166,72 +151,3 @@ export async function fetchGameInfo(): Promise<GameInfo | null> {
 }
 
 export type PlayerTier = 'anon' | 'nip05' | 'close' | 'verified';
-
-async function sha256Hex(input: string): Promise<string> {
-  const buf = new TextEncoder().encode(input);
-  const hash = await crypto.subtle.digest('SHA-256', buf);
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-function utf8Base64(s: string): string {
-  const bytes = new TextEncoder().encode(s);
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
-
-/**
- * POST /api/heartbeat. Lightweight live-presence ping the watch
- * surface uses to render LIVE cards for in-progress runs. NIP-98
- * authed so the pubkey can't be impersonated.
- *
- * Errors are swallowed — heartbeats are best-effort, a transient
- * network glitch shouldn't disturb gameplay. Returns true when the
- * server accepted the heartbeat, false on any failure.
- */
-export async function postHeartbeat(
-  session: SignetSession,
-  body: { score: number; wave: number; started_at: number; run_id: string; mode?: RunMode },
-): Promise<boolean> {
-  if (faucetClosed) return false;
-  if (!session.signer.capabilities.canSignEvents) return false;
-  const url = `${apiOrigin()}${API_BASE}/heartbeat`;
-  const bodyJson = JSON.stringify(body);
-  const payloadHash = await sha256Hex(bodyJson);
-  const authTemplate = {
-    kind: 27235,
-    created_at: Math.floor(Date.now() / 1000),
-    content: '',
-    tags: [
-      ['u', url],
-      ['method', 'POST'],
-      ['payload', payloadHash],
-    ],
-  };
-  let signedAuth;
-  try {
-    signedAuth = await Promise.race([
-      session.signer.signEvent(authTemplate),
-      new Promise<never>((_, reject) => {
-        window.setTimeout(() => reject(new Error('signer-timeout')), 10_000);
-      }),
-    ]);
-  } catch {
-    return false;
-  }
-  try {
-    const res = await fetch(`${API_BASE}/heartbeat`, {
-      method: 'POST',
-      headers: {
-        authorization: `Nostr ${utf8Base64(JSON.stringify(signedAuth))}`,
-        'content-type': 'application/json',
-      },
-      body: bodyJson,
-    });
-    return noteStatus(res).ok;
-  } catch {
-    return false;
-  }
-}
