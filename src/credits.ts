@@ -38,6 +38,10 @@ export const EXPERIMENTAL_RELAYS: readonly string[] = ['wss://relay.trotters.cc'
  *  list at runtime comes from `getActiveRelays()` which honours any user
  *  override saved in localStorage. */
 export const DEFAULT_RELAYS = [
+  // Gamestr's own relay: gamestr.io reads its leaderboard from here. The
+  // faucet published scores to it until it closed; scores are player-signed
+  // now, so the game has to.
+  'wss://main.relay.gamestr.io',
   'wss://relay.trotters.cc',
   'wss://nos.lol',
   // Gamestr.io reads scores from these four — keep them in the set so the

@@ -46,3 +46,7 @@ console.log('PASS another account\'s signature, a cheated run and a relay refusa
 const coop = await publishCoopCampaignScore(signerFor(pubkey), { score: 900, wave: 4, durationMs: 60_000, players: 2 }, []);
 assert.deepEqual(coop?.event.tags.filter(t => t[0] === 'd').map(t => t[1]), [`pallasite:${pubkey}:coop:wave-4`]);
 console.log('PASS a co-op score has an address, so it no longer replaces the player\'s other scores');
+
+const { DEFAULT_RELAYS } = await import('../src/credits.js');
+assert.ok((DEFAULT_RELAYS as readonly string[]).includes('wss://main.relay.gamestr.io'));
+console.log('PASS scores go to the relay gamestr.io reads its leaderboard from');
