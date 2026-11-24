@@ -4,12 +4,10 @@
  * Spins up vite + the controller-ws broker, opens the lobby in a single
  * headless Chromium page, and verifies:
  *
- *  - the lobby renders the host panel with WAITING FOR OPPONENT badge
+ *  - the lobby renders the host panel with its share-then-READY status line
  *  - the session id is shown and matches the peer URL
- *  - a peer slot 1 connecting to the broker flips the badge to CONNECTED
- *  - peer slot 1 disconnecting flips the badge back to WAITING
- *  - the spectate link is broadcastable (a peerwatch socket connects and
- *    sees peer-joined for any bound slots)
+ *  - the relay refuses the removed spectator role and the lobby offers no
+ *    watch link
  *  - JOIN tab swaps in the input + scan buttons without leaking the host
  *    panel's peerwatch socket
  *  - `/duel?deathmatch=1` opens directly into a 4P human deathmatch lobby
@@ -90,11 +88,11 @@ async function readSessionId(page: Page): Promise<string> {
 /** Read the current partner-status text from the lobby badge. */
 async function readBadgeText(page: Page): Promise<string> {
   return page.evaluate(() => {
-    // The badge is the span whose text starts with WAITING or OPPONENT.
+    // The status line is the span whose text starts with SHARE THE INVITE.
     const all = Array.from(document.querySelectorAll('span'));
     const match = all.find(s => {
       const t = s.textContent?.trim() ?? '';
-      return t.startsWith('WAITING') || t.startsWith('OPPONENT');
+      return t.startsWith('SHARE THE INVITE');
     });
     return match?.textContent?.trim() ?? '<no badge>';
   });
@@ -134,13 +132,13 @@ async function main(): Promise<void> {
       await page.goto(`${VITE_BASE}/duel`, { waitUntil: 'load' });
       // Wait for the host panel to mount.
       await page.waitForFunction(
-        () => Array.from(document.querySelectorAll('span')).some(s => (s.textContent ?? '').trim().startsWith('WAITING FOR OPPONENT')),
+        () => Array.from(document.querySelectorAll('span')).some(s => (s.textContent ?? '').trim().startsWith('SHARE THE INVITE')),
         undefined,
         { timeout: LOBBY_RENDER_TIMEOUT_MS },
       );
 
       const initialBadge = await readBadgeText(page);
-      reportCheck(checks, 'initial badge WAITING', initialBadge.startsWith('WAITING'), `text="${initialBadge}"`);
+      reportCheck(checks, 'status line tells the host to share and press READY', initialBadge.startsWith('SHARE THE INVITE'), `text="${initialBadge}"`);
 
       const session = await readSessionId(page);
       reportCheck(checks, 'session id rendered', /^[a-z0-9]{8}$/i.test(session), `session=${session}`);
@@ -154,7 +152,6 @@ async function main(): Promise<void> {
           'You enter as slot 0',
           'Friendly fire is off',
           'No sats, no stakes',
-          'Share the spectate link',
           'The run ends when both ships',
           'Hyperspace doubles',
           'EXACT same arena',
@@ -174,78 +171,18 @@ async function main(): Promise<void> {
       });
       reportCheck(checks, 'daily leader chip rendered', !!dailyChip.headingText, `heading=${dailyChip.headingText}`);
 
-      // ── Simulate the opponent connecting to slot 1 via the broker ───
-      const opponentWs = new WebSocket(`${BROKER_URL}/?s=${session}&r=peer&slot=1`);
-      const opponentMsgs: string[] = [];
-      opponentWs.addEventListener('message', (ev: MessageEvent) => {
-        opponentMsgs.push(typeof ev.data === 'string' ? ev.data : '[binary]');
+      // ── The relay refuses the removed spectator role ───────────────
+      // The lobby used to learn about joins through it; nothing in the
+      // lobby may depend on it again.
+      const refused = await new Promise<boolean>(resolve => {
+        const specWs = new WebSocket(`${BROKER_URL}/?s=${session}&r=peerwatch`);
+        specWs.addEventListener('open', () => { specWs.close(); resolve(false); });
+        specWs.addEventListener('error', () => resolve(true));
+        setTimeout(() => resolve(false), 3000);
       });
-      await new Promise<void>((resolve, reject) => {
-        opponentWs.addEventListener('open', () => resolve());
-        opponentWs.addEventListener('error', () => reject(new Error('opponent ws error')));
-        setTimeout(() => reject(new Error('opponent ws open timeout')), 3000);
-      });
-      opponentWs.send(JSON.stringify({ type: 'hello-peer', session, slot: 1, version: 1 }));
-
-      // Wait for the lobby's badge to flip.
-      let flipped = false;
-      try {
-        await page.waitForFunction(
-          () => {
-            const all = Array.from(document.querySelectorAll('span'));
-            return all.some(s => (s.textContent ?? '').trim().startsWith('OPPONENT CONNECTED'));
-          },
-          undefined,
-          { timeout: BADGE_FLIP_TIMEOUT_MS },
-        );
-        flipped = true;
-      } catch { /* recorded by the check below */ }
-      const connectedBadge = await readBadgeText(page);
-      reportCheck(checks, 'badge flips on slot 1 join', flipped, `text="${connectedBadge}"`);
-
-      // ── Simulate the opponent disconnecting ─────────────────────────
-      opponentWs.close();
-      let reverted = false;
-      try {
-        await page.waitForFunction(
-          () => {
-            const all = Array.from(document.querySelectorAll('span'));
-            return all.some(s => (s.textContent ?? '').trim().startsWith('WAITING FOR OPPONENT'));
-          },
-          undefined,
-          { timeout: BADGE_FLIP_TIMEOUT_MS },
-        );
-        reverted = true;
-      } catch { /* recorded below */ }
-      const revertedBadge = await readBadgeText(page);
-      reportCheck(checks, 'badge reverts on slot 1 leave', reverted, `text="${revertedBadge}"`);
-
-      // ── Spectate link is broadcastable (peerwatch role works) ──────
-      // Re-attach the opponent so the broker has a slot to report.
-      const opp2 = new WebSocket(`${BROKER_URL}/?s=${session}&r=peer&slot=1`);
-      await new Promise<void>((resolve, reject) => {
-        opp2.addEventListener('open', () => resolve());
-        opp2.addEventListener('error', () => reject(new Error('opp2 open')));
-        setTimeout(() => reject(new Error('opp2 open timeout')), 3000);
-      });
-      opp2.send(JSON.stringify({ type: 'hello-peer', session, slot: 1, version: 1 }));
-
-      const specWs = new WebSocket(`${BROKER_URL}/?s=${session}&r=peerwatch`);
-      const specMsgs: string[] = [];
-      specWs.addEventListener('message', (ev: MessageEvent) => {
-        specMsgs.push(typeof ev.data === 'string' ? ev.data : '[binary]');
-      });
-      await new Promise<void>((resolve, reject) => {
-        specWs.addEventListener('open', () => resolve());
-        specWs.addEventListener('error', () => reject(new Error('spec open')));
-        setTimeout(() => reject(new Error('spec open timeout')), 3000);
-      });
-      // Give the broker a tick to send peerwatch-ready + peer-joined.
-      await wait(300);
-      const sawReady = specMsgs.some(m => m.includes('peerwatch-ready'));
-      const sawJoined = specMsgs.some(m => m.includes('"peer-joined"') && m.includes('"slot":1'));
-      reportCheck(checks, 'spectate peerwatch-ready', sawReady, `messages=${JSON.stringify(specMsgs)}`);
-      reportCheck(checks, 'spectate sees slot 1 bound', sawJoined, `messages=${JSON.stringify(specMsgs)}`);
+      reportCheck(checks, 'relay refuses the spectator role', refused, `refused=${refused}`);
+      const watchOffered = await page.evaluate(() => Array.from(document.querySelectorAll('button')).some(b => /WATCH/.test(b.textContent ?? '')));
+      reportCheck(checks, 'lobby offers no watch link', !watchOffered, `offered=${watchOffered}`);
 
       // ── JOIN tab swap doesn't break ────────────────────────────────
       await page.evaluate(() => {
@@ -270,7 +207,7 @@ async function main(): Promise<void> {
         if (host) host.click();
       });
       await page.waitForFunction(
-        () => Array.from(document.querySelectorAll('span')).some(s => (s.textContent ?? '').trim().startsWith('WAITING FOR OPPONENT')),
+        () => Array.from(document.querySelectorAll('span')).some(s => (s.textContent ?? '').trim().startsWith('SHARE THE INVITE')),
         undefined,
         { timeout: 3000 },
       );
@@ -337,7 +274,7 @@ async function main(): Promise<void> {
       const dmPage = await ctx.newPage();
       await dmPage.goto(`${VITE_BASE}/duel?deathmatch=1`, { waitUntil: 'load' });
       await dmPage.waitForFunction(
-        () => document.body.innerText.includes('DEATHMATCH') && document.body.innerText.includes('WAITING FOR 3 PILOT'),
+        () => document.body.innerText.includes('DEATHMATCH') && document.body.innerText.includes('SHARE THE INVITES'),
         undefined,
         { timeout: LOBBY_RENDER_TIMEOUT_MS },
       );
@@ -346,7 +283,7 @@ async function main(): Promise<void> {
         const text = document.body.innerText;
         return {
           heading: text.includes('DEATHMATCH'),
-          waitingForPilots: text.includes('WAITING FOR 3 PILOT'),
+          waitingForPilots: text.includes('SHARE THE INVITES'),
           available2p: buttons.some(b => b.textContent === '2P'),
           selected4p: buttons.some(b => b.textContent === '4P' && b.className === 'menu-btn'),
           noStressPresets: !['8P', '16P', '64P'].some(label => buttons.some(b => b.textContent === label)),

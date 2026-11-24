@@ -9323,26 +9323,6 @@ function buildDuelInviteUrl(session: string, partnerSlot: number, players = 2, r
   return `${origin}/?${params.toString()}`;
 }
 
-/** Build the spectator page URL. Anyone opening this connects via the
- *  broker peerwatch role and watches the duel read-only. No slot — the
- *  spectator sees BOTH ships. The encoded `peer` param carries the FULL
- *  peerwatch URL (broker base + `?s=…&r=peerwatch`) so the spectator's
- *  SpectatorPeer.connect can open it directly; it must NOT reuse the
- *  duel peer URL (that one has `r=peer`, which the broker treats as a
- *  half-handshake peer and the spectator never resolves). */
-function buildSpectateUrl(session: string, players = 2, rules?: Partial<DeathmatchRules>, kind: LobbyMatchKind = players > 2 ? 'deathmatch' : 'duel'): string {
-  const base = defaultBrokerWsUrl().replace(/\/$/, '');
-  const peerWatchUrl = `${base}/?s=${encodeURIComponent(session)}&r=peerwatch&binaryFrames=1`;
-  const origin = window.location.origin;
-  const params = new URLSearchParams({
-    spectate: session,
-    peer: peerWatchUrl,
-    players: String(players),
-  });
-  appendLobbyModeUrlParams(params, kind, players, rules);
-  return `${origin}/?${params.toString()}`;
-}
-
 /** 8-char crockford-base32-ish session id. Short enough to type, long
  *  enough that a casual collision in the broker's open-session set is
  *  vanishingly unlikely. */
@@ -9427,14 +9407,10 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby
   let playerCount = deathmatchLobby ? 4 : 2;
   let deathmatchRules = makeDeathmatchRules(playerCount);
   const matchKind = (): LobbyMatchKind => coopLobby ? 'coop-campaign' : deathmatchLobby || playerCount > 2 ? 'deathmatch' : 'duel';
-  const joinedSlots = new Set<number>();
-  const humanSlotsForStart = (): number[] => {
-    const slots = new Set<number>([0]);
-    for (const slot of joinedSlots) {
-      if (slot > 0 && slot < playerCount) slots.add(slot);
-    }
-    return Array.from(slots).sort((a, b) => a - b);
-  };
+  // The relay no longer reports who has joined a session (its spectator role
+  // was removed), so the host is the only pilot known at start. Invited pilots
+  // take over their slots as they connect.
+  const humanSlotsForStart = (): number[] => [0];
   let qrInviteSlot = 1;
   const inviteUrlForSlot = (slot: number, humanSlots?: readonly number[]): string =>
     buildDuelInviteUrl(session, slot, playerCount, deathmatchRules, matchKind(), humanSlots);
@@ -9450,7 +9426,6 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby
   const startUrl = (): string => {
     return inviterUrl();
   };
-  const spectateUrl = (): string => buildSpectateUrl(session, playerCount, deathmatchRules, matchKind());
   const inviteBundle = (): string => {
     if (playerCount <= 2) return partnerUrl();
     const lines: string[] = [];
@@ -9460,84 +9435,14 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby
     return lines.join('\n');
   };
 
-  // ── Partner-status badge ──────────────────────────────────────────────
-  // Live indicator that flips the moment slot 1 binds at the broker. The
-  // panel opens a peerwatch socket on the same session id; the broker
-  // forwards a peer-joined message when slot 1 connects (and peer-left
-  // when they drop). Without this, the host clicks READY blind, with no
-  // way to know if their partner has even scanned the QR yet.
+  // ── Status line ───────────────────────────────────────────────────────
+  // The lobby cannot see invited pilots arrive: the relay's spectator role,
+  // which used to report joins, was removed. READY is safe to press at any
+  // time, so say that instead of showing a badge that can never change.
   const status = el('div', { parent });
   status.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px 18px;border-radius:999px;border:1.5px solid rgba(255,216,74,0.45);background:rgba(255,216,74,0.08);';
-  const statusDot = el('span', { parent: status });
-  statusDot.style.cssText = 'width:10px;height:10px;border-radius:50%;background:#ffd84a;box-shadow:0 0 12px rgba(255,216,74,0.85);animation:pallasiteWaitPulse 1.4s ease-in-out infinite;';
-  const statusText = el('span', { parent: status, text: coopLobby ? 'WAITING FOR CO-PILOT...' : deathmatchLobby ? 'WAITING FOR PILOTS...' : 'WAITING FOR OPPONENT...' });
+  const statusText = el('span', { parent: status, text: deathmatchLobby ? 'SHARE THE INVITES, THEN PRESS READY' : 'SHARE THE INVITE, THEN PRESS READY' });
   statusText.style.cssText = "font-family:'VT323',ui-monospace,monospace;font-size:0.95rem;letter-spacing:0.18em;color:#ffd84a;";
-  ensurePulseKeyframes();
-
-  const setPartnerStatus = (connected: boolean): void => {
-    if (connected) {
-      statusDot.style.background = '#8cffb4';
-      statusDot.style.boxShadow = '0 0 14px rgba(140,255,180,0.9)';
-      statusDot.style.animation = 'none';
-      statusText.textContent = coopLobby ? 'CO-PILOT CONNECTED ✓' : deathmatchLobby ? 'PILOT CONNECTED ✓' : 'OPPONENT CONNECTED ✓';
-      statusText.style.color = '#8cffb4';
-      status.style.borderColor = 'rgba(140,255,180,0.55)';
-      status.style.background = 'rgba(140,255,180,0.1)';
-    } else {
-      statusDot.style.background = '#ffd84a';
-      statusDot.style.boxShadow = '0 0 12px rgba(255,216,74,0.85)';
-      statusDot.style.animation = 'pallasiteWaitPulse 1.4s ease-in-out infinite';
-      statusText.textContent = coopLobby ? 'WAITING FOR CO-PILOT...' : deathmatchLobby ? 'WAITING FOR PILOTS...' : 'WAITING FOR OPPONENT...';
-      statusText.style.color = '#ffd84a';
-      status.style.borderColor = 'rgba(255,216,74,0.45)';
-      status.style.background = 'rgba(255,216,74,0.08)';
-    }
-  };
-
-  const renderSessionStatus = (): void => {
-    if (playerCount === 2) {
-      setPartnerStatus(joinedSlots.has(1));
-      return;
-    }
-    const connected = Array.from(joinedSlots).filter(slot => slot > 0 && slot < playerCount).length;
-    const missing = Math.max(0, playerCount - 1 - connected);
-    const allConnected = missing === 0;
-    statusDot.style.background = allConnected ? '#8cffb4' : '#ffd84a';
-    statusDot.style.boxShadow = allConnected ? '0 0 14px rgba(140,255,180,0.9)' : '0 0 12px rgba(255,216,74,0.85)';
-    statusDot.style.animation = allConnected ? 'none' : 'pallasiteWaitPulse 1.4s ease-in-out infinite';
-    statusText.textContent = allConnected
-      ? 'ALL PILOTS CONNECTED ✓'
-      : `WAITING FOR ${missing} PILOT${missing === 1 ? '' : 'S'}…`;
-    statusText.style.color = allConnected ? '#8cffb4' : '#ffd84a';
-    status.style.borderColor = allConnected ? 'rgba(140,255,180,0.55)' : 'rgba(255,216,74,0.45)';
-    status.style.background = allConnected ? 'rgba(140,255,180,0.1)' : 'rgba(255,216,74,0.08)';
-  };
-
-  // Open the peerwatch socket. Best-effort: if the broker is down we just
-  // leave the badge in WAITING and let READY work as before. The watch is
-  // a purely informational channel — nothing about the duel flow depends
-  // on it succeeding.
-  const watchUrl = `${defaultBrokerWsUrl().replace(/\/$/, '')}/?s=${encodeURIComponent(session)}&r=peerwatch&binaryFrames=1`;
-  let watchSocket: WebSocket | null = null;
-  try {
-    watchSocket = new WebSocket(watchUrl);
-    watchSocket.addEventListener('message', (ev: MessageEvent) => {
-      try {
-        const msg = JSON.parse(typeof ev.data === 'string' ? ev.data : '') as { type: string; slot?: number };
-        // Only slot 1 binding/leaving matters — slot 0 is the host, which
-        // doesn't bind until READY anyway.
-        if (msg.type === 'peer-joined' && typeof msg.slot === 'number') {
-          joinedSlots.add(msg.slot);
-          renderSessionStatus();
-        } else if (msg.type === 'peer-left' && typeof msg.slot === 'number') {
-          joinedSlots.delete(msg.slot);
-          renderSessionStatus();
-        }
-      } catch { /* malformed — ignore */ }
-    });
-    // Silent failures are OK; the badge just stays in WAITING.
-    watchSocket.addEventListener('error', () => { /* leave badge as-is */ });
-  } catch { /* socket construction itself failed */ }
 
   // ── INVITE block ──────────────────────────────────────────────────────
   // Card-shaped section so the invite reads as one unit (QR + session +
@@ -9571,14 +9476,10 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby
     for (const [kills, btn] of killButtons) btn.className = `menu-btn${deathmatchRules.killLimit === kills ? '' : ' secondary'}`;
     for (const [respawns, btn] of respawnButtons) btn.className = `menu-btn${deathmatchRules.respawns === respawns ? '' : ' secondary'}`;
     copyBtn.textContent = playerCount === 2 ? 'COPY INVITE LINK' : 'COPY INVITE LINKS';
-    watchBtn.textContent = 'COPY WATCH LINK';
     matchRules.style.display = isDeathmatch ? 'flex' : 'none';
     rulesSummary.textContent = isDeathmatch
       ? `${Math.round(deathmatchRules.timeLimitMs / 60_000)} min · ${deathmatchRules.killLimit} kills · ${deathmatchRules.respawns} respawns · FFA`
       : coopLobby ? 'Co-op campaign · shared score · no sats payouts' : 'Classic two-player duel';
-    watchInfo.textContent = playerCount === 2
-      ? coopLobby ? 'Anyone with this link can watch the co-op campaign live, no account needed.' : isDeathmatch ? 'Anyone with this link can watch both pilots live, no account needed.' : 'Anyone with this link can watch the duel live, no account needed.'
-      : `Anyone with this link can watch all ${playerCount} pilots live, no account needed.`;
     slotLinks.replaceChildren();
     slotButtons.clear();
     if (playerCount > 2) {
@@ -9594,7 +9495,6 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby
       }
     }
     renderInviteQr();
-    renderSessionStatus();
   };
   for (const count of [2, 4]) {
     const btn = el('button', { className: `menu-btn${count === playerCount ? '' : ' secondary'}`, parent: sizeRow, text: `${count}P` });
@@ -9602,7 +9502,6 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby
     btn.addEventListener('click', () => {
       playerCount = count;
       deathmatchRules = makeDeathmatchRules(playerCount, { timeLimitMs: deathmatchRules.timeLimitMs, aiSkill: deathmatchRules.aiSkill });
-      for (const slot of Array.from(joinedSlots)) if (slot >= playerCount) joinedSlots.delete(slot);
       refreshRuleChoices();
       updateInviteViews();
     });
@@ -9696,34 +9595,6 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby
   const slotLinks = el('div', { parent: inviteCard });
   slotLinks.style.cssText = 'display:flex;flex-wrap:wrap;justify-content:center;gap:6px;max-width:440px;';
 
-  // ── SPECTATE block ────────────────────────────────────────────────────
-  // Coequal section, not a buried footer. Anyone with the spectate link
-  // can watch the duel live via a read-only peerwatch socket — this is
-  // a genuinely novel feature and deserves visible billing in the lobby
-  // instead of getting tucked under the READY button.
-  const watchCard = lobbyCard(parent, coopLobby ? '👁  SHARE THE RUN' : deathmatchLobby ? '👁  SHARE THE MATCH' : '👁  SHARE THE FIGHT');
-
-  const watchInfo = el('p', { parent: watchCard });
-  watchInfo.style.cssText = 'margin:0;font-size:0.85rem;color:rgba(220,210,255,0.78);line-height:1.45;text-align:center;max-width:420px;';
-  watchInfo.textContent = coopLobby
-    ? 'Anyone with this link can watch the co-op campaign live, no account needed.'
-    : deathmatchLobby
-    ? `Anyone with this link can watch all ${playerCount} pilots live, no account needed.`
-    : 'Anyone with this link can watch the duel live, no account needed.';
-
-  const watchRow = el('div', { className: 'menu-row', parent: watchCard });
-  watchRow.style.cssText = 'gap:8px;flex-wrap:wrap;margin:0;';
-  const watchBtn = el('button', { className: 'menu-btn secondary', parent: watchRow, text: 'COPY WATCH LINK' });
-  watchBtn.addEventListener('click', () => {
-    void navigator.clipboard.writeText(spectateUrl())
-      .then(() => { watchBtn.textContent = 'COPIED ✓'; setTimeout(() => { watchBtn.textContent = 'COPY WATCH LINK'; }, 1500); })
-      .catch(() => { watchBtn.textContent = 'COPY FAILED'; setTimeout(() => { watchBtn.textContent = 'COPY WATCH LINK'; }, 1500); });
-  });
-  const openWatchBtn = el('button', { className: 'menu-btn secondary', parent: watchRow, text: 'OPEN WATCH' });
-  openWatchBtn.addEventListener('click', () => {
-    window.open(spectateUrl(), '_blank', 'noopener,noreferrer');
-  });
-
   // ── READY ─────────────────────────────────────────────────────────────
   // Promoted out of the copy row to its own full-width block so it reads
   // as THE primary action. Tapping READY here drops the host into the
@@ -9745,15 +9616,8 @@ function renderHostPanel(parent: HTMLElement, coopLobby = false, deathmatchLobby
   renderDailyLeaderChip(parent);
   updateInviteViews();
 
-  // Teardown — close the peerwatch socket when the panel is swapped out
-  // (tab toggle or back to title). Without this the socket lingers until
-  // GC + ws timeout, leaving an orphan watcher on the broker for minutes.
-  // Also stops the tip rotation timer.
+  // Teardown — stops the tip rotation timer when the panel is swapped out.
   return () => {
-    if (watchSocket) {
-      try { watchSocket.close(); } catch { /* already closed */ }
-      watchSocket = null;
-    }
     try { tipStripTeardown(); } catch { /* ignore */ }
   };
 }
@@ -9771,7 +9635,6 @@ function lobbyTipStrip(parent: HTMLElement, coopLobby = false, deathmatchLobby =
         'You enter as slot 0. Lockstep buffers your input until your co-pilot joins, so READY is safe to press now.',
         'Co-op campaign uses the normal 25-wave route with a shared final score.',
         'No sats pay out in co-op. Scores publish to the separate co-op board.',
-        'Share the spectate link so anyone can watch the whole run live.',
         'The run ends when both ships are out of lives.',
         'Hyperspace doubles as a panic button. Shield burns a cooldown.',
         'Both clients see the EXACT same campaign: same seed, same rocks, same waves.',
@@ -9783,13 +9646,11 @@ function lobbyTipStrip(parent: HTMLElement, coopLobby = false, deathmatchLobby =
         'Every pilot gets a separate invite link; copy the bundle or send one slot link at a time.',
         'Deathmatch is free-for-all: every other pilot is a valid target.',
         'Rounds end on the time cap, kill cap, or last pilot standing.',
-        'Share the spectate link so anyone can watch every pilot live.',
       ]
     : [
         'You enter as slot 0. Lockstep buffers your input until the remote slots join, so READY is safe to press now.',
         'Deathmatch is free-for-all: every other pilot is a valid target.',
         'No sats, no stakes. Bragging rights only.',
-        'Share the spectate link so anyone can watch every pilot live.',
         'Rounds end on the time cap, kill cap, or last pilot standing.',
         'Hyperspace doubles as a panic button. Shield burns a cooldown.',
         'Every client sees the EXACT same arena: same seed, same rocks, same rules.',
@@ -9820,17 +9681,6 @@ function lobbyTipStrip(parent: HTMLElement, coopLobby = false, deathmatchLobby =
   }, 5_000);
 
   return (): void => { window.clearInterval(interval); };
-}
-
-/** Inject the @keyframes the partner-status badge uses for its "waiting"
- *  dot pulse. Idempotent — only attaches once per page. Lobby-only style;
- *  not worth a CSS file. */
-function ensurePulseKeyframes(): void {
-  if (document.getElementById('pallasite-lobby-keyframes')) return;
-  const style = document.createElement('style');
-  style.id = 'pallasite-lobby-keyframes';
-  style.textContent = '@keyframes pallasiteWaitPulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(0.85); } }';
-  document.head.appendChild(style);
 }
 
 /** Card-style container used by the lobby's host panel to group related
